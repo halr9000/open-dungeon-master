@@ -99,6 +99,25 @@ try {
     assert.deepEqual(routed, [{ id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash", context: 1000000 }]);
   });
 
+  await test("a model's creation stamp is kept in seconds, whatever unit arrived", () => {
+    const stamped = logic.readModelList({
+      data: [
+        // OpenAI's own shape: seconds.
+        { id: "gpt-5.1", created: 1_760_000_000 },
+        // Some proxies send milliseconds; past 1e12 it is read as ms.
+        { id: "z-ai/glm", created: 1_760_000_000_000 },
+        { id: "undated" },
+        { id: "junk", created: "yesterday" },
+        { id: "negative", created: -5 },
+      ],
+    });
+    assert.equal(stamped.find((model) => model.id === "gpt-5.1").created, 1_760_000_000);
+    assert.equal(stamped.find((model) => model.id === "z-ai/glm").created, 1_760_000_000);
+    assert.equal("created" in stamped.find((model) => model.id === "undated"), false);
+    assert.equal("created" in stamped.find((model) => model.id === "junk"), false);
+    assert.equal("created" in stamped.find((model) => model.id === "negative"), false);
+  });
+
   await test("the documented default is preselected, then the provider's choice, then the first listed", () => {
     const listed = (ids) => ids.map((id) => ({ id, label: id }));
     assert.equal(logic.recommendedModel(listed(["gemma4-26b", "qwen3.6-35b"])), "qwen3.6-35b");

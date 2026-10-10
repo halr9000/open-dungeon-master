@@ -27,7 +27,9 @@ export default defineConfig({
     ],
   },
   test: {
-    include: ["scripts/test-*.mjs"],
+    // The scripts are the app's own harness; the .test.ts files are vitest
+    // suites for pure UI helpers that no script can drive.
+    include: ["scripts/test-*.mjs", "src/**/*.test.ts"],
     passWithNoTests: true,
     fileParallelism: false,
     sequence: { sequencer: ByName },

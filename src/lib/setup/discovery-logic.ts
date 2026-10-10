@@ -83,6 +83,10 @@ export type ListedModel = {
   label: string;
   // The model's window where the server says it; OpenRouter does.
   context?: number;
+  // Unix seconds when the provider added the model, where it says so
+  // (OpenAI-style /v1/models `created`). A model without one is of unknown
+  // age: the picker's newest-first sort puts it after every dated one.
+  created?: number;
 };
 
 type RawModel = {
@@ -90,6 +94,7 @@ type RawModel = {
   name?: unknown;
   owned_by?: unknown;
   context_length?: unknown;
+  created?: unknown;
   supported_parameters?: unknown;
 };
 
@@ -129,7 +134,13 @@ export function readModelList(json: unknown): ListedModel[] {
     seen.add(id);
     const label = typeof entry.name === "string" && entry.name.trim() && entry.name.trim() !== id ? entry.name.trim() : id;
     const context = typeof entry.context_length === "number" && entry.context_length > 0 ? entry.context_length : undefined;
-    out.push({ id, label, ...(context ? { context } : {}) });
+    // A creation stamp arrives in seconds (OpenAI) or milliseconds (some
+    // proxies); anything past the year 5136 CE was seconds misread as ms.
+    let created: number | undefined;
+    if (typeof entry.created === "number" && entry.created > 0 && Number.isFinite(entry.created)) {
+      created = entry.created > 1e12 ? Math.round(entry.created / 1000) : entry.created;
+    }
+    out.push({ id, label, ...(context ? { context } : {}), ...(created ? { created } : {}) });
   }
   return out;
 }

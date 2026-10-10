@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { GameIcon } from "@/components/ui/GameIcon";
+import { FilterableModelPicker } from "@/components/FilterableModelPicker";
 import type { ListedModel } from "@/lib/setup/discovery-logic";
 import type { FoundTextServer, ScanResult } from "@/lib/setup/discovery";
 import { Select } from "@/components/ui/Select";
@@ -107,6 +108,10 @@ export function FoundRow({
   );
 }
 
+// Past this many models a menu stops being a way to choose: OpenRouter lists
+// hundreds, and the typeahead picker takes over. A small list stays a menu.
+const TYPEAHEAD_AT = 25;
+
 export function ModelPicker({
   label,
   models,
@@ -120,6 +125,17 @@ export function ModelPicker({
   recommended: string;
   onChange: (model: string) => void;
 }) {
+  if (models.length > TYPEAHEAD_AT) {
+    return (
+      <FilterableModelPicker
+        label={label}
+        models={models}
+        value={value}
+        placeholder={`Search ${models.length} models…`}
+        onChange={onChange}
+      />
+    );
+  }
   const options = [
     ...models.map((model) => ({
       value: model.id,
