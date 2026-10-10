@@ -112,7 +112,49 @@
 4. Manual test with a running TTS server (kokoro on :8880 or OpenRouter cloud): confirm sound + failure path shows message when provider is off.
 5. Commit: `fix(speech): surface audio playback failures in test buttons`
 
-## Task 7: Regression sweep + upstream PR prep
+## Task 7: Setup wizard parity + admin dialog cleanup + ComfyUI model lister
+
+**Objective:** First-run setup offers the same backend options the admin panel has (remote URLs, cloud), and the admin Image/Speech dialogs get tidied.
+
+**Background (verified 2026-10-10):**
+- Setup wizard art step (`src/app/setup/MediaSteps.tsx` ~line 63-135) only offers "ComfyUI on this computer" (localhost scan) and placeholders; it accepts a typed URL but presents it as local-only. Speech step (~244-300) likewise only kokoro + docker hint.
+- Admin panel already exposes OpenAI-compatible images API with remote base URL + key (`AdminImagesSection.tsx`) — that's the parity target.
+- `comfyStatus()` in `src/lib/comfyui.ts` (line 142) already lists checkpoints/unets via ComfyUI `/object_info` — the setup wizard consumes it, but admin's "Model file" field (line 69-79 of AdminImagesSection) is a plain text input.
+
+**Steps:**
+1. Setup art step: add "OpenAI-compatible images API" and "fal.ai" choice cards (mirroring admin), with URL/key fields; keep local ComfyUI scan as-is. Speech step: add "OpenRouter (cloud)" and "fal.ai" choice cards alongside Kokoro.
+2. AdminImagesSection: replace the "Model file" text input with the Task 4 `FilterableModelPicker` fed by `comfyStatus(images.comfyUrl)` checkpoints (fetch on URL blur/change, cache per URL, keep free-typing as fallback when the server doesn't answer — a dropdown must never block a working setup).
+3. AdminSpeechSection cleanup: label "Kokoro server URL" only shows for kokoro provider; the hardcoded paragraph "Each passage is sent as text to the Kokoro server at 127.0.0.1:8880…" becomes provider-aware wording; with Task 3's openrouter option the dialog gets provider-conditional fields (done together).
+4. Verify: fresh-setup flow can configure cloud art + TTS without touching admin first; admin comfy model dropdown populates from mando:8188.
+5. Commit(s): `feat(setup): cloud backends in first-run wizard` + `feat(admin): comfyui checkpoint picker`
+
+## Task 8: fal.ai image backend
+
+**Objective:** New image backend `fal` rendering via fal's REST API (distinct wire format — NOT OpenAI-compatible).
+
+**Wire format (verified 2026-10-10):** `POST https://fal.run/<model>` with header `Authorization: Key $FAL_KEY`, JSON body per model schema, sync response JSON containing media CDN URLs (e.g. `images[0].url`). Queue variant at `queue.fal.run` for long jobs; sync `fal.run` is fine for portraits.
+
+**Files:**
+- Modify: `src/lib/schemas/global-config.ts:91` — image backend enum add `"fal"`; new fields `falKey` (secret, hasFlag), `falImageModel` (default e.g. `fal-ai/flux/general`)
+- Create or extend: `src/lib/image-generate.ts` — `generateFalImage()` mapping ODM's prompt/size to the model's input schema and fetching the returned URL into bytes (same shape existing backends return)
+- Modify: `AdminImagesSection.tsx` — new group block (model name + key; no URL needed), included in picker + offered list
+- Modify: setup wizard art step — fal choice card (Task 7 wires the slot)
+- Test: unit test for request mapping + response parsing with mocked fetch.
+
+## Task 9: fal.ai TTS backend
+
+**Objective:** New TTS provider `fal` (same wire format as Task 8; audio comes back as a CDN URL that we fetch server-side and stream to the client — the client never sees the key or the URL signing).
+
+**Models:** fal hosts Chatterbox TTS, MiniMax Speech-02, Dia, Kokoro etc. Voice handling is model-specific (Chatterbox takes an audio prompt for cloning; MiniMax has preset voices) — implement one default model (`fal-ai/chatterbox` or MiniMax) with a model-name override field, document that voice IDs are per-model.
+
+**Files:**
+- Modify: `src/lib/tts-backend.ts` — `TtsProvider` add `"fal"`; `resolveTtsBackend` fal branch; speech request path branches: fal → POST `fal.run`, poll if queued, fetch audio URL → bytes
+- Modify: `src/lib/schemas/global-config.ts` speech schema — `falTtsModel`, key flag
+- Modify: `/api/tts/*` routes pass-through (they already proxy bytes)
+- UI: provider option "fal.ai (cloud)" in AdminSpeechSection + setup speech step
+- Test: mocked-fetch tests for submit→result→audio fetch; failure path when FAL key missing.
+
+## Task 10: Regression sweep + upstream PR prep
 
 **Objective:** Everything green; changes structured for upstream contribution.
 
