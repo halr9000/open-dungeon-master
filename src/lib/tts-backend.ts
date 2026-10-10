@@ -10,6 +10,7 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 //   openai  any server that speaks OpenAI's /v1/audio/speech: OpenAI itself,
 //           or a local one (Kokoro-FastAPI, Speaches, openedai-speech, ...)
 //           with its own address, model and key.
+//   openrouter  OpenRouter's speech endpoint at openrouter.ai.
 //   off     no narration on this server.
 //
 // Both kinds are the same request on the wire; the kind only picks the
@@ -17,7 +18,7 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 // The decision logic is pure and exported so scripts/test-tts-backend.mjs can
 // drive it without a network.
 
-export type TtsProvider = "kokoro" | "openai" | "off";
+export type TtsProvider = "kokoro" | "openai" | "openrouter" | "off";
 
 export type TtsBackend = {
   provider: TtsProvider;
@@ -31,6 +32,8 @@ export type TtsBackend = {
 
 export const KOKORO_DEFAULT_URL = "http://127.0.0.1:8880";
 export const OPENAI_DEFAULT_URL = "https://api.openai.com/v1";
+export const OPENROUTER_DEFAULT_URL = "https://openrouter.ai/api/v1";
+export const OPENROUTER_DEFAULT_TTS_MODEL = "hexgrad/kokoro-82m";
 export const OPENAI_DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
 // OpenAI publishes no voice list endpoint; these are the documented voices.
@@ -77,7 +80,17 @@ export type TtsBackendInput = {
 };
 
 export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
-  const provider: TtsProvider = input.provider === "openai" || input.provider === "off" ? input.provider : "kokoro";
+  const provider: TtsProvider =
+    input.provider === "openai" || input.provider === "openrouter" || input.provider === "off" ? input.provider : "kokoro";
+  if (provider === "openrouter") {
+    return {
+      provider,
+      v1: v1Root(input.openaiUrl.trim() || OPENROUTER_DEFAULT_URL),
+      model: input.model.trim() || OPENROUTER_DEFAULT_TTS_MODEL,
+      apiKey: input.apiKey.trim(),
+      defaultVoice: input.voice.trim() || "af_heart",
+    };
+  }
   if (provider === "openai") {
     const base = input.openaiUrl.trim() || OPENAI_DEFAULT_URL;
     const official = isOpenAiHost(base);

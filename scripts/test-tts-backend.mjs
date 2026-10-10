@@ -86,6 +86,19 @@ await test("off is off, and anything unknown is Kokoro", () => {
   assert.equal(resolveTtsBackend({ ...blank, provider: "banana" }).provider, "kokoro");
 });
 
+await test("openrouter defaults to OpenRouter's own speech endpoint", () => {
+  const backend = resolveTtsBackend({ ...blank, provider: "openrouter" });
+  assert.deepEqual(backend, { provider: "openrouter", v1: "https://openrouter.ai/api/v1", model: "hexgrad/kokoro-82m", apiKey: "", defaultVoice: "af_heart" });
+  // Its own address is used as given, with or without /v1.
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", openaiUrl: "https://openrouter.ai/api/v1/" }).v1, "https://openrouter.ai/api/v1");
+  // Overrides follow, as on every other kind.
+  const named = resolveTtsBackend({ ...blank, provider: "openrouter", openaiUrl: "http://10.0.0.5:8000", model: "my-tts", apiKey: "sk-or", voice: "narrator_one" });
+  assert.equal(named.v1, "http://10.0.0.5:8000/v1");
+  assert.equal(named.model, "my-tts");
+  assert.equal(named.apiKey, "sk-or");
+  assert.equal(named.defaultVoice, "narrator_one");
+});
+
 await test("voice lists are read in the shapes servers send them", () => {
   assert.deepEqual(parseVoiceList({ voices: ["af_heart", "af_bella", "af_heart"] }), ["af_heart", "af_bella"]);
   assert.deepEqual(parseVoiceList({ voices: [{ id: "alloy" }, { name: "echo" }, { voice_id: "nova" }, 7, null] }), ["alloy", "echo", "nova"]);
