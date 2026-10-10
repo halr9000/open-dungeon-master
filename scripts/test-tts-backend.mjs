@@ -14,7 +14,7 @@ import { removeTempDir } from "./lib/remove-temp-dir.mjs";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-tts-backend-"));
 process.env.SQLITE_DB_PATH = path.join(dir, "test.sqlite");
 process.env.DB_ENCRYPTION_KEY = randomBytes(32).toString("hex");
-for (const key of ["KOKORO_URL", "TTS_PROVIDER", "TTS_BASE_URL", "TTS_MODEL", "TTS_API_KEY", "TTS_VOICE", "OPENAI_API_KEY", "OPENAI_IMAGE_API_KEY"]) {
+for (const key of ["KOKORO_URL", "TTS_PROVIDER", "TTS_BASE_URL", "TTS_MODEL", "TTS_API_KEY", "TTS_VOICE", "OPENAI_API_KEY", "OPENAI_IMAGE_API_KEY", "OPENROUTER_API_KEY"]) {
   delete process.env[key];
 }
 const previousCwd = process.cwd();
@@ -215,6 +215,44 @@ const server = http.createServer((request, response) => {
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
+
+await test("an OpenRouter speech request carries the shared OpenRouter key", async () => {
+  process.env.OPENROUTER_API_KEY = "sk-or-shared";
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: base, ttsModel: "router-tts", ttsApiKey: "", ttsVoice: "narrator_one" } });
+  const backend = ttsBackend();
+  assert.equal(backend.apiKey, "sk-or-shared");
+  let captured;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    captured = { url: String(url), auth: options?.headers?.Authorization ?? "" };
+    return new Response(Buffer.from("ID3-fake-mpeg"), { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+  };
+  try {
+    await synthesizeSpeech("Hello from OpenRouter.", "narrator_one", 1, { ...backend, v1: "https://openrouter.ai/api/v1" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(captured.url, "https://openrouter.ai/api/v1/audio/speech");
+  assert.equal(captured.auth, "Bearer sk-or-shared");
+});
+
+await test("a Kokoro speech request does not carry an API key", async () => {
+  saveGlobalConfig({ speech: { ttsProvider: "kokoro", kokoroUrl: base, ttsModel: "kokoro", ttsApiKey: "sk-kokoro", ttsVoice: "af_heart" } });
+  await synthesizeSpeech("Hello from Kokoro.", "af_heart", 1, ttsBackend());
+  const call = seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1);
+  assert.equal(call.auth, "");
+});
+
+await test("a missing OpenRouter key has a clear configuration failure", async () => {
+  const backend = { provider: "openrouter", v1: base, model: "router-tts", apiKey: "", defaultVoice: "af_heart" };
+  await assert.rejects(
+    synthesizeSpeech("No key.", "af_heart", 1, backend),
+    (error) => {
+      assert.equal(describeSpeechFailure(error, backend), "The OpenRouter key is not configured.");
+      return true;
+    },
+  );
+});
 
 await test("speech is asked of the configured server, with its model, voice and key", async () => {
   saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsApiKey: "sk-local", ttsVoice: "narrator_one" } });

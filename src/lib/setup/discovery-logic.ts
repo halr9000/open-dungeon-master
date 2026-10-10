@@ -199,7 +199,7 @@ export const KEY_PROVIDERS: readonly KeyProvider[] = [
     keyUrl: "https://openrouter.ai/keys",
     keyPlaceholder: "sk-or-...",
     preferred: ["google/gemini-3.5-flash"],
-    coversMedia: false,
+    coversMedia: true,
   },
   {
     id: "other",

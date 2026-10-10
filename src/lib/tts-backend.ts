@@ -66,6 +66,15 @@ export function isOpenAiHost(baseUrl: string): boolean {
   }
 }
 
+export function isOpenRouterHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "openrouter.ai" || host.endsWith(".openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
 export type TtsBackendInput = {
   provider: string;
   // Admin value, then env, for each kind of server.
@@ -87,7 +96,7 @@ export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
       provider,
       v1: v1Root(input.openaiUrl.trim() || OPENROUTER_DEFAULT_URL),
       model: input.model.trim() || OPENROUTER_DEFAULT_TTS_MODEL,
-      apiKey: input.apiKey.trim(),
+      apiKey: input.apiKey.trim() || input.sharedOpenAiKey.trim(),
       defaultVoice: input.voice.trim() || "af_heart",
     };
   }
@@ -186,6 +195,9 @@ export function effectiveVoice(voice: string, backend: Pick<TtsBackend, "provide
 // never more of an upstream body than a sentence.
 export function describeSpeechFailure(error: unknown, backend: Pick<TtsBackend, "provider" | "v1">): string {
   const where = backend.provider === "kokoro" ? "The Kokoro speech server" : "The speech server";
+  if ((backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) && error instanceof Error && error.message === "OpenRouter key is not configured.") {
+    return `The ${error.message}`;
+  }
   if (error instanceof SpeechHttpError) {
     if (error.status === 401 || error.status === 403) {
       return `${where} refused the API key (HTTP ${error.status}).`;
@@ -254,12 +266,19 @@ export function upstreamDetail(body: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
+function authorizationHeaders(backend: TtsBackend): Record<string, string> {
+  const shouldAuthorize =
+    Boolean(backend.apiKey) &&
+    (backend.provider === "openai" || backend.provider === "openrouter" || isOpenRouterHost(backend.v1));
+  return shouldAuthorize ? { Authorization: `Bearer ${backend.apiKey}` } : {};
+}
+
 async function requestSpeech(backend: TtsBackend, input: string, voice: string, speed: number): Promise<Buffer> {
   const response = await fetch(`${backend.v1}/audio/speech`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(backend.apiKey ? { Authorization: `Bearer ${backend.apiKey}` } : {}),
+      ...authorizationHeaders(backend),
     },
     body: JSON.stringify({ model: backend.model, voice, input, response_format: "mp3", ...(speed !== 1 ? { speed } : {}) }),
     signal: AbortSignal.timeout(180_000),
@@ -278,6 +297,9 @@ async function requestSpeech(backend: TtsBackend, input: string, voice: string, 
 export async function synthesizeSpeech(input: string, voice: string, speed = 1, backend: TtsBackend = ttsBackend()): Promise<Buffer> {
   if (backend.provider === "off") {
     throw new Error("Narration is switched off on this server.");
+  }
+  if ((backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) && !backend.apiKey) {
+    throw new Error("OpenRouter key is not configured.");
   }
   const voices = backend.provider === "openai" ? await serverVoiceIds(backend) : [];
   // A local server with no default named falls back to the first voice it
@@ -314,7 +336,7 @@ export async function serverVoices(backend: TtsBackend = ttsBackend(), fresh = f
     try {
       const response = await fetch(`${backend.v1}/audio/voices`, {
         cache: "no-store",
-        headers: backend.apiKey ? { Authorization: `Bearer ${backend.apiKey}` } : {},
+        headers: authorizationHeaders(backend),
         signal: AbortSignal.timeout(4_000),
       });
       if (response.ok) {

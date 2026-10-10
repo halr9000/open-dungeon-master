@@ -79,6 +79,24 @@ export function openAiImagesPaid(story?: TextBackendKey): boolean {
 // and the story already use (on a device world, the one saved in the app).
 // No campaign in play, so only the server-wide sources count.
 export function openAiSpeechConfig(): { baseUrl: string; apiKey: string; model: string } {
+  const config = getGlobalConfig();
+  if (configValue(config.speech.ttsProvider, "TTS_PROVIDER") === "openrouter") {
+    const baseUrl = configValue(
+      config.speech.ttsBaseUrl,
+      "TTS_BASE_URL",
+      "https://openrouter.ai/api/v1",
+    ).replace(/\/+$/, "");
+    const textBaseUrl = (config.text.customBaseUrl || serverEnv("OPENAI_COMPAT_BASE_URL")).trim();
+    const textKey =
+      endpointKind(textBaseUrl) === "openrouter"
+        ? config.text.customApiKey.trim() || serverEnv("OPENROUTER_API_KEY") || serverEnv("OPENAI_COMPAT_API_KEY")
+        : "";
+    return {
+      baseUrl,
+      apiKey: config.speech.ttsApiKey.trim() || textKey || serverEnv("OPENROUTER_API_KEY"),
+      model: configValue(config.speech.ttsModel, "TTS_MODEL", "hexgrad/kokoro-82m"),
+    };
+  }
   const { baseUrl, apiKey } = resolveConfig();
   return { baseUrl, apiKey, model: serverEnv("STT_OPENAI_MODEL", "gpt-4o-mini-transcribe") };
 }
