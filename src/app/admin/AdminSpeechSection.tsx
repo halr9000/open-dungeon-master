@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import { registerOutput, releaseOutput } from "@/lib/audio-devices";
 import { ui } from "@/lib/ui";
 import { PageSection } from "@/components/PageShell";
+import { VoiceDocsLink } from "@/components/VoicePicker";
 import { BuiltinSpeechCard } from "@/app/admin/BuiltinSpeechCard";
 import {
   Field,
@@ -221,7 +222,9 @@ export function AdminSpeechSection({
             hint={
               provider === "openai"
                 ? `Used for the test, and whenever a campaign asks for a voice this server does not have. Blank = ${official ? "alloy" : "the first voice the server lists"}.`
-                : "Used for the test. Blank = af_heart. Campaigns pick their own from the server's list, or type one."
+                : provider === "openrouter"
+                  ? "Used for the test. Blank = af_heart. OpenRouter's Kokoro takes the standard Kokoro voice ids."
+                  : "Used for the test. Blank = af_heart. Campaigns pick their own from the server's list, or type one."
             }
           >
             <input
@@ -231,6 +234,7 @@ export function AdminSpeechSection({
               onChange={(event) => set({ ttsVoice: event.target.value })}
               placeholder={provider === "openai" ? (official ? "alloy" : "") : "af_heart"}
             />
+            <VoiceDocsLink className="mt-1" />
           </Field>
         )}
       </div>

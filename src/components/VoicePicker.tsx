@@ -1,5 +1,6 @@
 "use client";
 
+import { ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
@@ -14,7 +15,7 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 // the endpoint, the list is the shipped Kokoro one, as it always was.
 
 type Voice = { id: string; label: string };
-type VoiceList = { voices: Voice[]; provider: string; defaultVoice: string };
+type VoiceList = { voices: Voice[]; provider: string; defaultVoice: string; docsUrl?: string };
 
 const SHIPPED: VoiceList = {
   voices: TTS_VOICES.map((voice) => ({ id: voice.id, label: voice.label })),
@@ -61,6 +62,28 @@ export function useTtsVoices(): VoiceList {
 // The name a voice goes by in a summary line.
 export function voiceLabel(list: VoiceList, voice: string): string {
   return list.voices.find((entry) => entry.id === voice)?.label ?? voice;
+}
+
+// Where the voice ids are documented, when anywhere: a small link under the
+// pickers, because a list that says "type a voice" still owes the reader the
+// ids it would accept. The server picks the address per backend (openai's
+// documented voices, OpenRouter's audio docs; a Kokoro server lists its own,
+// so no link).
+export function VoiceDocsLink({ className }: { className?: string }) {
+  const list = useTtsVoices();
+  if (!list.docsUrl) {
+    return null;
+  }
+  return (
+    <a
+      href={list.docsUrl}
+      target="_blank"
+      rel="noreferrer"
+      className={cn("inline-flex items-center gap-1 text-[11px] text-stone-500 hover:text-amber-200", className)}
+    >
+      Find voice IDs <ExternalLink className="size-3" />
+    </a>
+  );
 }
 
 const CUSTOM = "\u0000custom";
