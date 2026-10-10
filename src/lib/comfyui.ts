@@ -17,6 +17,23 @@ const STEPS = 25;
 const CFG = 6.0;
 const NEGATIVE_PROMPT =
   "text, watermark, signature, low quality, jpeg artifacts, deformed hands, extra fingers";
+// Krea2-class checkpoints (and other UNET-file models like Flux.2 Klein) are
+// not full checkpoints: the diffusion weights, text encoder and VAE load
+// through three separate nodes, the negative prompt goes through
+// ConditioningZeroOut (cfg 1 distilled sampling), and the model needs far
+// fewer steps than an SD-class checkpoint. The user picks the unet file; the
+// encoder/VAE names come from each loader's own dropdown, so no filenames
+// are hardcoded here.
+const KREA_STEPS = 8;
+const KREA_CFG = 1.0;
+const KREA_CLIP_MATCH = /qwen/i;
+const KREA_VAE_MATCH = /qwen_image_vae|flux2-vae/i;
+// The model dropdown merges plain checkpoints with unet-file models, and a
+// generic loader can't tell them apart by name alone; a picker entry only
+// counts as a unet file when the server's own UNETLoader dropdown has it.
+function isUnetFile(checkpoint: string, unets: readonly string[]): boolean {
+  return unets.includes(checkpoint);
+}
 // Checkpoint-friendly ceiling: SDXL models train at 1024 and degrade past
 // ~1.5K on the long side, unlike the FLUX backends' 2048 slow mode.
 const LONG_SIDE = { fast: 1024, slow: 1344 } as const;
@@ -98,40 +115,56 @@ export type ComfyStatus = {
   ok: boolean;
   error?: string;
   checkpoints: string[];
+  // Model picker entries for UNET-file models (Krea2, Flux.2 Klein): the
+  // diffusion weights load separately from the encoder and VAE, so they are
+  // listed here instead of the CheckpointLoaderSimple dropdown.
+  unets?: string[];
+  // First-choice encoder/VAE for the selected unet, from the server's own
+  // dropdowns; empty when the server has none.
+  clipName?: string;
+  vaeName?: string;
 };
 
-// One call powers the Images panel: reachability plus the checkpoint list
-// from CheckpointLoaderSimple's declared inputs.
+// A dropdown value list from /object_info/<Node>, flattened to strings.
+async function objectOptions(url: string, node: string, input: string, signal: AbortSignal): Promise<string[]> {
+  const response = await comfyFetch(`${url}/object_info/${node}`, { cache: "no-store", signal });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    return [];
+  }
+  const info = await readJson<Record<string, { input?: { required?: Record<string, unknown[]> } }>>(response);
+  const field = info[node]?.input?.required?.[input]?.[0];
+  return Array.isArray(field) ? field.filter((name): name is string => typeof name === "string") : [];
+}
+
+// One call powers the Images panel: reachability plus the model lists the
+// checkpoint and unet loaders each declare.
 export async function comfyStatus(rawUrl: string | undefined): Promise<ComfyStatus> {
   const url = resolveComfyUrl(rawUrl);
   const timeout = timeoutSignal(STATUS_TIMEOUT_MS);
 
   try {
-    const [stats, objectInfo] = await Promise.all([
-      comfyFetch(`${url}/system_stats`, { cache: "no-store", signal: timeout.signal }),
-      comfyFetch(`${url}/object_info/CheckpointLoaderSimple`, {
-        cache: "no-store",
-        signal: timeout.signal,
-      }),
-    ]);
-
+    const stats = await comfyFetch(`${url}/system_stats`, { cache: "no-store", signal: timeout.signal });
     if (!stats.ok) {
-      await objectInfo.body?.cancel().catch(() => {});
       return { ok: false, error: `ComfyUI answered ${stats.status}.`, checkpoints: [] };
     }
 
-    let checkpoints: string[] = [];
-    if (objectInfo.ok) {
-      const info = await readJson<{
-        CheckpointLoaderSimple?: { input?: { required?: { ckpt_name?: unknown[] } } };
-      }>(objectInfo);
-      const names = info.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
-      if (Array.isArray(names)) {
-        checkpoints = names.filter((name): name is string => typeof name === "string");
-      }
-    }
+    const [checkpoints, unets, clips, vaes] = await Promise.all([
+      objectOptions(url, "CheckpointLoaderSimple", "ckpt_name", timeout.signal),
+      objectOptions(url, "UNETLoader", "unet_name", timeout.signal),
+      objectOptions(url, "CLIPLoader", "clip_name", timeout.signal),
+      objectOptions(url, "VAELoader", "vae_name", timeout.signal),
+    ]);
 
-    return { ok: true, checkpoints };
+    // The pick-one-list the panel shows: unet-file models first (what this
+    // server is set up to run), then plain checkpoints. The Krea/Flux
+    // encoder and VAE defaults come from these same dropdowns.
+    const status: ComfyStatus = { ok: true, checkpoints: [...unets, ...checkpoints], unets };
+    const clip = clips.find((name) => KREA_CLIP_MATCH.test(name));
+    const vae = vaes.find((name) => KREA_VAE_MATCH.test(name));
+    if (clip) status.clipName = clip;
+    if (vae) status.vaeName = vae;
+    return status;
   } catch (error) {
     if (error instanceof ComfyRefusal) {
       return { ok: false, error: error.message, checkpoints: [] };
@@ -167,7 +200,66 @@ function buildWorkflow(options: {
   seed: number;
   // Extra negatives from the table's boundary (safety-logic.ts).
   negative?: string;
+  // Krea2-class graph inputs: unet-file models load their diffusion weights,
+  // encoder and VAE through three nodes instead of one checkpoint loader.
+  clipName?: string;
+  vaeName?: string;
+  unets: readonly string[];
 }) {
+  if (isUnetFile(options.checkpoint, options.unets) && options.clipName && options.vaeName) {
+    // Distilled unet-file graph: cfg 1 with a zeroed negative (the text
+    // encoder still sees the positive prompt; zeroing just removes the
+    // classifier-free branch, which these models are trained without).
+    return {
+      "1": {
+        class_type: "UNETLoader",
+        inputs: { unet_name: options.checkpoint, weight_dtype: "default" },
+      },
+      "2": {
+        class_type: "CLIPLoader",
+        inputs: { clip_name: options.clipName, type: "krea2", device: "default" },
+      },
+      "3": {
+        class_type: "VAELoader",
+        inputs: { vae_name: options.vaeName },
+      },
+      "4": {
+        class_type: "CLIPTextEncode",
+        inputs: { text: options.prompt, clip: ["2", 0] },
+      },
+      "5": {
+        class_type: "ConditioningZeroOut",
+        inputs: { conditioning: ["4", 0] },
+      },
+      "6": {
+        class_type: "EmptyLatentImage",
+        inputs: { width: options.width, height: options.height, batch_size: 1 },
+      },
+      "7": {
+        class_type: "KSampler",
+        inputs: {
+          model: ["1", 0],
+          positive: ["4", 0],
+          negative: ["5", 0],
+          latent_image: ["6", 0],
+          seed: options.seed,
+          steps: KREA_STEPS,
+          cfg: KREA_CFG,
+          sampler_name: "euler",
+          scheduler: "simple",
+          denoise: 1,
+        },
+      },
+      "8": {
+        class_type: "VAEDecode",
+        inputs: { samples: ["7", 0], vae: ["3", 0] },
+      },
+      "9": {
+        class_type: "SaveImage",
+        inputs: { images: ["8", 0], filename_prefix: "open-dungeon" },
+      },
+    };
+  }
   return {
     "1": {
       class_type: "CheckpointLoaderSimple",
@@ -235,28 +327,45 @@ export async function generateComfyImage(options: {
   seed?: number;
   hasReferences?: boolean;
   negative?: string;
+  // Krea2-class encoder/VAE overrides, discovered from the server when blank.
+  clipName?: string;
+  vaeName?: string;
 }): Promise<GeneratedImage> {
   const url = resolveComfyUrl(options.url);
   const startedAt = Date.now();
   const deadline = startedAt + GENERATE_TIMEOUT_MS;
 
+  const status = await comfyStatus(url);
+  if (!status.ok) {
+    throw new Error(status.error || `Could not reach ComfyUI at ${url}.`);
+  }
   let checkpoint = (options.checkpoint || "").trim();
   if (!checkpoint) {
-    const status = await comfyStatus(url);
-    if (!status.ok) {
-      throw new Error(status.error || `Could not reach ComfyUI at ${url}.`);
-    }
     checkpoint = status.checkpoints[0] || "";
     if (!checkpoint) {
       throw new Error(
-        "ComfyUI has no checkpoints installed. Put a model in ComfyUI/models/checkpoints and refresh.",
+        "ComfyUI has no models installed. Put a checkpoint or unet file in ComfyUI's models folders and refresh.",
       );
     }
   }
+  // The clip/vae defaults come from the same discovery pass, so a Krea-class
+  // graph is only built when the server actually has the encoder and VAE.
+  const clipName = options.clipName?.trim() || status.clipName || "";
+  const vaeName = options.vaeName?.trim() || status.vaeName || "";
 
   const seed = options.seed ?? Math.floor(Math.random() * 2_147_483_647);
   const { width, height } = comfyDimensions(options.mode, options.aspect);
-  const workflow = buildWorkflow({ checkpoint, prompt: options.prompt, width, height, seed, negative: options.negative });
+  const workflow = buildWorkflow({
+    checkpoint,
+    prompt: options.prompt,
+    width,
+    height,
+    seed,
+    negative: options.negative,
+    clipName,
+    vaeName,
+    unets: status.unets ?? [],
+  });
 
   const submitTimeout = timeoutSignal(STATUS_TIMEOUT_MS * 2);
   let promptId = "";

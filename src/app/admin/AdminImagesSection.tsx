@@ -66,12 +66,15 @@ export function AdminImagesSection({
             placeholder={env.comfyUrl}
           />
         </Field>
-        <Field label="Checkpoint (model file)">
+        <Field
+          label="Model file"
+          hint="A full checkpoint (SD/SDXL) or a unet file such as a Krea2 or Flux.2 model; unet files load their encoder and VAE separately."
+        >
           <input
             className={ui.input}
             value={images.comfyCheckpoint}
             onChange={(event) => set({ comfyCheckpoint: event.target.value })}
-            placeholder="CyberRealisticXLPlay_V6.0.safetensors"
+            placeholder="krea2Fp8Nvfp4Mixed_turbo.safetensors"
           />
         </Field>
       </div>

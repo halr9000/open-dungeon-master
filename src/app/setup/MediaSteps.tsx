@@ -128,23 +128,23 @@ export function PicturesStep({
             </label>
             {comfy?.checkpoints.length ? (
               <div role="group" aria-label="Model file" className="block">
-                <span className="mb-1 block text-xs font-medium text-stone-400">Model file (checkpoint)</span>
+                <span className="mb-1 block text-xs font-medium text-stone-400">Model file</span>
                 <Select
                   value={draft.comfy.checkpoint}
                   onChange={(checkpoint) => setComfy({ checkpoint })}
                   options={comfy.checkpoints.map((name) => ({ value: name, label: name }))}
-                  label="Model file (checkpoint)"
+                  label="Model file"
                   className="w-full"
                 />
               </div>
             ) : (
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-stone-400">Model file (checkpoint)</span>
-                <input className={ui.input} value={draft.comfy.checkpoint} onChange={(event) => setComfy({ checkpoint: event.target.value })} placeholder="Any SDXL checkpoint in ComfyUI/models/checkpoints" />
+                <span className="mb-1 block text-xs font-medium text-stone-400">Model file</span>
+                <input className={ui.input} value={draft.comfy.checkpoint} onChange={(event) => setComfy({ checkpoint: event.target.value })} placeholder="Any checkpoint or unet file ComfyUI has installed" />
               </label>
             )}
           </div>
-          <p className="text-[11px] text-stone-500">Any checkpoint works; the campaign&apos;s genre supplies the art style.</p>
+          <p className="text-[11px] text-stone-500">Any model works; the campaign&apos;s genre supplies the art style. Krea2-class unet files pick their encoder and VAE automatically.</p>
         </div>
       ) : draft.pictures === "agent" ? (
         <div key="agent" className="reveal-height">
