@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Loader2, X, Zap } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { registerOutput, releaseOutput } from "@/lib/audio-devices";
 import { ui } from "@/lib/ui";
 import { Select } from "@/components/ui/Select";
@@ -181,11 +181,28 @@ function NarrationTest({ body }: { body: Record<string, string> }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // The clip's blob URL, freed when the component goes away or replays.
+  const clipUrlRef = useRef("");
+
+  function dropClip() {
+    audioRef.current?.pause();
+    if (audioRef.current) {
+      releaseOutput(audioRef.current);
+      audioRef.current = null;
+    }
+    if (clipUrlRef.current) {
+      URL.revokeObjectURL(clipUrlRef.current);
+      clipUrlRef.current = "";
+    }
+  }
+
+  // Leaving the step must not leave a clip talking or a URL stranded.
+  useEffect(() => dropClip, []);
 
   async function test() {
     setTesting(true);
     setResult(null);
-    audioRef.current?.pause();
+    dropClip();
     try {
       const response = await fetch("/api/admin/tts-test", {
         method: "POST",
@@ -195,11 +212,22 @@ function NarrationTest({ body }: { body: Record<string, string> }) {
       const data = (await response.json().catch(() => null)) as TestResult | null;
       setResult(data ?? { ok: false, error: "The test request failed without an answer." });
       if (data?.ok && data.audio) {
-        if (audioRef.current) releaseOutput(audioRef.current);
-        const audio = registerOutput(new Audio(data.audio));
+        // Through a blob URL with the play() promise awaited: a browser that
+        // refuses playback (autoplay policy, no audio device) says so here
+        // instead of the test quietly "passing" in silence.
+        clipUrlRef.current = URL.createObjectURL(await (await fetch(data.audio)).blob());
+        const audio = registerOutput(new Audio(clipUrlRef.current));
         audioRef.current = audio;
-        audio.onended = () => releaseOutput(audio);
-        void audio.play().catch(() => {});
+        audio.onended = () => {
+          releaseOutput(audio);
+          URL.revokeObjectURL(clipUrlRef.current);
+          clipUrlRef.current = "";
+        };
+        try {
+          await audio.play();
+        } catch (error) {
+          setResult({ ok: false, error: `audio blocked: ${error instanceof Error ? error.message : error}` });
+        }
       }
     } catch {
       setResult({ ok: false, error: "Could not reach this server." });
