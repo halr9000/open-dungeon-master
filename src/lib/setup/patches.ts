@@ -97,6 +97,9 @@ export type NarrationChoice =
   | { kind: "kokoro"; url: string; voice: string }
   // OpenAI's speech API: blank key borrows the storyteller's OpenAI key.
   | { kind: "openai"; apiKey: string }
+  // OpenRouter's speech endpoint: no address, no key here — it borrows the
+  // OpenRouter key the storyteller step saved.
+  | { kind: "openrouter" }
   | { kind: "off" };
 
 export function narrationPatch(choice: NarrationChoice): Patch {
@@ -110,6 +113,11 @@ export function narrationPatch(choice: NarrationChoice): Patch {
     return {
       speech: { ttsProvider: "openai", ttsBaseUrl: "", ttsModel: "", ttsVoice: "", ...(apiKey ? { ttsApiKey: apiKey } : {}) },
     };
+  }
+  if (choice.kind === "openrouter") {
+    // The key is the text model's OpenRouter one (tts-backend resolves it);
+    // the base URL is OpenRouter's own, so nothing is written for either.
+    return { speech: { ttsProvider: "openrouter" } };
   }
   return { speech: { ttsProvider: "off" } };
 }

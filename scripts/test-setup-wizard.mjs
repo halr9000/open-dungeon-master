@@ -187,6 +187,7 @@ try {
       speech: { ttsProvider: "kokoro", kokoroUrl: "http://127.0.0.1:8880", ttsVoice: "af_heart" },
     });
     assert.equal("ttsApiKey" in patches.narrationPatch({ kind: "openai", apiKey: "" }).speech, false);
+    assert.deepEqual(patches.narrationPatch({ kind: "openrouter" }), { speech: { ttsProvider: "openrouter" } });
     assert.deepEqual(patches.narrationPatch({ kind: "off" }), { speech: { ttsProvider: "off" } });
     assert.deepEqual(patches.joiningPatch({ signupMode: "invite", publicUrl: "https://keep.example/" }), {
       signupMode: "invite",

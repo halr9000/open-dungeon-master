@@ -152,6 +152,7 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
     if (key === "voice") {
       if (draft.narration === "kokoro") return narrationPatch({ kind: "kokoro", url: draft.kokoro.url, voice: draft.kokoro.voice });
       if (draft.narration === "openai") return narrationPatch({ kind: "openai", apiKey: draft.narrationKey });
+      if (draft.narration === "openrouter") return narrationPatch({ kind: "openrouter" });
       return narrationPatch({ kind: "off" });
     }
     if (key === "players") {
@@ -221,7 +222,12 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           !config.speech.hasTtsApiKey &&
           !config.images.hasOpenaiApiKey
         ? "Paste an OpenAI key, or choose another answer."
-        : null;
+        : draft.narration === "openrouter" &&
+            !draft.key.apiKey.trim() &&
+            !(savedKeyFor === "openrouter") &&
+            !config.speech.hasOpenRouterKey
+          ? "The storyteller step needs an OpenRouter key first, or choose another answer."
+          : null;
 
   const address = draft.publicUrl.trim() || info.lanUrls[0] || "";
   const title = (eyebrow: string, text: string, key: StepKey) => (

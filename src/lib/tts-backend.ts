@@ -167,6 +167,65 @@ export function labelVoices(ids: string[]): TtsVoice[] {
   return [...curated, ...ids.filter((id) => !known.has(id)).map((id) => ({ id, label: id }))];
 }
 
+// The standard Kokoro voice ids, all 54 the model ships. OpenRouter's
+// kokoro-82m endpoint accepts the same ids, so its branch reuses this list.
+export const KOKORO_VOICES = [
+  "af_alloy",
+  "af_aoede",
+  "af_bella",
+  "af_heart",
+  "af_jessica",
+  "af_kore",
+  "af_nicole",
+  "af_nova",
+  "af_river",
+  "af_sarah",
+  "af_sky",
+  "am_adam",
+  "am_echo",
+  "am_eric",
+  "am_fenrir",
+  "am_liam",
+  "am_michael",
+  "am_onyx",
+  "am_puck",
+  "am_santa",
+  "bf_alice",
+  "bf_emma",
+  "bf_isabella",
+  "bf_lily",
+  "bm_daniel",
+  "bm_fable",
+  "bm_george",
+  "bm_lewis",
+  "ef_dora",
+  "em_alex",
+  "em_santa",
+  "ff_siwis",
+  "hf_alpha",
+  "hf_beta",
+  "hm_omega",
+  "hm_psi",
+  "if_sara",
+  "im_nicola",
+  "jf_alpha",
+  "jf_gongitsune",
+  "jf_nezumi",
+  "jf_tebukuro",
+  "jm_kumo",
+  "pf_dora",
+  "pm_alex",
+  "pm_santa",
+  "zf_xiaobei",
+  "zf_xiaoni",
+  "zf_xiaoxiao",
+  "zf_xiaoyi",
+  "zm_yunjian",
+  "zm_yunxi",
+  "zm_yunxia",
+  "zm_yunyang",
+];
+
 // What a server offers when it will not say: Kokoro's shipped voices, or
 // OpenAI's documented ones. An unknown compatible server offers nothing and
 // the picker falls back to typing a voice.
@@ -174,7 +233,23 @@ export function fallbackVoices(backend: Pick<TtsBackend, "provider" | "v1">): st
   if (backend.provider === "kokoro") {
     return TTS_VOICES.map((voice) => voice.id);
   }
+  if (backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) {
+    return KOKORO_VOICES;
+  }
   return isOpenAiHost(backend.v1) ? OPENAI_TTS_VOICES : [];
+}
+
+// Where to read about the voice ids a backend takes. Kokoro lists its own at
+// /v1/audio/voices, so no link is needed; OpenAI documents its small set;
+// OpenRouter's docs carry the audio section its Kokoro endpoint follows.
+export function voiceDocsUrl(backend: Pick<TtsBackend, "provider" | "v1">): string {
+  if (backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) {
+    return "https://openrouter.ai/docs#audio";
+  }
+  if (backend.provider === "kokoro") {
+    return "";
+  }
+  return isOpenAiHost(backend.v1) ? "https://platform.openai.com/docs/guides/text-to-speech/voices" : "";
 }
 
 // The voice actually asked for. Campaigns, personalities and NPCs made on a

@@ -29,6 +29,7 @@ const {
   parseVoiceList,
   labelVoices,
   fallbackVoices,
+  voiceDocsUrl,
   effectiveVoice,
   describeSpeechFailure,
   upstreamDetail,
@@ -119,6 +120,23 @@ await test("a silent server falls back to what its kind ships", () => {
   assert.ok(fallbackVoices({ provider: "kokoro", v1: "http://x/v1" }).includes("af_heart"));
   assert.ok(fallbackVoices({ provider: "openai", v1: "https://api.openai.com/v1" }).includes("alloy"));
   assert.deepEqual(fallbackVoices({ provider: "openai", v1: "http://10.0.0.5/v1" }), []);
+});
+
+await test("openrouter without a voice list offers Kokoro's own voices", () => {
+  const voices = fallbackVoices({ provider: "openrouter", v1: "https://openrouter.ai/api/v1" });
+  assert.equal(voices.length, 54);
+  assert.ok(voices.includes("af_heart"));
+  assert.ok(voices.includes("bm_george"));
+  assert.ok(voices.includes("zm_yunyang"));
+});
+
+await test("voice docs links follow the backend", () => {
+  assert.equal(voiceDocsUrl({ provider: "kokoro", v1: "http://127.0.0.1:8880/v1" }), "");
+  assert.equal(voiceDocsUrl({ provider: "openrouter", v1: "https://openrouter.ai/api/v1" }), "https://openrouter.ai/docs#audio");
+  assert.equal(voiceDocsUrl({ provider: "openai", v1: "https://api.openai.com/v1" }), "https://platform.openai.com/docs/guides/text-to-speech/voices");
+  // A local server speaking the OpenAI kind has no documented list.
+  assert.equal(voiceDocsUrl({ provider: "openai", v1: "http://10.0.0.5:8000/v1" }), "");
+  assert.equal(voiceDocsUrl({ provider: "off", v1: "" }), "");
 });
 
 await test("a Kokoro voice on a server without it becomes the default voice", () => {

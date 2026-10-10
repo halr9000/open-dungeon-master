@@ -65,7 +65,7 @@ export function AdminSpeechSection({
 
   // What "Auto" means on this server right now.
   const envProvider: Exclude<Provider, ""> =
-    env.ttsProvider === "openai" || env.ttsProvider === "off" ? env.ttsProvider : "kokoro";
+    env.ttsProvider === "openai" || env.ttsProvider === "openrouter" || env.ttsProvider === "off" ? env.ttsProvider : "kokoro";
   const provider = speech.ttsProvider || envProvider;
   const set = (patch: Partial<Speech>) => {
     setResult(null);
@@ -75,6 +75,9 @@ export function AdminSpeechSection({
   const kokoroAt = speech.kokoroUrl.trim() || env.kokoroUrl;
   const openaiAt = speech.ttsBaseUrl.trim() || env.ttsBaseUrl || "https://api.openai.com/v1";
   const official = host(openaiAt) === "api.openai.com";
+  // The openrouter kind has no address of its own to show; its key lives
+  // with the text model, so the panel says where to look instead.
+  const openRouterKeyReady = env.hasOpenRouterKey || speech.hasOpenRouterKey || apiKey !== SECRET_KEPT;
 
   async function test() {
     setTesting(true);
@@ -130,6 +133,7 @@ export function AdminSpeechSection({
             },
             { value: "kokoro", label: "Kokoro-FastAPI (local)" },
             { value: "openai", label: "OpenAI-compatible server" },
+            { value: "openrouter", label: "OpenRouter (uses your OpenRouter key)" },
             { value: "off", label: "Off: no narration on this server" },
           ]}
         />
@@ -142,6 +146,28 @@ export function AdminSpeechSection({
               placeholder={env.kokoroUrl}
             />
           </Field>
+        ) : null}
+        {provider === "openrouter" ? (
+          <>
+            <Field
+              label="Model name"
+              hint={env.ttsModel ? `Env: ${env.ttsModel}` : "Blank = hexgrad/kokoro-82m, OpenRouter's Kokoro endpoint."}
+            >
+              <input
+                className={ui.input}
+                value={speech.ttsModel}
+                onChange={(event) => set({ ttsModel: event.target.value })}
+                placeholder={env.ttsModel || "hexgrad/kokoro-82m"}
+              />
+            </Field>
+            <div role="group" aria-label="API key" className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">API key</span>
+              <span className="mt-1 block text-[11px] leading-4 text-stone-500">
+                Uses your OpenRouter API key — the one the text model runs on. Set it on the Text model section
+                above, or the OPENROUTER_API_KEY env var. Nothing to paste here.
+              </span>
+            </div>
+          </>
         ) : null}
         {provider === "openai" ? (
           <>
@@ -213,8 +239,16 @@ export function AdminSpeechSection({
           ? "No passage is read aloud and no text is sent anywhere. Campaigns that have Narration on are told it is off here."
           : provider === "kokoro"
             ? `Each passage is sent as text to the Kokoro server at ${host(kokoroAt)} and comes back as audio. It is not sent to the text model's server or anywhere else.`
-            : `Each passage is sent as text to ${host(openaiAt)} and comes back as audio${official ? ", billed to the API key" : ""}. It is not sent to the text model's server or anywhere else.`}
+            : provider === "openrouter"
+              ? `Each passage is sent as text to OpenRouter (${host(speech.ttsBaseUrl.trim() || "https://openrouter.ai/api/v1")}) on your OpenRouter key and comes back as audio, billed to it. It is not sent to the text model's server or anywhere else.`
+              : `Each passage is sent as text to ${host(openaiAt)} and comes back as audio${official ? ", billed to the API key" : ""}. It is not sent to the text model's server or anywhere else.`}
       </p>
+      {provider === "openrouter" && !openRouterKeyReady ? (
+        <p role="status" className="mt-2 text-xs text-amber-300">
+          No OpenRouter key is saved yet. Add one under Text model → API key (or set OPENROUTER_API_KEY), or narration
+          will fail until it is there.
+        </p>
+      ) : null}
       {provider === "off" ? null : (
         <div className="mt-3">
           <div className="flex flex-wrap items-center gap-3">

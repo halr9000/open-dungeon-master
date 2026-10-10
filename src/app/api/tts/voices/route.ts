@@ -1,5 +1,5 @@
 import { currentUser, unauthorized } from "@/lib/auth";
-import { labelVoices, serverVoices, ttsBackend } from "@/lib/tts-backend";
+import { labelVoices, serverVoices, ttsBackend, voiceDocsUrl } from "@/lib/tts-backend";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,7 +8,9 @@ export const dynamic = "force-dynamic";
 // pickers (issue 89). `listed` says the server named them itself; when it is
 // false the list is the shipped fallback (or empty) and the picker leans on
 // typing a voice. A custom voice string is always allowed: many servers take
-// blends and described voices that no list could hold.
+// blends and described voices that no list could hold. `docsUrl`, when set,
+// is where the voice ids are documented — the one link the pickers show
+// under the field. Read-only: no key ever reaches this answer.
 export async function GET() {
   const user = await currentUser();
   if (!user) {
@@ -21,5 +23,6 @@ export async function GET() {
     voices: labelVoices(ids),
     listed,
     defaultVoice: backend.defaultVoice,
+    docsUrl: voiceDocsUrl(backend),
   });
 }

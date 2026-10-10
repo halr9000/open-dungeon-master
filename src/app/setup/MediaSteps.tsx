@@ -273,6 +273,13 @@ export function VoiceStep({
           sub={storyIsOpenAi ? "On the storyteller's key. Every passage read aloud is billed to it." : "Billed to an OpenAI key for every passage read aloud."}
         />
         <ChoiceCard
+          picked={draft.narration === "openrouter"}
+          onPick={() => pick("openrouter")}
+          glyph="system-share"
+          title="OpenRouter (cloud)"
+          sub="Reads passages aloud through OpenRouter's Kokoro endpoint, on the OpenRouter key the storyteller already uses. No GPU needed."
+        />
+        <ChoiceCard
           picked={draft.narration === "off"}
           onPick={() => pick("off")}
           glyph="tab-handout"
@@ -330,6 +337,15 @@ export function VoiceStep({
             />
           )}
           <NarrationTest body={{ provider: "openai", baseUrl: "", apiKey: draft.narrationKey }} />
+        </div>
+      ) : draft.narration === "openrouter" ? (
+        <div key="openrouter" className="reveal-height space-y-3">
+          <p className="su-note">
+            Narration goes to OpenRouter&apos;s speech endpoint on the OpenRouter key from the storyteller step — the
+            model is OpenRouter&apos;s Kokoro (hexgrad/kokoro-82m), and nothing more to paste. Set an OpenRouter key in
+            the admin panel&apos;s Text model section if there is not one saved already.
+          </p>
+          <NarrationTest body={{ provider: "openrouter" }} />
         </div>
       ) : null}
 

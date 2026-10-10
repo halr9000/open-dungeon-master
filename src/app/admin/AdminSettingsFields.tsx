@@ -35,11 +35,14 @@ export type MaskedConfig = {
     hasOpenaiApiKey: boolean;
   };
   speech: {
-    ttsProvider: "" | "kokoro" | "openai" | "off";
+    ttsProvider: "" | "kokoro" | "openai" | "openrouter" | "off";
     kokoroUrl: string;
     ttsBaseUrl: string;
     ttsModel: string;
     hasTtsApiKey: boolean;
+    // A saved OpenRouter key counts as a narration key too: the openrouter
+    // provider borrows it (src/lib/tts-backend.ts resolveTtsBackend).
+    hasOpenRouterKey: boolean;
     ttsVoice: string;
     sttUrl: string;
   };
@@ -68,6 +71,7 @@ export type EnvDefaults = {
   ttsBaseUrl: string;
   ttsModel: string;
   hasTtsApiKey: boolean;
+  hasOpenRouterKey: boolean;
   sttUrl: string;
   discordClientId: string;
   hasDiscordClientSecret: boolean;

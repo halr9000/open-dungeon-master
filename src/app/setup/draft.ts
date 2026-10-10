@@ -36,7 +36,7 @@ export type Draft = {
   pictures: "comfyui" | "openai" | "agent" | "none" | "";
   comfy: { url: string; checkpoint: string };
   picturesKey: string;
-  narration: "kokoro" | "openai" | "off" | "";
+  narration: "kokoro" | "openai" | "openrouter" | "off" | "";
   kokoro: { url: string; voice: string };
   narrationKey: string;
   signupMode: "open" | "invite" | "closed";
@@ -109,9 +109,11 @@ export function draftFromConfig(config: MaskedConfig, firstRun: boolean): Draft 
         ? "kokoro"
         : config.speech.ttsProvider === "openai"
           ? "openai"
-          : config.speech.ttsProvider === "off"
-            ? "off"
-            : "",
+          : config.speech.ttsProvider === "openrouter"
+            ? "openrouter"
+            : config.speech.ttsProvider === "off"
+              ? "off"
+              : "",
     kokoro: { url: config.speech.kokoroUrl, voice: config.speech.ttsVoice },
     narrationKey: "",
     signupMode: config.signupMode,

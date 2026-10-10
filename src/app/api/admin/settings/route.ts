@@ -51,6 +51,9 @@ function maskedConfig(config: GlobalConfig) {
       ttsBaseUrl: config.speech.ttsBaseUrl,
       ttsModel: config.speech.ttsModel,
       hasTtsApiKey: config.speech.ttsApiKey !== "",
+      // The openrouter provider borrows the text model's OpenRouter key, so
+      // narration can be ready before any TTS key of its own is saved.
+      hasOpenRouterKey: config.text.customApiKey !== "" || serverEnv("OPENROUTER_API_KEY") !== "",
       ttsVoice: config.speech.ttsVoice,
       sttUrl: config.speech.sttUrl,
     },
@@ -81,6 +84,7 @@ function envDefaults() {
     ttsBaseUrl: serverEnv("TTS_BASE_URL"),
     ttsModel: serverEnv("TTS_MODEL"),
     hasTtsApiKey: serverEnv("TTS_API_KEY") !== "",
+    hasOpenRouterKey: serverEnv("OPENROUTER_API_KEY") !== "",
     sttUrl: serverEnv("STT_URL", "http://127.0.0.1:8870"),
     discordClientId: serverEnv("DISCORD_CLIENT_ID"),
     hasDiscordClientSecret: serverEnv("DISCORD_CLIENT_SECRET") !== "",
@@ -158,7 +162,7 @@ const patchSchema = z.object({
     .optional(),
   speech: z
     .object({
-      ttsProvider: z.enum(["", "kokoro", "openai", "off"]).optional(),
+      ttsProvider: z.enum(["", "kokoro", "openai", "openrouter", "off"]).optional(),
       kokoroUrl: z.string().trim().max(500).optional(),
       ttsBaseUrl: z.string().trim().max(500).optional(),
       ttsModel: z.string().trim().max(200).optional(),
