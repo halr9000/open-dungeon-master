@@ -88,7 +88,7 @@ export const globalConfigSchema = z.object({
       // Server-wide default backend for new campaigns. Blank = the
       // DEFAULT_IMAGE_BACKEND env var, then the built-in default (ComfyUI).
       defaultBackend: z
-        .enum(["", "comfyui", "openai", "mflux-hs", "sdnq-hs", "harness"])
+        .enum(["", "comfyui", "openai", "fal", "mflux-hs", "sdnq-hs", "harness"])
         .default(""),
       comfyUrl: z.string().trim().max(500).default(""),
       comfyCheckpoint: z.string().trim().max(300).default(""),
@@ -99,6 +99,13 @@ export const globalConfigSchema = z.object({
       // UI). Blank model = gpt-image-1.
       openaiBaseUrl: z.string().trim().max(500).default(""),
       openaiModel: z.string().trim().max(200).default(""),
+      // The "fal" backend: fal.ai's REST API (a different wire format from
+      // the OpenAI images API — POST /model, JSON per the model's schema,
+      // CDN URLs in the answer). The key is the server owner's, applied at
+      // request time only, and never leaves the server. Blank model =
+      // fal-ai/flux/general.
+      falImageKey: z.string().trim().max(400).default(""),
+      falImageModel: z.string().trim().max(200).default(""),
       openaiApiKey: z.string().trim().max(400).default(""),
     })
     .prefault({}),

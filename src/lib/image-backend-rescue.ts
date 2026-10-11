@@ -62,6 +62,10 @@ async function canPaint(settings: Pick<StorySettings, "imageBackend" | "comfyUrl
   if (settings.imageBackend === "openai") {
     return openAiImagesConfigured(settings);
   }
+  // fal is key-gated like OpenAI; nothing to probe.
+  if (settings.imageBackend === "fal") {
+    return getGlobalConfig().images.falImageKey.trim() !== "" || serverEnv("FAL_KEY") !== "";
+  }
   const comfy = settings.comfyUrl || configValue(getGlobalConfig().images.comfyUrl, "COMFYUI_URL", "http://127.0.0.1:8188");
   const flux = serverEnv("FLUX_WORKER_URL", "http://127.0.0.1:7869");
   return probeReachable(imagesProbeUrl(settings.imageBackend, comfy, flux));

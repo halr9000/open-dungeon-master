@@ -52,6 +52,7 @@ export function AdminSettingsPanel() {
   const [apiKey, setApiKey] = useState(SECRET_KEPT);
   const [utilityApiKey, setUtilityApiKey] = useState(SECRET_KEPT);
   const [openaiImageKey, setOpenaiImageKey] = useState(SECRET_KEPT);
+  const [falImageKey, setFalImageKey] = useState(SECRET_KEPT);
   const [ttsApiKey, setTtsApiKey] = useState(SECRET_KEPT);
   const [discordSecret, setDiscordSecret] = useState(SECRET_KEPT);
   const [saving, setSaving] = useState(false);
@@ -136,6 +137,8 @@ export function AdminSettingsPanel() {
             openaiBaseUrl: config.images.openaiBaseUrl,
             openaiModel: config.images.openaiModel,
             ...(openaiImageKey === SECRET_KEPT ? {} : { openaiApiKey: openaiImageKey }),
+            falImageModel: config.images.falImageModel,
+            ...(falImageKey === SECRET_KEPT ? {} : { falImageKey: falImageKey }),
           },
           speech: {
             ttsProvider: config.speech.ttsProvider,
@@ -158,6 +161,7 @@ export function AdminSettingsPanel() {
       setApiKey(SECRET_KEPT);
       setUtilityApiKey(SECRET_KEPT);
       setOpenaiImageKey(SECRET_KEPT);
+      setFalImageKey(SECRET_KEPT);
       setTtsApiKey(SECRET_KEPT);
       setDiscordSecret(SECRET_KEPT);
       setRescued(Array.isArray(data.rescued) ? data.rescued : []);
@@ -461,8 +465,10 @@ export function AdminSettingsPanel() {
         harness={config.harness}
         phoneWorld={phoneWorld}
         openaiKey={openaiImageKey}
+        falKey={falImageKey}
         onImages={(images) => setConfig({ ...config, images })}
         onOpenaiKey={setOpenaiImageKey}
+        onFalKey={setFalImageKey}
       />
 
       <AdminSpeechSection

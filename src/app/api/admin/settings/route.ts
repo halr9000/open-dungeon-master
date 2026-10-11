@@ -44,6 +44,8 @@ function maskedConfig(config: GlobalConfig) {
       openaiBaseUrl: config.images.openaiBaseUrl,
       openaiModel: config.images.openaiModel,
       hasOpenaiApiKey: config.images.openaiApiKey !== "",
+      falImageModel: config.images.falImageModel,
+      hasFalImageKey: config.images.falImageKey !== "",
     },
     speech: {
       ttsProvider: config.speech.ttsProvider,
@@ -85,6 +87,8 @@ function envDefaults() {
     ttsModel: serverEnv("TTS_MODEL"),
     hasTtsApiKey: serverEnv("TTS_API_KEY") !== "",
     hasOpenRouterKey: serverEnv("OPENROUTER_API_KEY") !== "",
+    hasFalKey: serverEnv("FAL_KEY") !== "",
+    falImageModel: serverEnv("FAL_IMAGE_MODEL"),
     sttUrl: serverEnv("STT_URL", "http://127.0.0.1:8870"),
     discordClientId: serverEnv("DISCORD_CLIENT_ID"),
     hasDiscordClientSecret: serverEnv("DISCORD_CLIENT_SECRET") !== "",
@@ -151,13 +155,15 @@ const patchSchema = z.object({
     .optional(),
   images: z
     .object({
-      defaultBackend: z.enum(["", "comfyui", "openai", "mflux-hs", "sdnq-hs", "harness"]).optional(),
+      defaultBackend: z.enum(["", "comfyui", "openai", "fal", "mflux-hs", "sdnq-hs", "harness"]).optional(),
       comfyUrl: z.string().trim().max(500).optional(),
       comfyCheckpoint: z.string().trim().max(300).optional(),
       fluxWorkerUrl: z.string().trim().max(500).optional(),
       openaiBaseUrl: z.string().trim().max(500).optional(),
       openaiModel: z.string().trim().max(200).optional(),
       openaiApiKey: z.string().trim().max(400).optional(),
+      falImageModel: z.string().trim().max(200).optional(),
+      falImageKey: z.string().trim().max(400).optional(),
     })
     .optional(),
   speech: z

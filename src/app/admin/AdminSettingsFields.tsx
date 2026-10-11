@@ -26,13 +26,15 @@ export type MaskedConfig = {
     hasUtilityApiKey: boolean;
   };
   images: {
-    defaultBackend: "" | "comfyui" | "openai" | "mflux-hs" | "sdnq-hs" | "harness";
+    defaultBackend: "" | "comfyui" | "openai" | "fal" | "mflux-hs" | "sdnq-hs" | "harness";
     comfyUrl: string;
     comfyCheckpoint: string;
     fluxWorkerUrl: string;
     openaiBaseUrl: string;
     openaiModel: string;
     hasOpenaiApiKey: boolean;
+    falImageModel: string;
+    hasFalImageKey: boolean;
   };
   speech: {
     ttsProvider: "" | "kokoro" | "openai" | "openrouter" | "off";
@@ -43,6 +45,7 @@ export type MaskedConfig = {
     // A saved OpenRouter key counts as a narration key too: the openrouter
     // provider borrows it (src/lib/tts-backend.ts resolveTtsBackend).
     hasOpenRouterKey: boolean;
+  hasFalKey: boolean;
     ttsVoice: string;
     sttUrl: string;
   };
@@ -65,6 +68,7 @@ export type EnvDefaults = {
   comfyUrl: string;
   fluxWorkerUrl: string;
   imageBackend: string;
+  falImageModel: string;
   hasOpenaiImageApiKey: boolean;
   kokoroUrl: string;
   ttsProvider: string;
@@ -72,6 +76,7 @@ export type EnvDefaults = {
   ttsModel: string;
   hasTtsApiKey: boolean;
   hasOpenRouterKey: boolean;
+  hasFalKey: boolean;
   sttUrl: string;
   discordClientId: string;
   hasDiscordClientSecret: boolean;

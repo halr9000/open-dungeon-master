@@ -99,9 +99,14 @@ export function imagesConfigured(
   hasOpenaiKey: boolean,
   explicitUrl: string,
   defaultReachable: boolean,
+  hasFalKey = false,
 ): boolean {
   if (backend === "openai") {
     return hasOpenaiKey;
+  }
+  // fal.ai is key-gated like OpenAI and never probed.
+  if (backend === "fal") {
+    return hasFalKey;
   }
   // The agent program's own pictures: ready means seen working here.
   if (backend === "harness") {
@@ -340,13 +345,16 @@ export async function capabilitiesSnapshot(): Promise<Capabilities> {
         hasOpenaiImageKey,
         explicitImageUrl,
         imagesReachable,
+        cfg.images.falImageKey !== "" || serverEnv("FAL_KEY") !== "",
       ),
       reachable:
         settings.imageBackend === "openai"
           ? hasOpenaiImageKey
-          : settings.imageBackend === "harness"
-            ? harnessImagesReady()
-            : imagesReachable,
+          : settings.imageBackend === "fal"
+            ? cfg.images.falImageKey !== "" || serverEnv("FAL_KEY") !== ""
+            : settings.imageBackend === "harness"
+              ? harnessImagesReady()
+              : imagesReachable,
       backend: settings.imageBackend,
       openaiPlace: backendPlace(configValue(cfg.images.openaiBaseUrl, "OPENAI_IMAGE_BASE_URL", "https://api.openai.com/v1")),
     },

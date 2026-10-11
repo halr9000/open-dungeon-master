@@ -54,6 +54,7 @@ const PAINTERS: Record<ImageBackend, string> = {
   "mflux-hs": "the FLUX worker (mflux) on this server",
   "sdnq-hs": "the FLUX worker (sdnq) on this server",
   openai: "an OpenAI-compatible images API",
+  fal: "fal.ai's image models",
   harness: "the server's agent program",
 };
 

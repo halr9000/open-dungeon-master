@@ -19,12 +19,13 @@ import { useEffect, useRef, useState } from "react";
 // in one flat grid, and nothing said which belonged to which backend).
 
 type Images = MaskedConfig["images"];
-type Group = "comfyui" | "flux" | "openai";
+type Group = "comfyui" | "flux" | "openai" | "fal";
 
 function groupOf(backend: string): Group | null {
   if (backend === "comfyui") return "comfyui";
   if (backend === "mflux-hs" || backend === "sdnq-hs") return "flux";
   if (backend === "openai") return "openai";
+  if (backend === "fal") return "fal";
   return null;
 }
 
@@ -32,6 +33,7 @@ const GROUP_TITLE: Record<Group, string> = {
   comfyui: "ComfyUI",
   flux: "FLUX worker",
   openai: "OpenAI-compatible images API",
+  fal: "fal.ai",
 };
 
 // The checkpoint list one ComfyUI answered with, kept per address: changing
@@ -154,8 +156,10 @@ export function AdminImagesSection({
   harness,
   phoneWorld,
   openaiKey,
+  falKey,
   onImages,
   onOpenaiKey,
+  onFalKey,
 }: {
   images: Images;
   env: EnvDefaults;
@@ -163,8 +167,10 @@ export function AdminImagesSection({
   // A phone cannot run ComfyUI or a FLUX worker.
   phoneWorld: boolean;
   openaiKey: string;
+  falKey: string;
   onImages: (images: Images) => void;
   onOpenaiKey: (value: string) => void;
+  onFalKey: (value: string) => void;
 }) {
   const set = (patch: Partial<Images>) => onImages({ ...images, ...patch });
   // The backend "Auto" resolves to, so its fields are the ones shown open.
@@ -236,9 +242,39 @@ export function AdminImagesSection({
         />
       </div>
     ),
+    fal: (
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field
+          label="Model"
+          hint={
+            env.falImageModel
+              ? `Env: ${env.falImageModel}`
+              : "Blank = fal-ai/flux/general. Any text-to-image model id fal hosts."
+          }
+        >
+          <input
+            className={ui.input}
+            value={images.falImageModel}
+            onChange={(event) => set({ falImageModel: event.target.value })}
+            placeholder={env.falImageModel || "fal-ai/flux/general"}
+          />
+        </Field>
+        <SecretField
+          label="API key"
+          isSet={images.hasFalImageKey}
+          value={falKey}
+          onChange={onFalKey}
+          hint={
+            env.hasFalKey
+              ? "An env-var FAL_KEY is also set; this one wins when filled."
+              : "A fal.ai key (fal.ai/dashboard/keys), billed per picture. There is no URL: fal's own API serves every model."
+          }
+        />
+      </div>
+    ),
   };
 
-  const offered = (["comfyui", "flux", "openai"] as Group[]).filter((group) => !phoneWorld || group === "openai");
+  const offered = (["comfyui", "flux", "openai", "fal"] as Group[]).filter((group) => !phoneWorld || group === "openai" || group === "fal");
   const others = offered.filter((group) => group !== active);
 
   return (
@@ -257,6 +293,7 @@ export function AdminImagesSection({
             { value: "", label: `Auto (${env.imageBackend || "ComfyUI"})` },
             ...(phoneWorld ? [] : [{ value: "comfyui" as const, label: "ComfyUI (local)" }]),
             { value: "openai", label: "OpenAI-compatible images API" },
+            { value: "fal" as const, label: "fal.ai (cloud)" },
             ...(phoneWorld
               ? []
               : [

@@ -31,6 +31,7 @@ const PROVIDER_LABELS: Record<TextProvider, string> = {
 const BACKEND_LABELS: Record<ImageBackend, string> = {
   comfyui: "ComfyUI",
   openai: "OpenAI-compatible",
+  fal: "fal.ai (cloud)",
   "mflux-hs": "MFLUX (home server)",
   "sdnq-hs": "SDNQ (home server)",
   harness: "The server's agent",
