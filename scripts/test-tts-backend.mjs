@@ -152,6 +152,21 @@ await test("a Kokoro voice on a server without it becomes the default voice", ()
   assert.equal(effectiveVoice("am_adam", { provider: "kokoro", defaultVoice: "af_heart" }, []), "am_adam");
 });
 
+await test("a Kokoro voice on fal becomes the model's own default", () => {
+  const fal = { provider: "fal", defaultVoice: "" };
+  // The shipped default every campaign carries before anyone picks: fal's
+  // models do not know Kokoro ids, so it becomes blank (their own default).
+  assert.equal(effectiveVoice("af_heart", fal, []), "");
+  // A blend reads as Kokoro to fal too.
+  assert.equal(effectiveVoice("af_heart(30)+af_bella(70)", fal, []), "");
+  // A real fal voice id — Chatterbox audio URL, a MiniMax preset name — is
+  // the server's to understand and passes untouched.
+  assert.equal(effectiveVoice("Rose", fal, []), "Rose");
+  assert.equal(effectiveVoice("https://example.com/clone.wav", fal, []), "https://example.com/clone.wav");
+  // Blank already means the model default; stays blank.
+  assert.equal(effectiveVoice("", fal, []), "");
+});
+
 await test("a failure is described in words, without the key", () => {
   const kokoro = { provider: "kokoro", v1: "http://127.0.0.1:8880/v1" };
   const openai = { provider: "openai", v1: "https://api.openai.com/v1" };

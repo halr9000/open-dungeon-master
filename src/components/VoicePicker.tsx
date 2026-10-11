@@ -161,7 +161,9 @@ export function VoicePicker({
           }}
           maxLength={120}
           aria-label={`${label}: custom voice`}
-          placeholder={list.provider === "openai" ? "alloy" : "af_heart(30)+af_bella(70)"}
+          placeholder={
+          list.provider === "openai" ? "alloy" : list.provider === "fal" ? "blank = the model's own default" : "af_heart(30)+af_bella(70)"
+        }
           className={cn(ui.input, "reveal min-w-0 grow basis-40", size === "sm" && "px-2 py-1 text-xs")}
         />
       ) : null}

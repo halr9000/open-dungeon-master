@@ -301,11 +301,27 @@ export function voiceDocsUrl(backend: Pick<TtsBackend, "provider" | "v1" | "mode
 // custom voice string is the server's to understand.
 export function effectiveVoice(voice: string, backend: Pick<TtsBackend, "provider" | "defaultVoice">, serverVoices: string[]): string {
   const asked = voice.trim() || backend.defaultVoice;
+  if (backend.provider === "fal") {
+    // fal's voices belong to its models (Chatterbox clones from an audio
+    // prompt; MiniMax names presets), so a Kokoro id — the shipped default a
+    // campaign carries before anyone picks — can only be an error there.
+    // Blank is the model's own default voice.
+    return isKokoroVoice(asked) ? "" : asked;
+  }
   if (backend.provider !== "openai" || !backend.defaultVoice) {
     return asked;
   }
   const kokoroId = TTS_VOICES.some((entry) => entry.id === asked);
   return kokoroId && !serverVoices.includes(asked) ? backend.defaultVoice : asked;
+}
+
+// A Kokoro voice id ("af_heart") or a blend of them ("af_heart(30)+af_bella(70)"):
+// voices that only a Kokoro-kind server understands.
+function isKokoroVoice(asked: string): boolean {
+  if (TTS_VOICES.some((entry) => entry.id === asked)) {
+    return true;
+  }
+  return /^[a-z]{2}_[a-z]+(\(\d+\))?(\+[a-z]{2}_[a-z]+\(\d+\))*$/.test(asked);
 }
 
 // Why a render failed, in words for the table (issue 88). Never the key, and
