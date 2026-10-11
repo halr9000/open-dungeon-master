@@ -33,13 +33,15 @@ export type Draft = {
   local: { baseUrl: string; model: string; apiKey: string; list: ModelList; typed: boolean };
   key: { provider: KeyProviderId; baseUrl: string; apiKey: string; model: string; list: ModelList };
   agent: { id: HarnessChoiceId | ""; model: string; utilityModel: string };
-  pictures: "comfyui" | "openai" | "agent" | "none" | "";
+  pictures: "comfyui" | "openai" | "fal" | "agent" | "none" | "";
   comfy: { url: string; checkpoint: string };
   // Typed on the setup's OpenAI-compatible pictures card (blank = OpenAI
   // itself), so a compatible proxy works from the first run exactly as it
   // does from the admin panel.
   picturesOpenai: { baseUrl: string; model: string };
   picturesKey: string;
+  // The fal art card: any model fal hosts plus the key it bills.
+  picturesFal: { model: string; apiKey: string };
   narration: "kokoro" | "openai" | "openrouter" | "fal" | "off" | "";
   kokoro: { url: string; voice: string };
   // Typed on the setup's OpenAI-compatible speech card (blank = OpenAI
@@ -108,14 +110,17 @@ export function draftFromConfig(config: MaskedConfig, firstRun: boolean): Draft 
         ? "comfyui"
         : images.defaultBackend === "openai"
           ? "openai"
-          : images.defaultBackend === "harness"
-            ? "agent"
-            : firstRun
-              ? ""
-              : "none",
+          : images.defaultBackend === "fal"
+            ? "fal"
+            : images.defaultBackend === "harness"
+              ? "agent"
+              : firstRun
+                ? ""
+                : "none",
     comfy: { url: images.comfyUrl, checkpoint: images.comfyCheckpoint },
     picturesOpenai: { baseUrl: images.openaiBaseUrl, model: images.openaiModel },
     picturesKey: "",
+    picturesFal: { model: images.falImageModel, apiKey: "" },
     narration:
       config.speech.ttsProvider === "kokoro" && config.speech.kokoroUrl
         ? "kokoro"

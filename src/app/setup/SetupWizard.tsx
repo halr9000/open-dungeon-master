@@ -147,6 +147,7 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
       if (draft.pictures === "comfyui") return picturesPatch({ kind: "comfyui", url: draft.comfy.url, checkpoint: draft.comfy.checkpoint });
       if (draft.pictures === "openai")
         return picturesPatch({ kind: "openai", baseUrl: draft.picturesOpenai.baseUrl, model: draft.picturesOpenai.model, apiKey: draft.picturesKey });
+      if (draft.pictures === "fal") return picturesPatch({ kind: "fal", model: draft.picturesFal.model, apiKey: draft.picturesFal.apiKey });
       if (draft.pictures === "agent") return picturesPatch({ kind: "agent" });
       return picturesPatch({ kind: "none" });
     }
@@ -219,7 +220,9 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           !draft.picturesKey.trim() &&
           !config.images.hasOpenaiApiKey
         ? "Paste an API key, or choose another answer."
-        : null;
+        : draft.pictures === "fal" && !draft.picturesFal.apiKey.trim() && !config.images.hasFalImageKey
+          ? "Paste a fal.ai key, or choose another answer."
+          : null;
   const voiceBlocker =
     draft.narration === "kokoro" && !draft.kokoro.url.trim()
       ? "Type where Kokoro runs, or choose another answer."
@@ -295,6 +298,7 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           agentLabel={draft.agent.id === "grok" ? "Grok Build" : "Codex"}
           onAgentVerified={() => void refreshConfig()}
           openaiKeySaved={config.images.hasOpenaiApiKey}
+          falKeySaved={config.images.hasFalImageKey}
         />
       ),
       blocker: picturesBlocker,

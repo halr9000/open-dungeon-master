@@ -206,6 +206,13 @@ try {
       images: { defaultBackend: "openai", openaiBaseUrl: "", openaiModel: "" },
     });
     assert.equal(patches.picturesPatch({ kind: "openai", baseUrl: "", model: "", apiKey: "sk-i" }).images.openaiApiKey, "sk-i");
+    assert.deepEqual(patches.picturesPatch({ kind: "fal", model: " fal-ai/flux/schnell ", apiKey: "fal-k" }), {
+      images: { defaultBackend: "fal", falImageModel: "fal-ai/flux/schnell", falImageKey: "fal-k" },
+    });
+    // A blank fal key keeps the saved one.
+    assert.deepEqual(patches.picturesPatch({ kind: "fal", model: "", apiKey: " " }), {
+      images: { defaultBackend: "fal", falImageModel: "" },
+    });
     assert.deepEqual(patches.picturesPatch({ kind: "agent" }), { images: { defaultBackend: "harness" }, harness: { images: "native" } });
     assert.deepEqual(patches.picturesPatch({ kind: "none" }), { images: { defaultBackend: "", comfyUrl: "" } });
     assert.deepEqual(patches.narrationPatch({ kind: "kokoro", url: "http://127.0.0.1:8880/", voice: "af_heart" }), {

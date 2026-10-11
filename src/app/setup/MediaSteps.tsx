@@ -46,6 +46,7 @@ export function PicturesStep({
   agentLabel,
   onAgentVerified,
   openaiKeySaved,
+  falKeySaved,
 }: {
   draft: Draft;
   update: Update;
@@ -59,6 +60,7 @@ export function PicturesStep({
   agentLabel: string;
   onAgentVerified: () => void;
   openaiKeySaved: boolean;
+  falKeySaved: boolean;
 }) {
   const comfy = scan?.comfyui ?? null;
   const pick = (pictures: Draft["pictures"]) =>
@@ -70,6 +72,8 @@ export function PicturesStep({
   const setComfy = (patch: Partial<Draft["comfy"]>) => update((current) => ({ ...current, comfy: { ...current.comfy, ...patch } }));
   const setOpenai = (patch: Partial<Draft["picturesOpenai"]>) =>
     update((current) => ({ ...current, picturesOpenai: { ...current.picturesOpenai, ...patch } }));
+  const setFal = (patch: Partial<Draft["picturesFal"]>) =>
+    update((current) => ({ ...current, picturesFal: { ...current.picturesFal, ...patch } }));
 
   return (
     <div className="space-y-4">
@@ -92,6 +96,13 @@ export function PicturesStep({
               ? "On the key from the last step. Each picture is billed to it."
               : "Billed to an API key, per picture. OpenAI itself, or any server with the same images API. No GPU needed."
           }
+        />
+        <ChoiceCard
+          picked={draft.pictures === "fal"}
+          onPick={() => pick("fal")}
+          glyph="system-share"
+          title="fal.ai (cloud)"
+          sub="Paints portraits, scenes and maps through a fal.ai image model (FLUX by default) on a fal.ai key, billed per picture. No GPU needed."
         />
         {agentPaints ? (
           <ChoiceCard
@@ -151,6 +162,27 @@ export function PicturesStep({
             )}
           </div>
           <p className="text-[11px] text-stone-500">Any model works; the campaign&apos;s genre supplies the art style. Krea2-class unet files pick their encoder and VAE automatically.</p>
+        </div>
+      ) : draft.pictures === "fal" ? (
+        <div key="fal" className="reveal-height space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">Model</span>
+              <input
+                className={ui.input}
+                value={draft.picturesFal.model}
+                onChange={(event) => setFal({ model: event.target.value })}
+                placeholder="fal-ai/flux/general"
+              />
+            </label>
+            <KeyField
+              label="fal.ai API key"
+              value={draft.picturesFal.apiKey}
+              onChange={(apiKey) => setFal({ apiKey })}
+              saved={falKeySaved}
+              hint="Billed per picture, on a fal.ai key of its own (fal.ai/dashboard/keys). The same key the narration's fal backend uses, if you set one there."
+            />
+          </div>
         </div>
       ) : draft.pictures === "agent" ? (
         <div key="agent" className="reveal-height">

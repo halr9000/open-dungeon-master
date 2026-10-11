@@ -68,6 +68,8 @@ export type PicturesChoice =
   // admin panel's Server base URL and Model name fields do; blank = OpenAI
   // itself and gpt-image-1.
   | { kind: "openai"; baseUrl: string; model: string; apiKey: string }
+  // A fal.ai model on the fal key; a blank key keeps the one saved.
+  | { kind: "fal"; model: string; apiKey: string }
   // The agent program's own image tool, once a test picture has come back.
   | { kind: "agent" }
   // Painted placeholders. A ComfyUI started later at its default address is
@@ -93,6 +95,12 @@ export function picturesPatch(choice: PicturesChoice): Patch {
         openaiModel: choice.model.trim(),
         ...(apiKey ? { openaiApiKey: apiKey } : {}),
       },
+    };
+  }
+  if (choice.kind === "fal") {
+    const apiKey = choice.apiKey.trim();
+    return {
+      images: { defaultBackend: "fal", falImageModel: choice.model.trim(), ...(apiKey ? { falImageKey: apiKey } : {}) },
     };
   }
   if (choice.kind === "agent") {
