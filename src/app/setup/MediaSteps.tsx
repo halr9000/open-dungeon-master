@@ -68,6 +68,8 @@ export function PicturesStep({
       comfy: pictures === "comfyui" && !current.comfy.url && comfy ? { url: comfy.url, checkpoint: current.comfy.checkpoint || comfy.checkpoints[0] || "" } : current.comfy,
     }));
   const setComfy = (patch: Partial<Draft["comfy"]>) => update((current) => ({ ...current, comfy: { ...current.comfy, ...patch } }));
+  const setOpenai = (patch: Partial<Draft["picturesOpenai"]>) =>
+    update((current) => ({ ...current, picturesOpenai: { ...current.picturesOpenai, ...patch } }));
 
   return (
     <div className="space-y-4">
@@ -84,8 +86,12 @@ export function PicturesStep({
           picked={draft.pictures === "openai"}
           onPick={() => pick("openai")}
           glyph="tab-admin"
-          title="OpenAI's image model"
-          sub={storyIsOpenAi ? "On the key from the last step. Each picture is billed to it." : "Billed to an OpenAI key, per picture. No GPU needed."}
+          title="OpenAI-compatible images API"
+          sub={
+            storyIsOpenAi && !draft.picturesOpenai.baseUrl.trim()
+              ? "On the key from the last step. Each picture is billed to it."
+              : "Billed to an API key, per picture. OpenAI itself, or any server with the same images API. No GPU needed."
+          }
         />
         {agentPaints ? (
           <ChoiceCard
@@ -158,15 +164,35 @@ export function PicturesStep({
         </div>
       ) : draft.pictures === "openai" ? (
         <div key="openai" className="reveal-height space-y-3">
-          {storyIsOpenAi ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">Server base URL</span>
+              <input
+                className={ui.input}
+                value={draft.picturesOpenai.baseUrl}
+                onChange={(event) => setOpenai({ baseUrl: event.target.value })}
+                placeholder="https://api.openai.com/v1 (blank = OpenAI itself)"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">Model name</span>
+              <input
+                className={ui.input}
+                value={draft.picturesOpenai.model}
+                onChange={(event) => setOpenai({ model: event.target.value })}
+                placeholder="gpt-image-1"
+              />
+            </label>
+          </div>
+          {storyIsOpenAi && !draft.picturesOpenai.baseUrl.trim() ? (
             <p className="su-note">Pictures go to OpenAI on the storyteller&apos;s key. Nothing more to paste.</p>
           ) : (
             <KeyField
-              label="OpenAI API key"
+              label="API key"
               value={draft.picturesKey}
               onChange={(picturesKey) => update((current) => ({ ...current, picturesKey }))}
               saved={openaiKeySaved}
-              hint="Used only for pictures. Each portrait, scene and map is billed to it."
+              hint="Billed to whoever owns the key. A compatible proxy needs its own key here; OpenAI itself takes the storyteller's."
             />
           )}
         </div>
@@ -281,6 +307,8 @@ export function VoiceStep({
           : current.kokoro,
     }));
   const setKokoro = (patch: Partial<Draft["kokoro"]>) => update((current) => ({ ...current, kokoro: { ...current.kokoro, ...patch } }));
+  const setNarrationOpenai = (patch: Partial<Draft["narrationOpenai"]>) =>
+    update((current) => ({ ...current, narrationOpenai: { ...current.narrationOpenai, ...patch } }));
 
   return (
     <div className="space-y-4">
@@ -297,8 +325,12 @@ export function VoiceStep({
           picked={draft.narration === "openai"}
           onPick={() => pick("openai")}
           glyph="tab-admin"
-          title="OpenAI's voices"
-          sub={storyIsOpenAi ? "On the storyteller's key. Every passage read aloud is billed to it." : "Billed to an OpenAI key for every passage read aloud."}
+          title="OpenAI-compatible speech server"
+          sub={
+            storyIsOpenAi && !draft.narrationOpenai.baseUrl.trim()
+              ? "On the storyteller's key. Every passage read aloud is billed to it."
+              : "OpenAI itself, or any server with the same speech API, billed to an API key. No GPU needed."
+          }
         />
         <ChoiceCard
           picked={draft.narration === "openrouter"}
@@ -355,16 +387,36 @@ export function VoiceStep({
         </div>
       ) : draft.narration === "openai" ? (
         <div key="openai" className="reveal-height space-y-3">
-          {storyIsOpenAi ? null : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">Server base URL</span>
+              <input
+                className={ui.input}
+                value={draft.narrationOpenai.baseUrl}
+                onChange={(event) => setNarrationOpenai({ baseUrl: event.target.value })}
+                placeholder="https://api.openai.com/v1 (blank = OpenAI itself)"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">Model name</span>
+              <input
+                className={ui.input}
+                value={draft.narrationOpenai.model}
+                onChange={(event) => setNarrationOpenai({ model: event.target.value })}
+                placeholder="gpt-4o-mini-tts"
+              />
+            </label>
+          </div>
+          {storyIsOpenAi && !draft.narrationOpenai.baseUrl.trim() ? null : (
             <KeyField
-              label="OpenAI API key"
+              label="API key"
               value={draft.narrationKey}
               onChange={(narrationKey) => update((current) => ({ ...current, narrationKey }))}
               saved={ttsKeySaved}
-              hint="Used only for narration. Blank uses the key saved for pictures, if there is one."
+              hint="Used only for narration. A compatible proxy needs its own key here; OpenAI itself takes the storyteller's, or the key saved for pictures."
             />
           )}
-          <NarrationTest body={{ provider: "openai", baseUrl: "", apiKey: draft.narrationKey }} />
+          <NarrationTest body={{ provider: "openai", baseUrl: draft.narrationOpenai.baseUrl, model: draft.narrationOpenai.model, apiKey: draft.narrationKey }} />
         </div>
       ) : draft.narration === "openrouter" ? (
         <div key="openrouter" className="reveal-height space-y-3">

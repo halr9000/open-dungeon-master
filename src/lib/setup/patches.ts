@@ -64,7 +64,10 @@ export function storyPatch(choice: StoryChoice, savedBaseUrl = ""): { patch: Pat
 export type PicturesChoice =
   | { kind: "comfyui"; url: string; checkpoint: string }
   // OpenAI's images API on the storyteller's OpenAI key, or on its own.
-  | { kind: "openai"; apiKey: string }
+  // A typed base URL and model reach any compatible proxy, exactly as the
+  // admin panel's Server base URL and Model name fields do; blank = OpenAI
+  // itself and gpt-image-1.
+  | { kind: "openai"; baseUrl: string; model: string; apiKey: string }
   // The agent program's own image tool, once a test picture has come back.
   | { kind: "agent" }
   // Painted placeholders. A ComfyUI started later at its default address is
@@ -83,7 +86,14 @@ export function picturesPatch(choice: PicturesChoice): Patch {
   }
   if (choice.kind === "openai") {
     const apiKey = choice.apiKey.trim();
-    return { images: { defaultBackend: "openai", openaiBaseUrl: "", ...(apiKey ? { openaiApiKey: apiKey } : {}) } };
+    return {
+      images: {
+        defaultBackend: "openai",
+        openaiBaseUrl: choice.baseUrl.trim().replace(/\/+$/, ""),
+        openaiModel: choice.model.trim(),
+        ...(apiKey ? { openaiApiKey: apiKey } : {}),
+      },
+    };
   }
   if (choice.kind === "agent") {
     // Both switches: the default backend alone leaves the agent's pictures
@@ -95,8 +105,10 @@ export function picturesPatch(choice: PicturesChoice): Patch {
 
 export type NarrationChoice =
   | { kind: "kokoro"; url: string; voice: string }
-  // OpenAI's speech API: blank key borrows the storyteller's OpenAI key.
-  | { kind: "openai"; apiKey: string }
+  // OpenAI's speech API, or any server speaking it (Speaches, openedai-speech,
+  // Kokoro-FastAPI elsewhere...). Blank URL = OpenAI itself; blank key borrows
+  // the storyteller's OpenAI key.
+  | { kind: "openai"; baseUrl: string; model: string; apiKey: string }
   // OpenRouter's speech endpoint: no address, no key here — it borrows the
   // OpenRouter key the storyteller step saved.
   | { kind: "openrouter" }
@@ -111,7 +123,13 @@ export function narrationPatch(choice: NarrationChoice): Patch {
   if (choice.kind === "openai") {
     const apiKey = choice.apiKey.trim();
     return {
-      speech: { ttsProvider: "openai", ttsBaseUrl: "", ttsModel: "", ttsVoice: "", ...(apiKey ? { ttsApiKey: apiKey } : {}) },
+      speech: {
+        ttsProvider: "openai",
+        ttsBaseUrl: choice.baseUrl.trim().replace(/\/+$/, ""),
+        ttsModel: choice.model.trim(),
+        ttsVoice: "",
+        ...(apiKey ? { ttsApiKey: apiKey } : {}),
+      },
     };
   }
   if (choice.kind === "openrouter") {

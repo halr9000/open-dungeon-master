@@ -35,9 +35,17 @@ export type Draft = {
   agent: { id: HarnessChoiceId | ""; model: string; utilityModel: string };
   pictures: "comfyui" | "openai" | "agent" | "none" | "";
   comfy: { url: string; checkpoint: string };
+  // Typed on the setup's OpenAI-compatible pictures card (blank = OpenAI
+  // itself), so a compatible proxy works from the first run exactly as it
+  // does from the admin panel.
+  picturesOpenai: { baseUrl: string; model: string };
   picturesKey: string;
   narration: "kokoro" | "openai" | "openrouter" | "off" | "";
   kokoro: { url: string; voice: string };
+  // Typed on the setup's OpenAI-compatible speech card (blank = OpenAI
+  // itself), so a compatible speech server works from the first run exactly
+  // as it does from the admin panel.
+  narrationOpenai: { baseUrl: string; model: string };
   narrationKey: string;
   signupMode: "open" | "invite" | "closed";
   publicUrl: string;
@@ -103,6 +111,7 @@ export function draftFromConfig(config: MaskedConfig, firstRun: boolean): Draft 
               ? ""
               : "none",
     comfy: { url: images.comfyUrl, checkpoint: images.comfyCheckpoint },
+    picturesOpenai: { baseUrl: images.openaiBaseUrl, model: images.openaiModel },
     picturesKey: "",
     narration:
       config.speech.ttsProvider === "kokoro" && config.speech.kokoroUrl
@@ -115,6 +124,7 @@ export function draftFromConfig(config: MaskedConfig, firstRun: boolean): Draft 
               ? "off"
               : "",
     kokoro: { url: config.speech.kokoroUrl, voice: config.speech.ttsVoice },
+    narrationOpenai: { baseUrl: config.speech.ttsBaseUrl, model: config.speech.ttsModel },
     narrationKey: "",
     signupMode: config.signupMode,
     publicUrl: config.publicUrl,

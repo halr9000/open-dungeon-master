@@ -198,14 +198,22 @@ try {
     assert.deepEqual(patches.picturesPatch({ kind: "comfyui", url: "http://127.0.0.1:8188/", checkpoint: "a.safetensors" }), {
       images: { defaultBackend: "comfyui", comfyUrl: "http://127.0.0.1:8188", comfyCheckpoint: "a.safetensors" },
     });
-    assert.deepEqual(patches.picturesPatch({ kind: "openai", apiKey: "" }), { images: { defaultBackend: "openai", openaiBaseUrl: "" } });
-    assert.equal(patches.picturesPatch({ kind: "openai", apiKey: "sk-i" }).images.openaiApiKey, "sk-i");
+    assert.deepEqual(patches.picturesPatch({ kind: "openai", baseUrl: "https://proxy.example/v1/", model: " my-image ", apiKey: "sk-p" }), {
+      images: { defaultBackend: "openai", openaiBaseUrl: "https://proxy.example/v1", openaiModel: "my-image", openaiApiKey: "sk-p" },
+    });
+    // Blank URL and model still mean OpenAI itself and its default model.
+    assert.deepEqual(patches.picturesPatch({ kind: "openai", baseUrl: " ", model: "", apiKey: "" }), {
+      images: { defaultBackend: "openai", openaiBaseUrl: "", openaiModel: "" },
+    });
+    assert.equal(patches.picturesPatch({ kind: "openai", baseUrl: "", model: "", apiKey: "sk-i" }).images.openaiApiKey, "sk-i");
     assert.deepEqual(patches.picturesPatch({ kind: "agent" }), { images: { defaultBackend: "harness" }, harness: { images: "native" } });
     assert.deepEqual(patches.picturesPatch({ kind: "none" }), { images: { defaultBackend: "", comfyUrl: "" } });
     assert.deepEqual(patches.narrationPatch({ kind: "kokoro", url: "http://127.0.0.1:8880/", voice: "af_heart" }), {
       speech: { ttsProvider: "kokoro", kokoroUrl: "http://127.0.0.1:8880", ttsVoice: "af_heart" },
     });
-    assert.equal("ttsApiKey" in patches.narrationPatch({ kind: "openai", apiKey: "" }).speech, false);
+    assert.equal("ttsApiKey" in patches.narrationPatch({ kind: "openai", baseUrl: "", model: "", apiKey: "" }).speech, false);
+    assert.equal(patches.narrationPatch({ kind: "openai", baseUrl: "http://box:8000/", model: "my-tts", apiKey: "sk-n" }).speech.ttsBaseUrl, "http://box:8000");
+    assert.equal(patches.narrationPatch({ kind: "openai", baseUrl: "", model: " ", apiKey: "" }).speech.ttsModel, "");
     assert.deepEqual(patches.narrationPatch({ kind: "openrouter" }), { speech: { ttsProvider: "openrouter" } });
     assert.deepEqual(patches.narrationPatch({ kind: "off" }), { speech: { ttsProvider: "off" } });
     assert.deepEqual(patches.joiningPatch({ signupMode: "invite", publicUrl: "https://keep.example/" }), {

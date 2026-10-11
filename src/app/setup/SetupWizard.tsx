@@ -145,13 +145,15 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
     }
     if (key === "pictures") {
       if (draft.pictures === "comfyui") return picturesPatch({ kind: "comfyui", url: draft.comfy.url, checkpoint: draft.comfy.checkpoint });
-      if (draft.pictures === "openai") return picturesPatch({ kind: "openai", apiKey: draft.picturesKey });
+      if (draft.pictures === "openai")
+        return picturesPatch({ kind: "openai", baseUrl: draft.picturesOpenai.baseUrl, model: draft.picturesOpenai.model, apiKey: draft.picturesKey });
       if (draft.pictures === "agent") return picturesPatch({ kind: "agent" });
       return picturesPatch({ kind: "none" });
     }
     if (key === "voice") {
       if (draft.narration === "kokoro") return narrationPatch({ kind: "kokoro", url: draft.kokoro.url, voice: draft.kokoro.voice });
-      if (draft.narration === "openai") return narrationPatch({ kind: "openai", apiKey: draft.narrationKey });
+      if (draft.narration === "openai")
+        return narrationPatch({ kind: "openai", baseUrl: draft.narrationOpenai.baseUrl, model: draft.narrationOpenai.model, apiKey: draft.narrationKey });
       if (draft.narration === "openrouter") return narrationPatch({ kind: "openrouter" });
       return narrationPatch({ kind: "off" });
     }
@@ -210,18 +212,23 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
       ? "Paint a test map first: the tables only get a painter that works."
       : draft.pictures === "comfyui" && !draft.comfy.url.trim()
       ? "Type where ComfyUI runs, or choose another answer."
-      : draft.pictures === "openai" && !storyIsOpenAi && !draft.picturesKey.trim() && !config.images.hasOpenaiApiKey
-        ? "Paste an OpenAI key, or choose another answer."
+      : draft.pictures === "openai" &&
+          !storyIsOpenAi &&
+          !draft.picturesOpenai.baseUrl.trim() &&
+          !draft.picturesKey.trim() &&
+          !config.images.hasOpenaiApiKey
+        ? "Paste an API key, or choose another answer."
         : null;
   const voiceBlocker =
     draft.narration === "kokoro" && !draft.kokoro.url.trim()
       ? "Type where Kokoro runs, or choose another answer."
       : draft.narration === "openai" &&
           !storyIsOpenAi &&
+          !draft.narrationOpenai.baseUrl.trim() &&
           !draft.narrationKey.trim() &&
           !config.speech.hasTtsApiKey &&
           !config.images.hasOpenaiApiKey
-        ? "Paste an OpenAI key, or choose another answer."
+        ? "Paste an API key, or choose another answer."
         : draft.narration === "openrouter" &&
             !draft.key.apiKey.trim() &&
             !(savedKeyFor === "openrouter") &&
