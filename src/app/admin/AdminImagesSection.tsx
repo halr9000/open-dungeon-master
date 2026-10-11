@@ -2,6 +2,7 @@
 
 import { ui } from "@/lib/ui";
 import { PageSection } from "@/components/PageShell";
+import { FilterableModelPicker, type PickerModel } from "@/components/FilterableModelPicker";
 import {
   Field,
   SecretField,
@@ -9,6 +10,7 @@ import {
   type EnvDefaults,
   type MaskedConfig,
 } from "@/app/admin/AdminSettingsFields";
+import { useEffect, useRef, useState } from "react";
 
 // Image generation. The picker names the backend new campaigns start on; a
 // campaign may still pick any backend that is set up here, so each backend
@@ -31,6 +33,120 @@ const GROUP_TITLE: Record<Group, string> = {
   flux: "FLUX worker",
   openai: "OpenAI-compatible images API",
 };
+
+// The checkpoint list one ComfyUI answered with, kept per address: changing
+// the URL asks the new server, coming back does not ask the old one again,
+// and a repeated render of the panel does not ask twice within a minute.
+type CheckpointEntry = { models: PickerModel[]; ok: boolean; error: string; at: number };
+type CheckpointCache = Map<string, CheckpointEntry>;
+
+const CHECKPOINT_CACHE_MS = 60_000;
+
+// The ComfyUI model file field as a picker over the server's own /object_info
+// lists (unet files first, then plain checkpoints). The list is asked on
+// change of the URL — debounce-free: each settled value fires one request,
+// cached per URL for a minute — and while it is empty or the server is
+// silent, the field stays a plain text input, so a working setup can never be
+// blocked by a dropdown that has nothing to show.
+function ComfyCheckpointPicker({
+  url,
+  value,
+  onChange,
+  placeholder,
+}: {
+  url: string;
+  value: string;
+  onChange: (checkpoint: string) => void;
+  placeholder: string;
+}) {
+  const [cache, setCache] = useState<CheckpointCache>(() => new Map());
+  const [busy, setBusy] = useState(false);
+  const cacheRef = useRef(cache);
+  // The effect reads the cache without listing it as a dependency (only a
+  // settled URL re-fires the request); the ref is synced in an effect, not
+  // during render.
+  useEffect(() => {
+    cacheRef.current = cache;
+  }, [cache]);
+  const inflight = useRef("");
+
+  const settled = url.trim().replace(/\/+$/, "");
+  const entry = cache.get(settled);
+
+  useEffect(() => {
+    if (!settled) {
+      return;
+    }
+    const hit = cacheRef.current.get(settled);
+    if (hit && Date.now() - hit.at < CHECKPOINT_CACHE_MS) {
+      return;
+    }
+    if (inflight.current === settled) {
+      return;
+    }
+    inflight.current = settled;
+    setBusy(true);
+    fetch("/api/comfy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: settled }),
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { ok?: boolean; error?: string; checkpoints?: unknown } | null) => {
+        const models: PickerModel[] = Array.isArray(data?.checkpoints)
+          ? (data!.checkpoints as unknown[]).filter((name): name is string => typeof name === "string").map((name) => ({ id: name, label: name }))
+          : [];
+        setCache((current) => {
+          const next = new Map(current);
+          next.set(settled, { models, ok: Boolean(data?.ok), error: data?.error ?? "", at: Date.now() });
+          return next;
+        });
+      })
+      .catch(() => {
+        setCache((current) => {
+          const next = new Map(current);
+          next.set(settled, { models: [], ok: false, error: "Could not reach ComfyUI.", at: Date.now() });
+          return next;
+        });
+      })
+      .finally(() => {
+        if (inflight.current === settled) {
+          inflight.current = "";
+          setBusy(false);
+        }
+      });
+  }, [settled]);
+
+  if (!entry || !entry.models.length) {
+    return (
+      <div role="group" aria-label="Model file" className="block">
+        <span className="mb-1 block text-xs font-medium text-stone-400">Model file</span>
+        <input
+          className={ui.input}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+        />
+        <span className="mt-1 block text-[11px] leading-4 text-stone-500">
+          {busy
+            ? "Asking the server for its model list…"
+            : entry && !entry.ok
+              ? "The server did not answer, so the model file is typed by name; full checkpoint or unet file."
+              : "A full checkpoint (SD/SDXL) or a unet file such as a Krea2 or Flux.2 model."}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <FilterableModelPicker
+      label="Model file"
+      models={entry.models}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+    />
+  );
+}
 
 export function AdminImagesSection({
   images,
@@ -66,17 +182,12 @@ export function AdminImagesSection({
             placeholder={env.comfyUrl}
           />
         </Field>
-        <Field
-          label="Model file"
-          hint="A full checkpoint (SD/SDXL) or a unet file such as a Krea2 or Flux.2 model; unet files load their encoder and VAE separately."
-        >
-          <input
-            className={ui.input}
-            value={images.comfyCheckpoint}
-            onChange={(event) => set({ comfyCheckpoint: event.target.value })}
-            placeholder="krea2Fp8Nvfp4Mixed_turbo.safetensors"
-          />
-        </Field>
+        <ComfyCheckpointPicker
+          url={images.comfyUrl || env.comfyUrl}
+          value={images.comfyCheckpoint}
+          onChange={(comfyCheckpoint) => set({ comfyCheckpoint })}
+          placeholder="krea2Fp8Nvfp4Mixed_turbo.safetensors"
+        />
       </div>
     ),
     flux: (
