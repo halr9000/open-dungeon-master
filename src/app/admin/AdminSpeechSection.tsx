@@ -50,15 +50,21 @@ export function AdminSpeechSection({
   speech,
   env,
   apiKey,
+  falKey,
   onSpeech,
   onApiKey,
+  onFalKey,
 }: {
   speech: Speech;
   env: EnvDefaults;
   // SECRET_KEPT until a new key is typed.
   apiKey: string;
+  // The fal key, SECRET_KEPT until typed; one key covers fal's speech and
+  // image backends.
+  falKey: string;
   onSpeech: (speech: Speech) => void;
   onApiKey: (value: string) => void;
+  onFalKey: (value: string) => void;
 }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
@@ -83,7 +89,9 @@ export function AdminSpeechSection({
 
   // What "Auto" means on this server right now.
   const envProvider: Exclude<Provider, ""> =
-    env.ttsProvider === "openai" || env.ttsProvider === "openrouter" || env.ttsProvider === "off" ? env.ttsProvider : "kokoro";
+    env.ttsProvider === "openai" || env.ttsProvider === "openrouter" || env.ttsProvider === "fal" || env.ttsProvider === "off"
+      ? env.ttsProvider
+      : "kokoro";
   const provider = speech.ttsProvider || envProvider;
   const set = (patch: Partial<Speech>) => {
     setResult(null);
@@ -109,8 +117,9 @@ export function AdminSpeechSection({
           provider,
           kokoroUrl: speech.kokoroUrl,
           baseUrl: speech.ttsBaseUrl,
-          model: speech.ttsModel,
+          model: provider === "fal" ? speech.falTtsModel : speech.ttsModel,
           apiKey: apiKey === SECRET_KEPT ? "" : apiKey,
+          falApiKey: falKey === SECRET_KEPT ? "" : falKey,
           voice: speech.ttsVoice,
         }),
       });
@@ -161,6 +170,7 @@ export function AdminSpeechSection({
             { value: "kokoro", label: "Kokoro-FastAPI (local)" },
             { value: "openai", label: "OpenAI-compatible server" },
             { value: "openrouter", label: "OpenRouter (uses your OpenRouter key)" },
+            { value: "fal", label: "fal.ai (cloud)" },
             { value: "off", label: "Off: no narration on this server" },
           ]}
         />
@@ -194,6 +204,36 @@ export function AdminSpeechSection({
                 above, or the OPENROUTER_API_KEY env var. Nothing to paste here.
               </span>
             </div>
+          </>
+        ) : null}
+        {provider === "fal" ? (
+          <>
+            <Field
+              label="Model"
+              hint={
+                env.falTtsModel
+                  ? `Env: ${env.falTtsModel}`
+                  : "Blank = fal-ai/chatterbox. Any speech model id fal hosts; voice ids are its own."
+              }
+            >
+              <input
+                className={ui.input}
+                value={speech.falTtsModel}
+                onChange={(event) => set({ falTtsModel: event.target.value })}
+                placeholder={env.falTtsModel || "fal-ai/chatterbox"}
+              />
+            </Field>
+            <SecretField
+              label="API key"
+              isSet={speech.hasFalApiKey}
+              value={falKey}
+              onChange={onFalKey}
+              hint={
+                env.hasFalKey
+                  ? "An env-var FAL_KEY is also set; this one wins when filled."
+                  : "The same fal.ai key the Image generation section uses. Voice ids are per model — the model's fal.ai page documents them."
+              }
+            />
           </>
         ) : null}
         {provider === "openai" ? (
@@ -250,7 +290,9 @@ export function AdminSpeechSection({
                 ? `Used for the test, and whenever a campaign asks for a voice this server does not have. Blank = ${official ? "alloy" : "the first voice the server lists"}.`
                 : provider === "openrouter"
                   ? "Used for the test. Blank = af_heart. OpenRouter's Kokoro takes the standard Kokoro voice ids."
-                  : "Used for the test. Blank = af_heart. Campaigns pick their own from the server's list, or type one."
+                  : provider === "fal"
+                    ? "Passed to the model as written; its voice ids are its own (the model's fal.ai page lists them)."
+                    : "Used for the test. Blank = af_heart. Campaigns pick their own from the server's list, or type one."
             }
           >
             <input
@@ -271,7 +313,9 @@ export function AdminSpeechSection({
             ? `Each passage is sent as text to the Kokoro server at ${host(kokoroAt)} and comes back as audio. It is not sent to the text model's server or anywhere else.`
             : provider === "openrouter"
               ? `Each passage is sent as text to OpenRouter (${host(speech.ttsBaseUrl.trim() || "https://openrouter.ai/api/v1")}) on your OpenRouter key and comes back as audio, billed to it. It is not sent to the text model's server or anywhere else.`
-              : `Each passage is sent as text to ${host(openaiAt)} and comes back as audio${official ? ", billed to the API key" : ""}. It is not sent to the text model's server or anywhere else.`}
+              : provider === "fal"
+                ? `Each passage is sent as text to fal.ai (${speech.falTtsModel.trim() || env.falTtsModel || "fal-ai/chatterbox"}) on your fal key and comes back as audio, billed to it. It is not sent to the text model's server or anywhere else.`
+                : `Each passage is sent as text to ${host(openaiAt)} and comes back as audio${official ? ", billed to the API key" : ""}. It is not sent to the text model's server or anywhere else.`}
       </p>
       {provider === "openrouter" && !openRouterKeyReady ? (
         <p role="status" className="mt-2 text-xs text-amber-300">

@@ -133,7 +133,11 @@ export function enqueueNarrationAudio(
       // Read once per passage, so every clip goes to the same server even
       // if the admin saves a change halfway through.
       const backend = ttsBackend();
-      const paid = backend.provider === "openai" && backend.apiKey !== "" && !isPrivateBackendHost(backend.v1);
+      // fal is always a public paid API; OpenAI only when it is really the
+      // official host (a local OpenAI-kind server is the host's own).
+      const paid =
+        backend.provider === "fal" ||
+        (backend.provider === "openai" && backend.apiKey !== "" && !isPrivateBackendHost(backend.v1));
       const version = Date.now();
       const url = narrationAudioUrl(campaignId, messageId, version);
       const live = openLiveNarration(campaignId, messageId);

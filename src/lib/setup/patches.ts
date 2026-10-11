@@ -112,6 +112,8 @@ export type NarrationChoice =
   // OpenRouter's speech endpoint: no address, no key here — it borrows the
   // OpenRouter key the storyteller step saved.
   | { kind: "openrouter" }
+  // A fal.ai speech model on the fal key; a blank key keeps the one saved.
+  | { kind: "fal"; model: string; apiKey: string }
   | { kind: "off" };
 
 export function narrationPatch(choice: NarrationChoice): Patch {
@@ -136,6 +138,12 @@ export function narrationPatch(choice: NarrationChoice): Patch {
     // The key is the text model's OpenRouter one (tts-backend resolves it);
     // the base URL is OpenRouter's own, so nothing is written for either.
     return { speech: { ttsProvider: "openrouter" } };
+  }
+  if (choice.kind === "fal") {
+    const apiKey = choice.apiKey.trim();
+    return {
+      speech: { ttsProvider: "fal", falTtsModel: choice.model.trim(), ...(apiKey ? { falApiKey: apiKey } : {}) },
+    };
   }
   return { speech: { ttsProvider: "off" } };
 }

@@ -37,7 +37,7 @@ export type MaskedConfig = {
     hasFalImageKey: boolean;
   };
   speech: {
-    ttsProvider: "" | "kokoro" | "openai" | "openrouter" | "off";
+    ttsProvider: "" | "kokoro" | "openai" | "openrouter" | "fal" | "off";
     kokoroUrl: string;
     ttsBaseUrl: string;
     ttsModel: string;
@@ -45,8 +45,9 @@ export type MaskedConfig = {
     // A saved OpenRouter key counts as a narration key too: the openrouter
     // provider borrows it (src/lib/tts-backend.ts resolveTtsBackend).
     hasOpenRouterKey: boolean;
-  hasFalKey: boolean;
     ttsVoice: string;
+    falTtsModel: string;
+    hasFalApiKey: boolean;
     sttUrl: string;
   };
   voiceChat: {
@@ -74,6 +75,7 @@ export type EnvDefaults = {
   ttsProvider: string;
   ttsBaseUrl: string;
   ttsModel: string;
+  falTtsModel: string;
   hasTtsApiKey: boolean;
   hasOpenRouterKey: boolean;
   hasFalKey: boolean;

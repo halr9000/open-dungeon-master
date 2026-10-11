@@ -287,6 +287,7 @@ export function VoiceStep({
   scanning,
   storyIsOpenAi,
   ttsKeySaved,
+  falKeySaved,
 }: {
   draft: Draft;
   update: Update;
@@ -294,6 +295,7 @@ export function VoiceStep({
   scanning: boolean;
   storyIsOpenAi: boolean;
   ttsKeySaved: boolean;
+  falKeySaved: boolean;
 }) {
   const kokoro = scan?.kokoro ?? null;
   const whisper = scan?.whisper ?? null;
@@ -309,6 +311,8 @@ export function VoiceStep({
   const setKokoro = (patch: Partial<Draft["kokoro"]>) => update((current) => ({ ...current, kokoro: { ...current.kokoro, ...patch } }));
   const setNarrationOpenai = (patch: Partial<Draft["narrationOpenai"]>) =>
     update((current) => ({ ...current, narrationOpenai: { ...current.narrationOpenai, ...patch } }));
+  const setNarrationFal = (patch: Partial<Draft["narrationFal"]>) =>
+    update((current) => ({ ...current, narrationFal: { ...current.narrationFal, ...patch } }));
 
   return (
     <div className="space-y-4">
@@ -338,6 +342,13 @@ export function VoiceStep({
           glyph="system-share"
           title="OpenRouter (cloud)"
           sub="Reads passages aloud through OpenRouter's Kokoro endpoint, on the OpenRouter key the storyteller already uses. No GPU needed."
+        />
+        <ChoiceCard
+          picked={draft.narration === "fal"}
+          onPick={() => pick("fal")}
+          glyph="system-share"
+          title="fal.ai (cloud)"
+          sub="Reads passages aloud through a fal.ai speech model (Chatterbox by default) on a fal.ai key, billed per character. No GPU needed."
         />
         <ChoiceCard
           picked={draft.narration === "off"}
@@ -417,6 +428,29 @@ export function VoiceStep({
             />
           )}
           <NarrationTest body={{ provider: "openai", baseUrl: draft.narrationOpenai.baseUrl, model: draft.narrationOpenai.model, apiKey: draft.narrationKey }} />
+        </div>
+      ) : draft.narration === "fal" ? (
+        <div key="fal" className="reveal-height space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-stone-400">Model</span>
+              <input
+                className={ui.input}
+                value={draft.narrationFal.model}
+                onChange={(event) => setNarrationFal({ model: event.target.value })}
+                placeholder="fal-ai/chatterbox"
+              />
+            </label>
+            <KeyField
+              label="fal.ai API key"
+              value={draft.narrationFal.apiKey}
+              onChange={(apiKey) => setNarrationFal({ apiKey })}
+              saved={falKeySaved}
+              hint="Billed per character. The same key the pictures' fal.ai backend uses, if you set one there."
+            />
+          </div>
+          <p className="text-[11px] text-stone-500">Voice ids are per model — Chatterbox takes its own; the model&apos;s fal.ai page documents them.</p>
+          <NarrationTest body={{ provider: "fal", model: draft.narrationFal.model, falApiKey: draft.narrationFal.apiKey }} />
         </div>
       ) : draft.narration === "openrouter" ? (
         <div key="openrouter" className="reveal-height space-y-3">

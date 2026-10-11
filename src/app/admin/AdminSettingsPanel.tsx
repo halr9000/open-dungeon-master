@@ -53,6 +53,7 @@ export function AdminSettingsPanel() {
   const [utilityApiKey, setUtilityApiKey] = useState(SECRET_KEPT);
   const [openaiImageKey, setOpenaiImageKey] = useState(SECRET_KEPT);
   const [falImageKey, setFalImageKey] = useState(SECRET_KEPT);
+  const [falTtsKey, setFalTtsKey] = useState(SECRET_KEPT);
   const [ttsApiKey, setTtsApiKey] = useState(SECRET_KEPT);
   const [discordSecret, setDiscordSecret] = useState(SECRET_KEPT);
   const [saving, setSaving] = useState(false);
@@ -146,8 +147,10 @@ export function AdminSettingsPanel() {
             ttsBaseUrl: config.speech.ttsBaseUrl,
             ttsModel: config.speech.ttsModel,
             ttsVoice: config.speech.ttsVoice,
+            falTtsModel: config.speech.falTtsModel,
             sttUrl: config.speech.sttUrl,
             ...(ttsApiKey === SECRET_KEPT ? {} : { ttsApiKey }),
+            ...(falTtsKey === SECRET_KEPT ? {} : { falApiKey: falTtsKey }),
           },
         }),
       });
@@ -162,6 +165,7 @@ export function AdminSettingsPanel() {
       setUtilityApiKey(SECRET_KEPT);
       setOpenaiImageKey(SECRET_KEPT);
       setFalImageKey(SECRET_KEPT);
+      setFalTtsKey(SECRET_KEPT);
       setTtsApiKey(SECRET_KEPT);
       setDiscordSecret(SECRET_KEPT);
       setRescued(Array.isArray(data.rescued) ? data.rescued : []);
@@ -475,8 +479,10 @@ export function AdminSettingsPanel() {
         speech={config.speech}
         env={env}
         apiKey={ttsApiKey}
+        falKey={falTtsKey}
         onSpeech={(speech) => setConfig({ ...config, speech })}
         onApiKey={setTtsApiKey}
+        onFalKey={setFalTtsKey}
       />
 
       {deviceWorld ? null : (

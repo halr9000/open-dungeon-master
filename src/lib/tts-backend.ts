@@ -11,6 +11,8 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 //           or a local one (Kokoro-FastAPI, Speaches, openedai-speech, ...)
 //           with its own address, model and key.
 //   openrouter  OpenRouter's speech endpoint at openrouter.ai.
+//   fal     fal.ai's hosted speech models (Chatterbox, MiniMax, Dia, Kokoro
+//           among them): one POST to fal.run/<model>, CDN URL in the answer.
 //   off     no narration on this server.
 //
 // Both kinds are the same request on the wire; the kind only picks the
@@ -18,7 +20,7 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 // The decision logic is pure and exported so scripts/test-tts-backend.mjs can
 // drive it without a network.
 
-export type TtsProvider = "kokoro" | "openai" | "openrouter" | "off";
+export type TtsProvider = "kokoro" | "openai" | "openrouter" | "fal" | "off";
 
 export type TtsBackend = {
   provider: TtsProvider;
@@ -35,6 +37,12 @@ export const OPENAI_DEFAULT_URL = "https://api.openai.com/v1";
 export const OPENROUTER_DEFAULT_URL = "https://openrouter.ai/api/v1";
 export const OPENROUTER_DEFAULT_TTS_MODEL = "hexgrad/kokoro-82m";
 export const OPENAI_DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
+// fal's speech models take the whole input their schema names; Chatterbox is
+// the default because it is the cheapest general narrator fal hosts. Voice
+// handling is per model (Chatterbox ignores ODM's Kokoro voice ids; MiniMax
+// has preset voices), so a model override and its own voice id go together.
+export const FAL_RUN_BASE = "https://fal.run";
+export const FAL_DEFAULT_TTS_MODEL = "fal-ai/chatterbox";
 
 // OpenAI publishes no voice list endpoint; these are the documented voices.
 export const OPENAI_TTS_VOICES = [
@@ -83,6 +91,8 @@ export type TtsBackendInput = {
   model: string;
   apiKey: string;
   voice: string;
+  // The fal key, resolved by the caller (admin value, then FAL_KEY env).
+  falApiKey: string;
   // The server's shared OpenAI key (images, dictation), lent only to
   // api.openai.com itself.
   sharedOpenAiKey: string;
@@ -90,7 +100,20 @@ export type TtsBackendInput = {
 
 export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
   const provider: TtsProvider =
-    input.provider === "openai" || input.provider === "openrouter" || input.provider === "off" ? input.provider : "kokoro";
+    input.provider === "openai" || input.provider === "openrouter" || input.provider === "fal" || input.provider === "off"
+      ? input.provider
+      : "kokoro";
+  if (provider === "fal") {
+    return {
+      provider,
+      // fal has no /v1: the model path itself is the endpoint. `v1` keeps the
+      // type's meaning ("where the request goes") as the bare API root.
+      v1: FAL_RUN_BASE,
+      model: input.model.trim() || FAL_DEFAULT_TTS_MODEL,
+      apiKey: input.falApiKey.trim(),
+      defaultVoice: input.voice.trim(),
+    };
+  }
   if (provider === "openrouter") {
     return {
       provider,
@@ -123,16 +146,26 @@ export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
 
 // The server's saved narration backend. `override` carries the admin form's
 // unsaved values so "Test" tries what is typed, not what was last saved.
-export function ttsBackend(override: Partial<Pick<TtsBackendInput, "provider" | "kokoroUrl" | "openaiUrl" | "model" | "voice">> & { apiKey?: string } = {}): TtsBackend {
+export function ttsBackend(
+  override: Partial<Pick<TtsBackendInput, "provider" | "kokoroUrl" | "openaiUrl" | "model" | "voice" | "falApiKey">> & { apiKey?: string } = {},
+): TtsBackend {
   const speech = getGlobalConfig().speech;
   const provider = override.provider ?? configValue(speech.ttsProvider, "TTS_PROVIDER");
+  // fal's model is its own field, not the OpenAI-kind model name beside it:
+  // the two are saved in one panel but describe different servers.
+  const model =
+    override.model?.trim() ||
+    (provider === "fal" ? configValue(speech.falTtsModel, "FAL_TTS_MODEL") : configValue(speech.ttsModel, "TTS_MODEL"));
   return resolveTtsBackend({
     provider,
     kokoroUrl: override.kokoroUrl?.trim() || configValue(speech.kokoroUrl, "KOKORO_URL"),
     openaiUrl: override.openaiUrl?.trim() || configValue(speech.ttsBaseUrl, "TTS_BASE_URL"),
-    model: override.model?.trim() || configValue(speech.ttsModel, "TTS_MODEL"),
+    model,
     apiKey: override.apiKey?.trim() || configValue(speech.ttsApiKey, "TTS_API_KEY"),
     voice: override.voice?.trim() || configValue(speech.ttsVoice, "TTS_VOICE"),
+    // One key covers both fal backends, exactly as the env does. A typed
+    // override (the admin test form) wins over the saved one.
+    falApiKey: override.falApiKey?.trim() || configValue(speech.falApiKey, "FAL_KEY"),
     sharedOpenAiKey: openAiSpeechConfig().apiKey,
   });
 }
@@ -236,13 +269,22 @@ export function fallbackVoices(backend: Pick<TtsBackend, "provider" | "v1">): st
   if (backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) {
     return KOKORO_VOICES;
   }
+  // fal's voice ids are per model and cannot be listed from here; the picker
+  // leans on typing one, as it does for an unknown OpenAI-kind server.
+  if (backend.provider === "fal") {
+    return [];
+  }
   return isOpenAiHost(backend.v1) ? OPENAI_TTS_VOICES : [];
 }
 
 // Where to read about the voice ids a backend takes. Kokoro lists its own at
 // /v1/audio/voices, so no link is needed; OpenAI documents its small set;
-// OpenRouter's docs carry the audio section its Kokoro endpoint follows.
-export function voiceDocsUrl(backend: Pick<TtsBackend, "provider" | "v1">): string {
+// OpenRouter's docs carry the audio section its Kokoro endpoint follows; fal
+// documents each model's voice handling on the model's own page.
+export function voiceDocsUrl(backend: Pick<TtsBackend, "provider" | "v1" | "model">): string {
+  if (backend.provider === "fal") {
+    return backend.model ? `https://fal.ai/models/${backend.model}/api` : "https://fal.ai/models";
+  }
   if (backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) {
     return "https://openrouter.ai/docs#audio";
   }
@@ -269,9 +311,12 @@ export function effectiveVoice(voice: string, backend: Pick<TtsBackend, "provide
 // Why a render failed, in words for the table (issue 88). Never the key, and
 // never more of an upstream body than a sentence.
 export function describeSpeechFailure(error: unknown, backend: Pick<TtsBackend, "provider" | "v1">): string {
-  const where = backend.provider === "kokoro" ? "The Kokoro speech server" : "The speech server";
+  const where = backend.provider === "kokoro" ? "The Kokoro speech server" : backend.provider === "fal" ? "fal.ai" : "The speech server";
   if ((backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) && error instanceof Error && error.message === "OpenRouter key is not configured.") {
     return `The ${error.message}`;
+  }
+  if (backend.provider === "fal" && error instanceof Error && error.message === "fal key is not configured.") {
+    return error.message.replace(/^fal/, "The fal");
   }
   if (error instanceof SpeechHttpError) {
     if (error.status === 401 || error.status === 403) {
@@ -344,11 +389,81 @@ export function upstreamDetail(body: string): string {
 function authorizationHeaders(backend: TtsBackend): Record<string, string> {
   const shouldAuthorize =
     Boolean(backend.apiKey) &&
-    (backend.provider === "openai" || backend.provider === "openrouter" || isOpenRouterHost(backend.v1));
-  return shouldAuthorize ? { Authorization: `Bearer ${backend.apiKey}` } : {};
+    (backend.provider === "openai" ||
+      backend.provider === "openrouter" ||
+      backend.provider === "fal" ||
+      isOpenRouterHost(backend.v1));
+  // fal's REST header spells it "Key", not "Bearer".
+  return shouldAuthorize
+    ? { Authorization: `${backend.provider === "fal" ? "Key" : "Bearer"} ${backend.apiKey}` }
+    : {};
+}
+
+// The audio URL in a fal sync answer. Chatterbox answers { audio: { url } },
+// other speech models the same shapes the image models use, so the same
+// walker works for both (see fal-images.ts falResultUrl). Only an http(s)
+// address counts.
+function falAudioUrl(payload: unknown): string {
+  const stack: unknown[] = [payload];
+  while (stack.length) {
+    const node = stack.shift();
+    if (Array.isArray(node)) {
+      stack.push(...node);
+      continue;
+    }
+    if (!node || typeof node !== "object") {
+      continue;
+    }
+    const record = node as Record<string, unknown>;
+    for (const key of ["audio", "audios", "video", "videos", "output"]) {
+      if (key in record) {
+        stack.push(record[key]);
+      }
+    }
+    const url = record.url;
+    if (typeof url === "string" && /^https?:\/\//.test(url)) {
+      return url;
+    }
+  }
+  return "";
+}
+
+// fal's speech path: one POST to fal.run/<model>, then the CDN clip behind
+// the audio URL in the answer, fetched here — the key never reaches a
+// client, and neither does a signed CDN address. Long passages ride the sync
+// endpoint (the queue variant is for batch jobs, not one narration line).
+async function requestFalSpeech(backend: TtsBackend, input: string, voice: string): Promise<Buffer> {
+  const response = await fetch(`${FAL_RUN_BASE}/${backend.model}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authorizationHeaders(backend),
+    },
+    body: JSON.stringify(voice ? { text: input, voice } : { text: input }),
+    signal: AbortSignal.timeout(180_000),
+  });
+  if (!response.ok) {
+    throw new SpeechHttpError(response.status, upstreamDetail(JSON.stringify(await response.json().catch(() => ({})))));
+  }
+  const audioUrl = falAudioUrl(await response.json().catch(() => null));
+  if (!audioUrl) {
+    throw new SpeechEmptyError();
+  }
+  const clip = await fetch(audioUrl, { signal: AbortSignal.timeout(60_000) });
+  if (!clip.ok) {
+    throw new SpeechHttpError(clip.status, "");
+  }
+  const audio = Buffer.from(await clip.arrayBuffer());
+  if (!audio.length) {
+    throw new SpeechEmptyError();
+  }
+  return audio;
 }
 
 async function requestSpeech(backend: TtsBackend, input: string, voice: string, speed: number): Promise<Buffer> {
+  if (backend.provider === "fal") {
+    return requestFalSpeech(backend, input, voice);
+  }
   const response = await fetch(`${backend.v1}/audio/speech`, {
     method: "POST",
     headers: {
@@ -375,6 +490,15 @@ export async function synthesizeSpeech(input: string, voice: string, speed = 1, 
   }
   if ((backend.provider === "openrouter" || isOpenRouterHost(backend.v1)) && !backend.apiKey) {
     throw new Error("OpenRouter key is not configured.");
+  }
+  if (backend.provider === "fal" && !backend.apiKey) {
+    throw new Error("fal key is not configured.");
+  }
+  if (backend.provider === "fal") {
+    // Voice ids are per model on fal (Chatterbox takes an audio prompt for
+    // cloning; MiniMax has preset voices), so the campaign's voice is passed
+    // through as written and no server list is asked.
+    return requestSpeech(backend, input, voice, speed);
   }
   const voices = backend.provider === "openai" ? await serverVoiceIds(backend) : [];
   // A local server with no default named falls back to the first voice it

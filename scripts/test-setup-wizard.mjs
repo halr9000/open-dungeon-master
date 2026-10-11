@@ -215,6 +215,13 @@ try {
     assert.equal(patches.narrationPatch({ kind: "openai", baseUrl: "http://box:8000/", model: "my-tts", apiKey: "sk-n" }).speech.ttsBaseUrl, "http://box:8000");
     assert.equal(patches.narrationPatch({ kind: "openai", baseUrl: "", model: " ", apiKey: "" }).speech.ttsModel, "");
     assert.deepEqual(patches.narrationPatch({ kind: "openrouter" }), { speech: { ttsProvider: "openrouter" } });
+    assert.deepEqual(patches.narrationPatch({ kind: "fal", model: " fal-ai/mini ", apiKey: "fal-k" }), {
+      speech: { ttsProvider: "fal", falTtsModel: "fal-ai/mini", falApiKey: "fal-k" },
+    });
+    // A blank fal key keeps the saved one.
+    assert.deepEqual(patches.narrationPatch({ kind: "fal", model: "", apiKey: " " }), {
+      speech: { ttsProvider: "fal", falTtsModel: "" },
+    });
     assert.deepEqual(patches.narrationPatch({ kind: "off" }), { speech: { ttsProvider: "off" } });
     assert.deepEqual(patches.joiningPatch({ signupMode: "invite", publicUrl: "https://keep.example/" }), {
       signupMode: "invite",

@@ -7,12 +7,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
-  provider: z.enum(["", "kokoro", "openai", "openrouter", "off"]).default(""),
+  provider: z.enum(["", "kokoro", "openai", "openrouter", "fal", "off"]).default(""),
   kokoroUrl: z.string().trim().max(500).default(""),
   baseUrl: z.string().trim().max(500).default(""),
   model: z.string().trim().max(200).default(""),
   // Only a freshly typed key; blank falls back to the saved one.
-  apiKey: z.string().trim().max(400).default(""),
+  apiKey: z.string().optional(),
+  falApiKey: z.string().optional(),
   voice: z.string().trim().max(120).default(""),
 });
 
@@ -38,14 +39,17 @@ export async function POST(request: Request) {
     model: form.model,
     apiKey: form.apiKey,
     voice: form.voice,
+    falApiKey: form.falApiKey,
   });
-  const endpoint = `${backend.v1}/audio/speech`;
+  const endpoint = backend.provider === "fal" ? `${backend.v1}/${backend.model}` : `${backend.v1}/audio/speech`;
   if (backend.provider === "off") {
     return Response.json({ ok: false, endpoint: "", error: "Narration is switched off, so there is nothing to test." });
   }
   const { ids, listed } = await serverVoices(backend, true);
+  // fal's voices belong to its models and are not listable; an empty one is
+  // the model's own default there, not a failure.
   const voice = form.voice || backend.defaultVoice || ids[0] || "";
-  if (!voice) {
+  if (!voice && backend.provider !== "fal") {
     return Response.json({
       ok: false,
       endpoint,

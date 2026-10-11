@@ -116,12 +116,18 @@ export const globalConfigSchema = z.object({
       // has its own address, so switching kinds never points one kind's
       // requests at the other's server. The key is masked on the way to the
       // admin UI like every other secret here.
-      ttsProvider: z.enum(["", "kokoro", "openai", "openrouter", "off"]).default(""),
+      ttsProvider: z.enum(["", "kokoro", "openai", "openrouter", "fal", "off"]).default(""),
       kokoroUrl: z.string().trim().max(500).default(""),
       ttsBaseUrl: z.string().trim().max(500).default(""),
       ttsModel: z.string().trim().max(200).default(""),
       ttsApiKey: z.string().trim().max(400).default(""),
       ttsVoice: z.string().trim().max(120).default(""),
+      // The "fal" provider: fal.ai's hosted speech models on the same key as
+      // the fal image backend. Voice ids are per model (Chatterbox clones
+      // from an audio prompt; MiniMax names preset voices), so a model
+      // override and its own voice id go together; blank = fal-ai/chatterbox.
+      falTtsModel: z.string().trim().max(200).default(""),
+      falApiKey: z.string().trim().max(400).default(""),
       sttUrl: z.string().trim().max(500).default(""),
     })
     .prefault({}),

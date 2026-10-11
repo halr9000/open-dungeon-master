@@ -155,6 +155,7 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
       if (draft.narration === "openai")
         return narrationPatch({ kind: "openai", baseUrl: draft.narrationOpenai.baseUrl, model: draft.narrationOpenai.model, apiKey: draft.narrationKey });
       if (draft.narration === "openrouter") return narrationPatch({ kind: "openrouter" });
+      if (draft.narration === "fal") return narrationPatch({ kind: "fal", model: draft.narrationFal.model, apiKey: draft.narrationFal.apiKey });
       return narrationPatch({ kind: "off" });
     }
     if (key === "players") {
@@ -234,7 +235,9 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
             !(savedKeyFor === "openrouter") &&
             !config.speech.hasOpenRouterKey
           ? "The storyteller step needs an OpenRouter key first, or choose another answer."
-          : null;
+          : draft.narration === "fal" && !draft.narrationFal.apiKey.trim() && !config.speech.hasFalApiKey
+            ? "Paste a fal.ai key, or choose another answer."
+            : null;
 
   const address = draft.publicUrl.trim() || info.lanUrls[0] || "";
   const title = (eyebrow: string, text: string, key: StepKey) => (
@@ -310,6 +313,7 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           scanning={scanning}
           storyIsOpenAi={storyIsOpenAi}
           ttsKeySaved={config.speech.hasTtsApiKey || config.images.hasOpenaiApiKey}
+          falKeySaved={config.speech.hasFalApiKey || config.images.hasFalImageKey}
         />
       ),
       blocker: voiceBlocker,

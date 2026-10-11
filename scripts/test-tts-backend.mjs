@@ -53,7 +53,7 @@ async function test(name, fn) {
   console.log(`ok: ${name}`);
 }
 
-const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "", voice: "", sharedOpenAiKey: "" };
+const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "", voice: "", falApiKey: "", sharedOpenAiKey: "" };
 
 await test("an untouched server is Kokoro at the shipped address", () => {
   const backend = resolveTtsBackend(blank);
@@ -259,6 +259,72 @@ await test("a Kokoro speech request does not carry an API key", async () => {
   await synthesizeSpeech("Hello from Kokoro.", "af_heart", 1, ttsBackend());
   const call = seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1);
   assert.equal(call.auth, "");
+});
+
+await test("fal resolves to its own endpoint, model and Key header", () => {
+  const backend = resolveTtsBackend({ ...blank, provider: "fal", model: "fal-ai/mini", falApiKey: "fal-k" });
+  assert.deepEqual(backend, { provider: "fal", v1: "https://fal.run", model: "fal-ai/mini", apiKey: "fal-k", defaultVoice: "" });
+  // The default model is fal-ai/chatterbox; a voice is per model, so none is preset.
+  const plain = resolveTtsBackend({ ...blank, provider: "fal", falApiKey: "fal-k", voice: "v1_voice" });
+  assert.equal(plain.model, "fal-ai/chatterbox");
+  assert.equal(plain.defaultVoice, "v1_voice");
+  // A blank fal key stays blank: no borrowing from any other kind.
+  assert.equal(resolveTtsBackend({ ...blank, provider: "fal", sharedOpenAiKey: "sk-shared" }).apiKey, "");
+});
+
+await test("a fal speech request posts to the model and fetches the CDN clip", async () => {
+  saveGlobalConfig({ speech: { ttsProvider: "fal", falTtsModel: "fal-ai/test-voice", falApiKey: "fal-shared", ttsVoice: "" } });
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), auth: options?.headers?.Authorization ?? "", body: options?.body ? JSON.parse(options.body) : null });
+    if (String(url).startsWith("https://fal.run/")) {
+      return new Response(JSON.stringify({ audio: { url: "https://cdn.example/clip.mp3" } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(Buffer.from("ID3-fal-mpeg"), { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+  };
+  try {
+    const audio = await synthesizeSpeech("Hello from fal.", "narrator_one", 1, ttsBackend());
+    assert.equal(audio.toString(), "ID3-fal-mpeg");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, "https://fal.run/fal-ai/test-voice");
+    assert.equal(calls[0].auth, "Key fal-shared");
+    assert.deepEqual(calls[0].body, { text: "Hello from fal.", voice: "narrator_one" });
+    // The CDN fetch carries no key.
+    assert.equal(calls[1].url, "https://cdn.example/clip.mp3");
+    assert.equal(calls[1].auth, "");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  saveGlobalConfig({ speech: { ttsProvider: "kokoro", kokoroUrl: base, ttsModel: "kokoro", ttsApiKey: "sk-local", ttsVoice: "af_heart" } });
+});
+
+await test("a fal answer without an audio URL is an empty failure", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ audio: {} }), { status: 200, headers: { "Content-Type": "application/json" } });
+  try {
+    const backend = { provider: "fal", v1: "https://fal.run", model: "fal-ai/chatterbox", apiKey: "fal-k", defaultVoice: "" };
+    await assert.rejects(synthesizeSpeech("Nothing back.", "", 1, backend), SpeechEmptyError);
+    assert.match(describeSpeechFailure(new SpeechEmptyError(), backend), /without any audio/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test("a missing fal key has a clear configuration failure", async () => {
+  const backend = { provider: "fal", v1: "https://fal.run", model: "fal-ai/chatterbox", apiKey: "", defaultVoice: "" };
+  await assert.rejects(
+    synthesizeSpeech("No key.", "", 1, backend),
+    (error) => {
+      assert.match(describeSpeechFailure(error, backend), /fal key is not configured/);
+      return true;
+    },
+  );
+});
+
+await test("fal lists no voices of its own and points at the model's page", () => {
+  assert.deepEqual(fallbackVoices({ provider: "fal", v1: "https://fal.run" }), []);
+  assert.equal(voiceDocsUrl({ provider: "fal", v1: "https://fal.run", model: "fal-ai/chatterbox" }), "https://fal.ai/models/fal-ai/chatterbox/api");
 });
 
 await test("a missing OpenRouter key has a clear configuration failure", async () => {

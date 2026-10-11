@@ -181,7 +181,7 @@ export function ttsProbeUrl(kokoroBaseUrl: string): string {
 // /health beside its /v1; an OpenAI-kind server is asked for its model list,
 // which every one of them serves. OpenAI itself is key-gated and not probed.
 export function speechProbeUrl(backend: Pick<TtsBackend, "provider" | "v1">): string {
-  if (backend.provider === "off" || isOpenAiHost(backend.v1)) {
+  if (backend.provider === "off" || backend.provider === "fal" || isOpenAiHost(backend.v1)) {
     return "";
   }
   return backend.provider === "kokoro" ? ttsProbeUrl(backend.v1.replace(/\/v\d+$/, "")) : `${backend.v1}/models`;
@@ -367,13 +367,17 @@ export async function capabilitiesSnapshot(): Promise<Capabilities> {
           ? false
           : isOpenAiHost(speech.v1)
             ? speech.apiKey !== ""
-            : speechConfigured(
-                speech.provider === "openai"
-                  ? configValue(cfg.speech.ttsBaseUrl, "TTS_BASE_URL")
-                  : configValue(cfg.speech.kokoroUrl, "KOKORO_URL"),
-                ttsReachable,
-              ),
-      reachable: speech.provider !== "off" && (isOpenAiHost(speech.v1) ? speech.apiKey !== "" : ttsReachable),
+            : speech.provider === "fal"
+              ? speech.apiKey !== ""
+              : speechConfigured(
+                  speech.provider === "openai"
+                    ? configValue(cfg.speech.ttsBaseUrl, "TTS_BASE_URL")
+                    : configValue(cfg.speech.kokoroUrl, "KOKORO_URL"),
+                  ttsReachable,
+                ),
+      reachable:
+        speech.provider !== "off" &&
+        (speech.provider === "fal" ? speech.apiKey !== "" : isOpenAiHost(speech.v1) ? speech.apiKey !== "" : ttsReachable),
       provider: speech.provider,
       place: backendPlace(speech.v1),
     },

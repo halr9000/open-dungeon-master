@@ -40,13 +40,16 @@ export type Draft = {
   // does from the admin panel.
   picturesOpenai: { baseUrl: string; model: string };
   picturesKey: string;
-  narration: "kokoro" | "openai" | "openrouter" | "off" | "";
+  narration: "kokoro" | "openai" | "openrouter" | "fal" | "off" | "";
   kokoro: { url: string; voice: string };
   // Typed on the setup's OpenAI-compatible speech card (blank = OpenAI
   // itself), so a compatible speech server works from the first run exactly
   // as it does from the admin panel.
   narrationOpenai: { baseUrl: string; model: string };
   narrationKey: string;
+  // The fal speech card: any model fal hosts plus the key it bills. Voice
+  // ids are per model, so nothing here presets one.
+  narrationFal: { model: string; apiKey: string };
   signupMode: "open" | "invite" | "closed";
   publicUrl: string;
 };
@@ -120,12 +123,15 @@ export function draftFromConfig(config: MaskedConfig, firstRun: boolean): Draft 
           ? "openai"
           : config.speech.ttsProvider === "openrouter"
             ? "openrouter"
-            : config.speech.ttsProvider === "off"
-              ? "off"
-              : "",
+            : config.speech.ttsProvider === "fal"
+              ? "fal"
+              : config.speech.ttsProvider === "off"
+                ? "off"
+                : "",
     kokoro: { url: config.speech.kokoroUrl, voice: config.speech.ttsVoice },
     narrationOpenai: { baseUrl: config.speech.ttsBaseUrl, model: config.speech.ttsModel },
     narrationKey: "",
+    narrationFal: { model: config.speech.falTtsModel, apiKey: "" },
     signupMode: config.signupMode,
     publicUrl: config.publicUrl,
   };
