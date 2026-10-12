@@ -11,7 +11,16 @@ import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { Select } from "@/components/ui/Select";
 import type { Quest, QuestStatus } from "@/lib/dm/quest-logic";
-import { GlyphChip, KitButton, LoadFailed, panelField, PanelLoading, panelRow, Tick, TickMark } from "./PanelKit";
+import {
+  GlyphChip,
+  KitButton,
+  LoadFailed,
+  panelField,
+  PanelLoading,
+  panelRow,
+  Tick,
+  TickMark,
+} from "./PanelKit";
 import { DictateField } from "@/components/DictateField";
 import { appendDictation } from "@/lib/dictation";
 
@@ -19,15 +28,35 @@ import { appendDictation } from "@/lib/dictation";
 // arc compiled and what the DM wrote, with objectives the DM ticks by
 // hand. Players read the party's; the DM's own rows are marked.
 
-const STATUS_LABEL: Record<QuestStatus, string> = { active: "Active", done: "Done", failed: "Failed", hidden: "Hidden" };
-const STATUS_GLYPH: Record<QuestStatus, string> = { active: "quest-active", done: "quest-done", failed: "quest-failed", hidden: "quest-hidden" };
-const STATUS_OPTIONS = (Object.keys(STATUS_LABEL) as QuestStatus[]).map((status) => ({
-  value: status,
-  label: STATUS_LABEL[status],
-  icon: { kind: "glyph" as const, key: STATUS_GLYPH[status] },
-}));
+const STATUS_LABEL: Record<QuestStatus, string> = {
+  active: "Active",
+  done: "Done",
+  failed: "Failed",
+  hidden: "Hidden",
+};
+const STATUS_GLYPH: Record<QuestStatus, string> = {
+  active: "quest-active",
+  done: "quest-done",
+  failed: "quest-failed",
+  hidden: "quest-hidden",
+};
+const STATUS_OPTIONS = (Object.keys(STATUS_LABEL) as QuestStatus[]).map(
+  (status) => ({
+    value: status,
+    label: STATUS_LABEL[status],
+    icon: { kind: "glyph" as const, key: STATUS_GLYPH[status] },
+  }),
+);
 
-export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignId: string; steersStory: boolean; refreshKey: number }) {
+export function QuestsPanel({
+  campaignId,
+  steersStory,
+  refreshKey,
+}: {
+  campaignId: string;
+  steersStory: boolean;
+  refreshKey: number;
+}) {
   const [quests, setQuests] = useState<Quest[] | null>(null);
   // A refused or failed read is shown in the server's words with a way to
   // ask again, never as "nothing here yet" (issue 140).
@@ -43,7 +72,10 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
 
   useEffect(() => {
     let cancelled = false;
-    readLoad<{ quests?: Quest[] }>(fetch(`/api/campaigns/${campaignId}/quests`), "The quest log").then((outcome) => {
+    readLoad<{ quests?: Quest[] }>(
+      fetch(`/api/campaigns/${campaignId}/quests`),
+      "The quest log",
+    ).then((outcome) => {
       if (cancelled) {
         return;
       }
@@ -58,15 +90,20 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
   }, [campaignId, refreshKey, reload, settle]);
 
   async function patch(questId: string, body: Record<string, unknown>) {
-    const response = await fetch(`/api/campaigns/${campaignId}/quests/${questId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const response = await fetch(
+      `/api/campaigns/${campaignId}/quests/${questId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
     const data = (await response.json().catch(() => ({}))) as { quest?: Quest };
     if (data.quest) {
       const next = data.quest;
-      setQuests((current) => (current ?? []).map((quest) => (quest.id === next.id ? next : quest)));
+      setQuests((current) =>
+        (current ?? []).map((quest) => (quest.id === next.id ? next : quest)),
+      );
     }
   }
 
@@ -79,7 +116,13 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
       const response = await fetch(`/api/campaigns/${campaignId}/quests`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, objectives: lines.split("\n").map((line) => line.trim()).filter(Boolean) }),
+        body: JSON.stringify({
+          title,
+          objectives: lines
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean),
+        }),
       });
       if (response.ok) {
         setTitle("");
@@ -93,17 +136,29 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
   }
 
   async function remove(quest: Quest) {
-    if (!(await appConfirm(`Take "${quest.title}" off the log?`, { actionLabel: "Take it off", tone: "danger" }))) {
+    if (
+      !(await appConfirm(`Take "${quest.title}" off the log?`, {
+        actionLabel: "Take it off",
+        tone: "danger",
+      }))
+    ) {
       return;
     }
-    await fetch(`/api/campaigns/${campaignId}/quests/${quest.id}`, { method: "DELETE" });
-    setQuests((current) => (current ?? []).filter((entry) => entry.id !== quest.id));
+    await fetch(`/api/campaigns/${campaignId}/quests/${quest.id}`, {
+      method: "DELETE",
+    });
+    setQuests((current) =>
+      (current ?? []).filter((entry) => entry.id !== quest.id),
+    );
   }
 
   if (quests === null && loadError) {
-
-    return <LoadFailed error={loadError} onRetry={() => setReload((current) => current + 1)} />;
-
+    return (
+      <LoadFailed
+        error={loadError}
+        onRetry={() => setReload((current) => current + 1)}
+      />
+    );
   }
 
   if (quests === null) {
@@ -122,7 +177,9 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
               <Plus className="size-3.5" /> Write one
             </KitButton>
           ) : quests.length ? (
-            <span className="text-[11px] text-stone-500">{active.length} active</span>
+            <span className="text-[11px] text-stone-500">
+              {active.length} active
+            </span>
           ) : null
         }
       />
@@ -136,18 +193,35 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
             aria-label="Quest title"
             className={panelField}
           />
-          <DictateField label="Objectives" onTranscript={(text) => setLines((current) => appendDictation(current.trim() ? `${current.trimEnd()}\n` : "", text))}>
+          <DictateField
+            label="Objectives"
+            onTranscript={(text) =>
+              setLines((current) =>
+                appendDictation(
+                  current.trim() ? `${current.trimEnd()}\n` : "",
+                  text,
+                ),
+              )
+            }
+          >
             <textarea
               value={lines}
               onChange={(event) => setLines(event.target.value)}
               rows={3}
-              placeholder={"Objectives, one per line:\nAsk at the mill\nSearch the weir"}
+              placeholder={
+                "Objectives, one per line:\nAsk at the mill\nSearch the weir"
+              }
               aria-label="Objectives, one per line"
               className={cn(panelField, "leading-5")}
             />
           </DictateField>
           <div className="flex gap-1.5">
-            <KitButton tone="primary" disabled={busy || !title.trim()} busy={busy} onClick={() => void add()}>
+            <KitButton
+              tone="primary"
+              disabled={busy || !title.trim()}
+              busy={busy}
+              onClick={() => void add()}
+            >
               {busy ? null : <Check className="size-3.5" />} Add
             </KitButton>
             <KitButton onClick={() => setAdding(false)}>
@@ -156,10 +230,25 @@ export function QuestsPanel({ campaignId, steersStory, refreshKey }: { campaignI
           </div>
         </div>
       ) : null}
-      {!quests.length ? (loadError ? <LoadFailed error={loadError} onRetry={() => setReload((current) => current + 1)} /> : loaded ? <EmptyState size="sm" art="scrolls" title="Nothing on the log yet." /> : null) : null}
+      {!quests.length ? (
+        loadError ? (
+          <LoadFailed
+            error={loadError}
+            onRetry={() => setReload((current) => current + 1)}
+          />
+        ) : loaded ? (
+          <EmptyState size="sm" art="scrolls" title="Nothing on the log yet." />
+        ) : null
+      ) : null}
       <ul className="stagger space-y-1.5">
         {[...active, ...settled].map((quest) => (
-          <QuestRow key={quest.id} quest={quest} steersStory={steersStory} onPatch={(body) => void patch(quest.id, body)} onRemove={() => void remove(quest)} />
+          <QuestRow
+            key={quest.id}
+            quest={quest}
+            steersStory={steersStory}
+            onPatch={(body) => void patch(quest.id, body)}
+            onRemove={() => void remove(quest)}
+          />
         ))}
       </ul>
     </div>
@@ -189,18 +278,46 @@ function QuestRow({
           onSelect: () => onPatch({ status }),
         })),
         ...(quest.source === "dm"
-          ? [{ id: "remove", label: "Take it off the log", glyph: "quest-failed", tone: "danger" as const, separated: true, onSelect: onRemove }]
+          ? [
+              {
+                id: "remove",
+                label: "Take it off the log",
+                glyph: "quest-failed",
+                tone: "danger" as const,
+                separated: true,
+                onSelect: onRemove,
+              },
+            ]
           : []),
       ]
     : [];
   return (
-    <ContextMenu as="li" items={items} label={quest.title} className={cn(panelRow, quest.status !== "active" && "opacity-70")}>
+    <ContextMenu
+      as="li"
+      items={items}
+      label={quest.title}
+      className={cn(panelRow, quest.status !== "active" && "opacity-70")}
+    >
       <div className="flex flex-wrap items-center gap-1.5">
-        <GameIcon icon={{ kind: "glyph", key: STATUS_GLYPH[quest.status] }} size="size-6" className="shrink-0" />
-        {quest.visibility === "dm" ? <EyeOff className="size-3.5 shrink-0 text-violet-300" aria-label="DM only" /> : null}
-        <span className="min-w-[9rem] flex-1 text-sm font-medium leading-5 text-stone-100">{quest.title}</span>
+        <GameIcon
+          icon={{ kind: "glyph", key: STATUS_GLYPH[quest.status] }}
+          size="size-6"
+          className="shrink-0"
+        />
+        {quest.visibility === "dm" ? (
+          <EyeOff
+            className="size-3.5 shrink-0 text-violet-300"
+            aria-label="DM only"
+          />
+        ) : null}
+        <span className="min-w-[9rem] flex-1 text-sm font-medium leading-5 text-stone-100">
+          {quest.title}
+        </span>
         {quest.objectives.length ? (
-          <span key={done} className="count-pop text-[11px] tabular-nums text-stone-400">
+          <span
+            key={done}
+            className="count-pop text-[11px] tabular-nums text-stone-400"
+          >
             {done}/{quest.objectives.length}
           </span>
         ) : null}
@@ -215,10 +332,17 @@ function QuestRow({
             className="pk-w-26"
           />
         ) : (
-          <GlyphChip glyph={STATUS_GLYPH[quest.status]}>{STATUS_LABEL[quest.status]}</GlyphChip>
+          <GlyphChip glyph={STATUS_GLYPH[quest.status]}>
+            {STATUS_LABEL[quest.status]}
+          </GlyphChip>
         )}
         {steersStory && quest.source === "dm" ? (
-          <KitButton tone="iconDanger" always onClick={onRemove} aria-label="Take it off the log">
+          <KitButton
+            tone="iconDanger"
+            always
+            onClick={onRemove}
+            aria-label="Take it off the log"
+          >
             <Trash2 className="size-3.5" />
           </KitButton>
         ) : null}
@@ -233,19 +357,33 @@ function QuestRow({
                   label={`Done: ${objective.text}`}
                   onChange={(checked) =>
                     onPatch({
-                      objectives: quest.objectives.map((entry) => (entry.id === objective.id ? { ...entry, done: checked } : entry)),
+                      objectives: quest.objectives.map((entry) =>
+                        entry.id === objective.id
+                          ? { ...entry, done: checked }
+                          : entry,
+                      ),
                     })
                   }
                 />
               ) : (
                 <TickMark checked={objective.done} />
               )}
-              <span className={cn(objective.done ? "text-stone-500 line-through" : "text-stone-300")}>{objective.text}</span>
+              <span
+                className={cn(
+                  objective.done
+                    ? "text-stone-500 line-through"
+                    : "text-stone-300",
+                )}
+              >
+                {objective.text}
+              </span>
             </li>
           ))}
         </ul>
       ) : null}
-      {quest.source === "arc" ? <p className="reveal mt-1 text-[11px] text-stone-500">From the story</p> : null}
+      {quest.source === "arc" ? (
+        <p className="reveal mt-1 text-[11px] text-stone-500">From the story</p>
+      ) : null}
     </ContextMenu>
   );
 }

@@ -54,7 +54,10 @@ export function AdminReportsPanel() {
   const [error, setError] = useState("");
 
   const refresh = useCallback(() => {
-    readLoad<{ reports?: Report[] }>(fetch(`/api/admin/reports${showAll ? "?status=all" : ""}`), "The reports").then((outcome) => {
+    readLoad<{ reports?: Report[] }>(
+      fetch(`/api/admin/reports${showAll ? "?status=all" : ""}`),
+      "The reports",
+    ).then((outcome) => {
       settle(outcome);
       if (outcome.payload) {
         setReports(outcome.payload.reports ?? []);
@@ -104,21 +107,51 @@ export function AdminReportsPanel() {
         }
       />
       <p className="mb-3 text-sm leading-6 text-stone-400">
-        Players flag Dungeon Master passages, messages and other players from the table.
-        Reports come to this server only; there is no central moderation behind the app.
+        Players flag Dungeon Master passages, messages and other players from
+        the table. Reports come to this server only; there is no central
+        moderation behind the app.
       </p>
 
-      {error ? <p role="alert" className="motion-shake mb-3 text-sm text-red-400">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="motion-shake mb-3 text-sm text-red-400">
+          {error}
+        </p>
+      ) : null}
 
       {reports.length === 0 ? (
-        (loadError ? <LoadFailed error={loadError} onRetry={refresh} /> : loaded ? <EmptyState art="board" title={showAll ? "No reports yet." : "Nothing waiting. Open reports show up here."} /> : null)
+        loadError ? (
+          <LoadFailed error={loadError} onRetry={() => refresh} />
+        ) : loaded ? (
+          <EmptyState
+            art="board"
+            title={
+              showAll
+                ? "No reports yet."
+                : "Nothing waiting. Open reports show up here."
+            }
+          />
+        ) : null
       ) : (
         <ul className="stagger space-y-2">
           {reports.map((report) => (
-            <li key={report.id} className="plate-row" data-layout="stack" data-tone={report.status === "open" ? undefined : "muted"}>
+            <li
+              key={report.id}
+              className="plate-row"
+              data-layout="stack"
+              data-tone={report.status === "open" ? undefined : "muted"}
+            >
               <div className="flex flex-wrap items-center gap-2 text-sm text-stone-100">
-                <GameIcon icon={{ kind: "glyph", key: report.status === "open" ? "quest-active" : "quest-done" }} size="size-6" />
-                <span className="plate-chip">{REASON_LABEL[report.reason] ?? report.reason}</span>
+                <GameIcon
+                  icon={{
+                    kind: "glyph",
+                    key:
+                      report.status === "open" ? "quest-active" : "quest-done",
+                  }}
+                  size="size-6"
+                />
+                <span className="plate-chip">
+                  {REASON_LABEL[report.reason] ?? report.reason}
+                </span>
                 <span>
                   {report.authorType === "dm"
                     ? "Dungeon Master passage"
@@ -128,10 +161,14 @@ export function AdminReportsPanel() {
                 </span>
                 <span className="text-xs text-stone-500">
                   in{" "}
-                  <Link href={`/campaigns/${report.campaignId}`} className="text-amber-200 hover:text-amber-100">
+                  <Link
+                    href={`/campaigns/${report.campaignId}`}
+                    className="text-amber-200 hover:text-amber-100"
+                  >
                     {report.campaignName}
                   </Link>
-                  , reported by {report.reporterUsername} on {new Date(report.createdAt).toLocaleString()}
+                  , reported by {report.reporterUsername} on{" "}
+                  {new Date(report.createdAt).toLocaleString()}
                 </span>
               </div>
               {report.excerpt ? (
@@ -141,16 +178,27 @@ export function AdminReportsPanel() {
               ) : null}
               {report.details ? (
                 <p className="reveal text-sm text-stone-400">
-                  <span className="text-stone-500">Reporter says:</span> {report.details}
+                  <span className="text-stone-500">Reporter says:</span>{" "}
+                  {report.details}
                 </p>
               ) : null}
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {report.status === "open" ? (
-                  <button type="button" disabled={busyId === report.id} onClick={() => setStatus(report, "resolved")} className={ui.btnSmall}>
+                  <button
+                    type="button"
+                    disabled={busyId === report.id}
+                    onClick={() => setStatus(report, "resolved")}
+                    className={ui.btnSmall}
+                  >
                     <Check className="size-3.5" /> Mark resolved
                   </button>
                 ) : (
-                  <button type="button" disabled={busyId === report.id} onClick={() => setStatus(report, "open")} className={ui.btnSmall}>
+                  <button
+                    type="button"
+                    disabled={busyId === report.id}
+                    onClick={() => setStatus(report, "open")}
+                    className={ui.btnSmall}
+                  >
                     <Undo2 className="size-3.5" /> Reopen
                   </button>
                 )}

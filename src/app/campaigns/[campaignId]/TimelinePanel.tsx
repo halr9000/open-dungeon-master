@@ -44,7 +44,13 @@ const KIND_TONE: Record<TimelineKind, string> = {
   now: "border-amber-400 bg-amber-950/60 text-amber-100 shadow-glow-gold",
 };
 
-export function TimelinePanel({ campaignId, refreshKey }: { campaignId: string; refreshKey: number }) {
+export function TimelinePanel({
+  campaignId,
+  refreshKey,
+}: {
+  campaignId: string;
+  refreshKey: number;
+}) {
   const [rows, setRows] = useState<TimelineRow[] | null>(null);
   // A refused or failed read is shown in the server's words with a way to
   // ask again, never as "nothing here yet" (issue 140).
@@ -54,7 +60,10 @@ export function TimelinePanel({ campaignId, refreshKey }: { campaignId: string; 
 
   useEffect(() => {
     let cancelled = false;
-    readLoad<{ rows?: TimelineRow[] }>(fetch(`/api/campaigns/${campaignId}/timeline`), "The timeline").then((outcome) => {
+    readLoad<{ rows?: TimelineRow[] }>(
+      fetch(`/api/campaigns/${campaignId}/timeline`),
+      "The timeline",
+    ).then((outcome) => {
       if (cancelled) {
         return;
       }
@@ -69,21 +78,34 @@ export function TimelinePanel({ campaignId, refreshKey }: { campaignId: string; 
   }, [campaignId, refreshKey, reloads, settle]);
 
   if (rows === null && loadError) {
-
-    return <LoadFailed error={loadError} onRetry={() => setReloads((current) => current + 1)} />;
-
+    return (
+      <LoadFailed
+        error={loadError}
+        onRetry={() => setReloads((current) => current + 1)}
+      />
+    );
   }
 
   if (rows === null) {
     return <PanelLoading label="Laying out the years..." />;
   }
-  const kinds = (Object.keys(KIND_LABEL) as TimelineKind[]).filter((kind) => kind !== "now" && rows.some((row) => row.kind === kind));
+  const kinds = (Object.keys(KIND_LABEL) as TimelineKind[]).filter(
+    (kind) => kind !== "now" && rows.some((row) => row.kind === kind),
+  );
   const shown = rows.filter((row) => !hidden.has(row.kind));
   return (
     <div className="space-y-3">
-      <SectionHead title="Timeline" glyph="tab-timeline" aside={shown.length > 1 ? shown.length - 1 : null} />
+      <SectionHead
+        title="Timeline"
+        glyph="tab-timeline"
+        aside={shown.length > 1 ? shown.length - 1 : null}
+      />
       {kinds.length ? (
-        <div role="group" aria-label="Show on the line" className="reveal flex flex-wrap items-center gap-1">
+        <div
+          role="group"
+          aria-label="Show on the line"
+          className="reveal flex flex-wrap items-center gap-1"
+        >
           {kinds.map((kind) => {
             const on = !hidden.has(kind);
             return (
@@ -105,7 +127,10 @@ export function TimelinePanel({ campaignId, refreshKey }: { campaignId: string; 
                 data-on={on ? "" : undefined}
                 className="pk-pill pk-tap motion-press"
               >
-                <GameIcon icon={{ kind: "glyph", key: KIND_GLYPH[kind] }} size="size-4" />
+                <GameIcon
+                  icon={{ kind: "glyph", key: KIND_GLYPH[kind] }}
+                  size="size-4"
+                />
                 {KIND_LABEL[kind]}
               </button>
             );
@@ -113,13 +138,32 @@ export function TimelinePanel({ campaignId, refreshKey }: { campaignId: string; 
         </div>
       ) : null}
       {shown.length <= 1 ? (
-        (loadError ? <LoadFailed error={loadError} onRetry={() => setReloads((current) => current + 1)} /> : loaded ? <EmptyState size="sm" art="scrolls" title="Nothing has happened yet. The first closed chapter starts the line." /> : null)
+        loadError ? (
+          <LoadFailed
+            error={loadError}
+            onRetry={() => setReloads((current) => current + 1)}
+          />
+        ) : loaded ? (
+          <EmptyState
+            size="sm"
+            art="scrolls"
+            title="Nothing has happened yet. The first closed chapter starts the line."
+          />
+        ) : null
       ) : null}
       <ol className="stagger relative space-y-2 lg:before:absolute lg:before:bottom-0 lg:before:left-1/2 lg:before:top-0 lg:before:w-px lg:before:bg-gradient-to-b lg:before:from-amber-700/0 lg:before:via-amber-600/70 lg:before:to-amber-700/0">
         {shown.map((row, index) => {
           const left = index % 2 === 0;
           return (
-            <li key={row.id} className={cn("lg:flex", left ? "lg:justify-start lg:pr-[52%]" : "lg:justify-end lg:pl-[52%]")}>
+            <li
+              key={row.id}
+              className={cn(
+                "lg:flex",
+                left
+                  ? "lg:justify-start lg:pr-[52%]"
+                  : "lg:justify-end lg:pl-[52%]",
+              )}
+            >
               <article
                 className={cn(
                   "panel w-full rounded-lg px-2.5 py-2",
@@ -128,12 +172,28 @@ export function TimelinePanel({ campaignId, refreshKey }: { campaignId: string; 
                 )}
               >
                 <p className="flex items-center gap-1.5 text-xs font-medium">
-                  <GameIcon icon={{ kind: "glyph", key: KIND_GLYPH[row.kind] }} size="size-5" className="shrink-0" />
+                  <GameIcon
+                    icon={{ kind: "glyph", key: KIND_GLYPH[row.kind] }}
+                    size="size-5"
+                    className="shrink-0"
+                  />
                   <span className="min-w-0 flex-1 truncate">{row.title}</span>
-                  {row.when ? <span className="text-[11px] font-normal text-stone-500">{row.when}</span> : null}
-                  {row.secret ? <span className="text-[11px] font-normal text-violet-300">DM</span> : null}
+                  {row.when ? (
+                    <span className="text-[11px] font-normal text-stone-500">
+                      {row.when}
+                    </span>
+                  ) : null}
+                  {row.secret ? (
+                    <span className="text-[11px] font-normal text-violet-300">
+                      DM
+                    </span>
+                  ) : null}
                 </p>
-                {row.detail ? <p className="reveal mt-0.5 text-xs leading-5 text-stone-400">{row.detail}</p> : null}
+                {row.detail ? (
+                  <p className="reveal mt-0.5 text-xs leading-5 text-stone-400">
+                    {row.detail}
+                  </p>
+                ) : null}
               </article>
             </li>
           );

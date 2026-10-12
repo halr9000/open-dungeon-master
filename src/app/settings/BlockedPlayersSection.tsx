@@ -25,7 +25,10 @@ export function BlockedPlayersSection() {
   const [busyId, setBusyId] = useState("");
 
   useEffect(() => {
-    readLoad<{ blocked?: Blocked[] }>(fetch("/api/profile/blocks"), "The blocked list").then((outcome) => {
+    readLoad<{ blocked?: Blocked[] }>(
+      fetch("/api/profile/blocks"),
+      "The blocked list",
+    ).then((outcome) => {
       settle(outcome);
       if (outcome.payload) {
         setBlocked(outcome.payload.blocked ?? []);
@@ -57,15 +60,29 @@ export function BlockedPlayersSection() {
       intro="Blocked players' table messages are hidden from you, and neither of you can open a private chat or send a friend request. Block someone from their message or from the party list."
     >
       {blocked === null ? (
-        <div className="skeleton-block h-12 rounded-xl" aria-label="Loading blocked players" />
+        <div
+          className="skeleton-block h-12 rounded-xl"
+          aria-label="Loading blocked players"
+        />
       ) : blocked.length === 0 ? (
-        (loadError ? <LoadFailed error={loadError} onRetry={() => setReloads((current) => current + 1)} /> : loaded ? <EmptyState art="board" size="sm" title="Nobody blocked." /> : null)
+        loadError ? (
+          <LoadFailed
+            error={loadError}
+            onRetry={() => setReloads((current) => current + 1)}
+          />
+        ) : loaded ? (
+          <EmptyState size="sm" art="board" title="Nobody blocked." />
+        ) : null
       ) : (
         <ul className="stagger space-y-2">
           {blocked.map((entry) => (
             <li key={entry.userId} className="plate-row">
               <span className="medallion">
-                <UserAvatar url={entry.avatar?.url} userId={entry.userId} size="size-9" />
+                <UserAvatar
+                  url={entry.avatar?.url}
+                  userId={entry.userId}
+                  size="size-9"
+                />
               </span>
               <span className="min-w-0 flex-1 truncate text-sm text-stone-200">
                 {entry.username}

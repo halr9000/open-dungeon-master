@@ -37,7 +37,10 @@ export function AdminInvitesSection() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    readLoad<{ invites?: AccountInvite[] }>(fetch("/api/admin/invites"), "The invite codes").then((outcome) => {
+    readLoad<{ invites?: AccountInvite[] }>(
+      fetch("/api/admin/invites"),
+      "The invite codes",
+    ).then((outcome) => {
       settle(outcome);
       if (outcome.payload) {
         setInvites(outcome.payload.invites ?? []);
@@ -70,15 +73,22 @@ export function AdminInvitesSection() {
 
   async function remove(code: string) {
     // A revoked code cannot be brought back, and somebody may be holding it.
-    const sure = await appConfirm(`Revoke the invite ${code}? Anyone still holding it will not be able to register with it.`, {
-      title: "Revoke this invite?",
-      actionLabel: "Revoke",
-      tone: "danger",
-    });
+    const sure = await appConfirm(
+      `Revoke the invite ${code}? Anyone still holding it will not be able to register with it.`,
+      {
+        title: "Revoke this invite?",
+        actionLabel: "Revoke",
+        tone: "danger",
+      },
+    );
     if (!sure) return;
-    const response = await fetch(`/api/admin/invites/${code}`, { method: "DELETE" });
+    const response = await fetch(`/api/admin/invites/${code}`, {
+      method: "DELETE",
+    });
     if (response.ok) {
-      setInvites((current) => (current ?? []).filter((invite) => invite.code !== code));
+      setInvites((current) =>
+        (current ?? []).filter((invite) => invite.code !== code),
+      );
     }
   }
 
@@ -91,16 +101,26 @@ export function AdminInvitesSection() {
 
   if (invites === null) {
     return (
-      <div className="skeleton-block mt-3 h-16 rounded-xl" aria-label="Loading invites" />
+      <div
+        className="skeleton-block mt-3 h-16 rounded-xl"
+        aria-label="Loading invites"
+      />
     );
   }
 
   return (
     <div className="mt-4 space-y-3">
-      <SectionHead title="Invite codes" glyph="tab-handout" level="h3" aside={<span className="tabular-nums">{invites.length}</span>} />
+      <SectionHead
+        title="Invite codes"
+        glyph="tab-handout"
+        level="h3"
+        aside={<span className="tabular-nums">{invites.length}</span>}
+      />
       <div className="flex flex-wrap items-end gap-2">
         <label className="min-w-40 flex-1 text-sm">
-          <span className="mb-1 block text-xs font-medium text-stone-400">Note (optional)</span>
+          <span className="mb-1 block text-xs font-medium text-stone-400">
+            Note (optional)
+          </span>
           <input
             className={ui.input}
             value={note}
@@ -110,23 +130,52 @@ export function AdminInvitesSection() {
           />
         </label>
         <div className="text-sm">
-          <span className="mb-1 block text-xs font-medium text-stone-400">Uses</span>
+          <span className="mb-1 block text-xs font-medium text-stone-400">
+            Uses
+          </span>
           <NumberStepper
             label="Uses"
             min={1}
             max={1000}
             value={maxUses}
-            onChange={(next) => setMaxUses(Math.max(1, Math.min(1000, Number(next) || 1)))}
+            onChange={(next) =>
+              setMaxUses(Math.max(1, Math.min(1000, Number(next) || 1)))
+            }
           />
         </div>
-        <button type="button" onClick={create} disabled={creating} aria-busy={creating} className={ui.btnSmall}>
-          {creating ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+        <button
+          type="button"
+          onClick={create}
+          disabled={creating}
+          aria-busy={creating}
+          className={ui.btnSmall}
+        >
+          {creating ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Plus className="size-4" />
+          )}
           New invite
         </button>
       </div>
-      {error ? <p role="alert" className="motion-shake text-sm text-red-400">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="motion-shake text-sm text-red-400">
+          {error}
+        </p>
+      ) : null}
       {invites.length === 0 ? (
-        (loadError ? <LoadFailed error={loadError} onRetry={() => setReloads((current) => current + 1)} /> : loaded ? <EmptyState art="scrolls" size="sm" title="No invite codes yet. Nobody can register until you create one." /> : null)
+        loadError ? (
+          <LoadFailed
+            error={loadError}
+            onRetry={() => setReloads((current) => current + 1)}
+          />
+        ) : loaded ? (
+          <EmptyState
+            size="sm"
+            art="scrolls"
+            title="No invite codes yet. Nobody can register until you create one."
+          />
+        ) : null
       ) : (
         <ul className="stagger space-y-2">
           {invites.map((invite) => {
@@ -150,18 +199,29 @@ export function AdminInvitesSection() {
                   )}
                   {invite.code}
                 </button>
-                <span className={exhausted ? "text-xs text-red-400" : "text-xs text-stone-500"}>
+                <span
+                  className={
+                    exhausted
+                      ? "text-xs text-red-400"
+                      : "text-xs text-stone-500"
+                  }
+                >
                   {invite.usedCount}/{invite.maxUses} used
                 </span>
                 {invite.note ? (
-                  <span className="truncate text-xs text-stone-500">{invite.note}</span>
+                  <span className="truncate text-xs text-stone-500">
+                    {invite.note}
+                  </span>
                 ) : null}
                 <button
                   type="button"
                   onClick={() => remove(invite.code)}
                   title="Revoke this invite"
                   aria-label={`Revoke the invite ${invite.code}`}
-                  className={cn(ui.btnSmall, "ml-auto px-2 hover:border-red-500/50 hover:text-red-400")}
+                  className={cn(
+                    ui.btnSmall,
+                    "ml-auto px-2 hover:border-red-500/50 hover:text-red-400",
+                  )}
                 >
                   <Trash2 className="size-3.5" />
                 </button>
