@@ -36,6 +36,7 @@ import { elementalAdeptFeatureName } from "@/lib/srd/feat-combat";
 import { featSpellGrants, freeCastFeatures, withFeatSpells } from "@/lib/srd/feat-spells";
 import {
   bundledSubclassName,
+  expertiseAllowed,
   expertiseSlotsFor,
   populateFeaturesForClasses,
   subclassLevelFor,
@@ -337,8 +338,8 @@ export function buildLevelUp(
     level: entry.level,
   }));
   const dwarf = hpBonusPerLevel(sheet.race) > 0;
-  const bonusBefore = hpBonusPerLevelFor(dwarf, sheet.feats);
-  const bonusAfter = hpBonusPerLevelFor(dwarf, feats);
+  const bonusBefore = hpBonusPerLevelFor(dwarf, sheet.feats, sheet.campaignId);
+  const bonusAfter = hpBonusPerLevelFor(dwarf, feats, sheet.campaignId);
   const rolls = context.hpMethod === "rolled" && request.hpChoice !== "average";
   const face = rolls
     ? Math.max(1, Math.min(klass.hitDie, context.rollDie(klass.hitDie)))
@@ -436,7 +437,7 @@ export function buildLevelUp(
           : "Expertise is a rogue's feature (1st and 6th level) and a bard's (3rd and 10th); this character has none to pick.",
       );
     }
-    const unproficient = picks.filter((skill) => !proficiencies.skills.includes(skill));
+    const unproficient = picks.filter((skill) => !expertiseAllowed(skill, proficiencies.skills, classes.map((entry) => entry.id)));
     if (unproficient.length) {
       return refuse(
         `Expertise doubles a proficiency the character has; ${unproficient.join(", ")} ${unproficient.length === 1 ? "is" : "are"} not among ${sheet.name}'s skills.`,
@@ -444,6 +445,7 @@ export function buildLevelUp(
     }
     proficiencies = { ...proficiencies, expertise: [...held, ...picks] };
   }
+
 
   // ---- features ----
   // The sheet's own features, and of the request's only the picks a class

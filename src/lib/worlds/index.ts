@@ -27,6 +27,7 @@ import {
   type WorldPackSummary,
 } from "@/lib/worlds/types";
 import { MAX_PACK_ART_BYTES, PACK_ART_DATA_URL, PACK_ART_KEY } from "@/lib/worlds/art";
+import { byName } from "@/lib/language/text-logic";
 
 // The same process.cwd() + env override pattern the SQLite paths use
 // (src/lib/content/db.ts, src/lib/db/core.ts). The Dockerfile copies /app/src
@@ -34,7 +35,7 @@ import { MAX_PACK_ART_BYTES, PACK_ART_DATA_URL, PACK_ART_KEY } from "@/lib/world
 // next start, and Docker.
 const BUNDLED_DIR = path.join(process.cwd(), "src", "lib", "worlds", "bundled");
 export const INSTALLED_DIR =
-  process.env.WORLD_PACKS_DIR || path.join(process.cwd(), "data", "worlds");
+  process.env.WORLD_PACKS_DIR || path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "worlds");
 
 // One decoded picture, held in memory for the art route. A pack's art is a
 // megabyte or two of WebP, and lifting it out of the manifest at load time is
@@ -140,13 +141,13 @@ export function resetWorldPackCache(): void {
 export function listWorldPacks(): WorldPack[] {
   return [...loadAll().values()]
     .map((entry) => entry.pack)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort(byName);
 }
 
 export function listWorldPackSummaries(): WorldPackSummary[] {
   return [...loadAll().values()]
     .map((entry) => summarizePack(entry.pack, entry.source))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort(byName);
 }
 
 export function worldPack(id: string): WorldPack | null {
@@ -180,7 +181,7 @@ export function installedPackPath(id: string): string | null {
     return null;
   }
   const target = path.resolve(INSTALLED_DIR, `${id}.json`);
-  const root = path.resolve(INSTALLED_DIR);
+  const root = path.resolve(/*turbopackIgnore: true*/ INSTALLED_DIR);
   if (path.dirname(target) !== root) {
     return null;
   }

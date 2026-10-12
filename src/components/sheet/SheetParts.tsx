@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { GameTerm } from "@/components/ui/GameTerm";
 import { InfoChipList } from "@/components/ui/InfoDialog";
@@ -141,25 +142,50 @@ export type Vital = {
   value: ReactNode;
   title?: string;
   tone?: "plain" | "warn";
+  // A tile that opens more about itself (Carried opens its load breakdown,
+  // issue #206) is a button; `opens` is what it opens, for a screen reader.
+  onOpen?: () => void;
+  opens?: string;
 };
 
 export function VitalTiles({ vitals }: { vitals: Vital[] }) {
   return (
     <div className="stagger-up grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-      {vitals.map((vital, index) => (
-        <div key={index} className="sheet-vital" data-tone={vital.tone ?? "plain"} title={vital.title}>
-          <GameIcon icon={{ kind: "glyph", key: vital.glyph }} size="size-7" />
-          <span className="min-w-0">
-            <span className="sheet-vital-label">{vital.label}</span>
-            <span className="sheet-vital-value">
-              {/* Gold spent, experience won, armour changed: the number pops. */}
-              <CountPop value={typeof vital.value === "string" || typeof vital.value === "number" ? vital.value : null}>
-                {vital.value}
-              </CountPop>
+      {vitals.map((vital, index) => {
+        const body = (
+          <>
+            <GameIcon icon={{ kind: "glyph", key: vital.glyph }} size="size-7" />
+            <span className="min-w-0">
+              <span className="sheet-vital-label">{vital.label}</span>
+              <span className="sheet-vital-value">
+                {/* Gold spent, experience won, armour changed: the number pops. */}
+                <CountPop value={typeof vital.value === "string" || typeof vital.value === "number" ? vital.value : null}>
+                  {vital.value}
+                </CountPop>
+              </span>
             </span>
-          </span>
-        </div>
-      ))}
+          </>
+        );
+        return vital.onOpen ? (
+          <button
+            key={index}
+            type="button"
+            className="sheet-vital sheet-vital-open"
+            data-tone={vital.tone ?? "plain"}
+            title={vital.title}
+            aria-haspopup="dialog"
+            onClick={vital.onOpen}
+          >
+            {body}
+            <ChevronRight className="sheet-vital-more size-3.5" aria-hidden="true" />
+            {vital.opens ? <span className="sr-only">{vital.opens}</span> : null}
+          </button>
+        ) : (
+          <div key={index} className="sheet-vital" data-tone={vital.tone ?? "plain"} title={vital.title}>
+            {body}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -30,16 +30,10 @@ const HISTORY = 6;
 
 type TrayResult = { roll: StoredRoll; secret: boolean };
 
-// Who reads a secret roll, said plainly for this seat.
-export function secretAudience(seat: { dmSeat: boolean; steersStory: boolean; aiTable: boolean }): string {
-  if (seat.dmSeat) return "Only you see it. The table is not told a die was rolled.";
-  if (seat.aiTable) {
-    return seat.steersStory
-      ? "Only you and the AI storyteller see it."
-      : "Only you, the AI storyteller and the party lead see it.";
-  }
-  return "Only you and the DM see it. The rest of the table is not told.";
-}
+// Moved to src/lib/dice/secret-audience.ts so the table can word the
+// tray's promise without loading the tray; kept here for its callers.
+export { secretAudience } from "@/lib/dice/secret-audience";
+
 
 function faces(roll: StoredRoll): string {
   return roll.breakdown.terms

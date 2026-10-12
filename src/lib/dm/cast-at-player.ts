@@ -4,14 +4,17 @@ import { tilesBetween } from "@/lib/dm/attack-spatial";
 import { z } from "zod";
 import { globeProblemFor } from "@/lib/dm/zone-rules";
 import type { Campaign } from "@/lib/db/campaigns";
-import { getActiveEncounter, recordEncounterTarget, saveEncounter, setEnemyConcentration } from "@/lib/db/encounters";
+import { getActiveEncounter, recordEncounterTarget, setEnemyConcentration } from "@/lib/db/encounters";
+import { markReactionUsed } from "@/lib/dm/turn-budget";
 import { getSheetById } from "@/lib/db/sheets";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { isValidExpression } from "@/lib/dice";
 import { spellMechanicsFor } from "@/lib/content";
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import type { SaveAbility } from "@/lib/bestiary/statblock";
 import { planSpellFx } from "@/lib/battlemap/fx-plan";
-import { clearSpellConditionsByName } from "@/lib/dm/concentration";
+import { clearSpellConditionsByName, concentrationRoundsFor } from "@/lib/dm/concentration";
+import { durationArgsFor } from "@/lib/dm/condition-logic";
 import { normalizeAbility } from "@/lib/dm/arg-coerce";
 import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
 import { prepareEnemyUse, type EnemyUse } from "@/lib/dm/enemy-casting";
@@ -77,14 +80,14 @@ export function trackEnemyConcentration(
   if (!enemy || enemy.status !== "alive") {
     return null;
   }
-  const resolved = spellMechanicsFor({ spell });
+  const resolved = spellMechanicsFor({ spell, userIds: spellAuthorsFor(campaign) });
   if (!resolved?.concentration) {
     return null;
   }
   if (enemy.concentration && enemy.concentration.toLowerCase() !== resolved.name.toLowerCase()) {
     clearSpellConditionsByName(campaign, enemy.concentration, undefined, enemy.id);
   }
-  setEnemyConcentration(enemy.id, resolved.name);
+  setEnemyConcentration(enemy.id, resolved.name, concentrationRoundsFor(resolved.name));
   return `${enemy.displayName} is now concentrating on ${resolved.name}; damage to it forces a CON save and a break ends the effect.`;
 }
 
@@ -128,6 +131,16 @@ export function layEnemyCondition(
       ),
     });
   }
+  // The block's own words for how long it lasts (monster-abilities.ts): a
+  // count, a repeat save, a long rest, or a cure. Only a condition the block
+  // gives no word for at all falls back to a save each turn, so it cannot
+  // last forever by omission.
+  const lasting = Boolean(use?.untilLongRest || use?.lasting);
+  if (use?.untilLongRest) {
+    return handleSetCondition(campaign, turn.id, fresh, { condition, sourceEnemyId: use.enemy.id }, reason, {
+      spellEffect: { source: use.enemy.id, untilLongRest: true },
+    });
+  }
   return applyDmMutation(
     campaign,
     turn.id,
@@ -135,8 +148,8 @@ export function layEnemyCondition(
     JSON.stringify({
       characterId: sheet.id,
       condition,
-      ...(timing.rounds ? { rounds: timing.rounds } : {}),
-      ...(timing.saveEnds || !timing.rounds ? { saveAbility: save.ability, saveDc: save.dc } : {}),
+      ...(timing.rounds ? durationArgsFor(timing.rounds) : {}),
+      ...(timing.saveEnds || (!timing.rounds && !lasting) ? { saveAbility: save.ability, saveDc: save.dc } : {}),
       ...(use ? { sourceEnemyId: use.enemy.id } : {}),
       reason,
     }),
@@ -294,8 +307,7 @@ export function handleCastAtPlayer(
     if (saved && dealt > 0 && ability === "dex" && shieldMasterSaveBonus(sheet) > 0) {
       const live = getActiveEncounter(campaign.id);
       if (live && !live.reactionsUsed.includes(sheet.id) && canAct({ sheet, encounter: live, kind: "reaction" }).ok) {
-        live.reactionsUsed = [...live.reactionsUsed, sheet.id];
-        saveEncounter(live);
+        markReactionUsed(live, sheet.id);
         dealt = 0;
         base.shieldMaster = `Shield Master: the reaction turns the successful save into no damage at all; ${sheet.name}'s reaction is used until their next turn.`;
       }
@@ -309,7 +321,7 @@ export function handleCastAtPlayer(
       base.evasion = taken.evasion;
     }
     // Disintegrate: a character it drops to 0 is dust, not dying.
-    const disintegrates = Boolean((use?.spell ?? args.spell) && spellMechanicsFor({ spell: use?.spell ?? args.spell ?? "" })?.mech.riders?.disintegrates);
+    const disintegrates = Boolean((use?.spell ?? args.spell) && spellMechanicsFor({ spell: use?.spell ?? args.spell ?? "", userIds: spellAuthorsFor(campaign) })?.mech.riders?.disintegrates);
     if (dealt > 0) {
       const reason = `${source} (${ability.toUpperCase()} save ${saved ? "succeeded" : "failed"})`;
       const applied = disintegrates
@@ -380,8 +392,8 @@ export function handleCastAtPlayer(
     if (!("error" in applied)) {
       base.conditionApplied = condition;
       base.duration = rounds
-        ? `${rounds} round${rounds === 1 ? "" : "s"}${saveEnds ? `, or until a successful ${ability.toUpperCase()} save (DC ${dc}) at the end of a round` : ""}`
-        : `until they succeed on a ${ability.toUpperCase()} save (DC ${dc}) at the end of a round`;
+        ? `${rounds} round${rounds === 1 ? "" : "s"}${saveEnds ? `, or until a successful ${ability.toUpperCase()} save (DC ${dc}) at the end of one of their turns` : ""}`
+        : `until they succeed on a ${ability.toUpperCase()} save (DC ${dc}) at the end of one of their turns`;
     }
   }
   if (saved && conditionName) {

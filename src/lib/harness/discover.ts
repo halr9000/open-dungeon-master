@@ -23,6 +23,8 @@ export function knownInstallDirs(home: string, platform: string = hostPlatform()
     return [
       p.join(appData, "npm"),
       p.join(localAppData, "Programs", "claude"),
+      // Codex's own Windows installer (chatgpt.com/codex/install.ps1).
+      p.join(localAppData, "Programs", "OpenAI", "Codex", "bin"),
       p.join(home, ".local", "bin"),
       p.join(home, ".bun", "bin"),
       p.join(home, ".opencode", "bin"),
@@ -54,7 +56,7 @@ function nodeManagerDirs(home: string): string[] {
   const out: string[] = [];
   for (const base of [path.join(home, ".nvm", "versions", "node"), path.join(home, ".local", "share", "fnm", "node-versions")]) {
     try {
-      const entries = readdirSync(base);
+      const entries = readdirSync(/*turbopackIgnore: true*/ base);
       entries
         .sort()
         .reverse()

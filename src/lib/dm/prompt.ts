@@ -1,4 +1,5 @@
 import type { Campaign } from "@/lib/db/campaigns";
+import { sceneIds } from "@/lib/ambience/catalog";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { StoredRoll } from "@/lib/db/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
@@ -10,12 +11,15 @@ import { classFeatureDescription, findCustomClass } from "@/lib/classes";
 import { resourceDef } from "@/lib/srd/class-resources";
 import { featEngineTag } from "@/lib/srd/feat-combat";
 import { featFactsFor } from "@/lib/characters/catalog";
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import { featTwinOf } from "@/lib/srd/feat-effects";
 import { subclassFeatureDescription } from "@/lib/srd/features";
+import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { authoredFeatureTags } from "@/lib/srd/authored-effects";
 import { describeConditionDuration, describeExhaustion } from "@/lib/dm/condition-logic";
 import { describeConditionEffects } from "@/lib/srd/condition-effects";
 import { presetFor, packFor } from "@/lib/worlds/preset";
+import { nameRegisterHint } from "@/lib/genres";
 import { renderWorldPrimer } from "@/lib/worlds/primer-logic";
 import { packIds } from "@/lib/worlds/reskin-logic";
 import { genreClassIds } from "@/lib/classes";
@@ -56,6 +60,9 @@ import { describeEquipmentItem } from "@/lib/dm/equipment-line";
 import { summonStateLine } from "@/lib/dm/summon-rules";
 import { dmSystemText, encounterRulesText, tracksAmmunition } from "@/lib/dm/prompt-rules";
 import { rollerName } from "@/lib/roll-labels";
+import { tableHazards } from "@/lib/srd/table-hazards";
+import { waypointProperty } from "@/lib/dm/waypoint-logic";
+import { languageDirective } from "@/lib/dm/table-language-logic";
 
 export { DM_SYSTEM, dmSystemText, ENCOUNTER_RULES, encounterRulesText } from "@/lib/dm/prompt-rules";
 
@@ -92,6 +99,10 @@ export function buildDmSystem(campaign: Campaign): string {
   const cover = coverPromptBlock(campaign.dmCover);
   if (cover) {
     parts.push(cover);
+  }
+  const language = languageDirective(campaign.gameSettings.tableLanguage);
+  if (language) {
+    parts.push(language);
   }
   return parts.join("\n\n");
 }
@@ -180,6 +191,9 @@ export type DmGameState = {
     agency?: string;
     aliases?: string[];
     witnessNote?: string;
+    statBlock?: string;
+    // From the table's WorldForge: hidden truth, ties, secrets kept.
+    world?: string;
   }>;
   // Server-tracked standing between each character and each NPC/companion,
   // one bounded line each (src/lib/dm/relationship-logic.ts).
@@ -200,6 +214,8 @@ export type DmGameState = {
   loreBlock?: string;
   // The factions block (docs/vtt-parity-implementation-plan.md section 6).
   factionsBlock?: string;
+  // The table's WorldForge, DM-only (src/lib/dm/world-prompt.ts).
+  worldBlock?: string;
   shopsBlock?: string;
   // Written while the state block is built, so the trace can cost the sky
   // line and the quest log on their own (docs/vtt-parity-implementation-plan.md
@@ -249,7 +265,7 @@ export function companionRules(campaign: Campaign, mode: "full" | "guests"): str
       ? ` Only these classes exist here: ${classIds.join(", ")}; add_companion refuses anything else.`
       : "",
     ` ${preset.raceHint}`,
-    preset.nameHints ? ` Name them in the world's register: ${preset.nameHints}` : "",
+    preset.nameHints ? ` Name them in the world's register: ${nameRegisterHint(preset.nameHints)}` : "",
   ].join("");
   const kinds =
     mode === "full"
@@ -340,9 +356,11 @@ export function describeSheet(
   // the load penalty in it and a carried-weight line is added, so the model
   // never has to work the pounds out itself.
   // The table owner's id, for the feats they brewed themselves.
-  options: { encumbrance?: boolean; ownerUserId?: string } = {},
+  options: { encumbrance?: boolean; ownerUserId?: string; authors?: string[] } = {},
 ): string {
   const derived = computeSheetDerived(sheet);
+  // A workshop or pack subclass's features carry their own text.
+  const extras = subclassExtrasForTable(sheet.campaignId, sheet.userId);
   const abilities = (Object.entries(sheet.abilities) as Array<[string, number]>)
     .map(([ability, score]) => `${ability.toUpperCase()} ${score}(${formatModifier(derived.abilityMods[ability as keyof typeof derived.abilityMods])})`)
     .join(" ");
@@ -377,7 +395,7 @@ export function describeSheet(
             sheet.subclass;
           const description =
             classFeatureDescription(owner, feature.name) ??
-            subclassFeatureDescription(owner, ownerSubclass, feature.name);
+            subclassFeatureDescription(owner, ownerSubclass, feature.name, extras);
           const tag = engineTags.get(feature.name);
           const named = description ? `${feature.name} (${description})` : feature.name;
           return tag ? `${named} ${tag}` : named;
@@ -424,7 +442,7 @@ export function describeSheet(
     `  ${abilities} | Save proficiencies: ${sheet.proficiencies.saves.map((save) => save.toUpperCase()).join(", ") || "none"}`,
     `  Skill proficiencies: ${proficientSkills || "none"}`,
     `  Languages (complete list; they cannot speak, read, or understand any other language): ${sheet.proficiencies.languages.join(", ") || "Common only"} | Tool proficiencies: ${sheet.proficiencies.tools.join(", ") || "none"} | Armor training: ${sheet.proficiencies.armor.join(", ") || "none"} | Weapon training: ${sheet.proficiencies.weapons.join(", ") || "none"}`,
-    `  Features & traits (complete list; an ability not listed here does not exist for them): ${featureList}${sheet.feats.length ? ` | Feats (each with its rules; the server applies what its tag names, the rest is yours to run): ${sheet.feats.map((feat) => featPromptLine(feat, options.ownerUserId)).join("; ")}` : ""}`,
+    `  Features & traits (complete list; an ability not listed here does not exist for them): ${featureList}${sheet.feats.length ? ` | Feats (each with its rules; the server applies what its tag names, the rest is yours to run): ${sheet.feats.map((feat) => featPromptLine(feat, options.authors ?? options.ownerUserId, sheet.campaignId)).join("; ")}` : ""}`,
   ];
   if (loadLine) {
     lines.push(loadLine);
@@ -830,7 +848,7 @@ export function buildGameStateBlock(state: DmGameState): string {
         .slice(0, 20)
         .map(
           (npc) =>
-            `- ${npc.name}: ${npc.attitude}${npc.location ? `, at ${npc.location}` : ""}${npc.trait ? ` (${npc.trait.slice(0, 120)})` : ""}${npc.aliases?.length ? ` [also called: ${npc.aliases.slice(0, 4).join(", ")}]` : ""}${npc.witnessNote ? ` | ${npc.witnessNote}` : ""}${npc.agency ? ` | ${npc.agency}` : ""}`,
+            `- ${npc.name}: ${npc.attitude}${npc.location ? `, at ${npc.location}` : ""}${npc.trait ? ` (${npc.trait.slice(0, 120)})` : ""}${npc.aliases?.length ? ` [also called: ${npc.aliases.slice(0, 4).join(", ")}]` : ""}${npc.witnessNote ? ` | ${npc.witnessNote}` : ""}${npc.agency ? ` | ${npc.agency}` : ""}${npc.statBlock ? ` | fights as ${npc.statBlock.startsWith("homebrew:") ? "the DM's own stat block" : npc.statBlock.replace(/-/g, " ")} (start_encounter or add_enemies with monster set to their name)` : ""}${npc.world ? ` | ${npc.world}` : ""}`,
         )
         .join("\n")}`,
     );
@@ -844,6 +862,9 @@ export function buildGameStateBlock(state: DmGameState): string {
   }
   if (state.factionsBlock) {
     sections.push(state.factionsBlock);
+  }
+  if (state.worldBlock) {
+    sections.push(state.worldBlock);
   }
   if (state.relationships?.length) {
     sections.push(
@@ -866,6 +887,25 @@ export function buildGameStateBlock(state: DmGameState): string {
         .join("\n")}`,
     );
   }
+  // Only when somebody at the table fields several characters: the usual
+  // one-each table pays no window for it (issue 120). Each line names the
+  // player, the characters they control and the one they have selected.
+  const severalOwned = members
+    .map((member) => ({
+      member,
+      owned: sheets.filter((sheet) => sheet.userId === member.userId && !sheet.isCompanion),
+    }))
+    .filter((entry) => entry.owned.length > 1);
+  if (severalOwned.length) {
+    sections.push(
+      `Players running several characters (player: the characters they control; the one they have selected). Every one of these is a player character and never an AI companion of yours, selected or not. The acting character is the one a player message names (its characterId), and in a fight the one whose turn it is; never speak or act for a player's other characters, and never turn one into a follower. A sheet's bound pet stays a pet.\n${severalOwned
+        .map(({ member, owned }) => {
+          const selected = owned.find((sheet) => sheet.id === member.activeCharacterId) ?? owned[0];
+          return `- ${member.username}: controls ${owned.map((sheet) => `${sheet.name} [${sheet.id}]`).join(", ")}; selected ${selected.name} [${selected.id}].`;
+        })
+        .join("\n")}`,
+    );
+  }
   sections.push(
     `Party:\n${sheets
       .map((sheet) => {
@@ -876,7 +916,7 @@ export function buildGameStateBlock(state: DmGameState): string {
             : usernamesById.get(sheet.userId) ?? "unknown",
           !sheet.isCompanion && physicalDiceUsers.has(sheet.userId),
           // Optional all the way down: test doubles build partial campaigns.
-          { encumbrance: state.campaign.gameSettings?.variantRules?.encumbrance ?? false, ownerUserId: state.campaign.ownerUserId },
+          { encumbrance: state.campaign.gameSettings?.variantRules?.encumbrance ?? false, ownerUserId: state.campaign.ownerUserId, authors: spellAuthorsFor(state.campaign) },
         );
         const events = state.recentEventsByCharacter?.get(sheet.id);
         const between = state.betweenBySheet?.get(sheet.id);
@@ -926,8 +966,33 @@ export function buildGameStateBlock(state: DmGameState): string {
   } else if (storySummary) {
     sections.push(`Story so far:\n${storySummary}`);
   }
+  // The table's own traps, poisons and diseases from the workshop, by the
+  // names apply_hazard (trap) and afflict take (src/lib/srd/table-hazards.ts).
+  const hazards = tableHazardLine(campaign.id);
+  if (hazards) {
+    sections.push(hazards);
+  }
   sections.push("=== END GAME STATE ===");
   return sections.join("\n\n");
+}
+
+function tableHazardLine(campaignId: string): string {
+  const own = tableHazards(campaignId);
+  if (!own.length) {
+    return "";
+  }
+  const named = (kind: string, how: string) => {
+    const rows = own.filter((entry) => entry.hazardKind === kind);
+    return rows.length
+      ? `${how}: ${rows.map((entry) => `${entry.name} (${("trap" in entry ? entry.trap.summary : "poison" in entry ? entry.poison.summary : entry.disease.summary).slice(0, 140)})`).join("; ")}`
+      : "";
+  };
+  return [
+    "This table's own hazards (the server runs them by name; never invent their numbers):",
+    named("trap", "- Traps, apply_hazard type trap with trap set to the name"),
+    named("poison", "- Poisons, afflict kind poison"),
+    named("disease", "- Diseases, afflict kind disease"),
+  ].filter(Boolean).join("\n");
 }
 
 // The request_roll tool. characterId must match a party characterId from
@@ -1082,6 +1147,15 @@ export const requestPlayerInputTool = {
 
 // Location tools: the DM keeps a structured record of where the party is
 // and how areas connect, feeding GAME STATE and the map renderer.
+
+// A place's kind from a fixed list, so its sound, battle map and picture
+// never depend on reading its name in some language.
+const sceneProperty = {
+  type: "string",
+  enum: sceneIds(),
+  description: "What kind of place this is, for its sound, battle map and picture. Set it when the party arrives somewhere new.",
+} as const;
+
 export const movePartyTool = {
   type: "function",
   function: {
@@ -1092,6 +1166,7 @@ export const movePartyTool = {
       type: "object",
       additionalProperties: false,
       properties: {
+        ...waypointProperty,
         name: { type: "string", description: "Short place name, e.g. The Rusted Flagon." },
         layoutDescription: {
           type: "string",
@@ -1108,6 +1183,7 @@ export const movePartyTool = {
           description:
             "True when the party can see the area well enough to map it (not darkness, fog, or blindness).",
         },
+        scene: sceneProperty,
       },
       required: ["name", "visionClear"],
     },
@@ -1193,7 +1269,7 @@ export const recallStoryTool = {
   function: {
     name: "recall_story",
     description:
-      "Look up the full summary of a past chapter when players reference old events you no longer remember. Give a chapter number, or a query to search titles and summaries.",
+      "Look up past chapters when players reference old events you no longer remember. Give a chapter number for that chapter's summary, or a query for the verbatim scenes that match it, nearest first, and the chapters they come from.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -1215,9 +1291,11 @@ export const updateLocationTool = {
       type: "object",
       additionalProperties: false,
       properties: {
+        ...waypointProperty,
         layoutDescription: { type: "string" },
         connections: { type: "array", items: { type: "string" } },
         visionClear: { type: "boolean" },
+        scene: sceneProperty,
       },
       required: ["layoutDescription", "visionClear"],
     },
@@ -1420,9 +1498,9 @@ export function buildDmMessages(
 // its rules text (ODM's own words, or the pack's) cut at a sentence near
 // 360 characters. The model used to see the name alone, and a Level Up or
 // Tome of Heroes feat meant nothing to it (issue #147).
-function featPromptLine(feat: string, ownerUserId: string | undefined): string {
-  const tag = featEngineTag(feat);
-  const twin = featTwinOf(feat);
+function featPromptLine(feat: string, ownerUserId: string | string[] | undefined, campaignId?: string): string {
+  const tag = featEngineTag(feat, campaignId);
+  const twin = featTwinOf(feat, campaignId);
   const known = twin !== feat.trim().toLowerCase() ? ` (${twin.replace(/\b[a-z]/g, (letter) => letter.toUpperCase())}'s rules)` : "";
   const text = (featFactsFor(feat, ownerUserId)?.desc ?? "").replace(/\s+/g, " ").trim();
   const cut = text.length <= 360 ? text : `${text.slice(0, 360).replace(/\s+\S*$/, "")}...`;

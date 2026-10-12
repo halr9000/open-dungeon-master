@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { hashPassword, mintSession, verifyPassword } from "@/lib/auth";
+import { PasswordBusyError, dummyPasswordHash, mintSession, passwordBusyResponse, verifyPassword } from "@/lib/auth";
 import { getUserByUsername } from "@/lib/db/users";
 import { checkPasswordAttempt, clientIp, recordPasswordFailure, recordPasswordSuccess } from "@/lib/login-throttle";
 
@@ -13,10 +13,6 @@ const tokenSchema = z.object({
   username: z.string().trim().min(1).max(24),
   password: z.string().min(1).max(100),
 });
-
-// Unknown usernames still pay one scrypt verification against this hash so
-// response timing does not reveal whether an account exists.
-const DUMMY_HASH = hashPassword("odm-dummy-password");
 
 export async function POST(request: Request) {
   const raw = await request.json().catch(() => ({}));
@@ -35,9 +31,19 @@ export async function POST(request: Request) {
   }
 
   const user = getUserByUsername(parsed.data.username);
-  const valid = user
-    ? verifyPassword(parsed.data.password, user.passwordHash)
-    : verifyPassword(parsed.data.password, DUMMY_HASH) && false;
+  // Unknown usernames still pay one scrypt verification (dummyPasswordHash)
+  // so response timing does not reveal whether an account exists.
+  let valid: boolean;
+  try {
+    valid = user
+      ? await verifyPassword(parsed.data.password, user.passwordHash)
+      : (await verifyPassword(parsed.data.password, await dummyPasswordHash())) && false;
+  } catch (error) {
+    if (error instanceof PasswordBusyError) {
+      return passwordBusyResponse();
+    }
+    throw error;
+  }
   if (!user || !valid) {
     recordPasswordFailure(parsed.data.username, ip);
     return Response.json({ error: "Wrong username or password." }, { status: 401 });

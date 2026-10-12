@@ -237,6 +237,15 @@ await test("the Adjust spell pickers reach the highest slot stored, pact slots i
   assert.equal(leadEdit.spellListOf({ class: "cleric", subclass: "" }), "cleric");
 });
 
+await test("an Adjust save can set a shared spell slot maximum to zero and clamp its used count", () => {
+  const original = { 1: { max: 4, used: 2 }, 2: { max: 3, used: 1 } };
+  assert.deepEqual(
+    leadEdit.editedSpellSlots(original, { 1: { max: "0", used: "2" }, 2: { max: "2.6", used: "9" } }),
+    { 1: { max: 0, used: 0 }, 2: { max: 3, used: 3 } },
+  );
+  assert.deepEqual(leadEdit.editedSpellSlots(original, {}), original);
+});
+
 // ---- U:UD9 the human DM corrects an enemy's hit points ----
 
 const { enemyHpCorrection } = await import("../src/lib/dm/catalog-enemy-hp.ts");

@@ -8,7 +8,8 @@ import { PageSection } from "@/components/PageShell";
 import { NumberStepper } from "@/components/ui/NumberStepper";
 import { Switch } from "@/components/ui/Switch";
 import { CopyLine } from "@/components/CopyLine";
-import { Field, SelectField, type MaskedConfig } from "@/app/admin/AdminSettingsFields";
+import { Field, SelectField } from "@/app/admin/AdminSettingsFields";
+import type { AdminConfigDraftPatch } from "@/app/admin/merge-config-draft";
 import { HarnessTestPanel } from "@/app/admin/HarnessTestPanel";
 import type { HarnessConfig, HarnessId, HarnessStatus } from "@/lib/harness/types";
 
@@ -31,7 +32,7 @@ function statusTone(status: HarnessStatus): { tone: "ready" | "warn" | "off" | "
   return { tone: "ready", text: "Ready" };
 }
 
-// The admin's agent program (docs/harness-mcp-plan.md 6): a card per program
+// The admin's agent program (docs/archive/harness-mcp-plan.md 6): a card per program
 // this server knows how to run, each saying whether it is installed, signed
 // in and locked down, then the models and limits for the chosen one. Saved on
 // its own, so choosing a program never rides along with an unrelated edit.
@@ -44,7 +45,7 @@ export function AdminHarnessSection({
   // The server's default picture backend, to say whether the tables already
   // paint with the agent.
   imagesBackend?: string;
-  onConfig: (config: MaskedConfig) => void;
+  onConfig: (patch: AdminConfigDraftPatch) => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
   const [draft, setDraft] = useState<HarnessConfig | null>(null);
@@ -141,7 +142,10 @@ export function AdminHarnessSection({
         setError(body?.error ?? "Could not save.");
         return;
       }
-      onConfig(body.config);
+      // Only what this save changed goes into the panel's draft (PR 221):
+      // the harness block and the storyteller choice, as the server now holds
+      // them. Unsaved edits in the other sections stay as typed.
+      onConfig({ harness: body.config.harness, text: { provider: body.config.text.provider } });
       setData((current) => (current ? { ...current, config: body.config.harness } : current));
       setDraft(body.config.harness);
       setDefaultOverride(null);
@@ -161,7 +165,10 @@ export function AdminHarnessSection({
       .then((response) => (response.ok ? response.json() : null))
       .catch(() => null);
     if (settings?.config) {
-      onConfig(settings.config as MaskedConfig);
+      onConfig({
+        harness: { images: settings.config.harness.images },
+        images: { defaultBackend: settings.config.images.defaultBackend },
+      });
       setDraft(settings.config.harness as HarnessConfig);
       setData((current) => (current ? { ...current, config: settings.config.harness } : current));
     }

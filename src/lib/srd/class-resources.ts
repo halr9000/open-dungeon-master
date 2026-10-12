@@ -12,6 +12,7 @@ import { innateSpellCounterRows } from "@/lib/srd/racial-grants";
 import { freeCastOf, freeCastResourceId, freeCastSpellOf, isFreeCastResource } from "@/lib/srd/feat-spells";
 import { LATE_RESOURCE_DEFS } from "@/lib/srd/class-resources-late";
 import { UNLIMITED_USES } from "@/lib/srd/resource-limits";
+import { tableFeat } from "@/lib/srd/feat-effects";
 
 export { isUnlimited, UNLIMITED_USES } from "@/lib/srd/resource-limits";
 
@@ -180,11 +181,12 @@ export function effectFromFx(fx: ResourceFx | undefined): ResourceEffect {
 }
 
 // What spending the feature costs of a turn in a fight. "none" is a feature
-// used on the character's own turn for nothing (Action Surge). Absent means
-// the feature's many uses cost different things (Ki, Channel Divinity
-// options, the genre counters) and the turn budget is left to the tool that
+// used on the character's own turn for nothing (Action Surge). "reaction"
+// spends the reaction, on the character's turn or off it. Absent means the
+// feature's many uses cost different things (Ki, Channel Divinity options)
+// or its text names no cost, and the turn budget is left to the tool that
 // resolves the effect.
-export type ResourceAction = "action" | "bonus" | "none";
+export type ResourceAction = "action" | "bonus" | "reaction" | "none";
 
 export type ResourceDef = {
   id: string;
@@ -312,7 +314,7 @@ const SRD_RESOURCE_DEFS: ResourceDef[] = [
     recharge: "long",
     effect: { kind: "narrative" },
     guidance:
-      "Sorcery points buy Metamagic on a spell being cast (spend with amount), or convert to and from spell slots: call use_resource with variant like 'create a 2nd-level slot' (costs 2/3/5/6/7 points for levels 1-5) or 'convert my 3rd-level slot into points' and the server moves the points and slots. Created slots vanish on a long rest. The spell itself still goes through use_spell_slot or cast_at_enemy as normal.",
+      "Sorcery points buy Metamagic on a spell being cast (spend with amount), or convert to and from spell slots: call use_resource with variant like 'create a 2nd-level slot' (costs 2/3/5/6/7 points for levels 1-5) or 'convert my 3rd-level slot into points' and the server moves the points and slots. Created slots vanish on a long rest. Quickened Spell: call use_resource with variant 'Quickened Spell' before the cast; the server spends 2 points and the next spell of one action this turn takes the bonus action. The spell itself still goes through use_spell_slot or cast_at_enemy as normal.",
   },
   // ---- the feats' counters (src/lib/srd/feat-combat.ts) ----
   {
@@ -453,6 +455,7 @@ const SRD_RESOURCE_DEFS: ResourceDef[] = [
     displayName: "Divine Sense",
     maxFor: (_level, mods) => Math.max(1, 1 + (mods.cha ?? 0)),
     recharge: "long",
+    action: "action",
     effect: { kind: "narrative" },
     guidance:
       "Until the end of their next turn the paladin knows the location of any celestial, fiend, or undead within 60 feet that is not behind total cover, and of consecrated or desecrated ground.",
@@ -578,6 +581,8 @@ type CustomResourceRow = {
   guidance: string;
   // Optional typed effect the spend executes server-side.
   fx?: ResourceFx;
+  // What a use costs of the turn, when the catalog line names it.
+  action?: ResourceAction;
 };
 
 const CUSTOM_RESOURCE_DEFS: ResourceDef[] = (
@@ -600,6 +605,7 @@ const CUSTOM_RESOURCE_DEFS: ResourceDef[] = (
   effect: effectFromFx(row.fx),
   guidance: row.guidance,
   upgrades: row.upgrades,
+  ...(row.action ? { action: row.action } : {}),
 }));
 
 // The limited-use features of the authored subclass layer. Same row shape as
@@ -631,6 +637,8 @@ type SubclassResourceRow = {
   // Never spent by choice (reaction-triggered features the server or model
   // invokes at the trigger, not on the holder's turn).
   passive?: boolean;
+  // What a use costs of the turn, when the guidance names it.
+  action?: ResourceAction;
 };
 
 function proficiencyBonus(level: number): number {
@@ -665,6 +673,7 @@ const SUBCLASS_RESOURCE_DEFS: ResourceDef[] = (
   effect: effectFromFx(row.fx),
   guidance: row.guidance,
   ...(row.passive ? { passive: true } : {}),
+  ...(row.action ? { action: row.action } : {}),
 }));
 
 // The spells a race casts once a day by nature (a tiefling's hellish rebuke
@@ -872,9 +881,14 @@ export function populateResources(
   // The feats on the sheet: the ones with a counter of their own (Lucky's
   // points, Inspiring Leader's uses) are read like features.
   feats?: string[],
+  // The table, for a workshop feat that runs as one with a counter.
+  campaignId?: string,
 ): ResourceMap {
   const out: ResourceMap = {};
-  const held_all: Array<{ name: string; classId?: string }> = [...features, ...(feats ?? []).map((name) => ({ name }))];
+  const held_all: Array<{ name: string; classId?: string }> = [
+    ...features,
+    ...(feats ?? []).map((name) => ({ name: tableFeat(name, campaignId)?.runsAs ?? name })),
+  ];
   for (const def of RESOURCE_DEFS) {
     const held = held_all.filter((feature) => featureHolds(def, feature));
     const matched = held[0];

@@ -14,6 +14,15 @@ public/uploads
 public/generated
 public/generated-audio
 
+# Not part of the server: plans and audits, the trailer's production files,
+# the Cloudflare workers (deployed on their own with wrangler), agent
+# settings, and the type checker's cache. The build never reads them.
+docs
+trailer
+workers
+.claude
+tsconfig.tsbuildinfo
+
 # Never bake secrets into an image layer. The DB key comes in as an env var.
 .env
 .env.*

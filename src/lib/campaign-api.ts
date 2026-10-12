@@ -3,7 +3,7 @@ import { capsFor as capsForCampaign, getCampaignForUser, type Campaign } from "@
 import type { ViewerCaps } from "@/lib/dm/viewer";
 import type { User } from "@/lib/db/users";
 import { isMemberMuted } from "@/lib/db/moderation";
-import { enterUsageScope } from "@/lib/usage/scope";
+import { fillUsageScope, openUsageScope } from "@/lib/usage/scope";
 
 export type MemberContext = { user: User; campaign: Campaign };
 
@@ -12,7 +12,9 @@ export type MemberContext = { user: User; campaign: Campaign };
 export async function requireMember(
   campaignId: string,
 ): Promise<MemberContext | Response> {
-  const user = await currentUser();
+  // Opened before the first await so it is the route's (src/lib/usage/scope.ts).
+  const scope = openUsageScope();
+  const user = await currentUser(scope);
   if (!user) {
     return unauthorized();
   }
@@ -27,7 +29,7 @@ export async function requireMember(
   }
   // Everything this request goes on to ask of a model, a painter or a
   // speech server is this campaign's in the usage ledger.
-  enterUsageScope({ campaignId: campaign.id, userId: user.id });
+  fillUsageScope(scope, { campaignId: campaign.id, userId: user.id });
   return { user, campaign };
 }
 
@@ -99,7 +101,8 @@ export async function requireDm(campaignId: string): Promise<MemberContext | Res
   return context;
 }
 
-// Prep authority (#154): the prepared fights and the map library. The DM
+// Prep authority (#154): the prepared fights, the map library and the
+// Market's shops and shelves (#171). The DM
 // seat at a table a person runs, and the party lead of an AI-narrated
 // campaign, who steers the story there and is the only person who could
 // bring the prep in (/api/campaigns/[id]/import follows the same rule). A
@@ -110,8 +113,7 @@ export async function requirePrepAuthority(campaignId: string): Promise<MemberCo
   if (isErrorResponse(context)) {
     return context;
   }
-  const caps = capsFor(context);
-  if (caps.role !== "dm" && !caps.steersStory) {
+  if (!hasPrepAuthority(context)) {
     return Response.json(
       {
         error: context.campaign.dmUserId
@@ -122,6 +124,13 @@ export async function requirePrepAuthority(campaignId: string): Promise<MemberCo
     );
   }
   return context;
+}
+
+// The inline counterpart, for a route that serves every member but shows
+// the prep tools only to whoever holds them (the Market panel, #171).
+export function hasPrepAuthority(context: MemberContext): boolean {
+  const caps = capsFor(context);
+  return caps.role === "dm" || caps.steersStory;
 }
 
 // Story authority: floor control, lead directions, the secret arc, the

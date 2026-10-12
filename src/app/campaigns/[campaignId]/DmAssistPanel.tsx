@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
@@ -19,6 +19,8 @@ import { evaluateEncounter, type EncounterVerdict } from "@/lib/srd/encounter-ma
 import { OddsCalculator, type CritRules } from "@/app/campaigns/[campaignId]/DmOddsPanel";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { LengthNote } from "@/components/ui/LengthNote";
+import { QUESTION_MAX_CHARS, questionLength } from "@/lib/dm/ask-logic";
 
 // The DM's assist rail: read-only answers from engines that already exist.
 // Nothing here applies anything to the game. The one exception is the
@@ -277,9 +279,15 @@ function RulesLookup({ campaignId }: { campaignId: string }) {
     citations: Array<{ kind: string; ref: string; quote: string }>;
   } | null>(null);
 
+  // The same limit as the Ask box: the question used to be cut at 500
+  // characters as it was typed, with nothing said (issue 207).
+  const noteId = useId();
+  const length = questionLength(question);
+  const tooLong = length > QUESTION_MAX_CHARS;
+
   async function look() {
     const text = question.trim();
-    if (!text) {
+    if (!text || questionLength(text) > QUESTION_MAX_CHARS) {
       return;
     }
     setBusy(true);
@@ -309,7 +317,7 @@ function RulesLookup({ campaignId }: { campaignId: string }) {
       <div className="flex gap-1.5">
         <input
           value={question}
-          onChange={(event) => setQuestion(event.target.value.slice(0, 500))}
+          onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               void look();
@@ -317,18 +325,21 @@ function RulesLookup({ campaignId }: { campaignId: string }) {
           }}
           placeholder="Can you cast a spell and use a bonus action?"
           aria-label="Rules question"
-          className={inputClass}
+          aria-describedby={noteId}
+          aria-invalid={tooLong || undefined}
+          className={cn(inputClass, tooLong && "border-red-500/60")}
         />
         <button
           type="button"
           onClick={look}
-          disabled={busy || !question.trim()}
+          disabled={busy || !question.trim() || tooLong}
           aria-busy={busy}
           className={cn(ui.btnSecondary, "shrink-0")}
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : "Ask"}
         </button>
       </div>
+      <LengthNote id={noteId} length={length} max={QUESTION_MAX_CHARS} from={0.8} className="mt-1" />
       {error ? <p className="motion-shake mt-1.5 text-xs text-red-400">{error}</p> : null}
       {answer ? (
         <div className="reveal mt-1.5 text-xs text-stone-300">

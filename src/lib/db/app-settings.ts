@@ -45,13 +45,43 @@ export function getInstanceId(): string {
   return getAppSetting<string>(INSTANCE_ID_KEY, "");
 }
 
-// Deliberately uncached: a single-row synchronous SQLite read per call keeps
-// admin edits live without any invalidation logic. If a cache is ever added,
-// saveGlobalConfig must bust it (single-process assumption).
+// Read on every call, so an admin edit (or any other write to the row) is
+// live at once with no invalidation to forget. What is remembered is only
+// the parse: the stored text is compared with the text the last parse read,
+// and the validated object is reused while they match. The parse is the
+// part a DM turn paid over and over (about 16 µs a call against 1 µs for the
+// read). The object is shared, like DEFAULT_GLOBAL_CONFIG always was, so it
+// is frozen outside production to catch any caller that writes to it.
+let parsedConfig: { raw: string; config: GlobalConfig } | null = null;
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
+
 export function getGlobalConfig(): GlobalConfig {
-  const raw = getAppSetting<unknown>(GLOBAL_CONFIG_KEY, null);
-  if (raw === null) return DEFAULT_GLOBAL_CONFIG;
-  return parseKeepingValid(globalConfigSchema, raw);
+  const row = getDatabase()
+    .prepare(`SELECT value_json FROM app_settings WHERE key = ?`)
+    .get(GLOBAL_CONFIG_KEY) as { value_json: string } | undefined;
+  if (!row) return DEFAULT_GLOBAL_CONFIG;
+  if (parsedConfig?.raw === row.value_json) return parsedConfig.config;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(row.value_json);
+  } catch {
+    return DEFAULT_GLOBAL_CONFIG;
+  }
+  const config = parseKeepingValid(globalConfigSchema, raw);
+  parsedConfig = {
+    raw: row.value_json,
+    config: process.env.NODE_ENV === "production" ? config : deepFreeze(config),
+  };
+  return parsedConfig.config;
 }
 
 export type GlobalConfigPatch = {

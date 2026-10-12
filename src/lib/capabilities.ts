@@ -214,7 +214,12 @@ type ProbeEntry = { probedAt: number; reachable: boolean };
 
 declare global {
   var __odmCapabilityProbes: Map<string, ProbeEntry> | undefined;
+  var __odmCapabilityProbesInFlight: Map<string, Promise<boolean>> | undefined;
 }
+
+// Addresses come from the admin panel and the environment, so the set is
+// small, but each edit adds one; past this many the oldest are forgotten.
+const PROBE_STORE_MAX = 64;
 
 function probeStore(): Map<string, ProbeEntry> {
   if (!globalThis.__odmCapabilityProbes) {
@@ -223,8 +228,26 @@ function probeStore(): Map<string, ProbeEntry> {
   return globalThis.__odmCapabilityProbes;
 }
 
+function probesInFlight(): Map<string, Promise<boolean>> {
+  return (globalThis.__odmCapabilityProbesInFlight ??= new Map());
+}
+
+function rememberProbe(url: string, entry: ProbeEntry) {
+  const store = probeStore();
+  store.delete(url);
+  store.set(url, entry);
+  while (store.size > PROBE_STORE_MAX) {
+    const oldest = store.keys().next().value;
+    if (oldest === undefined) break;
+    store.delete(oldest);
+  }
+}
+
 // A failed probe is an answer, never an error: the UI polls this, and a dead
-// backend must cost one timeout per cache window, not one per poll.
+// backend must cost one timeout per cache window, not one per poll. Callers
+// that arrive while the same address is already being asked share that one
+// request instead of each dialling a cold backend (several tabs opening the
+// admin panel at once).
 export async function probeReachable(
   url: string,
   now = Date.now(),
@@ -237,19 +260,31 @@ export async function probeReachable(
   if (cached && probeCacheFresh(cached.probedAt, now)) {
     return cached.reachable;
   }
-  let reachable = false;
-  try {
-    const response = await fetch(url, {
-      cache: "no-store",
-      headers,
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    });
-    reachable = response.ok;
-  } catch {
-    reachable = false;
+  const pending = probesInFlight().get(url);
+  if (pending) {
+    return pending;
   }
-  probeStore().set(url, { probedAt: now, reachable });
-  return reachable;
+  const probe = (async () => {
+    let reachable = false;
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        headers,
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+      reachable = response.ok;
+      // Only the status matters; the body is not left to the collector.
+      await response.body?.cancel().catch(() => undefined);
+    } catch {
+      reachable = false;
+    }
+    rememberProbe(url, { probedAt: now, reachable });
+    return reachable;
+  })().finally(() => {
+    probesInFlight().delete(url);
+  });
+  probesInFlight().set(url, probe);
+  return probe;
 }
 
 // The producer-side question every portrait and map enqueue asks before it

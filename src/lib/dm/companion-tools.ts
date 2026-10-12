@@ -22,7 +22,8 @@ import { spliceIntoOrder } from "@/lib/dm/encounter-logic";
 import { publishBattleMapUpdate } from "@/lib/dm/map-tools";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
-import { d20Expression, defaultRng } from "@/lib/dice";
+import { defaultRng } from "@/lib/dice";
+import { characterInitiativeExpression } from "@/lib/dm/contest-roll";
 import {
   DRACONIC_ANCESTRY_IDS,
   findDraconicAncestry,
@@ -35,9 +36,15 @@ import { startingKitFor } from "@/lib/srd/starting-kit";
 import { legalCompanionSheet } from "@/lib/dm/companion-level";
 import { queueCompanionPortrait } from "@/lib/portrait";
 import { settingClassIds } from "@/lib/classes";
+import { TOLD_GENDER_HELP, TOLD_GENDERS, toldGender } from "@/lib/gender";
 import { presetFor, packFor } from "@/lib/worlds/preset";
 import { packIds } from "@/lib/worlds/reskin-logic";
-import { resolveCompanionMode, type CompanionMode } from "@/lib/schemas/game-settings";
+import {
+  lastingCompanionBlock,
+  resolveCompanionMode,
+  type CompanionMode,
+  type LastingCompanionBlock,
+} from "@/lib/schemas/game-settings";
 import { hasHumanDm } from "@/lib/dm/viewer";
 import {
   createSheetSchema,
@@ -77,6 +84,21 @@ export function companionMode(campaign: Campaign): CompanionMode {
 
 export function listCompanions(sheets: CharacterSheet[]): CharacterSheet[] {
   return sheets.filter((sheet) => sheet.isCompanion);
+}
+
+// Why a lasting party companion cannot join this table now, with the way
+// to allow one (game-settings.ts lastingCompanionBlock, issue 209); null
+// when one can. The mode and the cap, read the way companionMode reads them.
+export function lastingCompanionProblem(campaign: Campaign): LastingCompanionBlock | null {
+  const partyCompanions = listCompanions(listSheets(campaign.id)).filter(
+    (sheet) => sheet.companionKind !== "guest",
+  ).length;
+  return lastingCompanionBlock(
+    campaign.gameSettings,
+    countPartySlots(campaign.id),
+    partyCompanions,
+    hasHumanDm(campaignSeats(campaign)),
+  );
 }
 
 type ToolDef = {
@@ -134,6 +156,7 @@ export function companionTools(campaign: Campaign): ToolDef[] {
               description: "A dragonborn's draconic ancestry, when the story names one. Omit it and the server rolls one.",
             },
             class: { type: "string", description: classDescription },
+            gender: { type: "string", enum: [...TOLD_GENDERS], description: TOLD_GENDER_HELP },
             level: {
               type: "integer",
               minimum: 1,
@@ -152,7 +175,7 @@ export function companionTools(campaign: Campaign): ToolDef[] {
               description: "For casters: the spells they know (level-appropriate).",
             },
           },
-          required: ["name", "class", "personality", "kind"],
+          required: ["name", "class", "gender", "personality", "kind"],
         },
       },
     },
@@ -181,6 +204,7 @@ const addArgsSchema = z.object({
   race: z.string().trim().max(60).optional(),
   ancestry: z.string().trim().max(40).optional(),
   class: z.string().trim().min(1).max(60),
+  gender: z.enum(TOLD_GENDERS),
   level: z.number().int().min(1).max(20).optional(),
   personality: z.string().trim().min(1).max(500),
   kind: z.enum(["party", "guest"]).default("guest"),
@@ -220,7 +244,7 @@ export function handleAddCompanion(
   } catch {
     return {
       error:
-        "Invalid arguments: add_companion needs name, class, personality, and kind ('party' or 'guest').",
+        "Invalid arguments: add_companion needs name, class, gender (Female, Male, Nonbinary or Unknown), personality, and kind ('party' or 'guest').",
     };
   }
 
@@ -328,6 +352,7 @@ export function handleAddCompanion(
     class: klass.id,
     background: "",
     alignment: "",
+    gender: toldGender(args.gender) ?? "",
     abilities,
     // A figure to start from; the legality check derives the real one by
     // the table's hit point method, and the armor engine the armor class.
@@ -407,16 +432,13 @@ export function finalizeNewCompanion(
   // model, so only lasting party members are worth a portrait; a sheet built
   // with its own portrait already (manual build) keeps it.
   if (kind === "party" && !sheet.portrait) {
-    queueCompanionPortrait({
+    queueCompanionPortrait(campaign, {
       id: sheet.id,
-      campaignId: campaign.id,
       name: sheet.name,
       race: sheet.race,
       class: sheet.class,
       background: sheet.background,
       personality,
-      genre: campaign.gameSettings.genre,
-      worldPack: campaign.gameSettings.worldPack,
     });
   }
 
@@ -424,7 +446,7 @@ export function finalizeNewCompanion(
   // exactly like add_enemies does for the other side.
   const encounter = getActiveEncounter(campaign.id);
   if (encounter) {
-    const initiative = rollCard(campaign, null, sheet.id, "initiative", "initiative", d20Expression(abilityMod(sheet.abilities.dex)), null).total;
+    const initiative = rollCard(campaign, null, sheet.id, "initiative", "initiative", characterInitiativeExpression(campaign, sheet, abilityMod(sheet.abilities.dex)), null).total;
     const entry: OrderEntry = {
       kind: "pc",
       characterId: sheet.id,
@@ -571,6 +593,7 @@ export function dismissGuestCompanions(campaign: Campaign, reason: string): stri
     campaignId: campaign.id,
     seq,
     authorType: "system",
+    glyph: "system-party",
     content: `${names.join(" and ")} ${names.length === 1 ? "was" : "were"} a temporary ally and leaves the party now that the fight is over. Narrate the goodbye.`,
   });
   publishWithSeq(campaign.id, seq, "message_added", { message });

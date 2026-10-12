@@ -14,7 +14,7 @@ import { publicOrigin } from "@/lib/discord-oauth";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Connected agents (docs/harness-mcp-plan.md 7): a player's own Claude Code,
+// Connected agents (docs/archive/harness-mcp-plan.md 7): a player's own Claude Code,
 // Codex or other MCP client acting as them on this server. The token is
 // shown once, at creation, and never again.
 

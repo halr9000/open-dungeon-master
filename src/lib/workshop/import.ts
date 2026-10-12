@@ -151,6 +151,21 @@ export function planImport(input: PlanInput): ImportPlan {
       continue;
     }
 
+    if (kind === "world") {
+      // WorldForge describes the records; a link, a secret or a pin whose
+      // record stays behind is dropped rather than left pointing at the
+      // workshop's row.
+      const records = (["npcs", "locations", "lore"] as const).filter((other) => !selected.has(other) && (input.source[other] ?? []).length);
+      if (records.length) {
+        notes.push({
+          kind,
+          message: `WorldForge's links, secrets and pins for ${records.map((other) => IMPORT_KIND_LABELS[other].toLowerCase()).join(" and ")} stay behind with them.`,
+        });
+      }
+      items.push({ kind, sourceId: rows[0].id, name: rows[0].name, finalName: rows[0].name, renamed: false });
+      continue;
+    }
+
     if (kind === "overworld") {
       if (input.existing.overworld.length) {
         warnings.push({
@@ -222,6 +237,10 @@ export function planImport(input: PlanInput): ImportPlan {
       }
     }
 
+    if (kind === "shops") {
+      planShops(rows, (row) => !(again === "skip" && here(kind, row.id)), arrives, warnings, notes);
+    }
+
     if (kind === "encounters") {
       const homebrewCount = rows.filter((row) =>
         row.monsters?.some((ref) => ref.trim().startsWith("homebrew:")),
@@ -260,6 +279,42 @@ export function planImport(input: PlanInput): ImportPlan {
     board: boardPlan,
     empty: items.every((item) => item.kept),
   };
+}
+
+// What the Market's shops lean on and bring (#171): a shop whose place is
+// not coming along arrives unplaced, and opens wherever a place of that
+// name is; a shop whose keeper is not coming arrives with nobody behind
+// the counter. Only the shops this import will actually copy are counted.
+function planShops(
+  rows: ImportSource["shops"],
+  copies: (row: ImportSource["shops"][number]) => boolean,
+  arrives: (kind: ImportKind, id: string | undefined) => boolean,
+  warnings: ImportWarning[],
+  notes: ImportWarning[],
+) {
+  const copied = rows.filter(copies);
+  const unplaced = copied.filter((row) => row.placeId && !arrives("locations", row.placeId)).length;
+  const unkept = copied.filter((row) => row.keeperId && !arrives("npcs", row.keeperId)).length;
+  const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
+  if (unplaced) {
+    warnings.push({
+      kind: "shops",
+      message: `${unplaced} shop${plural(unplaced, " stands", "s stand")} at a place that is not coming along. ${plural(unplaced, "It arrives", "They arrive")} unplaced and open${plural(unplaced, "s", "")} wherever a place of that name is; tick Places to keep ${plural(unplaced, "it", "them")} where ${plural(unplaced, "it stands", "they stand")}.`,
+    });
+  }
+  if (unkept) {
+    warnings.push({
+      kind: "shops",
+      message: `${unkept} shop${plural(unkept, "'s keeper is", "s' keepers are")} not coming along, so ${plural(unkept, "it arrives", "they arrive")} with nobody behind the counter; tick NPCs to bring ${plural(unkept, "the keeper", "them")}.`,
+    });
+  }
+  const lines = copied.reduce((sum, row) => sum + (row.lines ?? 0), 0);
+  if (copied.length) {
+    notes.push({
+      kind: "shops",
+      message: `${copied.length} shop${plural(copied.length, "", "s")} with ${lines} stock line${plural(lines, "", "s")} arrive${plural(copied.length, "s", "")} as authored. Purchases, sales and haggles at a shop already here are never reset by an import.`,
+    });
+  }
 }
 
 // Whether the planned import should carry the region map's anchors across.

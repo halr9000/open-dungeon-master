@@ -4,6 +4,7 @@ import { allocateSeq } from "@/lib/db/campaigns";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { requestDmTurn } from "@/lib/dm/loop";
 import { publishWithSeq } from "@/lib/events";
+import { LEAD_NOTE_MAX_CHARS, textLength, tooLongMessage } from "@/lib/text-limits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,9 +25,17 @@ export async function POST(
   }
 
   const raw = await request.json().catch(() => ({}));
-  const content = typeof raw?.content === "string" ? raw.content.trim().slice(0, 1000) : "";
+  // Refused over the limit rather than cut: a direction that lost its end
+  // could steer the DM somewhere its writer never meant (issue 207).
+  const content = typeof raw?.content === "string" ? raw.content.trim() : "";
   if (!content) {
     return Response.json({ error: "Write the direction first." }, { status: 400 });
+  }
+  if (textLength(content) > LEAD_NOTE_MAX_CHARS) {
+    return Response.json(
+      { error: tooLongMessage("A direction", LEAD_NOTE_MAX_CHARS, textLength(content)), maxChars: LEAD_NOTE_MAX_CHARS },
+      { status: 400 },
+    );
   }
   const wake = raw?.wake !== false;
 
@@ -35,6 +44,7 @@ export async function POST(
     campaignId,
     seq,
     authorType: "system",
+    glyph: "cue-bell",
     userId: context.user.id,
     content: `${LEAD_NOTE_PREFIX}${content}`,
   });

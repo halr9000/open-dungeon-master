@@ -627,7 +627,7 @@ cheap.
 
 1. **Safety tools.** X-card that pauses the turn anonymously, lines and
    veils in settings riding into the prompt as hard constraints, a content
-   boundary level. No AI GM in the field has them. `docs/human-dm-plan.md`
+   boundary level. No AI GM in the field has them. `docs/archive/human-dm-plan.md`
    phase 2 conventions cover the seat that receives the card.
 2. **Conditions and auras on the board.** Status icons on tokens and a ring
    for any effect with a radius. Render only; the data is already there.

@@ -1,15 +1,19 @@
 import { createHash } from "node:crypto";
+import { compareNames } from "@/lib/language/text-logic";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { getDatabase, parseJson } from "@/lib/db/core";
 import { getCampaignById } from "@/lib/db/campaigns";
 import { getHouseRulesText } from "@/lib/db/rules";
-import { listHomebrewMonsters } from "@/lib/bestiary/homebrew-monsters";
 import { listHomebrew } from "@/lib/db/homebrew";
 import { getPackDraft, hasPackDraft } from "@/lib/db/world-pack-drafts";
 import { bundleRefOf, type OriginKind } from "@/lib/db/content-origins";
 import { getCommonWorkshop } from "@/lib/db/workshop-common";
-import { createSheetSchema } from "@/lib/schemas/sheet";
+import { worldForBundle } from "@/lib/db/world-forge-bundle";
+import { normalizeStock } from "@/lib/db/shops";
+import { clampMarkup } from "@/lib/dm/shop-logic";
+import { storedSheetSchema } from "@/lib/schemas/sheet";
+import { storedGender } from "@/lib/gender";
 import { isUploadedImagePath } from "@/lib/uploads";
 import { normalizeMapSkin } from "@/lib/battlemap/skins";
 import { normalizeRoutes } from "@/lib/workshop/board";
@@ -23,6 +27,7 @@ import {
   type WorkshopBundle,
 } from "@/lib/workshop/bundle";
 import { isWorkshop, normalizeTargetParty } from "@/lib/workshop/kind";
+import { portableSheet, portableStatBlock, shelfForBundle, type ShelfReport } from "@/lib/db/workshop-bundle-shelf";
 
 // Reading a workshop out to a bundle. Split from src/lib/db/workshop-bundle.ts
 // (the import half, which re-exports this) to keep both under the project's
@@ -59,7 +64,7 @@ function loadImage(relPath: unknown, budget: ImageBudget): string {
   }
   let encoded = "";
   try {
-    encoded = encodeBundleImage(relPath, readFileSync(path.join(process.cwd(), "public", relPath)));
+    encoded = encodeBundleImage(relPath, readFileSync(path.join(/*turbopackIgnore: true*/ process.cwd(), "public", relPath)));
   } catch {
     // Dangling path; fall through to the skip below.
   }
@@ -81,17 +86,24 @@ export function refFor(campaignId: string, kind: OriginKind, rowId: string): str
   );
 }
 
+const rowsByName = (a: Row, b: Row) => compareNames(str(a.name), str(b.name));
+
 // The rows of one linkable kind: this workshop's, then the ones its cards
-// pick from the shared workshop (#159), each with the workshop it lives in.
-function linkable(sql: string, own: string, sharedIds: string[], common: string | null): Array<Row & { home: string }> {
-  const rows = allRows(sql.replace("{where}", "campaign_id = ?"), own).map((row) => ({ ...row, home: own }));
+// pick from the shared workshop (#159), each with the workshop it lives in,
+// each part in `order` when one is given.
+function linkable(sql: string, own: string, sharedIds: string[], common: string | null, order?: (a: Row, b: Row) => number): Array<Row & { home: string }> {
+  const read = (id: string) => {
+    const rows = allRows(sql.replace("{where}", "campaign_id = ?"), id);
+    return order ? rows.sort(order) : rows;
+  };
+  const rows = read(own).map((row) => ({ ...row, home: own }));
   if (!common || !sharedIds.length) {
     return rows;
   }
   const wanted = new Set(sharedIds);
   return [
     ...rows,
-    ...allRows(sql.replace("{where}", "campaign_id = ?"), common)
+    ...read(common)
       .filter((row) => wanted.has(str(row.id)))
       .map((row) => ({ ...row, home: common })),
   ];
@@ -104,6 +116,10 @@ function linkable(sql: string, own: string, sharedIds: string[], common: string 
 // this makes somebody decide.
 const IDENTITY = { id: "a fresh id on import", campaign_id: "the new workshop", created_at: "now", updated_at: "now" };
 export const BUNDLE_COLUMNS: Record<string, { carried: string[]; left: Record<string, string> }> = {
+  world_forge: {
+    carried: ["doc_json"],
+    left: { campaign_id: "the new workshop", updated_at: "now" },
+  },
   prepared_maps: {
     carried: ["name", "notes", "tags_json", "width", "height", "terrain", "ambient", "theme", "lights_json", "seed", "backdrop_path", "backdrop_transform_json", "outdoors", "drawings_json", "skin_json", "labels_json", "props_json", "doors_json", "zones_json", "overlay_path", "ambience_json"],
     left: { ...IDENTITY },
@@ -117,7 +133,7 @@ export const BUNDLE_COLUMNS: Record<string, { carried: string[]; left: Record<st
     left: { ...IDENTITY, visited: "play", is_current: "play", map_image_json: "a legacy column nothing reads" },
   },
   npcs: {
-    carried: ["name", "attitude", "trait", "location", "role", "aliases_json", "personality_json", "goals_json", "relations_json", "portrait_url", "voice_json", "faction_id"],
+    carried: ["name", "attitude", "trait", "location", "role", "gender", "aliases_json", "personality_json", "goals_json", "relations_json", "portrait_url", "voice_json", "faction_id", "stat_block"],
     left: {
       ...IDENTITY,
       last_shift_turn: "the source table's clock",
@@ -152,10 +168,14 @@ export const BUNDLE_COLUMNS: Record<string, { carried: string[]; left: Record<st
     carried: ["seed", "width", "height", "terrain", "anchors_json", "pins_json", "params_json", "notes", "paths_json", "labels_json", "backdrop_path"],
     left: { campaign_id: "the new workshop", created_at: "now", updated_at: "now", party_xy_json: "where the party stood is play" },
   },
+  shops: {
+    carried: ["name", "kind", "size", "location_id", "location_name", "keeper_npc_id", "stock_json", "prepared_stock_json", "markup", "buys", "restock_days"],
+    left: { ...IDENTITY, restocked_at: "the source's clock; the cycle starts on arrival", haggled_json: "who haggled is the source table's play" },
+  },
 };
 
 export type ExportResult =
-  | { bundle: WorkshopBundle; skippedImages: number }
+  | { bundle: WorkshopBundle; skippedImages: number; shelf: ShelfReport }
   | { error: string };
 
 export function exportWorkshopBundle(
@@ -211,18 +231,20 @@ export function exportWorkshopBundle(
   }
   const commonId = common?.id ?? null;
   const npcRows = linkable(
-    `SELECT * FROM npcs WHERE {where} AND archived = 0 ORDER BY name COLLATE NOCASE`,
+    `SELECT * FROM npcs WHERE {where} AND archived = 0`,
     workshopId,
     [...picked.npcId],
     commonId,
+    rowsByName,
   );
   const locationRows = linkable(`SELECT * FROM locations WHERE {where} ORDER BY created_at`, workshopId, [...picked.locationId], commonId);
-  const mapRows = linkable(`SELECT * FROM prepared_maps WHERE {where} ORDER BY name COLLATE NOCASE`, workshopId, [...picked.mapId], commonId);
+  const mapRows = linkable(`SELECT * FROM prepared_maps WHERE {where}`, workshopId, [...picked.mapId], commonId, rowsByName);
   const encounterRows = linkable(
-    `SELECT * FROM encounter_templates WHERE {where} ORDER BY name COLLATE NOCASE`,
+    `SELECT * FROM encounter_templates WHERE {where}`,
     workshopId,
     [...picked.encounterId],
     commonId,
+    rowsByName,
   );
   const indexOf = (rows: Row[]) => new Map(rows.map((row, index) => [str(row.id), index]));
   const npcIndex = indexOf(npcRows);
@@ -232,6 +254,47 @@ export function exportWorkshopBundle(
   const at = (index: Map<string, number>, id: unknown) =>
     typeof id === "string" ? index.get(id) ?? null : null;
 
+  // The owner's library characters filed under this workshop. Each sheet is
+  // checked against the builder's schema on the way OUT as well, so one old
+  // sheet the schema no longer accepts drops out of the bundle rather than
+  // making the whole bundle unreadable on the other side.
+  const pregenRows = allRows(
+    `SELECT name, level, role, sheet_json FROM library_characters
+     WHERE workshop_id = ? AND user_id = ?`,
+    workshopId,
+    campaign.ownerUserId,
+  ).sort(rowsByName).flatMap((row) => {
+    const sheet = storedSheetSchema.safeParse(parseJson<unknown>(str(row.sheet_json, "{}"), {}));
+    return sheet.success
+      ? [{ name: str(row.name), level: Math.min(20, Math.max(1, Number(row.level) || 1)), role: str(row.role) === "companion" ? ("companion" as const) : ("pc" as const), sheet: sheet.data }]
+      : [];
+  });
+
+  const loreRows = allRows(
+    `SELECT id, category, title, body, tags_json, pinned, visibility, image_path, style FROM lore_entries WHERE campaign_id = ? ORDER BY created_at, rowid`,
+    workshopId,
+  );
+  const factionRows = allRows(
+    `SELECT id, name, blurb, goal, attitude_to_party, power, tags_json, portrait_path FROM factions WHERE campaign_id = ?`,
+    workshopId,
+  ).sort(rowsByName);
+  const ownIds = (rows: Array<Row & { home?: string }>) => rows.map((row) => (row.home === undefined || row.home === workshopId ? str(row.id) : ""));
+
+  const shelf = shelfForBundle({
+    ownerUserId: campaign.ownerUserId,
+    setting: campaign.gameSettings,
+    scope: manifest.shelf,
+    statBlocks: npcRows.map((row) => portableStatBlock(str(row.stat_block))),
+    rosters: encounterRows.map((row) => parseJson<unknown[]>(str(row.enemies_json, "[]"), [])),
+    sheets: pregenRows.map((row) => row.sheet),
+    texts: [
+      ...beats.map((row) => `${str(row.title)}\n${str(row.body)}`),
+      ...encounterRows.map((row) => `${str(row.notes)}\n${str(row.battlefield)}`),
+      ...locationRows.map((row) => str(row.layout_description)),
+      ...loreRows.map((row) => str(row.body)),
+    ],
+  });
+  const shelfById = new Map(listHomebrew(campaign.ownerUserId).map((entry) => [entry.id, entry]));
   const bundle: WorkshopBundle = {
     kind: WORKSHOP_BUNDLE_KIND,
     version: WORKSHOP_BUNDLE_VERSION,
@@ -242,10 +305,7 @@ export function exportWorkshopBundle(
     targetParty: normalizeTargetParty(campaign.gameSettings.targetParty),
     houseRulesText: getHouseRulesText(workshopId),
     variantRules: { ...campaign.gameSettings.variantRules },
-    lore: allRows(
-      `SELECT category, title, body, tags_json, pinned, visibility, image_path, style FROM lore_entries WHERE campaign_id = ? ORDER BY created_at`,
-      workshopId,
-    ).map((row) => ({
+    lore: loreRows.map((row) => ({
       category: str(row.category, "other"),
       title: str(row.title),
       body: str(row.body),
@@ -275,19 +335,18 @@ export function exportWorkshopBundle(
       trait: str(row.trait),
       location: str(row.location),
       role: str(row.role),
+      gender: storedGender(row.gender),
       aliases: parseJson<string[]>(str(row.aliases_json, "[]"), []),
       personality: str(row.personality_json),
       goals: str(row.goals_json),
       relations: str(row.relations_json),
       portrait: loadImage(row.portrait_url, budget),
       voice: row.voice_json ? parseJson<Record<string, unknown> | null>(str(row.voice_json), null) : null,
+      statBlock: portableStatBlock(str(row.stat_block)),
       ref: refFor(row.home, "npcs", str(row.id)),
       shared: row.home !== workshopId,
     })),
-    factions: allRows(
-      `SELECT id, name, blurb, goal, attitude_to_party, power, tags_json, portrait_path FROM factions WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`,
-      workshopId,
-    ).map((row) => ({
+    factions: factionRows.map((row) => ({
       name: str(row.name),
       blurb: str(row.blurb),
       goal: str(row.goal),
@@ -309,6 +368,7 @@ export function exportWorkshopBundle(
         notes: str(row.notes),
         map: {
           map: at(mapIndex, map.mapId),
+          scene: typeof map.scene === "string" ? map.scene : null,
           seed: number(map.seed),
           theme: typeof map.theme === "string" ? map.theme : null,
           ambient: typeof map.ambient === "string" ? map.ambient : null,
@@ -321,9 +381,9 @@ export function exportWorkshopBundle(
       };
     }),
     tables: allRows(
-      `SELECT name, entries_json, no_replacement FROM roll_tables WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`,
+      `SELECT name, entries_json, no_replacement FROM roll_tables WHERE campaign_id = ?`,
       workshopId,
-    ).map((row) => ({
+    ).sort(rowsByName).map((row) => ({
       name: str(row.name),
       entries: parseJson<unknown[]>(str(row.entries_json, "[]"), []),
       noReplacement: Number(row.no_replacement) === 1,
@@ -361,48 +421,49 @@ export function exportWorkshopBundle(
       };
     }),
     storyboard: [],
-    monsters: listHomebrewMonsters(campaign.ownerUserId).map((entry) => ({
+    // The shelf: hand-built monsters, and items, spells and options, so a
+    // prepared encounter or a pregen that names one finds it on the other
+    // side; the whole shelf, or only what this workshop uses
+    // (workshop-bundle-shelf.ts).
+    monsters: shelf.monsters.map((entry) => ({
       name: entry.draft.name,
       desc: entry.desc,
       stats: entry.draft.stats,
       extraDamagePerRound: entry.draft.extraDamagePerRound,
     })),
-    // The rest of the homebrew shelf, same reasoning as the monsters: a
-    // prepared encounter or a pregen that names a hand-built item should
-    // find it on the other side.
-    homebrew: listHomebrew(campaign.ownerUserId)
-      .filter((entry) => entry.kind !== "monster")
-      .map((entry) => ({
-        kind: entry.kind as Exclude<typeof entry.kind, "monster">,
-        name: entry.name,
-        data: entry.data,
-      })),
-    // The owner's library characters filed under this workshop. Each sheet
-    // is checked against the builder's schema on the way OUT as well, so
-    // one old sheet the schema no longer accepts drops out of the bundle
-    // rather than making the whole bundle unreadable on the other side.
-    pregens: allRows(
-      `SELECT name, level, role, sheet_json FROM library_characters
-       WHERE workshop_id = ? AND user_id = ? ORDER BY name COLLATE NOCASE`,
-      workshopId,
-      campaign.ownerUserId,
-    ).flatMap((row) => {
-      const sheet = createSheetSchema.safeParse(parseJson<unknown>(str(row.sheet_json, "{}"), {}));
-      if (!sheet.success) {
-        return [];
-      }
-      return [
-        {
-          name: str(row.name),
-          level: Math.min(20, Math.max(1, Number(row.level) || 1)),
-          role: str(row.role) === "companion" ? ("companion" as const) : ("pc" as const),
-          sheet: sheet.data,
-        },
-      ];
-    }),
+    homebrew: shelf.homebrew.map((entry) => ({
+      kind: entry.kind as Exclude<typeof entry.kind, "monster">,
+      name: entry.name,
+      data: entry.data,
+    })),
+    // The owner's library characters filed under this workshop, their
+    // homebrew written by kind and name rather than by this server's ids.
+    pregens: pregenRows.map((row) => ({ ...row, sheet: portableSheet(row.sheet, shelfById) })),
     // The world pack draft travels whole, art and all; it is the one thing
     // in a workshop that was built to be handed on.
+    // The Market (#171), the place and keeper as indexes like a card's picks.
+    shops: allRows(`SELECT * FROM shops WHERE campaign_id = ?`, workshopId).sort(rowsByName).map((row) => {
+      const prepared = str(row.prepared_stock_json);
+      return {
+        name: str(row.name),
+        kind: str(row.kind, "general"),
+        size: str(row.size, "village"),
+        location: at(locationIndex, row.location_id),
+        locationName: str(row.location_name),
+        keeper: at(npcIndex, row.keeper_npc_id),
+        stock: normalizeStock(parseJson<unknown>(str(row.stock_json, "[]"), [])),
+        preparedStock: prepared ? normalizeStock(parseJson<unknown>(prepared, [])) : null,
+        markup: clampMarkup(Number(row.markup) || 1),
+        buys: Number(row.buys) === 1,
+        restockDays: Math.max(0, Math.min(365, Math.round(Number(row.restock_days) || 0))),
+      };
+    }),
     plugin: hasPackDraft(workshopId) ? getPackDraft(workshopId).draft : null,
+    world: worldForBundle(
+      workshopId,
+      { npc: ownIds(npcRows), location: ownIds(locationRows), faction: ownIds(factionRows), lore: ownIds(loreRows) },
+      (image) => loadImage(image, budget),
+    ),
     overworld: null,
     dependsOn: common ? { name: common.title.slice(0, 80) } : null,
   };
@@ -463,5 +524,5 @@ export function exportWorkshopBundle(
     };
   });
 
-  return { bundle, skippedImages: budget.skipped };
+  return { bundle, skippedImages: budget.skipped, shelf: shelf.report };
 }

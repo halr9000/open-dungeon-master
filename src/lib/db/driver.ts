@@ -97,11 +97,64 @@ function loadNative(): NativeModule | null {
   return nativeModule;
 }
 
+// How many writes so far could have given a picture or a document a new
+// reader: a write whose values name a stored file, or one that copies rows
+// (INSERT ... SELECT, a clone or an import). src/lib/media-access.ts keeps
+// its who-may-see-what sets until this moves.
+let mediaWrites = 0;
+
+export function mediaWriteCount(): number {
+  return mediaWrites;
+}
+
+// Bumped by every open: a restore swaps the whole file underneath, which no
+// write the counter above sees.
+let opens = 0;
+
+export function databaseOpenCount(): number {
+  return opens;
+}
+
+const WRITE_SQL = /^\s*(?:INSERT|UPDATE|REPLACE)\b/i;
+const COPY_SQL = /\bSELECT\b/i;
+
+function namesMedia(value: unknown): boolean {
+  return typeof value === "string" && (value.includes("/uploads/") || value.includes("/generated/"));
+}
+
+function mentionsMedia(params: unknown[]): boolean {
+  for (const param of params) {
+    if (namesMedia(param)) return true;
+    if (param && typeof param === "object" && !ArrayBuffer.isView(param)) {
+      for (const value of Object.values(param)) {
+        if (namesMedia(value)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function watchWrites(sql: string, statement: SqliteStatement): SqliteStatement {
+  if (!WRITE_SQL.test(sql)) return statement;
+  const copies = COPY_SQL.test(sql);
+  return {
+    run: (...params) => {
+      const result = statement.run(...params);
+      if (copies || mentionsMedia(params)) mediaWrites += 1;
+      return result;
+    },
+    get: (...params) => statement.get(...params),
+    all: (...params) => statement.all(...params),
+  };
+}
+
 export function sqliteEngine(): Engine {
   return chooseEngine();
 }
 
 export function openDatabase(file: string, options: OpenOptions = {}): SqliteDatabase {
+  opens += 1;
+  mediaWrites += 1;
   const engine = chooseEngine();
   if (engine === "native") {
     const Native = loadNative();
@@ -124,7 +177,7 @@ function wrapNative(db: import("better-sqlite3-multiple-ciphers").Database): Sql
   return {
     engine: "native",
     encrypted: true,
-    prepare: (sql) => statements.take(sql, (text) => db.prepare(text)),
+    prepare: (sql) => statements.take(sql, (text) => watchWrites(text, db.prepare(text) as SqliteStatement)),
     exec: (sql) => {
       statements.clear();
       db.exec(sql);
@@ -196,7 +249,7 @@ function openNode(file: string, options: OpenOptions): SqliteDatabase {
   return {
     engine: "node",
     encrypted: false,
-    prepare: (sql) => statements.take(sql, prepare),
+    prepare: (sql) => statements.take(sql, (text) => watchWrites(text, prepare(text))),
     // Cleared for the reason given in wrapNative. The transaction wrapper
     // above talks to the raw handle, so BEGIN and COMMIT leave the cache be.
     exec: (sql) => {

@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const srcDir = path.resolve(import.meta.dirname, "../../src");
+const nodeModules = path.resolve(import.meta.dirname, "../../node_modules");
 
 function withExtension(bare) {
   if (/\.(ts|tsx|json|js|mjs)$/.test(bare)) {
@@ -32,6 +33,11 @@ export function resolve(specifier, context, nextResolve) {
   ) {
     const parentDir = path.dirname(fileURLToPath(context.parentURL));
     spec = pathToFileURL(withExtension(path.resolve(parentDir, spec))).href;
+  } else if (/^next\/[\w/-]+$/.test(spec) && fs.existsSync(path.join(nodeModules, `${spec}.js`))) {
+    // Next publishes no exports map, so a bare subpath ("next/server") names
+    // a file whose extension plain Node will not guess. Vitest's resolver
+    // does, which is why a script passed there and failed run on its own.
+    spec = `${spec}.js`;
   }
   return nextResolve(spec, context);
 }

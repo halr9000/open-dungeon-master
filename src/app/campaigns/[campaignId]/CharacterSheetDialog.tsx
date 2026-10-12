@@ -1,5 +1,6 @@
 "use client";
 
+import { owedChoices } from "@/lib/srd/owed-choices";
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { GameIcon } from "@/components/ui/GameIcon";
@@ -16,7 +17,7 @@ import {
   sizeForRace,
   type DerivedPart,
 } from "@/lib/srd";
-import { ATTUNEMENT_SLOTS, matchArmor } from "@/lib/srd/armor";
+import { attunementSlotsFor, matchArmor } from "@/lib/srd/armor";
 import { encumbranceFor } from "@/lib/srd/encumbrance";
 import { matchMagicItem, magicItemRiders } from "@/lib/srd/magic-items";
 import { RESOURCE_DEFS } from "@/lib/srd/class-resources";
@@ -38,6 +39,7 @@ import { SheetBetween } from "@/components/sheet/SheetBetween";
 import { conditionDetail, hitDiceLine, itemStatus, maxHpView, otherSpeedsLine, speedView } from "@/components/sheet/sheet-state";
 import { FeatureChoicePicker, OtherSpeeds } from "@/components/sheet/SheetChoices";
 import { SheetGearRow } from "@/components/sheet/SheetGearRow";
+import { LoadBreakdown } from "@/components/sheet/LoadBreakdown";
 import { ResourceRow, SlotRow, STEP_BUTTON } from "@/components/sheet/SheetCounters";
 import { namesLookup } from "@/lib/battlemap/condition-notes";
 
@@ -140,6 +142,9 @@ export function CharacterSheetDialog({
   const speedNote = speedState.notes.length ? speedState.notes.join(" ") : "Their walking speed.";
   const [busy, setBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  // The Carried tile's breakdown (issue #206), drawn from the same sheet and
+  // load as the tile, so a change to either redraws both.
+  const [loadOpen, setLoadOpen] = useState(false);
   // The server's reason when it refuses an adjustment, shown under the
   // counters so the player knows what would be accepted.
   // It is kept beside the control that was used (the counters or the gear).
@@ -171,7 +176,7 @@ export function CharacterSheetDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // A correction names the sheet; a player is answered on their own.
-        body: JSON.stringify(mine ? body : { ...body, characterId: sheet.id }),
+        body: JSON.stringify({ ...body, characterId: sheet.id }),
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -222,7 +227,7 @@ export function CharacterSheetDialog({
                   {sheet.name}
                 </Dialog.Title>
                 <p className="text-xs text-stone-400">
-                  Level {sheet.level} {titleCase(sheet.race)}{" "}
+                  Level {sheet.level} {sheet.raceLabel ?? titleCase(sheet.race)}{" "}
                   {(sheet.classes?.length ?? 0) > 1
                     ? (sheet.classes ?? [])
                         .map((entry) => `${titleCase(entry.id)} ${entry.level}`)
@@ -291,8 +296,18 @@ export function CharacterSheetDialog({
                         ? `${load.note ?? "Not encumbered"}. Capacity ${load.capacityLb} lb.`
                         : `Carrying capacity ${load.capacityLb} lb. Encumbrance is off for this table, so weight up to the capacity costs nothing.`
                   }${load.unweighed ? ` ${load.unweighed} item${load.unweighed === 1 ? "" : "s"} of unknown weight are not counted.` : ""}`,
+                  onOpen: () => setLoadOpen(true),
+                  opens: "Show what makes up this load",
                 },
               ]}
+            />
+            <LoadBreakdown
+              open={loadOpen}
+              onOpenChange={setLoadOpen}
+              name={sheet.name}
+              equipment={sheet.equipment}
+              gold={sheet.gold}
+              load={load}
             />
             <OtherSpeeds speeds={derived.speeds} />
           </div>
@@ -494,7 +509,7 @@ export function CharacterSheetDialog({
           ) : null}
 
           {sheet.equipment.length ? (
-            <SheetBlock className="mt-4" title="Equipment" aside={`Attuned ${attunedCount}/${ATTUNEMENT_SLOTS}`}>
+            <SheetBlock className="mt-4" title="Equipment" aside={`Attuned ${attunedCount}/${attunementSlotsFor(sheet)}`}>
               <EquipmentChips
                 equipment={sheet.equipment}
                 extra={(index) => {
@@ -506,7 +521,7 @@ export function CharacterSheetDialog({
                 <div className="reveal mt-2 space-y-1">
                   <p className="text-[11px] text-stone-500">
                     Worn gear sets your AC ({sheet.acOverride ? "pinned by hand" : armor.parts.join(" + ")}
-                    ). Attuned {attunedCount}/{ATTUNEMENT_SLOTS}.
+                    ). Attuned {attunedCount}/{attunementSlotsFor(sheet)}.
                   </p>
                   {magic.sources.length ? (
                     <p className="reveal text-[11px] text-sky-400/80">
@@ -551,6 +566,13 @@ export function CharacterSheetDialog({
             </SheetBlock>
           ) : null}
 
+          {owedChoices(sheet).length ? (
+            <SheetBlock className="mt-4" title="Choices owed">
+              <p className="text-sm text-amber-200/90">
+                Earned and not yet made: {owedChoices(sheet).join("; ")}. The next level-up takes them.
+              </p>
+            </SheetBlock>
+          ) : null}
           {sheet.features.length ? (
             <SheetBlock className="mt-4" title="Features and traits">
               <FeatureChips features={sheet.features} classId={sheet.class} subclass={sheet.subclass} />

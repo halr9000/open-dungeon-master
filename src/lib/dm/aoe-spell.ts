@@ -15,6 +15,7 @@
 //
 // Imports mutations (for the slot spend) and must never be imported by it.
 
+import { areaProblem, spellAreaShape } from "@/lib/dm/aoe-shape";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { EncounterEnemy } from "@/lib/db/encounters";
 import type { DmTurn } from "@/lib/db/dm-turns";
@@ -39,6 +40,9 @@ const FEET_PER_TILE = 5;
 export type AoeSpellPlan = {
   caster: CharacterSheet;
   spell: string;
+  // The published spell a table's workshop copy runs as (its area, Prismatic
+  // Spray's rays); absent for a published spell.
+  runsAs?: string;
   mech: SpellMech | null;
   // Null when the spell deals no damage (Entangle, Hypnotic Pattern).
   damage: string | null;
@@ -82,6 +86,9 @@ export function planAoeSpell(
     reason?: string;
     enemies: EncounterEnemy[];
     characters: CharacterSheet[];
+    // Where the caller placed the area (atX/atY, towardX/towardY).
+    at?: { x: number; y: number };
+    toward?: { x: number; y: number };
   },
 ): AoeSpellPlan | { error: string } {
   if (!input.casterId) {
@@ -181,6 +188,26 @@ export function planAoeSpell(
     }
   }
 
+  // Everyone caught must fit one placement of the spell's shape
+  // (src/lib/dm/aoe-shape.ts): one sphere, one cone, one line.
+  const area = spellAreaShape(input.spell, authors);
+  if (area && !(cluster && everyone.length <= 2)) {
+    const problem = areaProblem({
+      encounterId: input.encounterId,
+      casterId: caster.id,
+      casterName: caster.name,
+      label: name,
+      area: { ...area, self: area.self || facts?.range.kind === "self" },
+      rangeFeet: facts?.range.kind === "feet" ? facts.range.feet : null,
+      creatures: everyone,
+      ...(input.at ? { at: input.at } : {}),
+      ...(input.toward ? { toward: input.toward } : {}),
+    });
+    if (problem) {
+      return { error: problem };
+    }
+  }
+
   // The cast through the one guard (src/lib/dm/cast-guard.ts).
   const cast = applyDmMutation(
     campaign,
@@ -264,9 +291,11 @@ export function planAoeSpell(
     corrections.push(payOverchannel(campaign, turn, caster.id, spellLevel));
   }
   const condition = mech?.condition ?? null;
+  const runsAs = resolved?.runsAs ?? facts?.runsAs;
   return {
     caster,
     spell: name,
+    ...(runsAs ? { runsAs } : {}),
     mech,
     damage,
     flat: riders.flat,

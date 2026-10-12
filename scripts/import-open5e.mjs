@@ -28,6 +28,7 @@ import {
   normalizeSpellV2,
   normalizeWeapon,
   slugify,
+  weightProblem,
 } from "./lib/open5e-normalize.mjs";
 
 const API = "https://api.open5e.com";
@@ -453,20 +454,28 @@ async function main() {
 
   console.log("items (weapons, armor, magic items, gear)...");
   const itemColumns = ["slug", "name", "document_slug", "kind", "rarity", "cost", "category", "weight"];
-  insertRows(db, "items", itemColumns, (await fetchAllPages("/v1/weapons/")).map(normalizeWeapon));
-  insertRows(db, "items", itemColumns, (await fetchAllPages("/v1/armor/")).map(normalizeArmor));
+  const weapons = await fetchAllPages("/v1/weapons/");
+  const armor = await fetchAllPages("/v1/armor/");
+  const gear = (await fetchAllPages("/v2/items/")).filter((raw) => !raw.weapon && !raw.armor);
+  insertRows(db, "items", itemColumns, weapons.map(normalizeWeapon));
+  insertRows(db, "items", itemColumns, armor.map(normalizeArmor));
   insertRows(
     db,
     "items",
     itemColumns,
     (await fetchAllPages("/v1/magicitems/")).map(normalizeMagicItem),
   );
-  insertRows(
-    db,
-    "items",
-    itemColumns,
-    (await fetchAllPages("/v2/items/")).map(normalizeGearItem).filter(Boolean),
-  );
+  insertRows(db, "items", itemColumns, gear.map(normalizeGearItem).filter(Boolean));
+  // A weight the reader cannot read is stored as unknown (0), never as the
+  // digits it happened to hold (issue #205: "1/4 lb." became 14 lb). Named
+  // here so a new source shape is seen at import, and
+  // scripts/test-item-weights.mjs fails on a pack that carries one.
+  const unread = [...weapons, ...armor, ...gear]
+    .map((raw) => ({ name: raw.name, problem: weightProblem(raw.weight, raw.weight_unit) }))
+    .filter((row) => row.problem);
+  for (const row of unread) {
+    console.warn(`  weight left unknown for ${row.name}: ${row.problem}`);
+  }
 
   console.log("monsters...");
   insertRows(

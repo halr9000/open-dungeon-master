@@ -290,6 +290,75 @@ export function forEachEventSince(
   }
 }
 
+// How far behind a stream may open and still be caught up event by event.
+// A reconnecting page reloads its snapshot anyway (useCampaignStream.ts);
+// past this gap the stream skips the replay and tells the page to resync,
+// rather than reading a whole campaign's history into one response.
+export const REPLAY_GAP_LIMIT = 2_000;
+
+export type ReplayPlan = { kind: "replay"; from: number } | { kind: "resync"; latest: number };
+
+// Where a stream picks up, from the Last-Event-ID header or ?lastSeq=. A
+// cursor that is not a whole number at or above zero, one ahead of the log,
+// or one too far behind it, gets no replay: the page is told to reload its
+// snapshot instead. An absent cursor is a stream opened from the start.
+export function planReplay(raw: string | null, latest: number): ReplayPlan {
+  const text = raw?.trim() ?? "";
+  const cursor = text === "" ? 0 : Number(text);
+  if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > latest) {
+    return { kind: "resync", latest };
+  }
+  if (latest - cursor > REPLAY_GAP_LIMIT) {
+    return { kind: "resync", latest };
+  }
+  return { kind: "replay", from: cursor };
+}
+
+// The stream's replay: forEachEventSince, but handing the event loop back
+// between batches and stopping as soon as `stopped` says the reader left.
+// Resolves to how many events were handed over and the seq the read reached
+// (skipped events count toward it, so a held live copy of one is dropped).
+export async function replayEventsSince(
+  campaignId: string,
+  afterSeq: number,
+  options: {
+    each: (event: StoredEvent) => void;
+    stopped: () => boolean;
+    viewerUserId?: string;
+    batch?: number;
+  },
+): Promise<{ count: number; reached: number }> {
+  const batch = options.batch ?? 250;
+  const viewer = options.viewerUserId ? viewerFor(campaignId, options.viewerUserId) : null;
+  let cursor = afterSeq;
+  let count = 0;
+  for (;;) {
+    if (options.stopped()) {
+      return { count, reached: cursor };
+    }
+    const events = readEventsSince(campaignId, cursor, batch);
+    for (const event of events) {
+      cursor = event.seq;
+      const payload = payloadForViewer(event.type, event.payload, viewer);
+      if (payload !== null) {
+        options.each({ ...event, payload });
+        count += 1;
+      }
+    }
+    if (events.length < batch) {
+      return { count, reached: cursor };
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+// The seq an SSE chunk carries on its id line, or null for one with none
+// (an ephemeral event, a beat).
+export function chunkSeq(chunk: string): number | null {
+  const match = /^id: (\d+)\n/.exec(chunk);
+  return match ? Number(match[1]) : null;
+}
+
 // The table's view of the log: what every member may read.
 export function listEventsSince(campaignId: string, afterSeq: number, limit = 500): StoredEvent[] {
   return readEventsSince(campaignId, afterSeq, limit).filter(

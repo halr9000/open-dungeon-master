@@ -6,9 +6,13 @@ import {
   normalizeGearItem,
   normalizeMagicItem,
   normalizeRaceRows,
+  normalizeArmor,
   normalizeSpell,
+  normalizeWeapon,
+  parseWeightLb,
   slugify,
   spellClassesCsv,
+  weightProblem,
 } from "./lib/open5e-normalize.mjs";
 
 let passed = 0;
@@ -28,6 +32,28 @@ test("spell classes csv prefers spell_lists", () => {
     "bard,wizard",
   );
   assert.equal(spellClassesCsv({ dnd_class: "Bard, Sorcerer, Wizard" }), "bard,sorcerer,wizard");
+});
+
+// Issue #205: the old reader kept digits and dots, so "1/4 lb." was 14 lb.
+test("weights: fractions, decimals and units, for every kind that has one", () => {
+  assert.equal(parseWeightLb("1/4 lb."), 0.25);
+  assert.equal(parseWeightLb("1 1/2 lb."), 1.5);
+  assert.equal(parseWeightLb("8 lb."), 8);
+  assert.equal(parseWeightLb("0.075", "lb"), 0.075);
+  assert.equal(parseWeightLb("5.000", "lb"), 5);
+  assert.equal(parseWeightLb("2", "kg"), 4.4092);
+  assert.equal(parseWeightLb(""), 0);
+  assert.equal(parseWeightLb(undefined), 0);
+  // Unreadable is unknown (0 in the column), never a number made of digits.
+  assert.equal(parseWeightLb("2-3 lb."), 0);
+  assert.equal(weightProblem("2-3 lb."), 'unreadable weight "2-3 lb."');
+  assert.equal(weightProblem("1/4 lb."), null);
+  const dart = normalizeWeapon({ slug: "dart", name: "Dart", document__slug: "wotc-srd", weight: "1/4 lb.", category: "Simple Ranged Weapons" });
+  assert.equal(dart.weight, 0.25);
+  const armor = normalizeArmor({ slug: "leather", name: "Leather", document__slug: "wotc-srd", weight: "" });
+  assert.equal(armor.weight, 0);
+  const gear = normalizeGearItem({ key: "srd_sling-bullets", name: "Sling bullets", document: "srd-2014", weight: "0.075", weight_unit: "lb", cost: "0.04" });
+  assert.equal(gear.weight, 0.075);
 });
 
 test("normalizeSpell", () => {

@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import { normalizeSettings, scrubStorySettings } from "@/lib/db/settings";
 import { configuredDefaultStorySettings } from "@/lib/runtime-defaults";
-import { normalizeGameSettings, type GameSettings } from "@/lib/schemas/game-settings";
+import { normalizeGameSettings, type GameSettings, type TableLanguage } from "@/lib/schemas/game-settings";
 import { normalizeCampaignKind, type CampaignKind } from "@/lib/workshop/kind";
 import type {
   CampaignCover,
@@ -18,7 +18,10 @@ import { syncArcQuests } from "@/lib/db/quests";
 import { normalizeCover, type DmCover } from "@/lib/dm/delegation";
 import { MINUTES_PER_DAY, daysPerYear, defaultClock, normalizeCalendarDefinition, normalizeClock, type CampaignClock } from "@/lib/dm/calendar";
 import { packFor } from "@/lib/worlds/preset";
-import { normalizeParty, type PartyState } from "@/lib/dm/party-logic";
+import { closeStreamsForCampaign } from "@/lib/live-streams";
+import { dropDmQueue } from "@/lib/dm/queue";
+import type { PartyState } from "@/lib/dm/party-logic";
+import { partyFromJson } from "@/lib/db/party";
 import {
   partySlotCount,
   viewerCaps,
@@ -267,7 +270,7 @@ function mapCampaign(row: CampaignRow): Campaign {
     floor: normalizeFloor(parseJson(row.floor_json, null)),
     dmCover: normalizeCover(parseJson(row.dm_cover_json ?? "", null)),
     clock: normalizeClock(parseJson(row.clock_json ?? "", null)),
-    party: normalizeParty(parseJson(row.party_json ?? "", null)),
+    party: partyFromJson(row.party_json ?? ""),
   };
 }
 
@@ -419,6 +422,10 @@ export function deleteCampaign(campaignId: string) {
        AND id IN (SELECT user_id FROM character_sheets WHERE campaign_id = ?)`,
   ).run(campaignId);
   db.prepare(`DELETE FROM campaigns WHERE id = ?`).run(campaignId);
+  // Anyone still at the table stops hearing it now (src/lib/live-streams.ts),
+  // and turns still waiting for it are not run against rows that are gone.
+  closeStreamsForCampaign(campaignId);
+  dropDmQueue(campaignId);
 }
 
 export function listCampaignsForUser(userId: string): CampaignSummary[] {
@@ -465,6 +472,16 @@ export function getCampaignById(campaignId: string): Campaign | null {
     .prepare(`${CAMPAIGN_SELECT} WHERE c.id = ?`)
     .get(campaignId) as CampaignRow | undefined;
   return row ? mapCampaign(row) : null;
+}
+
+// The language a campaign plays in, for the readers that are handed only
+// its id (src/lib/language). A campaign that is gone is a caller's bug.
+export function campaignLanguage(campaignId: string): TableLanguage {
+  const campaign = getCampaignById(campaignId);
+  if (!campaign) {
+    throw new Error(`Campaign ${campaignId} not found.`);
+  }
+  return campaign.gameSettings.tableLanguage;
 }
 
 export function listMembers(campaignId: string): CampaignMember[] {
@@ -886,10 +903,14 @@ export function setMemberRealDice(campaignId: string, userId: string, useRealDic
 
 // Which of their characters a player is running now
 // (docs/vtt-parity-implementation-plan.md 11.3).
-export function setMemberActiveCharacter(campaignId: string, userId: string, characterId: string) {
+// No character is the empty string: the column is NOT NULL DEFAULT ''. A
+// null here failed the write, which is how handing a player's only
+// character to the DM answered 500 after the sheet had already changed
+// hands, and the table never heard about it (companions/adopt).
+export function setMemberActiveCharacter(campaignId: string, userId: string, characterId: string | null) {
   getDatabase()
     .prepare(`UPDATE campaign_members SET active_character_id = ? WHERE campaign_id = ? AND user_id = ?`)
-    .run(characterId, campaignId, userId);
+    .run(characterId ?? "", campaignId, userId);
 }
 
 export function setMemberHoldRolls(campaignId: string, userId: string, holdRolls: boolean) {

@@ -23,6 +23,7 @@ import { Book } from "@/components/ui/Book";
 import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
+<<<<<<< HEAD
 import {
   KitButton,
   LoadFailed,
@@ -32,6 +33,10 @@ import {
   RowMenu,
 } from "./PanelKit";
 import { Fragment, useEffect, useState } from "react";
+=======
+import { KitButton, LoadFailed, PanelError, panelField, PanelLoading, RowMenu } from "./PanelKit";
+import { Fragment, useEffect, useMemo, useState } from "react";
+>>>>>>> upstream/main
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import type { Chapter } from "@/lib/db/chapters";
@@ -217,7 +222,9 @@ function ChapterCard({
       ) : null}
       {expanded && !editing ? (
         <div className="reveal mt-2 space-y-1.5 pl-5">
-          {chapter.summary ? (
+          {chapter.abridged ? (
+            <div className="skeleton-block h-10 rounded-md" role="status" aria-label="Reading the summary" />
+          ) : chapter.summary ? (
             <p className="reveal whitespace-pre-wrap font-serif text-xs leading-5 text-stone-300">
               {chapter.summary}
             </p>
@@ -228,7 +235,19 @@ function ChapterCard({
           )}
           {steersStory ? (
             <div className="reveal flex flex-wrap items-center gap-1.5">
-              <KitButton onClick={() => setEditing(true)}>
+              <KitButton
+                // The draft starts from the chapter as it is now, not as it
+                // was when the card first drew: an older chapter's summary
+                // arrives after the card (StoryPanel's own fetch), and an
+                // edit from elsewhere may have landed since.
+                onClick={() => {
+                  setTitle(chapter.title);
+                  setSummary(chapter.summary);
+                  setEditing(true);
+                }}
+                disabled={chapter.abridged}
+                title={chapter.abridged ? "Reading this chapter's summary…" : undefined}
+              >
                 <Pencil className="size-3" /> Edit
               </KitButton>
               {onRewind ? (
@@ -1047,7 +1066,7 @@ function ArcCard({ campaignId }: { campaignId: string }) {
 
 export function StoryPanel({
   campaignId,
-  chapters,
+  chapters: tableChapters,
   steersStory,
 }: {
   campaignId: string;
@@ -1069,6 +1088,15 @@ export function StoryPanel({
   // The acts the table has been told about: names and recaps for the
   // headings between chapters (issue #31). Player-safe by construction.
   const [acts, setActs] = useState<PublicAct[]>([]);
+  // The whole list as /chapters answers it. The table's own list (from the
+  // snapshot and the stream) leaves the older chapters' summaries out
+  // (listChaptersForSnapshot); those are filled from here, while every
+  // chapter the stream has touched since keeps the stream's copy.
+  const [fullChapters, setFullChapters] = useState<Map<string, Chapter>>(() => new Map());
+  const chapters = useMemo(
+    () => tableChapters.map((chapter) => (chapter.abridged ? (fullChapters.get(chapter.id) ?? chapter) : chapter)),
+    [tableChapters, fullChapters],
+  );
   const closed = chapters.filter((chapter) => chapter.status === "closed");
   const open = chapters.find((chapter) => chapter.status === "open");
 
@@ -1076,10 +1104,14 @@ export function StoryPanel({
   // rewind to is lead-only UI and only arrives for the lead.
   useEffect(() => {
     let cancelled = false;
+<<<<<<< HEAD
     readLoad<{ acts?: unknown; rewindableChapters?: unknown }>(
       fetch(`/api/campaigns/${campaignId}/chapters`),
       "The chapters",
     ).then((outcome) => {
+=======
+    readLoad<{ acts?: unknown; rewindableChapters?: unknown; chapters?: unknown }>(fetch(`/api/campaigns/${campaignId}/chapters`), "The chapters").then((outcome) => {
+>>>>>>> upstream/main
       if (cancelled) {
         return;
       }
@@ -1091,6 +1123,9 @@ export function StoryPanel({
       if (Array.isArray(data.acts)) {
         setActs(data.acts as PublicAct[]);
       }
+      if (Array.isArray(data.chapters)) {
+        setFullChapters(new Map((data.chapters as Chapter[]).map((chapter) => [chapter.id, chapter])));
+      }
       if (steersStory && Array.isArray(data.rewindableChapters)) {
         setRewindable(data.rewindableChapters as number[]);
       }
@@ -1098,7 +1133,7 @@ export function StoryPanel({
     return () => {
       cancelled = true;
     };
-  }, [campaignId, steersStory, chapters.length, reloads, settle]);
+  }, [campaignId, steersStory, tableChapters.length, reloads, settle]);
 
   async function postRewind(chapterIndex: number, confirm: boolean) {
     setRewindBusy(true);

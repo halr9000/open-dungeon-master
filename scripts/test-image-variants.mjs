@@ -5,10 +5,11 @@
 // under plain Node, once, and never for a name it did not make.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { register } from "node:module";
+import { createRequire, register, syncBuiltinESMExports } from "node:module";
 import zlib from "node:zlib";
 import { removeTempDir } from "./lib/remove-temp-dir.mjs";
 
@@ -18,6 +19,11 @@ const { imageSize, isVariantFileName, pixelBudget, sniffImage, variantFileName, 
   "../src/lib/image-format.ts"
 );
 const { servedSegments, writeImageVariants } = await import("../src/lib/image-variants.ts");
+const { imageVariantsSettled, scheduleImageVariants } = await import("../src/lib/image-variants.ts");
+const workerThreads = createRequire(import.meta.url)("node:worker_threads");
+const realWorker = workerThreads.Worker;
+const fsPromises = createRequire(import.meta.url)("node:fs/promises");
+const realReadFile = fsPromises.readFile;
 
 const repo = path.resolve(import.meta.dirname, "..");
 const samplePng = path.join(repo, "public", "assets", "themes", "default", "diffuse-dark.png");
@@ -212,6 +218,108 @@ try {
     assert.deepEqual(result.written, []);
     const missing = await writeImageVariants(path.join(generated, "nope.png"));
     assert.ok(missing.error);
+  });
+
+  await test("worker startup failure is nonfatal and the next image still gets its copies", async () => {
+    const startupOriginal = path.join(generated, "startup.png");
+    fs.copyFileSync(samplePng, startupOriginal);
+    workerThreads.Worker = class Worker {
+      constructor() { throw new Error("injected worker startup failure"); }
+    };
+    syncBuiltinESMExports();
+    const unhandled = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const result = await writeImageVariants(startupOriginal);
+      assert.deepEqual(result, { written: [], skipped: [], error: "injected worker startup failure" });
+      assert.ok(fs.existsSync(startupOriginal));
+      assert.ok(!fs.existsSync(path.join(generated, "startup.w256.webp")));
+      scheduleImageVariants(startupOriginal);
+      await imageVariantsSettled();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      workerThreads.Worker = realWorker;
+      syncBuiltinESMExports();
+    }
+    const next = await writeImageVariants(startupOriginal);
+    assert.equal(next.error, undefined);
+    assert.ok(fs.existsSync(path.join(generated, "startup.w256.webp")));
+    assert.ok(fs.existsSync(startupOriginal));
+  });
+
+  await test("worker error, exit and timeout return errors without removing originals", async () => {
+    const runInjected = async (name, WorkerClass) => {
+      const source = path.join(generated, `${name}.png`);
+      fs.copyFileSync(samplePng, source);
+      workerThreads.Worker = WorkerClass;
+      syncBuiltinESMExports();
+      try {
+        const result = await writeImageVariants(source);
+        assert.deepEqual(result.written, []);
+        assert.ok(fs.existsSync(source));
+        return result.error;
+      } finally {
+        workerThreads.Worker = realWorker;
+        syncBuiltinESMExports();
+      }
+    };
+    class ErrorWorker extends EventEmitter {
+      constructor() {
+        super();
+        setImmediate(() => this.emit("error", new Error("injected worker error")));
+      }
+    }
+    class ExitWorker extends EventEmitter {
+      constructor() {
+        super();
+        setImmediate(() => this.emit("exit", 17));
+      }
+    }
+    class TimeoutWorker extends EventEmitter {
+      terminate() { return Promise.resolve(0); }
+    }
+    assert.equal(await runInjected("worker-error", ErrorWorker), "injected worker error");
+    assert.equal(await runInjected("worker-exit", ExitWorker), "worker exited with 17");
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, delay, ...args) =>
+      realSetTimeout(callback, delay === 90_000 ? 0 : delay, ...args);
+    try {
+      assert.equal(await runInjected("worker-timeout", TimeoutWorker), "timed out");
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
+  await test("an unexpected queued rejection is logged and does not become unhandled", async () => {
+    const source = path.join(generated, "queued-rejection.png");
+    fs.copyFileSync(samplePng, source);
+    fsPromises.readFile = async (file, ...args) =>
+      file === source ? undefined : realReadFile(file, ...args);
+    syncBuiltinESMExports();
+    const unhandled = [];
+    const warnings = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    const realWarn = console.warn;
+    process.on("unhandledRejection", onUnhandled);
+    console.warn = (message) => warnings.push(message);
+    try {
+      scheduleImageVariants(source);
+      await imageVariantsSettled();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(unhandled, []);
+      assert.ok(warnings.some((message) => message.includes("queued-rejection.png")));
+      assert.ok(fs.existsSync(source));
+    } finally {
+      console.warn = realWarn;
+      process.off("unhandledRejection", onUnhandled);
+      fsPromises.readFile = realReadFile;
+      syncBuiltinESMExports();
+    }
+    const next = await writeImageVariants(source);
+    assert.equal(next.error, undefined);
   });
 
   // servedSegments reads under process.cwd()/public like the routes do.

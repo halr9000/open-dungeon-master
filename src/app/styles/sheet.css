@@ -170,6 +170,62 @@
   }
   .sheet-vital[data-tone="warn"] { border-color: rgba(212, 171, 58, 0.55); }
   .sheet-vital[data-tone="warn"] .sheet-vital-value { color: var(--color-amber-300); }
+  /* A tile that opens more about itself (Carried, issue #206). The lift and
+     press come from src/lib/motion/answer.ts like every button's. */
+  .sheet-vital-open {
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 160ms ease, background-color 160ms ease;
+  }
+  .sheet-vital-open:hover { border-color: rgba(212, 171, 58, 0.5); background: rgba(22, 15, 38, 0.75); }
+  .sheet-vital-open:focus-visible { outline: 2px solid rgba(212, 171, 58, 0.6); outline-offset: 2px; }
+  .sheet-vital-more {
+    flex-shrink: 0;
+    margin-left: auto;
+    color: var(--color-stone-500);
+    transition: color 160ms ease, transform 200ms var(--ease-spring, ease);
+  }
+  .sheet-vital-open:hover .sheet-vital-more,
+  .sheet-vital-open:focus-visible .sheet-vital-more { color: var(--color-amber-300); transform: translateX(2px); }
+
+  /* The load breakdown (src/components/sheet/LoadBreakdown.tsx). */
+  .load-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+  }
+  .load-table th,
+  .load-table td {
+    padding: 0.35rem 0.4rem;
+    border-bottom: 1px solid rgba(120, 100, 160, 0.18);
+    vertical-align: top;
+  }
+  .load-table thead th {
+    font-size: 0.6rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-stone-500);
+    text-align: left;
+  }
+  .load-table thead th[aria-sort] { color: var(--color-amber-200); }
+  .load-table tbody th,
+  .load-table tfoot th { font-weight: 400; text-align: left; overflow-wrap: anywhere; }
+  .load-table .load-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .load-table thead .load-num { text-align: right; }
+  .load-table tbody tr { transition: background-color 160ms ease; }
+  .load-table tbody tr:hover { background: rgba(212, 171, 58, 0.06); }
+  .load-unknown { font-style: italic; color: var(--color-amber-300); }
+  .load-table tfoot tr:first-child th,
+  .load-table tfoot tr:first-child td { border-top: 1px solid rgba(212, 171, 58, 0.3); }
+  .load-table .load-sum th,
+  .load-table .load-sum td {
+    border-bottom: 0;
+    font-family: var(--font-display, serif);
+    font-size: 0.9rem;
+    color: var(--color-amber-100);
+  }
   .sheet-vital-label {
     display: block;
     font-size: 0.6rem;
@@ -252,12 +308,17 @@ html[data-theme="light"] .sheet-hp {
   box-shadow: none;
 }
 html[data-theme="light"] .sheet-ability-score { background: rgba(255, 252, 244, 0.9); }
+html[data-theme="light"] .sheet-vital-open:hover { background: rgba(255, 248, 230, 0.95); border-color: rgba(150, 110, 30, 0.5); }
+html[data-theme="light"] .load-table th,
+html[data-theme="light"] .load-table td { border-bottom-color: rgba(120, 96, 40, 0.2); }
+html[data-theme="light"] .load-table tbody tr:hover { background: rgba(150, 110, 30, 0.07); }
 html[data-theme="light"] .sheet-medallion-face,
 html[data-theme="light"] .sheet-medallion-emblem { background: #f6efdc; }
 
 @media (prefers-reduced-motion: reduce) {
   .sheet-ability { animation: none; }
   .sheet-hp-fill { transition: none; }
+  .sheet-vital-more { transition: none; }
 }
 
 /* ---- spell book (src/components/sheet/SpellBook.tsx) ----

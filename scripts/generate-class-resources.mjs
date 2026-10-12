@@ -146,6 +146,37 @@ function parseFx(desc) {
   return undefined;
 }
 
+// What a use costs of the turn (src/lib/srd/class-resources.ts
+// ResourceAction), when the description names it: "Reaction: …", "1/rest,
+// bonus action: …", "… as a bonus action". The first one named wins. A clause
+// about other creatures' turns ("Allies … may … as a reaction", "creatures …
+// losing their action") is not the holder's cost. Neither is "cast a cantrip
+// as a bonus action", nor "Hide as a bonus action": the cast's tool and
+// take_action's bonus routes (src/lib/dm/bonus-routes.ts) charge those.
+const ACTION_PHRASES = [
+  [/(?:^|[:,]\s*)reaction\b/i, "reaction"],
+  [/\bas a reaction\b/i, "reaction"],
+  [/(?:^|[:,]\s*)bonus action\b/i, "bonus"],
+  [/(?<!(?:cast a cantrip|dash|disengage|hide|dodge) )\bas a bonus action\b/i, "bonus"],
+  [/(?:^|[:,]\s*)action:/i, "action"],
+  [/\bas an action\b/i, "action"],
+];
+
+function parseAction(desc) {
+  const own = desc
+    .split(/[.;]\s*/)
+    .filter((clause) => !/^(?:allies|creatures)\b/i.test(clause.trim()));
+  for (const clause of own) {
+    const named = ACTION_PHRASES.map(([pattern, action]) => ({ at: pattern.exec(clause)?.index ?? -1, action }))
+      .filter((hit) => hit.at >= 0)
+      .sort((a, b) => a.at - b.at)[0];
+    if (named) {
+      return named.action;
+    }
+  }
+  return undefined;
+}
+
 // The count an upgrade line states in its own name: "Hardened (2 uses)" is
 // two, whatever its description goes on to say.
 function namedUses(name) {
@@ -197,6 +228,7 @@ function collect() {
               continue;
             }
             const fx = parseFx(feat.d);
+            const action = parseAction(feat.d);
             byId.set(id, {
               id,
               displayName: base,
@@ -208,6 +240,7 @@ function collect() {
               upgrades: [],
               guidance: feat.d,
               ...(fx ? { fx } : {}),
+              ...(action ? { action } : {}),
             });
           }
         }

@@ -9,7 +9,9 @@ import { publishPersisted, publishWithSeq } from "@/lib/events";
 import { enqueueNarrationAudio } from "@/lib/tts";
 import { getNpcById } from "@/lib/db/npcs";
 import type { Speaker } from "@/lib/dm/speech";
-import { agentNarrationProblem, closeAgentTurn, isAgentRequest } from "@/lib/dm/agent-turn";
+import { closeAgentTurn, isAgentRequest, readAgentNarration } from "@/lib/dm/agent-turn";
+import { narratedLines } from "@/lib/dm/speech-lines";
+import { NARRATION_MAX_CHARS, textLength, tooLongMessage } from "@/lib/text-limits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +23,7 @@ export const dynamic = "force-dynamic";
 // engine (chapters, compaction, retrieval, export, recap) keep working
 // without knowing who wrote the words.
 const narrateSchema = z.object({
-  content: z.string().trim().min(1).max(8000),
+  content: z.string().trim().min(1),
   // Spoken as someone (docs/vtt-parity-implementation-plan.md 8.1): an
   // NPC by id, or a monster on the board by name. Absent for the narrator.
   speaker: z
@@ -52,6 +54,12 @@ export async function POST(
   if (!parsed.success) {
     return Response.json({ error: "Write something to narrate." }, { status: 400 });
   }
+  if (textLength(parsed.data.content) > NARRATION_MAX_CHARS) {
+    return Response.json(
+      { error: tooLongMessage("A passage", NARRATION_MAX_CHARS, textLength(parsed.data.content)), maxChars: NARRATION_MAX_CHARS },
+      { status: 400 },
+    );
+  }
 
   // An NPC speaker is named from the record so a stale client name never
   // lands in the transcript; a monster is only its name.
@@ -68,9 +76,9 @@ export async function POST(
   // A connected agent program's prose is checked like the storyteller's,
   // and a contradiction comes back to it as the rewrite prompt.
   const agent = isAgentRequest(request);
-  const problem = agent ? agentNarrationProblem(campaign, parsed.data.content) : null;
-  if (problem) {
-    return Response.json({ error: problem }, { status: 409 });
+  const read = agent ? await readAgentNarration(campaign, parsed.data.content) : null;
+  if (read?.problem) {
+    return Response.json({ error: read.problem }, { status: 409 });
   }
   if (agent) {
     closeAgentTurn(campaignId);
@@ -88,6 +96,7 @@ export async function POST(
     userId: user.id,
     content: parsed.data.content,
     speaker,
+    speech: narratedLines(campaign, parsed.data.content, { speaker, agentLines: read?.lines ?? null }),
   });
   publishWithSeq(campaignId, seq, "message_added", { message });
 
@@ -107,6 +116,7 @@ export async function POST(
       campaignId,
       message.id,
       parsed.data.content,
+      message.speech,
       campaign.gameSettings,
       speaker,
     );

@@ -270,7 +270,8 @@ export type SpendDoes =
   | { kind: "temp_hp"; formula: Formula; allies?: { rangeFt: number; count: Formula } }
   // An area the model resolves with aoe_damage: the dice, save and DC.
   | { kind: "aoe_report"; dice: Formula; perUnit?: string; baseUnits?: number; save: Ability; dcAbility: Ability | "spell"; type: string; area: string }
-  | { kind: "teleport"; feet: number; note?: string }
+  // `touched`: a willing creature the holder touches is the one moved.
+  | { kind: "teleport"; feet: number; note?: string; touched?: boolean }
   // Dice of damage onto the creature the holder just hit.
   | { kind: "die_damage"; dice: Formula; type: string }
   // Blade Flourish: the Bardic Inspiration die onto the hit, and AC for a

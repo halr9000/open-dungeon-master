@@ -3,6 +3,7 @@ import { getActiveEncounter, saveEncounter, type Encounter, type EncounterEnemy 
 import type { SaveAbility } from "@/lib/bestiary/statblock";
 import type { SpellCondition } from "@/lib/srd/spell-mech-types";
 import { spellDamageFor, spellFactsFor, spellMechanicsFor } from "@/lib/content";
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import { canEnemyAct } from "@/lib/dm/can-act";
 import { spendEnemyAction } from "@/lib/dm/enemy-approach";
 import { castingHold } from "@/lib/dm/spell-planes";
@@ -42,8 +43,11 @@ export type EnemyUse = {
   halfOnSave?: boolean;
   condition?: string;
   rounds?: number;
-  // The condition ends on a save at the end of each round.
+  // The condition ends on a save at the end of each of the holder's turns.
   saveEnds?: boolean;
+  // The block gives it no count and no save: a long rest or a cure ends it.
+  untilLongRest?: boolean;
+  lasting?: boolean;
   // A spell or a magical ability, which Magic Resistance answers.
   magical: boolean;
   // The numbers are the block's (or the spell's): the caller's are ignored.
@@ -125,8 +129,9 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
         error: `${enemy.displayName} cannot cast ${spellName}: it is not on its stat block.${describe(enemy)} Use one of those, or its attacks.`,
       };
     }
-    const resolved = spellMechanicsFor({ spell: spellName });
-    const facts = spellFactsFor(spellName);
+    const authors = spellAuthorsFor(campaign);
+    const resolved = spellMechanicsFor({ spell: spellName, userIds: authors });
+    const facts = spellFactsFor(spellName, authors);
     const level = listed?.level ?? resolved?.spellLevel ?? facts?.level ?? 0;
     use.name = resolved?.name ?? facts?.name ?? spellName;
     use.magical = true;
@@ -171,6 +176,7 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
     }
     const dice = spellDamageFor({
       spell: spellName,
+      userIds: authors,
       casterLevel: casting?.casterLevel ?? Math.max(1, Math.ceil(enemy.cr)),
       ...(slot ? { slotLevel: slot } : {}),
     });
@@ -211,6 +217,8 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
         ...(ability.condition ? { condition: ability.condition } : {}),
         ...(ability.rounds ? { rounds: ability.rounds } : {}),
         ...(ability.repeatSave ? { saveEnds: true } : {}),
+        ...(ability.untilLongRest ? { untilLongRest: true } : {}),
+        ...(ability.lasting ? { lasting: true } : {}),
         magical: Boolean(ability.magical),
       });
     }

@@ -16,6 +16,7 @@
 // exact when it is not.
 import { gearWeightLb } from "@/lib/srd/adventuring-gear";
 import { matchArmor } from "@/lib/srd/armor";
+import { matchWeapon, SRD_WEAPON_WEIGHT_LB } from "@/lib/srd/weapons";
 import { ammoCount, ammoKindForItem, AMMO_WEIGHT_LB } from "@/lib/srd/ammunition";
 import { magicItemRiders, type Wearer, type WornMagicItem } from "@/lib/srd/magic-items";
 
@@ -73,31 +74,99 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-// What one line of the inventory weighs in total, or null when nothing
-// knows. A stamped weight of 0 means "the source did not say" rather than
+// Where a line's weight came from: the line's own number (the content pack's,
+// a workshop entry's, or one typed by hand), the ammunition table, or the SRD
+// armor, gear or weapon table.
+export type WeightSource = "item" | "ammunition" | "armor" | "gear" | "weapon";
+
+// One inventory line as the load weighs it (issue #206: the breakdown behind
+// the sheet's Carried tile is built from these, and so is the total, so the
+// two cannot disagree).
+export type LoadLine = {
+  // Its place in the equipment list, so two lines of one name stay apart.
+  index: number;
+  name: string;
+  // The count it is weighed by: the rounds an ammunition line holds (its
+  // count lives in the name or the qty, never both), otherwise its qty, at
+  // least one.
+  qty: number;
+  // Pounds for one and for the whole line; null when nothing knows.
+  eachLb: number | null;
+  totalLb: number | null;
+  source: WeightSource | null;
+};
+
+// A stamped weight of 0 means "the source did not say" rather than
 // "weightless", which is why it falls through to the other lookups.
-export function lineWeightLb(item: CarriedItem): number | null {
+export function loadLine(item: CarriedItem, index = 0): LoadLine {
   const ammo = ammoKindForItem(item.name);
   if (ammo) {
     // An ammunition line's count lives in its name or its qty and moves as
     // rounds are spent, so it is weighed per round rather than per line.
-    return round2(AMMO_WEIGHT_LB[ammo] * ammoCount({ name: item.name, qty: item.qty ?? 1 }));
+    const rounds = ammoCount({ name: item.name, qty: item.qty ?? 1 });
+    const each = AMMO_WEIGHT_LB[ammo];
+    return { index, name: item.name, qty: rounds, eachLb: each, totalLb: round2(each * rounds), source: "ammunition" };
   }
   const qty = Math.max(1, Math.floor(item.qty ?? 1));
+  const weighed = (each: number, source: WeightSource): LoadLine => ({
+    index,
+    name: item.name,
+    qty,
+    eachLb: each,
+    totalLb: round2(each * qty),
+    source,
+  });
   if (typeof item.weight === "number" && Number.isFinite(item.weight) && item.weight > 0) {
-    return round2(item.weight * qty);
+    return weighed(item.weight, "item");
   }
   const armor = matchArmor(item.name);
   if (armor) {
-    return round2(armor.weightLb * qty);
+    return weighed(armor.weightLb, "armor");
   }
   // Adventuring gear and tools by their SRD weights (adventuring-gear.ts),
   // for a kit the content pack did not stamp.
   const gear = gearWeightLb(item.name);
   if (gear !== null) {
-    return round2(gear * qty);
+    return weighed(gear, "gear");
   }
-  return null;
+  // Then a weapon by the SRD's table (a +1 longsword weighs a longsword's 3 lb).
+  const weapon = matchWeapon(item.name);
+  if (weapon && SRD_WEAPON_WEIGHT_LB[weapon.name] !== undefined) {
+    return weighed(SRD_WEAPON_WEIGHT_LB[weapon.name], "weapon");
+  }
+  return { index, name: item.name, qty, eachLb: null, totalLb: null, source: null };
+}
+
+// What one line of the inventory weighs in total, or null when nothing
+// knows.
+export function lineWeightLb(item: CarriedItem): number | null {
+  return loadLine(item).totalLb;
+}
+
+export function loadLines(equipment: CarriedItem[]): LoadLine[] {
+  return equipment.map((item, index) => loadLine(item, index));
+}
+
+export type LoadSort = "total" | "each";
+export type LoadOrder = "desc" | "asc";
+
+// The breakdown's order: heaviest (or lightest) first by the chosen column,
+// ties in the sheet's order, and a line of unknown weight always last, in
+// sheet order, so it is never read as the lightest thing carried.
+export function sortLoadLines(lines: LoadLine[], key: LoadSort, order: LoadOrder): LoadLine[] {
+  const value = (line: LoadLine) => (key === "total" ? line.totalLb : line.eachLb);
+  const known = lines.filter((line) => value(line) !== null);
+  const unknown = lines.filter((line) => value(line) === null);
+  known.sort((a, b) => {
+    const gap = (value(a) as number) - (value(b) as number);
+    return (order === "asc" ? gap : -gap) || a.index - b.index;
+  });
+  return [...known, ...unknown];
+}
+
+// What the purse weighs, to the hundredth the total is shown in.
+export function coinWeightLb(coins: number): number {
+  return round2(Math.max(0, coins) / COINS_PER_POUND);
 }
 
 export function carriedWeight(
@@ -106,15 +175,14 @@ export function carriedWeight(
 ): { pounds: number; unweighed: number } {
   let pounds = 0;
   let unweighed = 0;
-  for (const item of equipment) {
-    const line = lineWeightLb(item);
-    if (line === null) {
+  for (const line of loadLines(equipment)) {
+    if (line.totalLb === null) {
       unweighed += 1;
       continue;
     }
-    pounds += line;
+    pounds += line.totalLb;
   }
-  pounds += Math.max(0, coins) / COINS_PER_POUND;
+  pounds += coinWeightLb(coins);
   return { pounds: round2(pounds), unweighed };
 }
 

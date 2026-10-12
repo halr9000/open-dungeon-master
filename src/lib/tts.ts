@@ -9,11 +9,11 @@ import { publishMediaStatus } from "@/lib/dm/images";
 import { stripToolText } from "@/lib/dm/tool-text";
 import { enqueueMediaJob } from "@/lib/media-queue";
 import { describeSpeechFailure, synthesizeSpeech, ttsBackend, type TtsBackend } from "@/lib/tts-backend";
-import { attributeSpeech, type Speaker } from "@/lib/dm/speech";
-import { guessGender, type VoiceGender } from "@/lib/tts-cast";
+import type { Speaker, SpokenLine } from "@/lib/dm/speech";
 import { closeLiveNarration, openLiveNarration, pushLiveNarration, renderSpeech } from "@/lib/tts-render";
 import { castUnvoiced, voiceRoster, type RosterEntry } from "@/lib/tts-roster";
 import { baseCreatureName, planSpeech, speechRequests, type CastVoice } from "@/lib/tts-segments";
+import { foldName } from "@/lib/language/text-logic";
 
 // Narration TTS on the server's speech backend (src/lib/tts-backend.ts: the
 // local Kokoro-FastAPI service on :8880 unless the admin chose another).
@@ -40,7 +40,7 @@ function stripForSpeech(text: string): string {
 }
 
 export function narrationAudioPath(campaignId: string, messageId: string): string {
-  return path.join(process.cwd(), "public", "generated-audio", campaignId, `${messageId}.mp3`);
+  return path.join(/*turbopackIgnore: true*/ process.cwd(), "public", "generated-audio", campaignId, `${messageId}.mp3`);
 }
 
 // Where a take is listened to. The files are served to be kept for a year,
@@ -73,46 +73,31 @@ export function castVoices(campaignId: string): CastVoice[] {
   }
 }
 
-// Who speaks in this passage without a voice yet, and what the prose that
-// pointed at them says about them ("she says", "Marla tucks her hair
-// back"), never the words about whoever else the sentence names.
+// Who speaks in this passage without a voice yet: the person it is spoken
+// as, else the speakers stored with its lines.
 export function unvoicedSpeakers(
-  speech: string,
+  lines: readonly SpokenLine[],
   roster: RosterEntry[],
   speaker: Speaker | null,
-): { keys: Set<string>; hints: Map<string, VoiceGender> } {
+): Set<string> {
   const keys = new Set<string>();
-  const near = new Map<string, string>();
-  if (speaker && speaker.kind !== "narrator") {
-    const wanted = [speaker.name.toLowerCase(), baseCreatureName(speaker.name).toLowerCase()];
-    const entry = roster.find((candidate) => wanted.includes(candidate.name.toLowerCase()));
+  const who = speaker && speaker.kind !== "narrator" ? [speaker] : lines.map((entry) => entry.speaker);
+  for (const person of who) {
+    const wanted = [foldName(person.name), foldName(baseCreatureName(person.name))];
+    const entry = roster.find((candidate) => wanted.includes(foldName(candidate.name)));
     if (entry && !entry.voice) {
       keys.add(entry.key);
     }
-    return { keys, hints: new Map() };
   }
-  const segments = attributeSpeech(
-    speech,
-    roster.map((entry) => ({ kind: "npc" as const, id: entry.key, name: entry.name, aliases: entry.aliases })),
-  );
-  for (const segment of segments) {
-    if (segment.kind !== "speech") {
-      continue;
-    }
-    const entry = roster.find((candidate) => candidate.key === segment.speaker.id);
-    if (!entry || entry.voice) {
-      continue;
-    }
-    keys.add(entry.key);
-    near.set(entry.key, `${near.get(entry.key) ?? ""} ${segment.cue ?? ""}`);
-  }
-  return { keys, hints: new Map([...near].map(([key, text]) => [key, guessGender(text)])) };
+  return keys;
 }
 
 export function enqueueNarrationAudio(
   campaignId: string,
   messageId: string,
   text: string,
+  // Who speaks the text's quoted lines, as stored with the message.
+  lines: readonly SpokenLine[],
   // The campaign's narration settings, or just the narrator's voice.
   narration: NarrationSettings | string,
   // The person the whole message is spoken as, when the DM said so.
@@ -150,9 +135,9 @@ export function enqueueNarrationAudio(
           // No readable roster: the narrator reads it all.
         }
         if (settings.ttsAutoCast && roster.length) {
-          const { keys, hints } = unvoicedSpeakers(speech, roster, speaker);
+          const keys = unvoicedSpeakers(lines, roster, speaker);
           if (keys.size) {
-            await castUnvoiced(campaignId, roster, settings.ttsVoice, { only: keys, hints, backend });
+            await castUnvoiced(campaignId, roster, settings.ttsVoice, { only: keys, backend });
           }
         }
         // OpenAI speech runs on the host's key; the shared-host policy
@@ -167,6 +152,7 @@ export function enqueueNarrationAudio(
           narratorSpeed: settings.ttsSpeed,
           cast: castOf(roster),
           speaker,
+          lines,
         });
         clips = await renderSpeech(speechRequests(plan), backend, (audio, index) => {
           pushLiveNarration(live, audio);
@@ -230,8 +216,21 @@ export function takeNarrationFailure(messageId: string): string | null {
 // drops it outright the moment a take lands.
 const narrationLists = new Map<string, { mtimeMs: number; audio: Record<string, string> }>();
 
+// The takes for the given messages only: what a table snapshot needs for the
+// transcript it carries. The whole map grew with every passage ever
+// narrated; an older passage's replay asks /narrate, which answers with the
+// take already on disk without rendering it again.
+export function narrationAudioFor(campaignId: string, messageIds: string[]): Record<string, string> {
+  const all = listNarrationAudio(campaignId);
+  const out: Record<string, string> = {};
+  for (const id of messageIds) {
+    if (all[id]) out[id] = all[id];
+  }
+  return out;
+}
+
 export function listNarrationAudio(campaignId: string): Record<string, string> {
-  const directory = path.join(process.cwd(), "public", "generated-audio", campaignId);
+  const directory = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", "generated-audio", campaignId);
   let mtimeMs: number;
   try {
     mtimeMs = statSync(directory).mtimeMs;
@@ -250,7 +249,7 @@ export function listNarrationAudio(campaignId: string): Record<string, string> {
       // One stat per file, paid only when the folder changed.
       let version = 0;
       try {
-        version = statSync(path.join(directory, file)).mtimeMs;
+        version = statSync(path.join(/*turbopackIgnore: true*/ directory, file)).mtimeMs;
       } catch {
         continue;
       }
@@ -286,7 +285,7 @@ export function voicePreviewName(voice: string, backend: Pick<TtsBackend, "v1" |
 }
 
 export function voicePreviewPath(name: string): string {
-  return path.join(process.cwd(), "public", "generated-audio", "previews", name);
+  return path.join(/*turbopackIgnore: true*/ process.cwd(), "public", "generated-audio", "previews", name);
 }
 
 export function voicePreviewCached(voice: string): boolean {

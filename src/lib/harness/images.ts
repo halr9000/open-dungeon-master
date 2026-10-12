@@ -20,6 +20,7 @@ import { buildChildEnv } from "./child-env.ts";
 import { childPath } from "./discover.ts";
 import { adapterFor, ADAPTERS, harnessConfig, resolveHarnessBinary } from "./status.ts";
 import { isHarnessId } from "./types.ts";
+import { recordMediaFile } from "@/lib/media-access";
 
 export const MAX_HARNESS_IMAGE_BYTES = 8 * 1024 * 1024;
 const PICTURE_TIMEOUT_MS = 5 * 60_000;
@@ -202,19 +203,26 @@ export async function generateHarnessImage(options: {
         .catch((error) => finish(null, error instanceof Error ? error : new Error(String(error))));
     });
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    try {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {
+      // On Windows the agent can briefly keep its working directory locked
+      // after close(). A leftover scratch folder is reclaimed by the OS; it
+      // must not turn an image we already received into a failed paint.
+    }
   }
   const accepted = acceptImage(captured);
   if (!accepted) {
     throw new Error(noPictureMessage(ADAPTERS[config.id].label, said));
   }
-  const generatedDir = path.join(process.cwd(), "public", "generated");
+  const generatedDir = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", "generated");
   mkdirSync(generatedDir, { recursive: true });
   const filename = `${Date.now()}-harness-${slug(options.prompt)}.${accepted.ext}`;
-  const saved = path.join(generatedDir, filename);
+  const saved = path.join(/*turbopackIgnore: true*/ generatedDir, filename);
   writeFileSync(saved, accepted.bytes);
   scheduleImageVariants(saved);
   const size = imageSize(accepted.bytes);
+  recordMediaFile(`/generated/${filename}`);
   return {
     id: randomUUID(),
     url: `/generated/${filename}`,

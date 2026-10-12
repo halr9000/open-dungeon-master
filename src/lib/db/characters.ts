@@ -1,11 +1,15 @@
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
-import { createSheet, getSheetById, getSheetForUser } from "@/lib/db/sheets";
+import { byName } from "@/lib/language/text-logic";
+import { createSheet, getSheetById, getSheetForUser, listSheetsForUser } from "@/lib/db/sheets";
 import { adaptSheetToLevel } from "@/lib/characters/adapt";
 import { admitSheet } from "@/lib/characters/admit";
 import { getCampaignById } from "@/lib/db/campaigns";
 import { XP_THRESHOLDS, levelForXp } from "@/lib/srd";
+import { subclassExtrasFor } from "@/lib/db/subclass-extras";
 import { populateFeaturesForClasses } from "@/lib/srd/features";
 import { normalizeSpellcasting } from "@/lib/srd/spell-lists";
+import { storedGender } from "@/lib/gender";
+import { repairedWeight } from "@/lib/content/item-weights";
 import { dedupeName } from "@/lib/workshop/import";
 import { normalizeCampaignKind, type CampaignKind } from "@/lib/workshop/kind";
 import type { CampaignStatus } from "@/lib/campaign-types";
@@ -74,6 +78,30 @@ function withSplitCantrips(sheet: CreateSheetInput): CreateSheetInput {
     : sheet;
 }
 
+function withStoredGender(sheet: CreateSheetInput): CreateSheetInput {
+  return { ...sheet, gender: storedGender(sheet.gender) };
+}
+
+// A weight the builder or a table copied from a pack built before issue
+// #205 (a dart at 14 lb) is put right on read; any other number stays.
+function withRepairedWeights(sheet: CreateSheetInput): CreateSheetInput {
+  if (!Array.isArray(sheet.equipment) || !sheet.equipment.some((item) => typeof item.weight === "number")) {
+    return sheet;
+  }
+  let changed = false;
+  const equipment = sheet.equipment.map((item) => {
+    const weight = repairedWeight(item.name, item.weight);
+    if (weight === item.weight) {
+      return item;
+    }
+    changed = true;
+    const line = { ...item };
+    delete line.weight;
+    return weight === undefined ? line : { ...line, weight };
+  });
+  return changed ? { ...sheet, equipment } : sheet;
+}
+
 function mapCharacter(row: LibraryRow): LibraryCharacter {
   return {
     id: row.id,
@@ -86,7 +114,7 @@ function mapCharacter(row: LibraryRow): LibraryCharacter {
     background: row.background,
     level: row.level,
     xp: row.xp,
-    sheet: withSplitCantrips(parseJson(row.sheet_json, {} as CreateSheetInput)),
+    sheet: withRepairedWeights(withStoredGender(withSplitCantrips(parseJson(row.sheet_json, {} as CreateSheetInput)))),
     workshopId: row.workshop_id ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -96,12 +124,13 @@ function mapCharacter(row: LibraryRow): LibraryCharacter {
 // SRD class features and racial traits for a stored sheet, granted per class
 // for a multiclassed one exactly as createSheet grants them, so a fighter 3 /
 // wizard 2 is not stored with a fighter 5's features.
-function libraryFeatures(input: CreateSheetInput, level: number) {
+function libraryFeatures(input: CreateSheetInput, level: number, userId: string) {
   const classList =
     (input.classes ?? []).length > 1
       ? input.classes
       : [{ id: input.class, subclass: input.subclass, level }];
-  return populateFeaturesForClasses(input.features ?? [], classList, input.race, input.feats);
+  // A workshop subclass is its owner's: a library character reads its own.
+  return populateFeaturesForClasses(input.features ?? [], classList, input.race, input.feats, subclassExtrasFor([userId]));
 }
 
 export function createCharacter(
@@ -121,7 +150,7 @@ export function createCharacter(
   const startingXp = levelForXp(xp) === level ? xp : floor;
   const stored: CreateSheetInput = {
     ...input,
-    features: libraryFeatures(input, level),
+    features: libraryFeatures(input, level, userId),
   };
   db.prepare(
     `
@@ -183,10 +212,10 @@ export function listCharactersForUser(
 export function listPregens(userId: string, workshopId: string): LibraryCharacter[] {
   const rows = getDatabase()
     .prepare(
-      `SELECT * FROM library_characters WHERE user_id = ? AND workshop_id = ? ORDER BY name COLLATE NOCASE`,
+      `SELECT * FROM library_characters WHERE user_id = ? AND workshop_id = ?`,
     )
     .all(userId, workshopId) as LibraryRow[];
-  return rows.map(mapCharacter);
+  return rows.map(mapCharacter).sort(byName);
 }
 
 // Files a library character under a workshop as a pregen, or takes it out
@@ -219,7 +248,7 @@ export function updateCharacter(
   }
   const stored: CreateSheetInput = {
     ...input,
-    features: libraryFeatures(input, level),
+    features: libraryFeatures(input, level, userId),
   };
   getDatabase()
     .prepare(
@@ -286,6 +315,18 @@ export function instantiateIntoCampaign(
   if (!character) {
     return { error: "Character not found in your library." };
   }
+  // Every player-character door ends here, so this is where the role holds
+  // whatever a client sends (issue 192).
+  if (character.role === "companion") {
+    return { error: companionRoleRefusal(character) };
+  }
+
+  // A retry selects the existing campaign copy; it must not clone the same
+  // library character again or discard progress on the copy already here.
+  const existing = listSheetsForUser(campaignId, userId).find(
+    (sheet) => sheet.libraryCharacterId === characterId && !sheet.isCompanion,
+  );
+  if (existing) return existing;
   const campaign = getCampaignById(campaignId);
   // One character each, unless the table allows several: then the new one
   // waits beside the one in play until its player switches to it.
@@ -315,6 +356,30 @@ export function instantiateIntoCampaign(
   return createSheet(campaignId, userId, level, admitted.sheet, characterId, {
     xp: character.level === level ? character.xp : 0,
   });
+}
+
+// An ally the DM plays is not a seat a player takes. The companion door
+// (POST /companions/create: Build a companion, From your library) is the one
+// that gives it a bot owner and the DM's turns; the player-character doors
+// refuse it in these words, so the character's controller never changes
+// quietly (issue 192).
+export function companionRoleRefusal(character: Pick<LibraryCharacter, "name">): string {
+  return `${character.name} is filed as an ally the DM plays, not a player character. Whoever runs the story brings them in from the party panel: Build a companion, then From your library.`;
+}
+
+// The role each of these library rows is filed under, for the snapshot: a
+// player sheet whose row says companion came in through the wrong door
+// before the doors checked (issue 192), and the party panel offers the
+// repair for it. Ids with no row are left out.
+export function libraryRolesFor(ids: string[]): Map<string, CharacterRole> {
+  const wanted = [...new Set(ids.filter(Boolean))];
+  if (!wanted.length) {
+    return new Map();
+  }
+  const rows = getDatabase()
+    .prepare(`SELECT id, role FROM library_characters WHERE id IN (${wanted.map(() => "?").join(", ")})`)
+    .all(...wanted) as Array<{ id: string; role: string | null }>;
+  return new Map(rows.map((row) => [row.id, normalizeCharacterRole(row.role)]));
 }
 
 // What a campaign sheet carries back to its library character when the

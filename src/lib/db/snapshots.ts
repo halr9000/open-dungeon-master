@@ -196,6 +196,11 @@ export function restoreSnapshot(campaignId: string, payload: SnapshotPayload) {
   if (snapshotHoldsTable(payload, "active_effects")) {
     db.prepare(`DELETE FROM active_effects WHERE campaign_id = ?`).run(campaignId);
   }
+  for (const table of ["quests", "shops", "factions", "calendar_events", "entity_attributes"] as const) {
+    if (snapshotHoldsTable(payload, table)) {
+      db.prepare(`DELETE FROM ${table} WHERE campaign_id = ?`).run(campaignId);
+    }
+  }
   for (const table of SNAPSHOT_TABLES) {
     const rows = payload.tables[table] ?? [];
     if (!rows.length) {

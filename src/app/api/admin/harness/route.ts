@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 // A test turn or a test picture runs a real program end to end.
 export const maxDuration = 600;
 
-// The agent programs on this machine (docs/harness-mcp-plan.md 6). Probing
+// The agent programs on this machine (docs/archive/harness-mcp-plan.md 6). Probing
 // starts each program briefly, so answers are cached for five minutes and
 // ?refresh=1 asks again. No vendor credential is ever read or returned: only
 // whether the program says it is signed in, and a masked account name.

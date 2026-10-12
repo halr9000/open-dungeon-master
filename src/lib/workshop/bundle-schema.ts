@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { createSheetSchema } from "@/lib/schemas/sheet";
+import { storedSheetSchema } from "@/lib/schemas/sheet";
+import { GENDERS } from "@/lib/gender";
 import { GENRES } from "@/lib/schemas/game-settings";
 import { BEAT_KINDS, ROUTE_KINDS, ROUTE_LABEL_MAX } from "@/lib/workshop/board";
 import { worldPackDraftSchema } from "@/lib/worlds/draft";
@@ -49,6 +50,7 @@ export const BUNDLE_LIMITS = {
   monsters: 200,
   homebrew: 400,
   pregens: 12,
+  shops: 200,
 } as const;
 
 export const BUNDLE_KINDS = Object.keys(BUNDLE_LIMITS) as Array<keyof typeof BUNDLE_LIMITS>;
@@ -67,6 +69,10 @@ export const bundleManifestSchema = z.object({
   // the milder community-content notice instead of a non-affiliation
   // disclaimer it does not need. See UnofficialPackNotice.
   rightsHolder: z.string().trim().max(120).default(""),
+  // What of the author's shelf (hand-built monsters, homebrew items, spells
+  // and options) rides along: all of it, or only what this workshop uses
+  // (src/lib/db/workshop-bundle-shelf.ts).
+  shelf: z.enum(["all", "used"]).default("all"),
 });
 
 export type BundleManifest = z.infer<typeof bundleManifestSchema>;
@@ -110,6 +116,8 @@ const npcSchema = z.object({
   location: z.string().max(120).default(""),
   // A role id or free text; bundles written before the field have none.
   role: z.string().trim().max(40).default(""),
+  // src/lib/gender.ts; bundles written before the field have none.
+  gender: z.enum(["", ...GENDERS]).default(""),
   aliases: z.array(z.string().trim().max(80)).max(20).default([]),
   personality: z.string().max(4_000).default(""),
   goals: z.string().max(4_000).default(""),
@@ -120,6 +128,10 @@ const npcSchema = z.object({
   portrait: bundleImageSchema,
   // Their read-aloud voice, normalised on import (src/lib/npcs/forge.ts).
   voice: z.record(z.string(), z.unknown()).nullable().default(null),
+  // The stat block they fight with: a published monster's slug, or the name
+  // of one of the bundle's own monsters (a "homebrew:" id means nothing on
+  // another machine, so the export writes the name).
+  statBlock: z.string().trim().max(80).default(""),
   ref: refSchema,
   shared: sharedSchema,
 });
@@ -149,13 +161,14 @@ const encounterSchema = z.object({
   map: z
     .object({
       map: indexSchema,
+      scene: z.string().max(40).nullable().default(null),
       seed: z.number().int().nullable().default(null),
       theme: z.string().max(40).nullable().default(null),
       ambient: z.string().max(40).nullable().default(null),
       width: z.number().int().nullable().default(null),
       height: z.number().int().nullable().default(null),
     })
-    .default({ map: null, seed: null, theme: null, ambient: null, width: null, height: null }),
+    .default({ map: null, scene: null, seed: null, theme: null, ambient: null, width: null, height: null }),
   extras: z.record(z.string(), z.unknown()).default({}),
   ref: refSchema,
   shared: sharedSchema,
@@ -252,6 +265,35 @@ const overworldSchema = z.object({
   backdrop: bundleImageSchema,
 });
 
+// A shelf line as the Market writes it. Lines are held to the same 60 per
+// shelf the editor allows; an empty one (no name, or none in stock) is
+// accepted here and left out on import, and the preview says how many.
+const stockLineSchema = z.object({
+  itemName: z.string().trim().max(80),
+  qty: z.number().int().min(0).max(999),
+  priceCp: z.number().int().min(1).max(100_000_000),
+  note: z.string().max(120).default(""),
+});
+
+// A Market shop (#171): its place and keeper as indexes into `locations`
+// and `npcs`, the place's name for when the place does not come along, its
+// policy, the shelf it starts with and the shelf it restocks to (null for a
+// shop the pack stocks). What was haggled and when it last restocked are the
+// source table's play and stay behind.
+const shopSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  kind: z.string().trim().max(20).default("general"),
+  size: z.string().trim().max(20).default("village"),
+  location: indexSchema,
+  locationName: z.string().trim().max(120).default(""),
+  keeper: indexSchema,
+  stock: z.array(stockLineSchema).max(60).default([]),
+  preparedStock: z.array(stockLineSchema).max(60).nullable().default(null),
+  markup: z.number().min(0.5).max(3).default(1),
+  buys: z.boolean().default(true),
+  restockDays: z.number().int().min(0).max(365).default(7),
+});
+
 const monsterSchema = z.object({
   name: z.string().trim().min(1).max(120),
   desc: z.string().max(8_000).default(""),
@@ -264,7 +306,7 @@ const monsterSchema = z.object({
 // (src/lib/homebrew/gear.ts), so a bundle written by an older build cannot
 // hand the engine a weapon it cannot roll.
 const homebrewSchema = z.object({
-  kind: z.enum(["spell", "feat", "item", "race", "background", "archetype"]),
+  kind: z.enum(["spell", "feat", "item", "race", "background", "archetype", "hazard"]),
   name: z.string().trim().min(1).max(80),
   data: z.record(z.string(), z.unknown()).default({}),
 });
@@ -276,7 +318,7 @@ const pregenSchema = z.object({
   name: z.string().trim().min(1).max(80),
   level: z.number().int().min(1).max(20),
   role: z.enum(["pc", "companion"]).default("pc"),
-  sheet: createSheetSchema,
+  sheet: storedSheetSchema,
 });
 
 export const workshopBundleSchema = z.object({
@@ -305,11 +347,23 @@ export const workshopBundleSchema = z.object({
   monsters: z.array(monsterSchema).max(BUNDLE_LIMITS.monsters).default([]),
   homebrew: z.array(homebrewSchema).max(BUNDLE_LIMITS.homebrew).default([]),
   pregens: z.array(pregenSchema).max(BUNDLE_LIMITS.pregens).default([]),
+  // The Market (#171). Absent in bundles from builds before it travelled.
+  shops: z.array(shopSchema).max(BUNDLE_LIMITS.shops).default([]),
   // The world pack the workshop is writing (src/lib/worlds/draft.ts), art
   // inline, so a shared workshop arrives with its plugin half-built rather
   // than as a folder of lore somebody has to re-key. Null in bundles from
   // builds before the creator existed.
   plugin: worldPackDraftSchema.nullable().default(null),
+  // The workshop's WorldForge (src/lib/db/world-forge-bundle.ts): its
+  // document with refs as row positions, read through the model's floors on
+  // import, and the atlas's pictures. Null in bundles from earlier builds.
+  world: z
+    .object({
+      doc: z.record(z.string(), z.unknown()),
+      images: z.record(z.string().max(80), bundleImageSchema).refine((images) => Object.keys(images).length <= 100).default({}),
+    })
+    .nullable()
+    .default(null),
   overworld: overworldSchema.nullable().default(null),
   // A chapter's shared workshop, by name, when the chapter draws on one
   // (#159). The rows its cards pick from it ride along marked `shared`, so

@@ -7,13 +7,14 @@
 // Pure and database-free: scripts/test-hand.mjs drives every branch. What a
 // card says once it is played lives next door in hand-play.ts.
 import { ragingMeleeBonus, weaponAttackProfile, weaponOf } from "@/lib/dm/attack-logic";
+import { dualWields, offHandProblem } from "@/lib/dm/attack-rules";
 import { magicWeaponOfRow, type WeaponGear } from "@/lib/dm/gear-attack";
-import { bonusRouteFor, kiLeft, type BonusRoute, type MoveAction } from "@/lib/dm/bonus-routes";
+import { bonusRouteFor, kiLeft, usesLeft, type BonusRoute, type MoveAction } from "@/lib/dm/bonus-routes";
 import { effectiveSpeed, exhaustionSpeed } from "@/lib/dm/condition-logic";
 import { martialArtsApplies } from "@/lib/dm/pc-attack-options";
 import { attackOptionsFor, bonusStrikeCards, fastHandsCards, kiCards } from "@/lib/battlemap/hand-class";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { computeSheetDerived } from "@/lib/srd";
+import { acBreakdownFor, computeSheetDerived } from "@/lib/srd";
 import { AMMO_LABELS, ammoKindForWeapon, findAmmo } from "@/lib/srd/ammunition";
 import { conditionOnHitDice } from "@/lib/srd/condition-effects";
 import { combatRiders, type CombatRiders } from "@/lib/srd/feature-effects";
@@ -31,6 +32,7 @@ import {
   slotLine,
   spellKey,
   standingGate,
+  budgetOf,
   type BasicActionId,
   type Gate,
   type HandCard,
@@ -58,12 +60,12 @@ export function carriedWeapons(sheet: Pick<CharacterSheet, "equipment">): Carrie
   const out: Carried[] = [];
   for (const item of sheet.equipment) {
     const own = weaponOf(item);
-    const magic = own ? null : magicWeaponOfRow(item);
-    const srd = own ?? (magic?.gear ? magic.srd : null) ?? matchWeapon(item.name);
+    const magic = magicWeaponOfRow(item);
+    const srd = (magic.gear ? magic.srd : null) ?? own ?? matchWeapon(item.name);
     const key = item.name.trim().toLowerCase();
     if (!srd || seen.has(key)) continue;
     seen.add(key);
-    out.push({ name: item.name.trim(), srd, qty: item.qty, gear: magic?.gear ?? null });
+    out.push({ name: item.name.trim(), srd, qty: item.qty, gear: magic.gear ?? null });
   }
   return out;
 }
@@ -169,8 +171,25 @@ function attackCards(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders
     const ammoGate: Gate =
       empty && options.trackAmmo ? { reason: `Out of ${AMMO_LABELS[ammoKind!]}.`, spent: true } : null;
     if (offHand) {
-      const opened: Gate =
-        turn.attacksMade > 0 ? null : { reason: "Attack with a light weapon first; the off-hand swing follows it.", spent: false };
+      // The engine's own rule (attack-rules.ts offHandProblem): the swing is
+      // earned by the Attack action's weapon, not by any attack, so a rapier
+      // swing leaves the card shut and a dagger swing opens it (issue 210).
+      // A server too old to say what the action was made with leaves the
+      // card to the first swing, as it always was.
+      const legacy = turn.lightMeleeAttack === undefined && turn.attacksMade > 0;
+      const rule = offHandProblem({
+        who: sheet.name,
+        profile,
+        budget: turn.myTurn
+          ? { ...budgetOf(turn, sheet, allowed), ...(legacy ? { lightMeleeAttack: true, oneHandMeleeAttack: true } : {}) }
+          : null,
+        inFight: true,
+        equipment: sheet.equipment,
+        feats: sheet.feats,
+        campaignId: sheet.campaignId,
+        shieldName: acBreakdownFor(sheet).shieldName,
+      });
+      const opened: Gate = rule ? { reason: rule, spent: false } : null;
       return gated(card, standing, costGate("bonus", turn, sheet, `an off-hand attack with ${name}`), opened);
     }
     return gated(card, standing, attackGate(turn, allowed, sheet, { unarmed: srd === null }), ammoGate);
@@ -181,11 +200,17 @@ function attackCards(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders
   // The bonus-action strikes a feature grants (Martial Arts, Frenzy).
   cards.push(...bonusStrikeCards(sheet, turn, riders, carried.map((weapon) => ({ name: weapon.name, srd: weapon.srd }))));
 
-  // Two-weapon fighting: two light melee weapons in hand buy a bonus swing.
-  const light = carried.filter((weapon) => weapon.srd.kind === "melee" && weapon.srd.properties?.includes("light"));
-  const lightCount = light.reduce((sum, weapon) => sum + weapon.qty, 0);
-  if (lightCount >= 2) {
-    const second = light.length > 1 ? light[1] : light[0];
+  // Two-weapon fighting: two light melee weapons in hand buy a bonus swing,
+  // and with Dual Wielder any two melee weapons held in one hand do.
+  const dualWielder = dualWields(sheet.feats, sheet.campaignId);
+  const paired = carried.filter(
+    (weapon) =>
+      weapon.srd.kind === "melee" &&
+      (dualWielder ? !weapon.srd.properties?.includes("two-handed") : weapon.srd.properties?.includes("light")),
+  );
+  const pairedCount = paired.reduce((sum, weapon) => sum + weapon.qty, 0);
+  if (pairedCount >= 2) {
+    const second = paired.length > 1 ? paired[1] : paired[0];
     cards.push(build(second.name, second.srd, true, second.gear));
   }
   return cards;
@@ -324,8 +349,12 @@ function basicCards(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders)
             ? `Perception ${signed(derived.skills.perception ?? derived.abilityMods.wis)}`
             : "",
       roll: contest || escape ? "contested check" : basic.id === "hide" || basic.id === "search" ? "skill check" : "no roll",
-      rules: route ? `${basic.rules} ${route.feature}: a bonus action${route.ki ? ` for ${route.ki} ki` : ""}.` : basic.rules,
-      resource: route?.ki && sheet.resources.ki ? `Ki ${ki ?? 0}/${sheet.resources.ki.max}` : "",
+      rules: route ? `${basic.rules} ${route.feature}: a bonus action${route.ki ? ` for ${route.ki} ki` : route.counter ? " and one use" : ""}.` : basic.rules,
+      resource: route?.ki && sheet.resources.ki
+        ? `Ki ${ki ?? 0}/${sheet.resources.ki.max}`
+        : route?.counter
+          ? `${route.feature} ${usesLeft(sheet, route.counter) ?? 0}/${sheet.resources[route.counter].max}`
+          : "",
       condition: basic.id === "dodge" ? "Dodging" : basic.id === "grapple" ? "Grappled" : basic.id === "shove" ? "Prone" : basic.id === "ready" ? "Readied" : "",
       icon: { kind: "action", key: basic.id },
       target: basic.target,
@@ -389,8 +418,12 @@ function basicCards(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders)
         route.ki > 0 && (kiLeft(sheet) ?? 0) < route.ki
           ? { reason: `${sheet.name} has no ki point left for ${route.feature}. It comes back after a rest.`, spent: true }
           : null;
+      const usesGate: Gate =
+        route.counter && !usesLeft(sheet, route.counter)
+          ? { reason: `${sheet.name} has no use of ${route.feature} left. It comes back after a rest.`, spent: true }
+          : null;
       cards.push(
-        gated(make(basic, route), standingGate(sheet, turn, "bonus"), costGate("bonus", turn, sheet, `${route.feature} (${basic.name})`), kiGate, still),
+        gated(make(basic, route), standingGate(sheet, turn, "bonus"), costGate("bonus", turn, sheet, `${route.feature} (${basic.name})`), kiGate, usesGate, still),
       );
     }
   }

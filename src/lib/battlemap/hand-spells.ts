@@ -2,7 +2,7 @@
 // 5.2): what a prepared spell or a limited-use feature costs, rolls and
 // spends, read from the same tables the cast and use_resource tools read.
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { casterStateProblem, componentProblem, materialPlan, slotPlan, turnCharge } from "@/lib/dm/cast-rules";
+import { casterStateProblem, componentProblem, focusProblem, materialPlan, slotPlan, turnCharge } from "@/lib/dm/cast-rules";
 import { computeSheetDerived, spellAttackFor, spellSaveDcFor } from "@/lib/srd";
 import { resourceDef, resourceLevel, type ResourceDef } from "@/lib/srd/class-resources";
 import { isMeleeSpellAttack } from "@/lib/srd/melee-spell";
@@ -38,6 +38,7 @@ import {
   type HandTurn,
   type SpellFact,
 } from "@/lib/battlemap/hand-core";
+import { compareNames } from "@/lib/language/text-logic";
 
 // ---- spells ----
 
@@ -154,7 +155,10 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   // card shows when no row exists (its target, its save). With no pack there
   // is no prose, and the engine reads the answers baked from the SRD rows, so
   // the card does too (Shocking Grasp stays a melee spell attack).
-  const row = spellMechFor([name]);
+  // A workshop spell's own block first, then the published row of the name
+  // or of the spell it runs as: the order the cast tools read them in.
+  const engine = fact.runsAs ?? name;
+  const row = fact.mech ?? spellMechFor([name, ...(fact.runsAs ? [fact.runsAs] : [])]);
   const mech: SpellMech =
     row ??
     (fact.desc ? parseSpellMech({ desc: fact.desc, higherLevel: fact.higherLevel }) : bakedSpellMech(name)) ??
@@ -196,7 +200,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   const toHit = mech.resolution === "attack" ? spellAttackFor(sheet, name) : null;
   // The engine's own facts (casting time, components, material cost, range)
   // for the engine's own gates below.
-  const facts = bundledSpellFacts(name);
+  const facts = fact.facts ?? bundledSpellFacts(name);
   const dc = mech.resolution === "save" && mech.save ? spellSaveDcFor(sheet, name) : null;
   const save = dc !== null && mech.save ? { ability: SAVE_LABEL[mech.save] ?? mech.save.toUpperCase(), dc } : null;
   const type: HandCardType =
@@ -234,7 +238,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   // costly material neither carried nor affordable, no slot, and the
   // bonus-action spell rule.
   const problem = (text: string | null, spent = false): Gate => (text ? { reason: text, spent } : null);
-  const material = materialPlan(sheet, facts);
+  const material = materialPlan(sheet, facts, { inFight: true, slotLevel: slot?.level ?? fact.level });
   const slotRefusal = fact.level > 0 && !slot ? slotPlan(sheet, name, facts, fact.level) : null;
   const charge = turnCharge({
     who: sheet.name,
@@ -245,7 +249,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
     budget: turn.myTurn ? budgetOf(turn, sheet) : null,
     reactionSpent: turn.reactionUsed,
   });
-  const melee = mech.resolution === "attack" && isMeleeSpellAttack(name, facts?.range.kind);
+  const melee = mech.resolution === "attack" && isMeleeSpellAttack(engine, facts?.range.kind);
   if (melee) notes.unshift("Melee spell attack: a creature beside you.");
   const card: HandCard = {
     id: `spell:${spellKey(name)}`,
@@ -282,13 +286,13 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   const choice = cost === "reaction" ? undefined : spellChoice(mech);
   if (choice) card.choice = choice;
   // Web, Moonbeam, a wall: the square it is laid on is picked on the board.
-  const area = cost === "reaction" ? null : areaFor(name, slot?.level ?? (fact.level || null));
+  const area = cost === "reaction" ? null : areaFor({ spell: name, runsAs: fact.runsAs }, slot?.level ?? (fact.level || null));
   if (area) card.area = area;
   return gated(
     card,
     standingGate(sheet, turn, cost === "reaction" ? "reaction" : "cast"),
     problem(casterStateProblem(sheet)),
-    problem(componentProblem(sheet, facts)),
+    problem(componentProblem(sheet, facts) ?? focusProblem(sheet, facts)),
     // A reaction spell needs a reaction to spend (slowed takes it away).
     cost === "reaction" ? costGate("reaction", turn, sheet, name) : null,
     "error" in material ? { reason: material.error, spent: false } : null,
@@ -307,7 +311,7 @@ export function spellCards(sheet: CharacterSheet, turn: HandTurn, riders: Combat
   }
   // Attacks first inside a level, so the cantrip that hurts leads the hand.
   const weight = (card: HandCard) => (card.target === "enemy" ? 0 : card.heals ? 1 : 2);
-  rows.sort((a, b) => a.level - b.level || weight(a.card) - weight(b.card) || a.card.name.localeCompare(b.card.name));
+  rows.sort((a, b) => a.level - b.level || weight(a.card) - weight(b.card) || compareNames(a.card.name, b.card.name));
   return rows.map((row) => row.card);
 }
 

@@ -1,0 +1,782 @@
+{
+  "generatedAt": "2026-10-11T05:18:48.514Z",
+  "tracks": {
+    "arcane": [
+      {
+        "file": "arcane.opus",
+        "title": "Dreamscape Drone",
+        "author": "jdagenet",
+        "source": "https://opengameart.org/content/dreamscape-drone",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "battle": [
+      {
+        "file": "battle.opus",
+        "title": "Volatile Reaction",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400039",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "battle-2.opus",
+        "title": "Five Armies",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100875",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "bell": [
+      {
+        "file": "bell.opus",
+        "title": "Point bell",
+        "author": "Unknown",
+        "source": "https://opengameart.org/content/point-bell",
+        "license": "OGA-BY (attribution required)"
+      }
+    ],
+    "boss": [
+      {
+        "file": "boss.opus",
+        "title": "Full On",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300005",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "boss-2.opus",
+        "title": "Killers",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1600024",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "calm": [
+      {
+        "file": "calm.opus",
+        "title": "Ascending the Vale",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1600064",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "calm-2.opus",
+        "title": "Dreamer",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1600043",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "camp": [
+      {
+        "file": "camp.opus",
+        "title": "Campfire sound ambience.ogg",
+        "author": "Glaneur de sons",
+        "source": "https://commons.wikimedia.org/wiki/File%3ACampfire%20sound%20ambience.ogg",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "cave": [
+      {
+        "file": "cave.opus",
+        "title": "Crystal Cave + Mysterious Ambience (seamless loop)",
+        "author": "cynicmusic",
+        "source": "https://opengameart.org/content/crystal-cave-mysterious-ambience-seamless-loop",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "chain": [
+      {
+        "file": "chain.opus",
+        "title": "SSE Library: CHAINS",
+        "author": "Unknown",
+        "source": "https://archive.org/details/SSE_Library_CHAINS",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "chase": [
+      {
+        "file": "chase.opus",
+        "title": "Hitman",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300013",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "chase-2.opus",
+        "title": "Clenched Teeth",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100705",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "city": [
+      {
+        "file": "city.opus",
+        "title": "echoing city noise under  canal Vughterstroom s-Hertogenbosch Netherlands 301 pm 250930_0043",
+        "author": "klankbeeld",
+        "source": "https://freesound.org/people/klankbeeld/sounds/828224/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "coast": [
+      {
+        "file": "coast.opus",
+        "title": "Carnewas Waves and gulls.wav",
+        "author": "Owl",
+        "source": "https://freesound.org/people/Owl/sounds/318070/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "coin": [
+      {
+        "file": "coin.opus",
+        "title": "Picked Coin Echo 2",
+        "author": "NenadSimic",
+        "source": "https://opengameart.org/content/picked-coin-echo-2",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "crow": [
+      {
+        "file": "crow.opus",
+        "title": "Crows singing",
+        "author": "IgnasD",
+        "source": "https://opengameart.org/content/crows-singing",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "crowd": [
+      {
+        "file": "crowd.opus",
+        "title": "walla nike headquarters large hall busy dutch english.wav",
+        "author": "hz37",
+        "source": "https://freesound.org/people/hz37/sounds/393688/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "crypt": [
+      {
+        "file": "crypt.opus",
+        "title": "Forgoten tomb ambience",
+        "author": "kindland",
+        "source": "https://opengameart.org/content/forgoten-tomb-ambience",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "death": [
+      {
+        "file": "death.opus",
+        "title": "Big thunder drum_1(3lrs,Eq,xctr,lmtr).wav",
+        "author": "newlocknew",
+        "source": "https://freesound.org/people/newlocknew/sounds/564810/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "deep_forest": [
+      {
+        "file": "deep_forest.opus",
+        "title": "Hullerweg, Niedertiefenbach, Beselich - night ambience /w aircraft, Oktoberfest and owls (excerpt)",
+        "author": "udo noll",
+        "source": "https://archive.org/details/aporee_46901_53269",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "desert": [
+      {
+        "file": "desert.opus",
+        "title": "Looping Gentle Wind Ambience on an Open Desert Plain.wav",
+        "author": "dhallcomposer",
+        "source": "https://freesound.org/people/dhallcomposer/sounds/697217/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "door_creak": [
+      {
+        "file": "door_creak.opus",
+        "title": "Creaky light wooden door",
+        "author": "fractilegames",
+        "source": "https://opengameart.org/content/creaky-light-wooden-door",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "door_locked": [
+      {
+        "file": "door_locked.opus",
+        "title": "Springlocked cellar door.ogg",
+        "author": "stephan",
+        "source": "https://commons.wikimedia.org/wiki/File%3ASpringlocked%20cellar%20door.ogg",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "door_secret": [
+      {
+        "file": "door_secret.opus",
+        "title": "Heavy stone door opens",
+        "author": "PostProdDog",
+        "source": "https://freesound.org/people/PostProdDog/sounds/578490/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "door_slam": [
+      {
+        "file": "door_slam.opus",
+        "title": "Door_Close_01",
+        "author": "SignatureSoundsOrg",
+        "source": "https://freesound.org/people/SignatureSoundsOrg/sounds/872998/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "dread": [
+      {
+        "file": "dread.opus",
+        "title": "SCP-x4x (Mind Leech)",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN2000010",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "dread-2.opus",
+        "title": "This House",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1500055",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "dungeon": [
+      {
+        "file": "dungeon.opus",
+        "title": "Loopable Dungeon Ambience",
+        "author": "JaggedStone",
+        "source": "https://opengameart.org/content/loopable-dungeon-ambience",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "festive": [
+      {
+        "file": "festive.opus",
+        "title": "Master of the Feast",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400019",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "festive-2.opus",
+        "title": "Bushwick Tarantella Loop",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300003",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "forest": [
+      {
+        "file": "forest.opus",
+        "title": "Forest Ambience",
+        "author": "TinyWorlds",
+        "source": "https://opengameart.org/content/forest-ambience",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "forge": [
+      {
+        "file": "forge.opus",
+        "title": "richardplatz: rixdorfer schmiede - the city, the country & me: smithy",
+        "author": "henrik schröder",
+        "source": "https://archive.org/details/aporee_5817_7300",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "gong": [
+      {
+        "file": "gong.opus",
+        "title": "Gonk Gong",
+        "author": "dklon",
+        "source": "https://opengameart.org/content/gonk-gong",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "graveyard": [
+      {
+        "file": "graveyard.opus",
+        "title": "Welford Road Cemetery soundscape.ogg",
+        "author": "NotFromUtrecht",
+        "source": "https://commons.wikimedia.org/wiki/File%3AWelford%20Road%20Cemetery%20soundscape.ogg",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "heal": [
+      {
+        "file": "heal.opus",
+        "title": "Magic Words + Healing Sound Effect",
+        "author": "Spring Spring",
+        "source": "https://opengameart.org/content/magic-words-healing-sound-effect",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "heartbeat": [
+      {
+        "file": "heartbeat.opus",
+        "title": "Heartbeat sounds",
+        "author": "bart",
+        "source": "https://opengameart.org/content/heartbeat-sounds",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "hit_crit": [
+      {
+        "file": "hit_crit.opus",
+        "title": "Sound Design Elements Impact SFX PS 058",
+        "author": "AudioPapkin",
+        "source": "https://freesound.org/people/AudioPapkin/sounds/812724/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "hit_melee": [
+      {
+        "file": "hit_melee.opus",
+        "title": "custom_heavy_punch_kick_thud_impact_sound_10022025",
+        "author": "Artninja",
+        "source": "https://freesound.org/people/Artninja/sounds/828412/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "hit_ranged": [
+      {
+        "file": "hit_ranged.opus",
+        "title": "Anime Sound Effect - Piercing impact / Stabbing",
+        "author": "Breviceps",
+        "source": "https://freesound.org/people/Breviceps/sounds/464839/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "horn": [
+      {
+        "file": "horn.opus",
+        "title": "Their Coming (generic horn sound)",
+        "author": "StumpyStrust",
+        "source": "https://opengameart.org/content/their-coming-generic-horn-sound",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "jungle": [
+      {
+        "file": "jungle.opus",
+        "title": "Jungle audio.wav",
+        "author": "Versatile Virtuoso",
+        "source": "https://commons.wikimedia.org/wiki/File%3AJungle%20audio.wav",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "keep": [
+      {
+        "file": "keep.opus",
+        "title": "Dutch people talking during guided tour in a castle",
+        "author": "hz37",
+        "source": "https://freesound.org/people/hz37/sounds/372609/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "library": [
+      {
+        "file": "library.opus",
+        "title": "Quiet library ambience (excerpt)",
+        "author": "xkeril",
+        "source": "https://freesound.org/people/xkeril/sounds/620683/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "magic_cast": [
+      {
+        "file": "magic_cast.opus",
+        "title": "Magic Healing Spell SFX - Fantasy RPG Restore Effect",
+        "author": "TommasoMotteran",
+        "source": "https://freesound.org/people/TommasoMotteran/sounds/853303/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "market": [
+      {
+        "file": "market.opus",
+        "title": "Idumota Market (Emeka Ogboh).ogg (excerpt)",
+        "author": "Emeka Ogboh",
+        "source": "https://commons.wikimedia.org/wiki/File%3AIdumota%20Market%20(Emeka%20Ogboh).ogg",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "mine": [
+      {
+        "file": "mine.opus",
+        "title": "Rumelange, Luxembourg - Mine ambience",
+        "author": "Vincent Duseigne",
+        "source": "https://archive.org/details/aporee_30433_35020",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "mountain": [
+      {
+        "file": "mountain.opus",
+        "title": "Ambience Mountain Outdoor Mirador Torrebaro",
+        "author": "bitlab_coop",
+        "source": "https://freesound.org/people/bitlab_coop/sounds/486894/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "mystery": [
+      {
+        "file": "mystery.opus",
+        "title": "Lost Frontier",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300039",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "mystery-2.opus",
+        "title": "Not As It Seems",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100762",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "night": [
+      {
+        "file": "night.opus",
+        "title": "Tawny owl calling at night in Tuntorp, Brastad, Sweden.ogg (excerpt)",
+        "author": "W.carter",
+        "source": "https://commons.wikimedia.org/wiki/File%3ATawny%20owl%20calling%20at%20night%20in%20Tuntorp%2C%20Brastad%2C%20Sweden.ogg",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "plains": [
+      {
+        "file": "plains.opus",
+        "title": "AMBRurl_Autumn.Swampy Wild Field.Dist Birds.Grass,Shrubs And Trees In The Wind.Gusts 2_EM",
+        "author": "newlocknew",
+        "source": "https://freesound.org/people/newlocknew/sounds/837496/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "rain": [
+      {
+        "file": "rain.opus",
+        "title": "Rain in the Gutter Loop",
+        "author": "Ogrebane",
+        "source": "https://opengameart.org/content/rain-gutter-loop",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "river": [
+      {
+        "file": "river.opus",
+        "title": "Sea and river wave sounds (excerpt)",
+        "author": "RandomMind",
+        "source": "https://opengameart.org/content/sea-and-river-wave-sounds",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "roar": [
+      {
+        "file": "roar.opus",
+        "title": "CC0 Deep Monster Roar",
+        "author": "trazzz123",
+        "source": "https://opengameart.org/content/cc0-deep-monster-roar",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "ruins": [
+      {
+        "file": "ruins.opus",
+        "title": "Fwimmygoat - 03 - distant ruins.ogg",
+        "author": "fwimmygoat",
+        "source": "https://commons.wikimedia.org/wiki/File%3AFwimmygoat%20-%2003%20-%20distant%20ruins.ogg",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "scream": [
+      {
+        "file": "scream.opus",
+        "title": "Horror scream1",
+        "author": "Vinrax",
+        "source": "https://opengameart.org/content/horror-scream1",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "sewer": [
+      {
+        "file": "sewer.opus",
+        "title": "Water Through Drain (With Reverb).wav",
+        "author": "clif_creates",
+        "source": "https://freesound.org/people/clif_creates/sounds/381418/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "ship": [
+      {
+        "file": "ship.opus",
+        "title": "Sailing Ambience - Focus On Cutting Through the Waves",
+        "author": "iainmccurdy",
+        "source": "https://freesound.org/people/iainmccurdy/sounds/645968/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "sorrow": [
+      {
+        "file": "sorrow.opus",
+        "title": "Man Down",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1700086",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "sorrow-2.opus",
+        "title": "Lost Time",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1500032",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "spell_cold": [
+      {
+        "file": "spell_cold.opus",
+        "title": "Freeze Spell Magic – Ice Frost Cast",
+        "author": "TommasoMotteran",
+        "source": "https://freesound.org/people/TommasoMotteran/sounds/871078/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "spell_fire": [
+      {
+        "file": "spell_fire.opus",
+        "title": "SSE Library: FIRE",
+        "author": "Unknown",
+        "source": "https://archive.org/details/SSE_Library_FIRE",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "spell_radiant": [
+      {
+        "file": "spell_radiant.opus",
+        "title": "User Interface Magic Chimes",
+        "author": "mikiko850",
+        "source": "https://freesound.org/people/mikiko850/sounds/849807/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "spell_thunder": [
+      {
+        "file": "spell_thunder.opus",
+        "title": "Sähköisiä räsähdyksiä / Electrical, short crackling, cracking, hissing sounds, like short-circuit, electric fault or electric shock, a close sound",
+        "author": "YleArkisto",
+        "source": "https://freesound.org/people/YleArkisto/sounds/367700/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "splash": [
+      {
+        "file": "splash.opus",
+        "title": "Water Splash and sand footsteps",
+        "author": "Peludo",
+        "source": "https://opengameart.org/content/water-splash-and-sand-footsteps",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "storm": [
+      {
+        "file": "storm.opus",
+        "title": "Thunder / Lightning Ambience - Field Recording (excerpt)",
+        "author": "Gregor Quendel",
+        "source": "https://opengameart.org/content/thunder-lightning-ambience-field-recording",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "swamp": [
+      {
+        "file": "swamp.opus",
+        "title": "Swamp Environment Audio",
+        "author": "LokiF",
+        "source": "https://opengameart.org/content/swamp-environment-audio",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "swing_miss": [
+      {
+        "file": "swing_miss.opus",
+        "title": "Sword_whoosh_sound.mp3",
+        "author": "Artninja",
+        "source": "https://freesound.org/people/Artninja/sounds/700220/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "sword_clash": [
+      {
+        "file": "sword_clash.opus",
+        "title": "Swords Clash - High Quality #1",
+        "author": "Christopherderp",
+        "source": "https://freesound.org/people/Christopherderp/sounds/364529/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "tavern": [
+      {
+        "file": "tavern.opus",
+        "title": "Crowded Pub",
+        "author": "Bobjt",
+        "source": "https://opengameart.org/content/crowded-pub",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "temple": [
+      {
+        "file": "temple.opus",
+        "title": "Peace Prayer by Armenian Apostolic Bishops in St. Pölten Cathedral - Friedensgebet armenisch-apostolischer Bischöfe im St. Pöltner Dom",
+        "author": "Marschal",
+        "source": "https://freesound.org/people/Marschal/sounds/859451/",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "tension": [
+      {
+        "file": "tension.opus",
+        "title": "Interloper",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100401",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "tension-2.opus",
+        "title": "Gagool",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100443",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "thud": [
+      {
+        "file": "thud.opus",
+        "title": "tree chop fall thud",
+        "author": "kheetor",
+        "source": "https://opengameart.org/content/tree-chop-fall-thud",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "thunder": [
+      {
+        "file": "thunder.opus",
+        "title": "Thunder, Very Close, Rain, 01",
+        "author": "InspectorJ",
+        "source": "https://opengameart.org/content/thunder-very-close-rain-01",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "town": [
+      {
+        "file": "town.opus",
+        "title": "medieval_village_atmosphere.wav",
+        "author": "ramonmineiro",
+        "source": "https://freesound.org/people/ramonmineiro/sounds/578072/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "travel": [
+      {
+        "file": "travel.opus",
+        "title": "Galway",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1700016",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "travel-2.opus",
+        "title": "Still Pickin",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1900033",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "triumph": [
+      {
+        "file": "triumph.opus",
+        "title": "Tempting Secrets",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300038",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "triumph-2.opus",
+        "title": "Americana",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1200092",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ],
+    "tundra": [
+      {
+        "file": "tundra.opus",
+        "title": "Bayelva Observatory, Ny-Ålesund, Svalbard - Bayelva stream flow, distant bird, wind (excerpt)",
+        "author": "radio aporee",
+        "source": "https://archive.org/details/aporee_69004_84662",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "turn": [
+      {
+        "file": "turn.opus",
+        "title": "Thin bell ding 4",
+        "author": "Khrinx",
+        "source": "https://freesound.org/people/Khrinx/sounds/333693/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "underwater": [
+      {
+        "file": "underwater.opus",
+        "title": "Underwater sound of a river.mp3",
+        "author": "Thomas Bresson",
+        "source": "https://commons.wikimedia.org/wiki/File%3AUnderwater%20sound%20of%20a%20river.mp3",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "waterfall": [
+      {
+        "file": "waterfall.opus",
+        "title": "Waterfall and birds sounds.wav",
+        "author": "Blight55",
+        "source": "https://commons.wikimedia.org/wiki/File%3AWaterfall%20and%20birds%20sounds.wav",
+        "license": "CC BY-SA (attribution and share-alike required)"
+      }
+    ],
+    "wind": [
+      {
+        "file": "wind.opus",
+        "title": "Strong Wind Blowing",
+        "author": "Flixberry Entertainment",
+        "source": "https://opengameart.org/content/strong-wind-blowing",
+        "license": "CC BY (attribution required)"
+      }
+    ],
+    "wolf_howl": [
+      {
+        "file": "wolf_howl.opus",
+        "title": "wolf 3.wav",
+        "author": "genel",
+        "source": "https://freesound.org/people/genel/sounds/399185/",
+        "license": "Public domain (CC0 or PD Mark)"
+      }
+    ],
+    "wonder": [
+      {
+        "file": "wonder.opus",
+        "title": "Arcadia",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100326",
+        "license": "CC BY 4.0 (attribution required)"
+      },
+      {
+        "file": "wonder-2.opus",
+        "title": "Frozen Star",
+        "author": "Kevin MacLeod (incompetech.com)",
+        "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100356",
+        "license": "CC BY 4.0 (attribution required)"
+      }
+    ]
+  }
+}

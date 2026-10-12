@@ -27,7 +27,8 @@ import { insertSheetAudit } from "@/lib/db/sheet-audit";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
 import { rollExpression } from "@/lib/dice";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
-import { chebyshev } from "@/lib/battlemap/types";
+import { tilesApart } from "@/lib/dm/board-reach";
+
 import { spendAction } from "@/lib/dm/action-budget";
 import { canAct } from "@/lib/dm/can-act";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
@@ -48,7 +49,8 @@ export function feetBetween(encounterId: string, a: string, b: string): number |
   const map = getBattleMapForEncounter(encounterId);
   const from = map ? getTokenByRef(map.id, a) : null;
   const to = map ? getTokenByRef(map.id, b) : null;
-  return from && to ? chebyshev(from.x, from.y, to.x, to.y) * 5 : null;
+  return from && to ? tilesApart(from, to) * 5 : null;
+
 }
 
 // The action a feature costs, checked and priced; `commit` stores it once
@@ -167,7 +169,7 @@ function intimidatingPresence(campaign: Campaign, stale: CharacterSheet, targetE
   }
   const derived = computeSheetDerived(sheet);
   const dc = 8 + derived.proficiencyBonus + derived.abilityMods.cha;
-  const save = rollEnemySave(campaign.id, enemy, "wis", dc);
+  const save = rollEnemySave(campaign.id, enemy, "wis", dc, { resist: true });
   price.commit();
   const rolled = save.autoFailed ? "automatic" : String(save.total);
   if (save.success) {

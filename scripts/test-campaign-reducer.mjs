@@ -7,7 +7,7 @@ import { register } from "node:module";
 
 register("./lib/register-alias.mjs", import.meta.url);
 
-const { campaignReducer, INITIAL_CAMPAIGN_STATE } = await import(
+const { campaignReducer, INITIAL_CAMPAIGN_STATE, refreshesBattleMap } = await import(
   "../src/app/campaigns/[campaignId]/useCampaignStream.ts"
 );
 
@@ -128,5 +128,84 @@ test("E2: the snapshot carries the scene, the active sheet, the handout, the pau
   passed += 1;
   console.log("ok: a narration failure is kept apart from the picture's status");
 }
+
+// Issue 193: a table that allows several characters each has one player
+// owning two sheets. An update to one used to drop the other from the list
+// until the next snapshot, because the reducer pruned every other sheet of
+// the same owner. A sheet leaves only on sheet_deleted.
+{
+  const a = { id: "sheet-a", userId: "u1", name: "Aria", level: 3, currentHp: 20 };
+  const b = { id: "sheet-b", userId: "u1", name: "Brom", level: 3, currentHp: 18 };
+  const c = { id: "sheet-c", userId: "u2", name: "Cass", level: 3, currentHp: 25 };
+  const seated = campaignReducer(loaded, { type: "snapshot", payload: { lastSeq: 10, sheets: [a, b, c] } });
+  const hit = campaignReducer(seated, event("sheet_updated", { sheet: { ...a, currentHp: 9 } }, 11));
+  assert.deepEqual(hit.sheets.map((sheet) => sheet.id), ["sheet-a", "sheet-b", "sheet-c"]);
+  assert.equal(hit.sheets[0].currentHp, 9);
+  assert.equal(hit.sheets[1], b, "the sibling sheet is untouched");
+  // Another player's update leaves both alone.
+  const other = campaignReducer(hit, event("sheet_updated", { sheet: { ...c, currentHp: 1 } }, 12));
+  assert.deepEqual(other.sheets.map((sheet) => sheet.id), ["sheet-a", "sheet-b", "sheet-c"]);
+  // An explicit deletion still removes exactly its id.
+  const gone = campaignReducer(other, event("sheet_deleted", { sheetId: "sheet-b", userId: "u1" }, 13));
+  assert.deepEqual(gone.sheets.map((sheet) => sheet.id), ["sheet-a", "sheet-c"]);
+  // A lobby replacement publishes sheet_deleted, then sheet_updated under a
+  // new id: the new sheet stands where the old one did and nothing else moves.
+  const dropped = campaignReducer(gone, event("sheet_deleted", { sheetId: "sheet-a", userId: "u1" }, 14));
+  const replaced = campaignReducer(dropped, event("sheet_updated", { sheet: { ...a, id: "sheet-a2" } }, 15));
+  assert.deepEqual(replaced.sheets.map((sheet) => sheet.id), ["sheet-c", "sheet-a2"]);
+  // A sheet changing hands (companions/adopt, issue 192) is still one sheet.
+  const adopted = campaignReducer(replaced, event("sheet_updated", { sheet: { ...c, userId: "comp_x", isCompanion: true } }, 16));
+  assert.deepEqual(adopted.sheets.map((sheet) => [sheet.id, sheet.userId]), [["sheet-c", "comp_x"], ["sheet-a2", "u1"]]);
+  // A reconnect's snapshot is the server's whole list again.
+  const again = campaignReducer(adopted, { type: "snapshot", payload: { lastSeq: 16, sheets: [a, b, c] } });
+  assert.deepEqual(again.sheets.map((sheet) => sheet.id), ["sheet-a", "sheet-b", "sheet-c"]);
+  passed += 1;
+  console.log("ok: issue 193: a sheet update replaces that sheet only; a player's other characters stay");
+}
+
+test("updating one character preserves the same player's other sheets", () => {
+  const first = { id: "first", userId: "player", level: 8, currentHp: 59 };
+  const second = { id: "second", userId: "player", level: 8, currentHp: 67 };
+  const other = { id: "other", userId: "other", level: 8 };
+  const state = { ...loaded, sheets: [first, second, other], activeSheetId: "second" };
+  const updated = { ...first, currentHp: 58 };
+  const next = campaignReducer(state, event("sheet_updated", { sheet: updated }, 11));
+  assert.deepEqual(next.sheets, [updated, second, other]);
+  assert.equal(next.activeSheetId, "second");
+  const deleted = campaignReducer(next, event("sheet_deleted", { sheetId: "first" }, 12));
+  assert.deepEqual(deleted.sheets, [second, other]);
+  const replacement = { ...first, id: "replacement" };
+  const replaced = campaignReducer(deleted, event("sheet_updated", { sheet: replacement }, 13));
+  assert.deepEqual(replaced.sheets.map((sheet) => sheet.id), ["second", "other", "replacement"]);
+});
+
+test("selection events update the named member without changing another player's selection", () => {
+  const state = { ...loaded, me: { id: "player-a" }, activeSheetId: "a1", members: [
+    { userId: "player-a", activeCharacterId: "a1" }, { userId: "player-b", activeCharacterId: "b1" },
+  ] };
+  const other = campaignReducer(state, event("roster_updated", { userId: "player-b", activeSheetId: "b2" }));
+  assert.equal(other.activeSheetId, "a1");
+  assert.equal(other.members[1].activeCharacterId, "b2");
+  const own = campaignReducer(other, event("roster_updated", { userId: "player-a", activeSheetId: "a2" }));
+  assert.equal(own.activeSheetId, "a2");
+  assert.equal(own.members[0].activeCharacterId, "a2");
+  const reconnect = campaignReducer(own, { type: "snapshot", payload: { members: own.members, sheets: own.sheets, activeSheetId: own.activeSheetId, lastSeq: own.lastSeq } });
+  assert.equal(reconnect.activeSheetId, "a2");
+});
+test("issue 214: a sheet change redraws a board that is up, and only then", () => {
+  // Dropping a pack, a condition or exhaustion changes the speed the board's
+  // reach is drawn from; the board kept the old reach until a reload.
+  assert.equal(refreshesBattleMap("sheet_updated", true), true);
+  assert.equal(refreshesBattleMap("sheet_updated", false), false);
+  for (const eventType of ["battle_map_updated", "encounter_updated", "floor_changed", "roster_updated"]) {
+    assert.equal(refreshesBattleMap(eventType, false), true, eventType);
+    assert.equal(refreshesBattleMap(eventType, true), true, eventType);
+  }
+  assert.equal(refreshesBattleMap("narration", true), false);
+  // The reducer still takes the sheet in, so the tile and the board agree.
+  const sheet = { id: "s1", name: "Hero", level: 1, equipment: [] };
+  const next = campaignReducer(loaded, event("sheet_updated", { sheet }));
+  assert.equal(next.sheets.find((entry) => entry.id === "s1"), sheet);
+});
 
 console.log(`\n${passed} campaign reducer tests passed.`);

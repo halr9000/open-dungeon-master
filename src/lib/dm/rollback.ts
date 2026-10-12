@@ -137,6 +137,13 @@ function rollbackNow(
   ).run(nowIso(), campaignId);
 
   db.transaction(() => {
+    // A pin names a message and a beat sits at a seq: both belong to the
+    // messages deleted below, and a pin left behind named a line nobody
+    // could read. The pins go first, while the messages they name exist.
+    db.prepare(
+      `DELETE FROM campaign_pins WHERE campaign_id = ?
+         AND message_id IN (SELECT id FROM campaign_messages WHERE campaign_id = ? AND seq > ?)`,
+    ).run(campaignId, campaignId, boundary);
     for (const table of [
       "campaign_messages",
       "campaign_events",
@@ -144,6 +151,7 @@ function rollbackNow(
       "character_events",
       "sheet_audit",
       "item_proposals",
+      "dm_beats",
     ]) {
       db.prepare(`DELETE FROM ${table} WHERE campaign_id = ? AND seq > ?`).run(
         campaignId,
@@ -190,6 +198,7 @@ function rollbackNow(
     campaignId,
     seq,
     authorType: "system",
+    glyph: "cue-bell",
     content: `The story rewinds to the start of Chapter ${targetChapterIndex}.`,
   });
   publishWithSeq(campaignId, seq, "message_added", { message: divider });

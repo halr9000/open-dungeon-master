@@ -19,7 +19,8 @@ import { listRecentRolls } from "@/lib/db/rolls";
 import { insertSheetAudit } from "@/lib/db/sheet-audit";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
-import { chebyshev } from "@/lib/battlemap/types";
+import { tilesApart } from "@/lib/dm/board-reach";
+
 import { computeSheetDerived } from "@/lib/srd";
 import { matchResource } from "@/lib/srd/class-resources";
 import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
@@ -98,7 +99,8 @@ function within(campaignId: string, fromRef: string, toRef: string, feet: number
   if (!from || !to) {
     return false;
   }
-  return chebyshev(from.x, from.y, to.x, to.y) <= Math.floor(feet / 5);
+  return tilesApart(from, to) <= Math.floor(feet / 5);
+
 }
 
 // A use_resource call this module resolves, or null for the generic path.
@@ -255,9 +257,10 @@ function turnUndead(
   const byId = new Map(sheets.map((entry) => [entry.id, entry]));
   const outcomes: string[] = [];
   for (const enemy of undead) {
-    const save = rollEnemySave(campaign.id, enemy, "wis", dc);
+    // Turned: a legendary creature spends a resistance to stand its ground.
+    const save = rollEnemySave(campaign.id, enemy, "wis", dc, { resist: true });
     if (save.success) {
-      outcomes.push(`${enemy.displayName} resists (WIS ${save.total} vs DC ${dc}).`);
+      outcomes.push(`${enemy.displayName} resists (WIS ${save.total ?? "failed outright"} vs DC ${dc})${save.legendaryResistance ? " with Legendary Resistance" : ""}.`);
       continue;
     }
     const cr = Number(enemy.stats.cr ?? enemy.cr ?? 99);

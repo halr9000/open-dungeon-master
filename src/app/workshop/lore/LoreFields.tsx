@@ -153,25 +153,26 @@ export function LoreBody({
       ) : null}
       <Markdown source={entry.body} targets={targets} onLink={onLink} style={entry.style ?? "plain"} dmView={dmView} />
       {entry.attachmentPath ? (
-        // The PDF's pages in the browser's own viewer (section 5.3). The
-        // Android app has no viewer of its own, so its bridge opens the
-        // file with the system's (docs/vtt-parity-implementation-plan.md 18.2).
-        <>
-          {typeof window !== "undefined" && window.odm?.openDocument ? (
-            <button
-              type="button"
-              onClick={() => void window.odm?.openDocument?.(entry.attachmentPath ?? "")}
-              className={cn(ui.btnSmall, "mb-2 text-sm")}
-            >
-              Open the pages in your reader
-            </button>
-          ) : null}
+        // The PDF's pages in the browser's own viewer (section 5.3). The apps
+        // have none to frame it in (the Android WebView draws no PDFs, and
+        // the desktop shell's page allows no frames), so their bridge fetches
+        // the file with the session and opens it in the system's
+        // (docs/vtt-parity-implementation-plan.md 18.2).
+        typeof window !== "undefined" && window.odm?.openDocument ? (
+          <button
+            type="button"
+            onClick={() => void window.odm?.openDocument?.(entry.attachmentPath ?? "")}
+            className={cn(ui.btnSmall, "mb-2 text-sm")}
+          >
+            Open the pages in your reader
+          </button>
+        ) : (
           <iframe
             src={entry.attachmentPath}
             title={`${entry.title} pages`}
             className="h-[70vh] w-full rounded-lg border border-stone-800 bg-stone-100"
           />
-        </>
+        )
       ) : null}
     </div>
   );

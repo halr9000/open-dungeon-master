@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { isErrorResponse, requireAdmin } from "@/lib/admin-api";
-import { hashPassword } from "@/lib/auth";
+import { PasswordBusyError, hashPassword, passwordBusyResponse } from "@/lib/auth";
 import {
   deleteSessionsForUser,
   getUserById,
@@ -27,7 +27,16 @@ export async function POST(
     return Response.json({ error: "User not found." }, { status: 404 });
   }
   const tempPassword = randomBytes(9).toString("base64url");
-  setUserPassword(target.id, hashPassword(tempPassword), true);
+  let hash: string;
+  try {
+    hash = await hashPassword(tempPassword);
+  } catch (error) {
+    if (error instanceof PasswordBusyError) {
+      return passwordBusyResponse();
+    }
+    throw error;
+  }
+  setUserPassword(target.id, hash, true);
   deleteSessionsForUser(target.id);
   return Response.json({ tempPassword });
 }

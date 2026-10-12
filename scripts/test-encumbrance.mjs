@@ -8,10 +8,13 @@ register("./lib/register-alias.mjs", import.meta.url);
 const {
   carriedWeight,
   carryMultiplier,
+  coinWeightLb,
   COINS_PER_POUND,
   encumbranceCovers,
   encumbranceFor,
   lineWeightLb,
+  loadLines,
+  sortLoadLines,
 } = await import("../src/lib/srd/encumbrance.ts");
 
 let passed = 0;
@@ -137,6 +140,84 @@ test("the load weighs on the body, not the mind", () => {
   assert.equal(encumbranceCovers("int"), false);
   assert.equal(encumbranceCovers("cha"), false);
   assert.equal(encumbranceCovers(null), false);
+});
+
+// ---- the Carried breakdown (issue #206) ----
+
+// The lines and the purse add up to the total the tile shows, whatever the
+// pack holds; a line nothing can weigh is counted once in `unweighed`.
+function reconciles(equipment, coins) {
+  const { pounds, unweighed } = carriedWeight(equipment, coins);
+  const lines = loadLines(equipment);
+  const known = lines.filter((line) => line.totalLb !== null);
+  const sum = Math.round((known.reduce((total, line) => total + line.totalLb, 0) + coinWeightLb(coins)) * 100) / 100;
+  assert.equal(sum, pounds, "known lines plus coins are the Carried figure");
+  assert.equal(lines.length - known.length, unweighed, "unknown lines are the + count");
+  return lines;
+}
+
+test("ten darts weigh 2.5 lb and a changed count changes the line", () => {
+  const [ten] = reconciles([{ name: "Dart", qty: 10, weight: 0.25 }], 0);
+  assert.deepEqual([ten.qty, ten.eachLb, ten.totalLb, ten.source], [10, 0.25, 2.5, "item"]);
+  const [four] = reconciles([{ name: "Dart", qty: 4, weight: 0.25 }], 0);
+  assert.equal(four.totalLb, 1);
+  // With no stamped weight the SRD weapon table weighs a dart the same.
+  const [bare] = reconciles([{ name: "Dart", qty: 10 }], 0);
+  assert.deepEqual([bare.eachLb, bare.totalLb, bare.source], [0.25, 2.5, "weapon"]);
+});
+
+test("an ammunition count in the name is weighed once, per round", () => {
+  const [named] = reconciles([{ name: "Arrows (20)", qty: 1 }], 0);
+  assert.deepEqual([named.qty, named.eachLb, named.totalLb, named.source], [20, 0.05, 1, "ammunition"]);
+  const [counted] = reconciles([{ name: "Crossbow bolts", qty: 12 }], 0);
+  assert.deepEqual([counted.qty, counted.totalLb], [12, 0.9]);
+});
+
+test("every line is listed, worn or packed, known or not, and reconciles", () => {
+  const pack = [
+    { name: "Chain Mail", qty: 1, equipped: true },
+    { name: "Longsword", qty: 1, weight: 3, equipped: true },
+    { name: "Rope, hempen (50 feet)", qty: 1, weight: 10 },
+    { name: "A Strange Idol", qty: 1 },
+    { name: "Arrows (20)", qty: 1 },
+    { name: "Mysterious Box", qty: 2, weight: 0 },
+  ];
+  const lines = reconciles(pack, 137);
+  assert.deepEqual(lines.map((line) => line.index), [0, 1, 2, 3, 4, 5]);
+  assert.equal(lines[0].source, "armor");
+  assert.equal(lines[3].totalLb, null);
+  assert.equal(lines[5].eachLb, null);
+  assert.equal(lines[5].qty, 2);
+  // 137 gold coins: 2.74 lb, the figure the breakdown prints.
+  assert.equal(coinWeightLb(137), 2.74);
+  assert.deepEqual(carriedWeight(pack, 137), { pounds: 55 + 3 + 10 + 1 + 2.74, unweighed: 2 });
+});
+
+test("sorting by line total or weight each, both ways, unknowns last", () => {
+  const lines = loadLines([
+    { name: "Dart", qty: 10, weight: 0.25 },
+    { name: "A Strange Idol", qty: 1 },
+    { name: "Greatsword", qty: 1, weight: 6 },
+    { name: "Torch", qty: 5, weight: 1 },
+    { name: "Mysterious Box", qty: 1 },
+  ]);
+  const names = (sorted) => sorted.map((line) => line.name);
+  assert.deepEqual(names(sortLoadLines(lines, "total", "desc")), ["Greatsword", "Torch", "Dart", "A Strange Idol", "Mysterious Box"]);
+  assert.deepEqual(names(sortLoadLines(lines, "total", "asc")), ["Dart", "Torch", "Greatsword", "A Strange Idol", "Mysterious Box"]);
+  assert.deepEqual(names(sortLoadLines(lines, "each", "desc")), ["Greatsword", "Torch", "Dart", "A Strange Idol", "Mysterious Box"]);
+  assert.deepEqual(names(sortLoadLines(lines, "each", "asc")), ["Dart", "Torch", "Greatsword", "A Strange Idol", "Mysterious Box"]);
+  // A tie keeps the sheet's order.
+  const tied = loadLines([
+    { name: "Torch", qty: 1, weight: 1 },
+    { name: "Hammer", qty: 1, weight: 1 },
+  ]);
+  assert.deepEqual(names(sortLoadLines(tied, "total", "desc")), ["Torch", "Hammer"]);
+  assert.deepEqual(names(sortLoadLines(tied, "total", "asc")), ["Torch", "Hammer"]);
+});
+
+test("a stated weight of zero is not weightless, so it is not counted as 0 lb", () => {
+  const [line] = loadLines([{ name: "A Strange Idol", qty: 3, weight: 0 }]);
+  assert.equal(line.totalLb, null);
 });
 
 console.log(`encumbrance: ${passed} tests passed`);

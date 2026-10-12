@@ -56,10 +56,18 @@ type Embedder = (
   options: { pooling: "mean"; normalize: boolean },
 ) => Promise<{ tolist(): number[][] }>;
 
+type EmbedTask = { run: () => Promise<void> };
+
+// A load that failed, and when: the next attempt waits out a backoff
+// instead of every embed call either retrying a broken download at once or,
+// as before, reusing the one rejected promise until the server restarted.
+type LoadFailure = { at: number; failures: number; permanent: boolean; error: unknown };
+
 // Survives dev-mode HMR, same pattern as the DM queues.
 declare global {
   var __odmEmbedderPromise: Promise<Embedder> | undefined;
-  var __odmEmbedQueue: Promise<unknown> | undefined;
+  var __odmEmbedderFailure: LoadFailure | undefined;
+  var __odmEmbedTasks: { foreground: EmbedTask[]; background: EmbedTask[]; running: boolean } | undefined;
 }
 
 // bufferToVector reads a stored vector of any other size as "not indexed
@@ -74,31 +82,107 @@ export function checkEmbeddingDim(modelId: string, size: number): void {
 
 async function loadEmbedder(): Promise<Embedder> {
   const { pipeline, env } = await import("@huggingface/transformers");
-  env.cacheDir = path.join(process.cwd(), "models", "embeddings");
+  env.cacheDir = path.join(/*turbopackIgnore: true*/ process.cwd(), "models", "embeddings");
   const pipe = (await pipeline("feature-extraction", MODEL_ID, { dtype: DTYPE })) as unknown as Embedder;
   const probe = await pipe(["probe"], { pooling: "mean", normalize: true });
   checkEmbeddingDim(MODEL_ID, probe.tolist()[0].length);
   return pipe;
 }
 
-function embedderPromise(): Promise<Embedder> {
-  return (globalThis.__odmEmbedderPromise ??= loadEmbedder());
+// A first failed load is retried after a minute, then two, four, up to half
+// an hour; a successful load clears the record.
+const LOAD_RETRY_MS = 60_000;
+const LOAD_RETRY_MAX_MS = 30 * 60_000;
+
+export function embedLoadRetryDelay(failures: number): number {
+  return Math.min(LOAD_RETRY_MS * 2 ** Math.max(0, failures - 1), LOAD_RETRY_MAX_MS);
+}
+
+// A runtime that is simply not there (a build that leaves the embedding
+// runtime out, an unsupported model) will not appear by asking again; a
+// download that failed or a network that dropped may.
+export function isPermanentEmbedLoadFailure(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /only \d+-dim models are supported|Cannot find module|Unsupported model type/i.test(message);
+}
+
+function embedderPromise(now = Date.now()): Promise<Embedder> {
+  const failure = globalThis.__odmEmbedderFailure;
+  if (failure && (failure.permanent || now - failure.at < embedLoadRetryDelay(failure.failures))) {
+    return Promise.reject(failure.error);
+  }
+  return (globalThis.__odmEmbedderPromise ??= loadEmbedder().then(
+    (pipe) => {
+      globalThis.__odmEmbedderFailure = undefined;
+      return pipe;
+    },
+    (error: unknown) => {
+      globalThis.__odmEmbedderPromise = undefined;
+      const failures = (globalThis.__odmEmbedderFailure?.failures ?? 0) + 1;
+      const permanent = isPermanentEmbedLoadFailure(error);
+      globalThis.__odmEmbedderFailure = { at: Date.now(), failures, permanent, error };
+      console.error(
+        permanent
+          ? "[embeddings] the embedding model cannot run on this server; keyword search stands in"
+          : `[embeddings] the embedding model did not load (attempt ${failures}); trying again in ${Math.round(embedLoadRetryDelay(failures) / 1000)}s`,
+        error,
+      );
+      throw error;
+    },
+  ));
+}
+
+function embedTasks() {
+  return (globalThis.__odmEmbedTasks ??= { foreground: [], background: [], running: false });
+}
+
+// One embed at a time, foreground first: a turn waiting on its search query
+// goes ahead of a re-index batch that has not started yet, rather than
+// behind the whole backlog.
+function pumpEmbedTasks() {
+  const tasks = embedTasks();
+  if (tasks.running) {
+    return;
+  }
+  const next = tasks.foreground.shift() ?? tasks.background.shift();
+  if (!next) {
+    return;
+  }
+  tasks.running = true;
+  void next.run().finally(() => {
+    tasks.running = false;
+    pumpEmbedTasks();
+  });
 }
 
 // Embeds a batch of texts into unit-normalized Float32Array(384) vectors.
 // Serialized: concurrent callers wait their turn rather than competing.
-export async function embed(texts: string[]): Promise<Float32Array[]> {
+// `background` marks indexing work (a re-embed, a backfill) that may wait
+// for anything a player is waiting on.
+export async function embed(
+  texts: string[],
+  options: { background?: boolean } = {},
+): Promise<Float32Array[]> {
   if (!texts.length) {
     return [];
   }
-  const run = async () => {
-    const embedder = await embedderPromise();
-    const output = await embedder(texts, { pooling: "mean", normalize: true });
-    return output.tolist().map((vector) => Float32Array.from(vector));
-  };
-  const queued = (globalThis.__odmEmbedQueue ?? Promise.resolve()).then(run, run);
-  globalThis.__odmEmbedQueue = queued.catch(() => undefined);
-  return queued;
+  return new Promise<Float32Array[]>((resolve, reject) => {
+    const run = async () => {
+      try {
+        const embedder = await embedderPromise();
+        const output = await embedder(texts, { pooling: "mean", normalize: true });
+        resolve(output.tolist().map((vector) => Float32Array.from(vector)));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    embedTasks()[options.background ? "background" : "foreground"].push({ run });
+    pumpEmbedTasks();
+  });
 }
 
 // Vectors are unit-normalized, so cosine is a plain dot product.

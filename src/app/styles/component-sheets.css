@@ -1,0 +1,11 @@
+/* Sheets that ship with their components on the web rather than in
+   globals.css: Next loads each with the chunk that renders it, so a page
+   with no rulebook on it never downloads the rulebook's styles. The desktop
+   and Android apps fold this file into their one scoped sheet, after
+   globals.css (client scripts/build-renderer.mjs, buildGameCss).
+
+   Only a sheet whose selectors appear in no other sheet belongs here: its
+   place in the cascade then cannot change how anything looks, wherever its
+   chunk happens to land. scripts/test-css-split.mjs holds that, and that
+   each sheet here is imported by the components that use it. */
+@import "./rulebook.css";

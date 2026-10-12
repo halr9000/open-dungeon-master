@@ -5,7 +5,7 @@
 // The resolver is a table of constants rather than a manifest lookup, which is
 // the right call for a render path but means the table can drift from what
 // scripts/generate-placeholders.mjs actually rendered. This walks the whole
-// input space - every race, class, gender, genre, role, map cue and creature
+// input space - every race, class, gender, genre, role, scene kind and creature
 // type the app can hold, plus all 576 bestiary entries at their real cr - and
 // asserts the answer resolves. A missing plate is a broken image in front of
 // a player, so it fails the build rather than warning. The reverse check
@@ -27,10 +27,14 @@ const PUBLIC = path.join(ROOT, "public");
 const SET_DIR = path.join(PUBLIC, "assets", "placeholders");
 
 // The whole set rides inside the desktop app and the Android APK. These are
-// ceilings, not targets: generate-placeholders.mjs encodes at 256px squares
-// and 704px landscapes at quality 70, which lands well under both.
-const BUDGET_TOTAL_BYTES = 3.5 * 1024 * 1024;
+// ceilings, not targets. The 177 majority-selected plates preserve their
+// reviewed WebP bytes: 13.76 MiB plus the existing race/class portraits.
+// Allow 18 MiB total, with separate scene and painted-square ceilings;
+// race/class portraits retain their 48 KiB ceiling.
+const BUDGET_TOTAL_BYTES = 18 * 1024 * 1024;
 const BUDGET_FILE_BYTES = 48 * 1024;
+const BUDGET_SCENE_FILE_BYTES = 192 * 1024;
+const BUDGET_PAINTED_SQUARE_BYTES = 128 * 1024;
 
 const failures = [];
 const reached = new Set();
@@ -45,7 +49,8 @@ function check(url, label) {
   }
 }
 
-const GENDER_INPUTS = ["", "male", "female", "nonbinary", "she/her", "he/him", "Agender", "?"];
+// The sheet's choices (src/lib/gender.ts), plus free text an old sheet may hold.
+const GENDER_INPUTS = ["", "Female", "Male", "Nonbinary", "she/her", "?"];
 const GENRES = [
   "high_fantasy", "dark_fantasy", "mystery", "horror",
   "cyberpunk", "steampunk", "post_apocalyptic", "custom", "",
@@ -66,7 +71,7 @@ for (const gender of GENDER_INPUTS) {
     check(R.characterPlaceholder({ race: race.id, gender }), `race ${race.id}/${gender}`);
   }
   // The content pack's classes from other books (Marshal, Mechanist) have
-  // two-gender plates like the genre classes (issue #116).
+  // three-gender plates like the genre classes (issue #116).
   for (const klass of [...srdClasses.map((entry) => entry.id), ...genreClasses, "marshal", "mechanist"]) {
     check(R.characterPlaceholder({ class: klass, gender }), `class ${klass}/${gender}`);
   }
@@ -118,8 +123,11 @@ for (const genre of GENRES) {
   }
 }
 
-for (const room of ["workshop", "maps", "cast", "bestiary", "encounters", "lore", "storyboard", "tables", "rulesets", "", "nope"]) {
+for (const room of ["workshop", "maps", "cast", "bestiary", "encounters", "lore", "storyboard", "tables", "rulesets", "region", "party", "factions", "homebrew", "plugin", "share", "", "nope"]) {
   check(R.workshopPlaceholder(room), `workshop ${room}`);
+  if (room && room !== "nope" && R.workshopPlaceholder(room) !== `/assets/placeholders/workshop/${room}.webp`) {
+    failures.push(`workshop ${room} did not resolve to its dedicated plate`);
+  }
 }
 
 for (const tile of ["party", "quest", "faction", "treasure", "chapter", "session", "journey", "empty", "nope"]) {
@@ -154,37 +162,32 @@ for (const seed of ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", 
 // and free text that matches nothing still lands on a real file. Each map
 // id is spelled as a person would name the place, which is what the cue
 // table has to recognise for the plate to ever be drawn.
-const MAP_NAMES = {
-  "": [
-    "dungeon", "cavern", "crypt", "sewer", "castle hall", "throne room", "temple",
-    "library", "tavern", "market", "village", "city gate", "forest", "deep forest",
-    "swamp", "desert", "tundra", "mountain pass", "coast", "ship deck", "ruins",
-    "arena", "laboratory", "wasteland",
-  ],
-  cyberpunk: ["neon alley", "arcology", "server farm", "undercity"],
-  steampunk: ["factory", "airship dock", "clockwork vault", "gaslit street"],
-  post_apocalyptic: ["overpass", "scrap market", "shelter", "dead highway"],
-  horror: ["manor", "asylum", "crypt chapel", "graveyard"],
-  mystery: ["precinct", "parlour", "back alley", "morgue"],
-};
-for (const [genre, names] of Object.entries(MAP_NAMES)) {
-  for (const name of names) {
-    const url = R.mapPlaceholder({ name, genre });
-    check(url, `map ${genre || "fantasy"}/${name}`);
-    const expected = `${genre ? `${genre.replace(/_/g, "-")}-` : ""}${name.replace(/\s+/g, "-")}`;
-    if (!url.endsWith(`/${expected}.webp`)) {
-      failures.push(`map ${genre || "fantasy"}/${name} drew ${url}, expected ${expected}`);
+// A kind of scene draws its plate whatever language the place is named in;
+// a genre's own plate comes first, and a kind with several plates draws each
+// for some place. No kind falls back to the genre's plates, or the journey.
+const { cueIds } = await import("../src/lib/ambience/catalog.ts");
+const SEEDS = Array.from({ length: 24 }, (_, index) => `loc-${index}`);
+for (const genre of GENRES) {
+  for (const scene of [...cueIds("bed"), null]) {
+    for (const seed of SEEDS) {
+      check(R.mapPlaceholder({ scene, genre }, seed), `map ${genre || "fantasy"}/${scene ?? "no kind"}`);
     }
   }
 }
-for (const genre of GENRES) {
-  for (const name of ["The Gilded Nothing", "", "Xyzzy"]) {
-    check(R.mapPlaceholder({ name, genre }, "loc-1"), `map fallback ${genre}/${name}`);
+for (const [look, plate] of [
+  [{ scene: "crypt", genre: "high_fantasy" }, "map/crypt"],
+  [{ scene: "crypt", genre: "horror" }, "map/horror-crypt-chapel"],
+  [{ scene: "town", genre: "mystery" }, "map/mystery-back-alley"],
+  [{ scene: "plains", genre: "high_fantasy" }, "misc/journey"],
+  [{ scene: null, genre: "" }, "misc/journey"],
+]) {
+  const url = R.mapPlaceholder(look, "loc-1");
+  if (!url.endsWith(`/${plate}.webp`)) {
+    failures.push(`map ${JSON.stringify(look)} drew ${url}, expected ${plate}`);
   }
-  check(
-    R.mapPlaceholder({ name: "A room", description: "A vaulted crypt of old kings", genre }),
-    `map by description ${genre}`,
-  );
+}
+if (!R.mapPlaceholder({ scene: null, genre: "cyberpunk" }, "loc-1").includes("/map/cyberpunk-")) {
+  failures.push("a cyberpunk place with no kind should draw a cyberpunk plate");
 }
 
 // The reverse check: every plate on disk is one of the answers above.
@@ -210,8 +213,14 @@ let totalBytes = 0;
 for (const url of shipped) {
   const size = statSync(path.join(PUBLIC, url.replace(/^\//, ""))).size;
   totalBytes += size;
-  if (size > BUDGET_FILE_BYTES) {
-    failures.push(`${url} is ${(size / 1024).toFixed(0)} KB, over the ${BUDGET_FILE_BYTES / 1024} KB ceiling`);
+  const group = url.split("/")[3];
+  const ceiling = ["campaign", "map", "misc", "workshop"].includes(group)
+    ? BUDGET_SCENE_FILE_BYTES
+    : ["npc", "monster", "avatar", "character", "character-genre"].includes(group)
+      ? BUDGET_PAINTED_SQUARE_BYTES
+      : BUDGET_FILE_BYTES;
+  if (size > ceiling) {
+    failures.push(`${url} is ${(size / 1024).toFixed(0)} KB, over the ${ceiling / 1024} KB ceiling`);
   }
 }
 // The effect assets a feature ships under public/fx (stings, glyph sprites;

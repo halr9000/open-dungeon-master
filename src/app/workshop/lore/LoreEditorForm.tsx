@@ -271,9 +271,21 @@ export function LoreEditorForm({
         </button>
         {draft.attachmentPath ? (
           <>
-            <a href={draft.attachmentPath} target="_blank" rel="noreferrer" className="text-[11px] text-amber-200 underline">
-              Open it
-            </a>
+            {typeof window !== "undefined" && window.odm?.openDocument ? (
+              // In the apps a link would open the system browser without the
+              // session; the shell fetches it with the session instead.
+              <button
+                type="button"
+                onClick={() => void window.odm?.openDocument?.(draft.attachmentPath ?? "")}
+                className="text-[11px] text-amber-200 underline"
+              >
+                Open it
+              </button>
+            ) : (
+              <a href={draft.attachmentPath} target="_blank" rel="noreferrer" className="text-[11px] text-amber-200 underline">
+                Open it
+              </a>
+            )}
             <button type="button" onClick={() => onChange({ ...draft, attachmentPath: "" })} className={chip}>
               <Trash2 className="size-3" /> Take it away
             </button>

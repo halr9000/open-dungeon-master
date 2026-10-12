@@ -1,8 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { allowedAppOrigin, appCorsHeaders, extraAppOrigins, isPreflight } from "@/lib/app-cors";
+import { describeLimit, judgeBody } from "@/lib/body-limits";
+import { maintenanceState } from "@/lib/maintenance";
 import {
   PORTAL_LOGOUT_PATH,
   PORTAL_ORIGIN_COOKIE,
+  PORTAL_SIG_COOKIE,
   PORTAL_TOKEN_COOKIE,
   forwardHeaders,
   isPortalPath,
@@ -16,10 +19,12 @@ import {
 //   API directly with a bearer token from a foreign origin, so those
 //   origins get CORS headers and their preflights an empty 204.
 // - Portal mode (src/lib/portal.ts): when the app that serves this UI has
-//   planted a host and a token, every data request is answered by that
-//   host instead of this server.
+//   planted a host and a token, signed with the secret it started this
+//   server with, every data request is answered by that host instead of
+//   this server. A server nobody gave a secret (any hosted one) has no
+//   portal at all, whatever cookies a request carries.
 //
-// Without an app origin or the portal cookies nothing here changes.
+// Without an app origin or the signed portal cookies nothing here changes.
 //
 // Uploads, generated pictures and narration audio reach the route that
 // checks the login (src/app/api/media) through the rewrites in
@@ -32,6 +37,7 @@ import {
 // http port as TLS and every picture answered 500.
 
 const extra = extraAppOrigins(process.env.ODM_APP_ORIGINS);
+const portalSecret = process.env.ODM_PORTAL_SECRET;
 
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
@@ -43,8 +49,46 @@ export function proxy(request: NextRequest) {
     return preflight;
   }
 
+  // A live restore has replaced the world under this process: nothing is
+  // read or written until it restarts (src/lib/maintenance.ts).
+  const maintenance = maintenanceState();
+  if (maintenance) {
+    const stopped = NextResponse.json(
+      { error: "This server is restarting after a restore. Try again once it is back.", maintenance: true },
+      { status: 503, headers: { "Retry-After": "30" } },
+    );
+    if (appOrigin) {
+      for (const [name, value] of appCorsHeaders(appOrigin)) stopped.headers.set(name, value);
+    }
+    return stopped;
+  }
+
+  // Every route's body budget (src/lib/body-limits.ts), judged on what the
+  // request declares, before Next has copied more than that into memory.
+  const body = judgeBody(
+    request.method,
+    pathname,
+    request.headers.get("content-length"),
+    request.headers.get("transfer-encoding"),
+  );
+  if (!body.ok) {
+    const refused = NextResponse.json(
+      {
+        error:
+          body.status === 413
+            ? `That is too large to send here (the limit is ${describeLimit(body.limit)}).`
+            : "Send the size of the request with it (Content-Length).",
+      },
+      { status: body.status, headers: { Connection: "close" } },
+    );
+    if (appOrigin) {
+      for (const [name, value] of appCorsHeaders(appOrigin)) refused.headers.set(name, value);
+    }
+    return refused;
+  }
+
   let response: NextResponse;
-  const target = portalFromCookies((name) => request.cookies.get(name)?.value);
+  const target = portalFromCookies((name) => request.cookies.get(name)?.value, portalSecret);
   if (target && isPortalPath(pathname)) {
     const headers = new Headers();
     for (const [name, value] of forwardHeaders(request.headers, target.token)) {
@@ -56,7 +100,7 @@ export function proxy(request: NextRequest) {
     // Logging out on the host ends the portal too: the app watches these
     // cookies and returns to its home screen when they go.
     if (pathname === PORTAL_LOGOUT_PATH && request.method === "POST") {
-      for (const name of [PORTAL_ORIGIN_COOKIE, PORTAL_TOKEN_COOKIE]) {
+      for (const name of [PORTAL_ORIGIN_COOKIE, PORTAL_TOKEN_COOKIE, PORTAL_SIG_COOKIE]) {
         response.cookies.set(name, "", { path: "/", maxAge: 0 });
       }
     }

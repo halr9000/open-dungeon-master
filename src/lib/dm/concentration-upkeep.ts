@@ -6,8 +6,9 @@
 import type { Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter, listEnemies } from "@/lib/db/encounters";
 import { getSheetById, listSheets } from "@/lib/db/sheets";
-import { spellMechanicsFor } from "@/lib/content";
-import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { spellEngineName, spellMechanicsFor } from "@/lib/content";
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
+import { instancesOf, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { breakConcentration } from "@/lib/dm/concentration";
 import { heldBySpell, spellKey } from "@/lib/dm/spell-effects";
 import { summonsOf } from "@/lib/dm/summon-store";
@@ -21,7 +22,9 @@ export function endConcentrationOnFadedSummons(campaign: Campaign, lines: string
   for (const stale of listSheets(campaign.id)) {
     const sheet = getSheetById(stale.id) ?? stale;
     const spell = sheet.concentratingOn;
-    if (!spell || sheet.deathSaves?.dead || !summonSpellFor(spell)) {
+    // A table's workshop copy of a summoning spell summons as the spell it
+    // runs as, under its own name.
+    if (!spell || sheet.deathSaves?.dead || !summonSpellFor(spellEngineName(spell, spellAuthorsFor(campaign)))) {
       continue;
     }
     if (summonsOf(campaign.id, sheet.id, spell).length) {
@@ -56,7 +59,7 @@ export function endSpentConcentration(campaign: Campaign, lines: string[]) {
   ];
   for (const caster of casters) {
     const spell = caster.concentratingOn ?? "";
-    const resolved = spellMechanicsFor({ spell, userId: caster.userId });
+    const resolved = spellMechanicsFor({ spell, userIds: spellAuthorsFor(campaign) });
     const places = new Set(
       [
         resolved?.mech.buff?.condition,
@@ -72,8 +75,10 @@ export function endSpentConcentration(campaign: Campaign, lines: string[]) {
       continue;
     }
     const spellNames = new Set([spellKey(spell), spellKey(resolved?.name ?? spell)]);
+    // Every instance counts: a target another caster also holds still
+    // carries this caster's own (src/lib/dm/condition-logic.ts instancesOf).
     const stillHeld = held.some(({ conditions, meta }) =>
-      conditions.some((name) => heldBySpell(name, meta[name], spellNames, places, caster.id)),
+      conditions.some((name) => instancesOf(meta[name]).some((instance) => heldBySpell(name, instance, spellNames, places, caster.id))),
     );
     if (stillHeld) {
       continue;

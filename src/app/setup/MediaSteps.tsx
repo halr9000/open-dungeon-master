@@ -3,11 +3,13 @@
 import { Check, Loader2, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { registerOutput, releaseOutput } from "@/lib/audio-devices";
+import { zImageMissing } from "@/lib/setup/discovery-logic";
 import { ui } from "@/lib/ui";
 import { Select } from "@/components/ui/Select";
+import { fetchComfyModels } from "@/app/admin/AdminImagesSection";
 import { BuiltinSpeechCard } from "@/app/admin/BuiltinSpeechCard";
 import { HarnessPictureTest } from "@/app/admin/HarnessPictureTest";
-import type { Draft } from "@/app/setup/draft";
+import { comfyFromScan, type Draft } from "@/app/setup/draft";
 import { ChoiceCard, ChoiceCards, Lamp, host, type ScanResult } from "@/app/setup/SetupParts";
 
 // Pictures and Voice: optional, so each offers "none" as a real answer, and
@@ -17,6 +19,28 @@ import { ChoiceCard, ChoiceCards, Lamp, host, type ScanResult } from "@/app/setu
 type Update = (change: (draft: Draft) => Draft) => void;
 
 const MEDIA_GUIDE = "https://github.com/Lebbitheplow/open-dungeon-master/blob/main/docs/media-setup.md";
+// Z-Image Turbo in the model picker; no checkpoint file is named like this.
+const Z_TURBO = "preset:z_turbo";
+type SetupComfyModels = NonNullable<ScanResult["comfyui"]> & { error: string | null };
+
+const sameComfyAddress = (left: string, right: string) => left.replace(/\/+$/, "") === right.replace(/\/+$/, "");
+
+export async function loadSetupComfyModels(
+  url: string,
+  scanned: ScanResult["comfyui"],
+  signal: AbortSignal,
+): Promise<SetupComfyModels | null> {
+  const address = url.trim();
+  if (!address) return null;
+  if (scanned && sameComfyAddress(address, scanned.url)) return { ...scanned, url: address, error: null };
+  const found = await fetchComfyModels(address, signal);
+  return {
+    url: address,
+    checkpoints: found.checkpoints,
+    zImage: Boolean(found.zImage && zImageMissing(found.zImage).length === 0),
+    error: found.error,
+  };
+}
 
 function KeyField({ label, value, onChange, saved, hint }: { label: string; value: string; onChange: (value: string) => void; saved: boolean; hint: string }) {
   return (
@@ -62,12 +86,40 @@ export function PicturesStep({
   openaiKeySaved: boolean;
   falKeySaved: boolean;
 }) {
-  const comfy = scan?.comfyui ?? null;
+  const scannedComfy = scan?.comfyui ?? null;
+  const address = draft.comfy.url.trim();
+  const scanMatches = Boolean(scannedComfy && sameComfyAddress(address, scannedComfy.url));
+  const [checkedComfy, setCheckedComfy] = useState<SetupComfyModels | null>(null);
+
+  useEffect(() => {
+    if (draft.pictures !== "comfyui" || !address || scanMatches) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void loadSetupComfyModels(address, scannedComfy, controller.signal)
+        .then((found) => {
+          if (!controller.signal.aborted) setCheckedComfy(found);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setCheckedComfy({ url: address, checkpoints: [], zImage: false, error: "Could not check ComfyUI. Check its address." });
+          }
+        });
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [address, draft.pictures, scannedComfy, scanMatches]);
+
+  const comfy = scanMatches && scannedComfy
+    ? { ...scannedComfy, url: address, error: null }
+    : checkedComfy?.url === address ? checkedComfy : null;
+  const checkingComfy = Boolean(address && draft.pictures === "comfyui" && !comfy);
   const pick = (pictures: Draft["pictures"]) =>
     update((current) => ({
       ...current,
       pictures,
-      comfy: pictures === "comfyui" && !current.comfy.url && comfy ? { url: comfy.url, checkpoint: current.comfy.checkpoint || comfy.checkpoints[0] || "" } : current.comfy,
+      comfy: pictures === "comfyui" && !current.comfy.url && scannedComfy ? comfyFromScan(current.comfy, scannedComfy) : current.comfy,
     }));
   const setComfy = (patch: Partial<Draft["comfy"]>) => update((current) => ({ ...current, comfy: { ...current.comfy, ...patch } }));
   const setOpenai = (patch: Partial<Draft["picturesOpenai"]>) =>
@@ -84,7 +136,7 @@ export function PicturesStep({
           glyph="sense-truesight"
           title="ComfyUI on this computer"
           sub="Portraits, scene art and battle maps, painted on your own GPU. Free to run."
-          badge={scanning ? { text: "Looking…", tone: "off" } : comfy ? { text: "Found", tone: "ready" } : { text: "Not found", tone: "off" }}
+          badge={scanning || checkingComfy ? { text: "Looking…", tone: "off" } : comfy && !comfy.error ? { text: "Found", tone: "ready" } : { text: "Not found", tone: "off" }}
         />
         <ChoiceCard
           picked={draft.pictures === "openai"}
@@ -129,7 +181,7 @@ export function PicturesStep({
 
       {draft.pictures === "comfyui" ? (
         <div key="comfy" className="reveal-height space-y-3">
-          {!comfy && !scanning ? (
+          {!address && !scanning ? (
             <p className="su-note">
               Nothing answered at ComfyUI&apos;s usual address. Start ComfyUI (its default port is 8188), or type where it runs.{" "}
               <a href={MEDIA_GUIDE} target="_blank" rel="noreferrer" className="text-amber-200 underline">
@@ -141,21 +193,44 @@ export function PicturesStep({
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-stone-400">ComfyUI address</span>
-              <input className={ui.input} value={draft.comfy.url} onChange={(event) => setComfy({ url: event.target.value })} placeholder="http://127.0.0.1:8188" />
+              <input className={ui.input} value={draft.comfy.url} onChange={(event) => { setCheckedComfy(null); setComfy({ url: event.target.value }); }} placeholder="http://127.0.0.1:8188" />
             </label>
-            {comfy?.checkpoints.length ? (
+            {checkingComfy ? (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-stone-400">Model file (checkpoint)</span>
+                <input className={ui.input} disabled placeholder="Checking installed models…" />
+              </label>
+            ) : comfy?.checkpoints.length || comfy?.zImage || (comfy && draft.comfy.preset === "z_turbo") ? (
               <div role="group" aria-label="Model file" className="block">
                 <span className="mb-1 block text-xs font-medium text-stone-400">Model file</span>
                 <Select
+<<<<<<< HEAD
                   value={draft.comfy.checkpoint}
                   onChange={(checkpoint) => setComfy({ checkpoint })}
                   options={comfy.checkpoints.map((name) => ({ value: name, label: name }))}
                   label="Model file"
+=======
+                  value={draft.comfy.preset === "z_turbo" ? Z_TURBO : draft.comfy.checkpoint}
+                  onChange={(value) => setComfy(value === Z_TURBO ? { preset: "z_turbo" } : { checkpoint: value, preset: "checkpoint" })}
+                  options={[
+                    ...comfy.checkpoints.map((name) => ({ value: name, label: name })),
+                    ...(draft.comfy.checkpoint && !comfy.checkpoints.includes(draft.comfy.checkpoint)
+                      ? [{ value: draft.comfy.checkpoint, label: draft.comfy.checkpoint, hint: "Saved selection; not reported by this ComfyUI." }]
+                      : []),
+                    // Offered once its three files are found (src/lib/setup/discovery.ts),
+                    // and kept in the list while it is the saved choice.
+                    ...(comfy.zImage || draft.comfy.preset === "z_turbo"
+                      ? [{ value: Z_TURBO, label: "Z-Image Turbo", hint: comfy.zImage ? "Diffusion model, Qwen 3 4B encoder and VAE found" : "Its files were not all found on this ComfyUI" }]
+                      : []),
+                  ]}
+                  label="Model file (checkpoint)"
+>>>>>>> upstream/main
                   className="w-full"
                 />
               </div>
             ) : (
               <label className="block">
+<<<<<<< HEAD
                 <span className="mb-1 block text-xs font-medium text-stone-400">Model file</span>
                 <input className={ui.input} value={draft.comfy.checkpoint} onChange={(event) => setComfy({ checkpoint: event.target.value })} placeholder="Any checkpoint or unet file ComfyUI has installed" />
               </label>
@@ -183,6 +258,19 @@ export function PicturesStep({
               hint="Billed per picture, on a fal.ai key of its own (fal.ai/dashboard/keys). The same key the narration's fal backend uses, if you set one there."
             />
           </div>
+=======
+                <span className="mb-1 block text-xs font-medium text-stone-400">Model file (checkpoint)</span>
+                <input className={ui.input} value={draft.comfy.checkpoint} onChange={(event) => setComfy({ checkpoint: event.target.value, preset: "checkpoint" })} placeholder="Any SDXL checkpoint in ComfyUI/models/checkpoints" />
+              </label>
+            )}
+          </div>
+          {comfy?.error ? <p role="alert" className="text-xs text-red-300">{comfy.error}</p> : checkingComfy ? <p role="status" className="text-xs text-stone-500">Checking models at this address…</p> : null}
+          <p className="text-[11px] text-stone-500">
+            {draft.comfy.preset === "z_turbo"
+              ? "Z-Image Turbo runs without a negative prompt, so a table's boundary cannot keep anything out of its pictures."
+              : "Any checkpoint works; the campaign's genre supplies the art style."}
+          </p>
+>>>>>>> upstream/main
         </div>
       ) : draft.pictures === "agent" ? (
         <div key="agent" className="reveal-height">

@@ -12,7 +12,30 @@ export type AskScope = (typeof ASK_SCOPES)[number];
 export const ASK_VISIBILITIES = ["private", "table"] as const;
 export type AskVisibility = (typeof ASK_VISIBILITIES)[number];
 
-export const QUESTION_MAX_CHARS = 500;
+// The longest question, counted once its whitespace is folded (as it is
+// stored). It was 500, which turned away a question carrying the scene it
+// was about with only "Invalid question." (issue 207). 2,000 is the action
+// box's own limit: a question may hold as much context as a move does. The
+// thread hands each earlier question back whole (ask.ts threadMessages).
+export const QUESTION_MAX_CHARS = 2_000;
+
+// A question's length as the route counts it.
+export function questionLength(question: string): number {
+  return question.replace(/\s+/g, " ").trim().length;
+}
+
+// Why a question cannot be asked as typed, or null. The route answers with
+// this sentence and the Ask box shows the same limit before it is sent.
+export function questionProblem(question: string): string | null {
+  const length = questionLength(question);
+  if (!length) {
+    return "Ask a question first.";
+  }
+  if (length > QUESTION_MAX_CHARS) {
+    return `Questions can be up to ${QUESTION_MAX_CHARS.toLocaleString("en-US")} characters; this one has ${length.toLocaleString("en-US")}. Shorten it and ask again.`;
+  }
+  return null;
+}
 
 export type AskCitation = {
   kind: string;
@@ -23,60 +46,26 @@ export type AskCitation = {
 export type AskResult = {
   answer: string;
   citations: AskCitation[];
+  // What the answer drew on (filedScope).
+  scope: AskScope;
 };
 
 export function isAskScope(value: unknown): value is AskScope {
   return ASK_SCOPES.includes(value as AskScope);
 }
 
+// The scope an ask is filed under: the one asked for, or for "auto" the one
+// the answer names, else the story's, which gathers the most evidence. The
+// label only files the ask, so an answer that names none is still kept.
+export function filedScope(asked: AskScope | "auto", named?: unknown): AskScope {
+  if (asked !== "auto") {
+    return asked;
+  }
+  return isAskScope(named) ? named : "story";
+}
+
 export function clampQuestion(question: string): string {
   return question.replace(/\s+/g, " ").trim().slice(0, QUESTION_MAX_CHARS);
-}
-
-// Rules questions are about the system; sheet questions are about the
-// asker's own character; everything else is about the world and the story.
-// Deliberately keyword-driven and cheap: this only picks which evidence to
-// gather, and gathering slightly wrong evidence costs a worse answer, not a
-// broken one.
-const RULES_HINT =
-  /\b(rule|rules|how do(es)?|mechanic|advantage|disadvantage|grapple|grappling|opportunity attack|concentration|save|saving throw|proficienc|initiative|condition|exhaustion|cover|stealth rules|resistance|attunement|short rest|long rest|spell slot|ritual|counterspell|difficulty class|\bdc\b|\bac\b)\b/i;
-const SHEET_HINT =
-  /\b(my|mine|i have|do i|can i|am i|my character|my sheet|my spells?|my inventory|my gold|my hp|my ac|my level|know how to|proficient|trained in)\b/i;
-
-export function inferScope(question: string): AskScope {
-  // Sheet wins over rules: "how does my Bardic Inspiration work" is best
-  // answered from the character who actually has it.
-  if (SHEET_HINT.test(question)) {
-    return "sheet";
-  }
-  if (RULES_HINT.test(question)) {
-    return "rules";
-  }
-  return "story";
-}
-
-// Whether a question is worth spending archive retrieval on. Recall hints
-// or a proper noun mean there is probably something on the record to find;
-// "how does grappling work" should never cost an embedding pass.
-const RECALL_HINT =
-  /\b(earlier|previous|previously|before|past|history|remember|recall|happened|ago|last time|back then|who|where|when|whose|lore|chapter|said|promised|owe)\b/i;
-const QUESTION_WORDS = new Set([
-  "what", "when", "where", "who", "why", "how", "can", "does", "do", "is",
-  "are", "was", "were", "tell", "please", "should", "could", "would", "will",
-  "may", "did", "the", "and", "but", "my", "our", "their", "his", "her",
-]);
-
-export function shouldSearchArchive(question: string, force = false): boolean {
-  if (force) {
-    return true;
-  }
-  if (RECALL_HINT.test(question)) {
-    return true;
-  }
-  // A capitalized word that is not just the sentence opener suggests a name.
-  return (question.match(/\b[A-Z][a-z]{2,}\b/g) ?? []).some(
-    (word) => !QUESTION_WORDS.has(word.toLowerCase()),
-  );
 }
 
 function asString(value: unknown, max: number): string {
@@ -85,7 +74,7 @@ function asString(value: unknown, max: number): string {
 
 // Parses the model's JSON reply. Tolerates code fences and surrounding
 // prose, because a small utility model will sometimes wrap its JSON.
-export function parseAskJson(raw: string): AskResult | null {
+export function parseAskJson(raw: string, asked: AskScope | "auto"): AskResult | null {
   const text = (raw ?? "").trim();
   if (!text) {
     return null;
@@ -130,5 +119,5 @@ export function parseAskJson(raw: string): AskResult | null {
       quote,
     });
   }
-  return { answer, citations };
+  return { answer, citations, scope: filedScope(asked, record.scope) };
 }

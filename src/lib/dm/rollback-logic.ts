@@ -8,6 +8,16 @@
 // preceding delete pass never fires against fresh rows.
 export const SNAPSHOT_TABLES = [
   "character_sheets",
+  "quests",
+  // Found with PR 215 (quests and the structured scene): the rest of the
+  // state the party changes in play. A shop's shelves empty as they buy, a
+  // faction's attitude and power move with their deeds, a calendar event
+  // fires once the clock passes it, and the DM's freeform attributes change
+  // under them. None is referenced by a foreign key, so order is free.
+  "shops",
+  "factions",
+  "calendar_events",
+  "entity_attributes",
   "npcs",
   "relationships",
   "locations",
@@ -48,6 +58,8 @@ export const CAMPAIGN_SNAPSHOT_COLUMNS = [
   "party_json",
   // Rests, travel and timed conditions are counted against the clock.
   "clock_json",
+  // Structured scene checks are part of the chapter's rewindable state.
+  "scene_tracker_json",
 ] as const;
 
 // A snapshot taken before a table or a column joined the lists above does

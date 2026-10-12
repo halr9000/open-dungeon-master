@@ -32,9 +32,13 @@ function readMuted() {
   return stored === null ? false : stored === "1";
 }
 
-function readVolume() {
-  const stored = Number(window.localStorage.getItem(VOLUME_KEY));
-  return Number.isFinite(stored) && stored > 0 ? Math.min(1, stored) : 0.8;
+export function readVolume() {
+  const stored = window.localStorage.getItem(VOLUME_KEY);
+  if (stored === null) {
+    return 0.8;
+  }
+  const value = Number(stored);
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.8;
 }
 
 export type NarrationAudio = {

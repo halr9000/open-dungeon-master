@@ -10,6 +10,8 @@
 // was. A monster's check uses its stat block: a skill it lists, else the
 // ability's modifier.
 
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
+import { enemyExhaustion } from "@/lib/dm/monster-abilities";
 import type { Campaign } from "@/lib/db/campaigns";
 import { allocateSeq } from "@/lib/db/campaigns";
 import { getClock } from "@/lib/db/clock";
@@ -97,7 +99,7 @@ export function contestOpponent(
     }
     return { name: enemy.displayName, stats: enemy.stats, conditions: enemy.conditions };
   }
-  const monster = resolveMonster(ref.monster ?? "", campaign.gameSettings, { userId: campaign.ownerUserId });
+  const monster = resolveMonster(ref.monster ?? "", campaign.gameSettings, { userIds: spellAuthorsFor(campaign) });
   if (!monster) {
     return { error: `No stat block for "${ref.monster ?? ""}"; name a monster the bestiary knows (an SRD creature, or an NPC stat block such as guard, noble or spy).` };
   }
@@ -119,7 +121,10 @@ export function rollContest(
   const theirs = skillId(input.contestSkill) || (input.hiding ? "stealth" : mine ? OPPOSED[mine] ?? mine : null);
   const ability = ((theirs ? findSkill(theirs)?.ability : null) ?? input.ability ?? "str") as SaveAbility;
   const derivation = rollDerivation(opponent.conditions, "skill_check", ability);
-  const advantage = mergeAdvantage([derivation.advantage]);
+  // Exhaustion's first level costs every ability check disadvantage, a
+  // creature's as a character's (src/lib/dm/monster-abilities.ts).
+  const worn = enemyExhaustion(opponent.conditions) >= 1;
+  const advantage = mergeAdvantage([derivation.advantage, ...(worn ? ["disadvantage" as const] : [])]);
   const modifier = creatureCheckMod(opponent.stats, theirs, ability);
   const outcome = derivation.autoFail ? null : rollExpression(d20Expression(modifier, advantage));
   const total = outcome?.total ?? 0;

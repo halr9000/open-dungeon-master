@@ -82,6 +82,8 @@ const caster = (overrides = {}) =>
       prepared: ["Fire Bolt", "Healing Word", "Hold Person", "Shield", "Detect Magic", "Identify"],
       known: [],
     },
+    // A material with no price is a component pouch's (cast-materials.ts).
+    equipment: [{ name: "Component pouch", qty: 1 }],
     ...overrides,
   });
 
@@ -156,12 +158,53 @@ test("two light weapons buy an off-hand swing, after the first attack", () => {
   const rogue = sheet({ class: "rogue", equipment: [item("Shortsword"), item("Dagger")] });
   const before = byId(deriveHand(rogue), "offhand:dagger");
   assert.equal(before.cost, "bonus");
-  assert.match(before.disabled, /light weapon first/);
+  assert.match(before.disabled, /follows the Attack action[\s\S]*first/);
   // No ability modifier on the off-hand damage without the fighting style.
   assert.equal(before.dice, "1d4 piercing");
   const turn = afterCommit(FRESH_TURN, byId(deriveHand(rogue), "attack:shortsword"));
   assert.equal(byId(deriveHand(rogue, turn), "offhand:dagger").disabled, null);
   assert.equal(byId(deriveHand(sheet({ equipment: [item("Longsword"), item("Dagger")] })), "offhand:dagger"), undefined);
+});
+
+// Issue 210: the card opened on ANY first attack, so a rapier swing lit the
+// off-hand dagger the engine then refused. It asks the engine's rule now.
+test("the off-hand card opens only after the Attack action earns it", () => {
+  const tavi = sheet({ class: "rogue", level: 3, equipment: [item("Rapier"), item("Dagger", 2)] });
+  const rapierTurn = afterCommit(FRESH_TURN, byId(deriveHand(tavi), "attack:rapier"));
+  assert.equal(rapierTurn.lightMeleeAttack, false);
+  assert.equal(rapierTurn.oneHandMeleeAttack, true);
+  const shut = byId(deriveHand(tavi, rapierTurn), "offhand:dagger");
+  assert.match(shut.disabled, /earned by attacking with a light melee weapon[\s\S]*something else/);
+  assert.equal(shut.spent, false, "shut, not spent: the bonus action is still there");
+
+  const daggerTurn = afterCommit(FRESH_TURN, byId(deriveHand(tavi), "attack:dagger"));
+  assert.equal(daggerTurn.lightMeleeAttack, true);
+  const open = byId(deriveHand(tavi, daggerTurn), "offhand:dagger");
+  assert.equal(open.disabled, null);
+  // Spending the bonus action closes it.
+  const spentTurn = afterCommit(daggerTurn, open);
+  assert.ok(byId(deriveHand(tavi, spentTurn), "offhand:dagger").disabled);
+
+  // The engine's word, as the public encounter carries it.
+  const fromEngine = { ...FRESH_TURN, actionUsed: true, attacksMade: 1, lightMeleeAttack: false, oneHandMeleeAttack: true };
+  assert.match(byId(deriveHand(tavi, fromEngine), "offhand:dagger").disabled, /something else/);
+  assert.equal(byId(deriveHand(tavi, { ...fromEngine, lightMeleeAttack: true }), "offhand:dagger").disabled, null);
+  // A server too old to say what the action was made with keeps the old
+  // behavior: the first swing opens the card.
+  const legacy = { ...FRESH_TURN, actionUsed: true, attacksMade: 1 };
+  assert.equal(byId(deriveHand(tavi, legacy), "offhand:dagger").disabled, null);
+  // A shield on the other arm is no second weapon, whatever the swing.
+  const shielded = sheet({ class: "rogue", equipment: [item("Dagger", 2), { name: "Shield", qty: 1, equipped: true }] });
+  assert.match(byId(deriveHand(shielded, daggerTurn), "offhand:dagger").disabled, /other hand/);
+});
+
+test("Dual Wielder deals an off-hand card for two one-handed weapons", () => {
+  const duelist = sheet({ feats: ["Dual Wielder"], equipment: [item("Rapier", 2)] });
+  assert.equal(byId(deriveHand(sheet({ equipment: [item("Rapier", 2)] })), "offhand:rapier"), undefined, "no card without the feat");
+  const swung = afterCommit(FRESH_TURN, byId(deriveHand(duelist), "attack:rapier"));
+  assert.equal(byId(deriveHand(duelist, swung), "offhand:rapier").disabled, null);
+  // Never a two-handed weapon, feat or no feat.
+  assert.equal(byId(deriveHand(sheet({ feats: ["Dual Wielder"], equipment: [item("Greatsword", 2)] })), "offhand:greatsword"), undefined);
 });
 
 test("a beast form swings with its own statblock", () => {

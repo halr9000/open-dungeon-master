@@ -47,27 +47,34 @@ export function layoutGraph(input: LayoutInput): LayoutNode[] {
   const iterations = input.iterations ?? 240;
   const random = mulberry(hashSeed(ids.join("|")));
   // Start on a jittered ring so the first frame is already readable.
+  // Positions and forces live in typed arrays (the inner loop used to read
+  // and write objects, and allocate a fresh one per node per step); the
+  // order of every operation is unchanged, so a roster lands exactly where
+  // it always did.
   const radius = Math.min(width, height) * 0.35;
-  const nodes: LayoutNode[] = ids.map((id, index) => {
-    const angle = (index / ids.length) * Math.PI * 2 + random() * 0.4;
-    return {
-      id,
-      x: width / 2 + Math.cos(angle) * radius * (0.7 + random() * 0.3),
-      y: height / 2 + Math.sin(angle) * radius * (0.7 + random() * 0.3),
-    };
+  const count = ids.length;
+  const xs = new Float64Array(count);
+  const ys = new Float64Array(count);
+  ids.forEach((id, index) => {
+    const angle = (index / count) * Math.PI * 2 + random() * 0.4;
+    xs[index] = width / 2 + Math.cos(angle) * radius * (0.7 + random() * 0.3);
+    ys[index] = height / 2 + Math.sin(angle) * radius * (0.7 + random() * 0.3);
   });
-  const at = new Map(nodes.map((node, index) => [node.id, index]));
+  const at = new Map(ids.map((id, index) => [id, index]));
   const edges = input.edges
     .map((edge) => [at.get(edge.from), at.get(edge.to)] as const)
     .filter((pair): pair is readonly [number, number] => pair[0] !== undefined && pair[1] !== undefined && pair[0] !== pair[1]);
   const rest = spacing * 1.6;
   let temperature = Math.min(width, height) / 8;
+  const fx = new Float64Array(count);
+  const fy = new Float64Array(count);
   for (let step = 0; step < iterations; step += 1) {
-    const force = nodes.map(() => ({ x: 0, y: 0 }));
-    for (let a = 0; a < nodes.length; a += 1) {
-      for (let b = a + 1; b < nodes.length; b += 1) {
-        let dx = nodes[a].x - nodes[b].x;
-        let dy = nodes[a].y - nodes[b].y;
+    fx.fill(0);
+    fy.fill(0);
+    for (let a = 0; a < count; a += 1) {
+      for (let b = a + 1; b < count; b += 1) {
+        let dx = xs[a] - xs[b];
+        let dy = ys[a] - ys[b];
         let distance = Math.hypot(dx, dy);
         if (distance < 0.01) {
           dx = random() - 0.5;
@@ -75,39 +82,38 @@ export function layoutGraph(input: LayoutInput): LayoutNode[] {
           distance = 0.01;
         }
         const push = (spacing * spacing) / distance;
-        force[a].x += (dx / distance) * push;
-        force[a].y += (dy / distance) * push;
-        force[b].x -= (dx / distance) * push;
-        force[b].y -= (dy / distance) * push;
+        fx[a] += (dx / distance) * push;
+        fy[a] += (dy / distance) * push;
+        fx[b] -= (dx / distance) * push;
+        fy[b] -= (dy / distance) * push;
       }
     }
     for (const [a, b] of edges) {
-      const dx = nodes[a].x - nodes[b].x;
-      const dy = nodes[a].y - nodes[b].y;
+      const dx = xs[a] - xs[b];
+      const dy = ys[a] - ys[b];
       const distance = Math.max(0.01, Math.hypot(dx, dy));
       const pull = ((distance - rest) * distance) / rest / 4;
-      force[a].x -= (dx / distance) * pull;
-      force[a].y -= (dy / distance) * pull;
-      force[b].x += (dx / distance) * pull;
-      force[b].y += (dy / distance) * pull;
+      fx[a] -= (dx / distance) * pull;
+      fy[a] -= (dy / distance) * pull;
+      fx[b] += (dx / distance) * pull;
+      fy[b] += (dy / distance) * pull;
     }
-    for (let index = 0; index < nodes.length; index += 1) {
-      const node = nodes[index];
+    for (let index = 0; index < count; index += 1) {
       // Gravity toward the centre keeps a disconnected roster in frame.
-      force[index].x += (width / 2 - node.x) * 0.02;
-      force[index].y += (height / 2 - node.y) * 0.02;
-      const magnitude = Math.hypot(force[index].x, force[index].y);
+      fx[index] += (width / 2 - xs[index]) * 0.02;
+      fy[index] += (height / 2 - ys[index]) * 0.02;
+      const magnitude = Math.hypot(fx[index], fy[index]);
       const stepSize = Math.min(magnitude, temperature);
       if (magnitude > 0) {
-        node.x += (force[index].x / magnitude) * stepSize;
-        node.y += (force[index].y / magnitude) * stepSize;
+        xs[index] += (fx[index] / magnitude) * stepSize;
+        ys[index] += (fy[index] / magnitude) * stepSize;
       }
-      node.x = Math.min(width - spacing / 2, Math.max(spacing / 2, node.x));
-      node.y = Math.min(height - spacing / 2, Math.max(spacing / 2, node.y));
+      xs[index] = Math.min(width - spacing / 2, Math.max(spacing / 2, xs[index]));
+      ys[index] = Math.min(height - spacing / 2, Math.max(spacing / 2, ys[index]));
     }
     temperature = Math.max(0.5, temperature * 0.97);
   }
-  return nodes.map((node) => ({ id: node.id, x: Math.round(node.x * 10) / 10, y: Math.round(node.y * 10) / 10 }));
+  return ids.map((id, index) => ({ id, x: Math.round(xs[index] * 10) / 10, y: Math.round(ys[index] * 10) / 10 }));
 }
 
 // The closest any two nodes stand, for the test and for a caller deciding

@@ -11,15 +11,27 @@ import { authoredBonusRoute } from "@/lib/srd/authored-economy";
 
 export type MoveAction = "dodge" | "dash" | "disengage" | "hide";
 
-// A way to take an action as the bonus action: the feature's name and what
-// it costs in ki.
-export type BonusRoute = { feature: string; ki: number };
+// A way to take an action as the bonus action: the feature's name, what it
+// costs in ki, and the limited-use counter it spends one use of, when it has
+// one (src/lib/srd/class-resources.ts).
+export type BonusRoute = { feature: string; ki: number; counter?: string };
+
+// The genre classes' counted routes (src/lib/classes/resources.json): the
+// grifter's Vanish, 3 a long rest, and the horror Adrenaline Surge.
+const VANISH_COUNTER = "mystery_vanish";
+const ADRENALINE_SURGE = "horror_adrenaline_surge";
 
 export function holdsFeature(sheet: Pick<CharacterSheet, "features" | "feats">, name: string): boolean {
   const wanted = name.toLowerCase();
   return [...sheet.features.map((feature) => feature.name), ...(sheet.feats ?? [])].some((entry) =>
     entry.toLowerCase().includes(wanted),
   );
+}
+
+// Uses left on a counter the sheet holds, or null when it holds none.
+export function usesLeft(sheet: Pick<CharacterSheet, "resources">, id: string): number | null {
+  const counter = sheet.resources?.[id];
+  return counter ? Math.max(0, counter.max - counter.used) : null;
 }
 
 // Ki points left on the sheet's counter, or null for a character with none.
@@ -38,10 +50,13 @@ export function bonusRouteFor(sheet: CharacterSheet, action: MoveAction): BonusR
     return { feature: "Cunning Action", ki: 0 };
   }
   if (action === "hide" && (ranger >= 14 || holdsFeature(sheet, "vanish"))) {
-    return { feature: "Vanish", ki: 0 };
+    return { feature: "Vanish", ki: 0, ...(ranger < 14 && usesLeft(sheet, VANISH_COUNTER) !== null ? { counter: VANISH_COUNTER } : {}) };
   }
   if ((action === "hide" || action === "disengage") && holdsFeature(sheet, "nimble escape")) {
     return { feature: "Nimble Escape", ki: 0 };
+  }
+  if (action !== "dodge" && holdsFeature(sheet, "adrenaline surge") && usesLeft(sheet, ADRENALINE_SURGE) !== null) {
+    return { feature: "Adrenaline Surge", ki: 0, counter: ADRENALINE_SURGE };
   }
   // Expeditious Retreat (the spell): the Dash as a bonus action while it lasts.
   if (action === "dash" && sheet.conditions.some((entry) => entry.trim().toLowerCase() === EXPEDITIOUS_RETREAT)) {

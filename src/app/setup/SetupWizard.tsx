@@ -144,10 +144,15 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
       return "error" in built ? built : built.patch;
     }
     if (key === "pictures") {
+<<<<<<< HEAD
       if (draft.pictures === "comfyui") return picturesPatch({ kind: "comfyui", url: draft.comfy.url, checkpoint: draft.comfy.checkpoint });
       if (draft.pictures === "openai")
         return picturesPatch({ kind: "openai", baseUrl: draft.picturesOpenai.baseUrl, model: draft.picturesOpenai.model, apiKey: draft.picturesKey });
       if (draft.pictures === "fal") return picturesPatch({ kind: "fal", model: draft.picturesFal.model, apiKey: draft.picturesFal.apiKey });
+=======
+      if (draft.pictures === "comfyui") return picturesPatch({ kind: "comfyui", url: draft.comfy.url, checkpoint: draft.comfy.checkpoint, preset: draft.comfy.preset });
+      if (draft.pictures === "openai") return picturesPatch({ kind: "openai", apiKey: draft.picturesKey });
+>>>>>>> upstream/main
       if (draft.pictures === "agent") return picturesPatch({ kind: "agent" });
       return picturesPatch({ kind: "none" });
     }

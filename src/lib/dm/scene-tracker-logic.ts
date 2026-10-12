@@ -138,12 +138,28 @@ export type TrackerAdvance = {
   outcome: TrackerStatus;
 };
 
+// The handler calls this before rolling; recordCheck calls it again so a
+// different caller cannot move the clock with an ineligible attempt.
+export function checkSceneAttempt(tracker: SceneTracker, characterId: string): { error: string } | null {
+  if (tracker.status !== "running") {
+    return { error: `"${tracker.title}" already finished.` };
+  }
+  if (tracker.characterIds.length > 0 && !tracker.characterIds.includes(characterId)) {
+    return { error: "That character is not a participant in this scene." };
+  }
+  if (tracker.log.some((entry) => entry.round === tracker.round && entry.characterId === characterId)) {
+    return { error: "That character already made a check this round." };
+  }
+  return null;
+}
+
 export function recordCheck(
   tracker: SceneTracker,
   entry: Omit<TrackerEntry, "round">,
 ): TrackerAdvance | { error: string } {
-  if (tracker.status !== "running") {
-    return { error: `"${tracker.title}" already finished.` };
+  const invalid = checkSceneAttempt(tracker, entry.characterId);
+  if (invalid) {
+    return invalid;
   }
   const successes = tracker.successes + (entry.success ? 1 : 0);
   const failures = tracker.failures + (entry.success ? 0 : 1);

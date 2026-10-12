@@ -16,7 +16,13 @@
 //   model.script([reply({ calls: [call("pc_attack", {...})] }), reply({ text: "..." })]);
 //   const turn = await model.turn(world, "I swing at the goblin.");
 //   model.close();
+//
+// The claims reader (src/lib/dm/claims.ts) is answered apart from the
+// script: each of its calls takes the next entry of model.claims([...]) (a
+// list of claims, as the reader would reply), or none once those run out, so
+// a scripted turn's replies are never spent on it.
 import http from "node:http";
+import { answerReader, isReaderRequest } from "./claims-reader.mjs";
 
 // The AI's door into the engine: an AI turn and actor kind "ai", the way a
 // delegated turn or an AI share of an assisted session reaches it.
@@ -55,6 +61,8 @@ export async function fakeModel() {
   let script = [];
   let served = 0;
   const requests = [];
+  let readerScript = [];
+  const readerRequests = [];
   const fallback = reply({ text: "The moment settles, and the table waits on the next move." });
 
   function sse(res, entry) {
@@ -89,6 +97,11 @@ export async function fakeModel() {
         return;
       }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (isReaderRequest(body)) {
+        readerRequests.push(body);
+        answerReader(res, readerScript.shift() ?? []);
+        return;
+      }
       requests.push(body);
       const entry = script[served] ?? fallback;
       served += 1;
@@ -124,6 +137,12 @@ export async function fakeModel() {
       );
     });
   });
+  // Node closes an idle keep-alive socket after five seconds; a test that
+  // sets up a fight between two requests can take that long, and a request
+  // written onto the socket as it closes fails before any reply. The
+  // backend fetch retries that once, and this server never closes idle
+  // sockets, so the suites do not depend on the timing either way.
+  server.keepAliveTimeout = 0;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
   // A context window stated up front, so no request goes to probe one.
@@ -136,6 +155,12 @@ export async function fakeModel() {
 
   return {
     requests,
+    readerRequests,
+    // What the claims reader answers, one list of claims per reader call.
+    claims: (entries) => {
+      readerScript = [...entries];
+      readerRequests.length = 0;
+    },
     served: () => served,
     script: (entries) => {
       script = entries;

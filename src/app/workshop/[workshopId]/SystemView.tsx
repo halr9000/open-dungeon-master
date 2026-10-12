@@ -6,26 +6,36 @@ import { GameIcon } from "@/components/ui/GameIcon";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { headIcon } from "@/app/workshop/kit";
-import { DmMapLibraryPanel } from "@/app/campaigns/[campaignId]/DmMapLibraryPanel";
-import { DmNpcForgePanel } from "@/app/campaigns/[campaignId]/DmNpcForgePanel";
-import { DmEncounterPrepPanel } from "@/app/campaigns/[campaignId]/DmEncounterPrepPanel";
-import { DmBestiaryPanel } from "@/app/campaigns/[campaignId]/DmBestiaryPanel";
-import { DmSharePanel } from "@/app/campaigns/[campaignId]/DmSharePanel";
-import { DmStoryboardPanel } from "@/app/campaigns/[campaignId]/DmStoryboardPanel";
-import { DmTablesPanel } from "@/app/campaigns/[campaignId]/DmTablesPanel";
-import { LorePanel } from "@/app/campaigns/[campaignId]/LorePanel";
-import { OverworldPanel } from "@/app/campaigns/[campaignId]/OverworldPanel";
-import { RulesPanel } from "@/app/campaigns/[campaignId]/RulesPanel";
-import { FactionsPanel } from "@/app/campaigns/[campaignId]/FactionsPanel";
-import { MarketPanel } from "@/app/campaigns/[campaignId]/MarketPanel";
-import { RulesetLibrary } from "@/app/workshop/RulesetLibrary";
-import { HomebrewPanel } from "@/app/workshop/homebrew/HomebrewPanel";
-import { PartyPanel } from "@/app/workshop/party/PartyPanel";
-import { PluginPanel } from "@/app/workshop/plugin/PluginPanel";
+import { Suspense, lazy } from "react";
+import { PanelLoading } from "@/app/campaigns/[campaignId]/side-panel-loaders";
+
+// One tool shows at a time, so each is its own download, fetched when the
+// tool is opened: the hub and the first tool no longer carry every other
+// tool's editors and rules tables.
+const DmMapLibraryPanel = lazy(() => import("@/app/campaigns/[campaignId]/DmMapLibraryPanel").then((module) => ({ default: module.DmMapLibraryPanel })));
+const DmNpcForgePanel = lazy(() => import("@/app/campaigns/[campaignId]/DmNpcForgePanel").then((module) => ({ default: module.DmNpcForgePanel })));
+const DmEncounterPrepPanel = lazy(() => import("@/app/campaigns/[campaignId]/DmEncounterPrepPanel").then((module) => ({ default: module.DmEncounterPrepPanel })));
+const DmBestiaryPanel = lazy(() => import("@/app/campaigns/[campaignId]/DmBestiaryPanel").then((module) => ({ default: module.DmBestiaryPanel })));
+const DmSharePanel = lazy(() => import("@/app/campaigns/[campaignId]/DmSharePanel").then((module) => ({ default: module.DmSharePanel })));
+const DmStoryboardPanel = lazy(() => import("@/app/campaigns/[campaignId]/DmStoryboardPanel").then((module) => ({ default: module.DmStoryboardPanel })));
+const DmTablesPanel = lazy(() => import("@/app/campaigns/[campaignId]/DmTablesPanel").then((module) => ({ default: module.DmTablesPanel })));
+const LorePanel = lazy(() => import("@/app/campaigns/[campaignId]/LorePanel").then((module) => ({ default: module.LorePanel })));
+const OverworldPanel = lazy(() => import("@/app/campaigns/[campaignId]/OverworldPanel").then((module) => ({ default: module.OverworldPanel })));
+const RulesPanel = lazy(() => import("@/app/campaigns/[campaignId]/RulesPanel").then((module) => ({ default: module.RulesPanel })));
+const FactionsPanel = lazy(() => import("@/app/campaigns/[campaignId]/FactionsPanel").then((module) => ({ default: module.FactionsPanel })));
+const MarketPanel = lazy(() => import("@/app/campaigns/[campaignId]/MarketPanel").then((module) => ({ default: module.MarketPanel })));
+const RulesetLibrary = lazy(() => import("@/app/workshop/RulesetLibrary").then((module) => ({ default: module.RulesetLibrary })));
+const HomebrewPanel = lazy(() => import("@/app/workshop/homebrew/HomebrewPanel").then((module) => ({ default: module.HomebrewPanel })));
+const PartyPanel = lazy(() => import("@/app/workshop/party/PartyPanel").then((module) => ({ default: module.PartyPanel })));
+const PluginPanel = lazy(() => import("@/app/workshop/plugin/PluginPanel").then((module) => ({ default: module.PluginPanel })));
+const WorldForgePanel = lazy(() => import("@/app/workshop/world/WorldForgePanel").then((module) => ({ default: module.WorldForgePanel })));
 import {
   WORKSHOP_SYSTEMS,
+  isSystemId,
   systemCount,
+  systemGlyph,
   type SystemId,
+  type WorldCount,
 } from "@/app/workshop/[workshopId]/systems";
 import type { WorkshopSummary } from "@/app/workshop/types";
 
@@ -37,7 +47,7 @@ import type { WorkshopSummary } from "@/app/workshop/types";
 // to any of them because a workshop IS a campaigns row and its owner holds
 // the DM seat (docs/workshop-plan.md section 1). Cast and Battle maps opt
 // into their workshop layouts; the other eight render as they always have.
-// Party, Homebrew and Plugin are the workshop's own.
+// Party, Homebrew, Plugin and WorldForge are the workshop's own.
 
 export function SystemView({
   workshop,
@@ -46,6 +56,7 @@ export function SystemView({
   homebrew,
   pregens,
   plugin,
+  world = null,
   onChange,
   onBack,
   onHelp,
@@ -60,6 +71,7 @@ export function SystemView({
   homebrew: number | null;
   pregens: number | null;
   plugin: number | null;
+  world?: WorldCount | null;
   onChange: (system: SystemId) => void;
   onBack: () => void;
   // The guide for this tool and its tour.
@@ -70,9 +82,9 @@ export function SystemView({
   onPluginChanged: (count: number) => void;
 }) {
   const current = WORKSHOP_SYSTEMS.find((entry) => entry.id === system) ?? WORKSHOP_SYSTEMS[0];
-  const count = systemCount(current.id, workshop, bestiary, homebrew, pregens, plugin);
+  const count = systemCount(current.id, workshop, bestiary, homebrew, pregens, plugin, world);
   const items: IconRailItem<SystemId>[] = WORKSHOP_SYSTEMS.map((entry) => {
-    const entryCount = systemCount(entry.id, workshop, bestiary, homebrew, pregens, plugin);
+    const entryCount = systemCount(entry.id, workshop, bestiary, homebrew, pregens, plugin, world);
     return {
       value: entry.id,
       label: entry.label,
@@ -92,7 +104,7 @@ export function SystemView({
         <ArrowLeft className="size-4" /> {workshop.title}
       </button>
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <GameIcon icon={{ kind: "glyph", key: `system-${current.id}` }} size="size-9" />
+        <GameIcon icon={systemGlyph(current.id)} size="size-9" />
         <h2 className="gold-title font-display text-xl tracking-wide">{current.label}</h2>
         <span className="text-sm text-stone-500">{count.phrase}</span>
         <button
@@ -118,6 +130,10 @@ export function SystemView({
 
       {/* Keyed by system so the incoming tool rises in instead of cutting. */}
       <div key={system} className="motion-tab">
+        <Suspense fallback={<PanelLoading />}>
+        {system === "world" ? (
+          <WorldForgePanel campaignId={workshop.id} onOpenSystem={(next) => isSystemId(next) && onChange(next)} />
+        ) : null}
         {system === "storyboard" ? (
           <DmStoryboardPanel campaignId={workshop.id} layout="board" />
         ) : null}
@@ -175,6 +191,7 @@ export function SystemView({
             />
           </>
         ) : null}
+        </Suspense>
       </div>
     </section>
   );

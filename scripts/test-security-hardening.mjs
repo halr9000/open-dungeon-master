@@ -200,10 +200,21 @@ const uploads = path.join(process.cwd(), "public", "uploads");
 fs.mkdirSync(uploads, { recursive: true });
 fs.writeFileSync(path.join(uploads, "cover.png"), PNG);
 
-await test("a file under public/ is answered only to somebody signed in, and cached privately", async () => {
+await test("a file under public/ is answered only to the table it belongs to, and cached privately", async () => {
   globalThis.__odmTestToken = "";
   const anonymous = await ask(media, "GET", undefined, { path: ["uploads", "cover.png"] });
   assert.equal(anonymous.status, 401);
+
+  // Being signed in is not enough (audit S6, src/lib/media-access.ts): the
+  // file has to belong to a place the reader sits at.
+  const { getDatabase } = await import("../src/lib/db/core.ts");
+  getDatabase()
+    .prepare(`UPDATE campaigns SET dm_cover_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ url: "/uploads/cover.png" }), table.campaignId);
+  const elsewhere = await openWorld();
+  elsewhere.signIn(elsewhere.owner);
+  const outsider = await ask(media, "GET", undefined, { path: ["uploads", "cover.png"] });
+  assert.equal(outsider.status, 404, "another table's account");
 
   table.signIn(player);
   const signedIn = await ask(media, "GET", undefined, { path: ["uploads", "cover.png"] });

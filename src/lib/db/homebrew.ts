@@ -1,5 +1,6 @@
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import { getContentDb } from "@/lib/content/db";
+import { repairedWeight } from "@/lib/content/item-weights";
 import { gearFromHomebrewData } from "@/lib/homebrew/gear";
 import { SRD_ARMOR } from "@/lib/srd/armor";
 import { matchMagicItem } from "@/lib/srd/magic-items";
@@ -16,6 +17,9 @@ export type HomebrewEntry = {
   data: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  // When its author forgot it, or null. A forgotten entry is off the shelf
+  // and out of every picker; what already carries it keeps its rules.
+  archivedAt: string | null;
 };
 
 type HomebrewRow = {
@@ -27,19 +31,45 @@ type HomebrewRow = {
   data_json: string;
   created_at: string;
   updated_at: string;
+  archived_at?: string | null;
 };
 
 function mapEntry(row: HomebrewRow): HomebrewEntry {
+  const data = parseJson<Record<string, unknown>>(row.data_json, {});
   return {
     id: row.id,
     userId: row.user_id,
     kind: row.kind,
     slug: row.slug,
     name: row.name,
-    data: parseJson<Record<string, unknown>>(row.data_json, {}),
+    data: row.kind === "item" ? withRepairedWeight(row.name, data) : data,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    archivedAt: row.archived_at ?? null,
   };
+}
+
+// A copy of a catalog item took the catalog's weight, and packs built before
+// issue #205 had a dart at 14 lb: that one number is put right on read,
+// whatever the copy was renamed to (its copiedFrom names the original).
+// A weight its author changed is theirs and stays.
+function withRepairedWeight(name: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (typeof data.weight !== "number") {
+    return data;
+  }
+  const from = data.copiedFrom as { name?: unknown } | undefined;
+  const original = typeof from?.name === "string" ? from.name : name;
+  const weight = repairedWeight(original, data.weight);
+  if (weight === data.weight) {
+    return data;
+  }
+  const repaired = { ...data };
+  if (weight === undefined) {
+    delete repaired.weight;
+  } else {
+    repaired.weight = weight;
+  }
+  return repaired;
 }
 
 function slugify(value: string) {
@@ -52,16 +82,24 @@ function slugify(value: string) {
   );
 }
 
-export function listHomebrew(userId: string, kind?: HomebrewKind): HomebrewEntry[] {
+// A user's shelf. `archived`: false (the default) leaves forgotten entries
+// out, which is what every picker and list wants; true reads them too, for
+// play, where a sheet or a table that already carries one keeps its rules;
+// "only" lists the forgotten ones, for the shelf's Forgotten view.
+export function listHomebrew(userId: string, kind?: HomebrewKind, options: { archived?: boolean | "only" } = {}): HomebrewEntry[] {
   const db = getDatabase();
+  const archived = options.archived ?? false;
+  const filter = archived === "only" ? " AND archived_at IS NOT NULL" : archived ? "" : " AND archived_at IS NULL";
   const rows = (
     kind
       ? db
-          .prepare(`SELECT * FROM homebrew_entries WHERE user_id = ? AND kind = ? ORDER BY name`)
+          .prepare(`SELECT * FROM homebrew_entries WHERE user_id = ? AND kind = ?${filter} ORDER BY name`)
           .all(userId, kind)
-      : db.prepare(`SELECT * FROM homebrew_entries WHERE user_id = ? ORDER BY kind, name`).all(userId)
+      : db.prepare(`SELECT * FROM homebrew_entries WHERE user_id = ?${filter} ORDER BY kind, name`).all(userId)
   ) as HomebrewRow[];
-  return rows.map(mapEntry);
+  // A live entry is listed before a forgotten one of the same name, so the
+  // first match by name is always the live one.
+  return rows.map(mapEntry).sort((a, b) => Number(Boolean(a.archivedAt)) - Number(Boolean(b.archivedAt)));
 }
 
 export function getHomebrew(userId: string, id: string): HomebrewEntry | null {
@@ -69,6 +107,33 @@ export function getHomebrew(userId: string, id: string): HomebrewEntry | null {
     .prepare(`SELECT * FROM homebrew_entries WHERE id = ? AND user_id = ?`)
     .get(id, userId) as HomebrewRow | undefined;
   return row ? mapEntry(row) : null;
+}
+
+// An entry of one of these authors by kind and slug (the slug createHomebrew
+// derives from the name), the first author's first; forgotten ones too,
+// since what reads a name in play still answers for it.
+export function findHomebrewBySlug(userIds: string[], kind: HomebrewKind, slug: string): HomebrewEntry | null {
+  const wanted = slug.trim().toLowerCase();
+  for (const userId of [...new Set(userIds.filter(Boolean))]) {
+    const row = getDatabase()
+      .prepare(`SELECT * FROM homebrew_entries WHERE user_id = ? AND kind = ? AND slug = ? ORDER BY archived_at IS NOT NULL LIMIT 1`)
+      .get(userId, kind, wanted) as HomebrewRow | undefined;
+    if (row) {
+      return mapEntry(row);
+    }
+  }
+  return null;
+}
+
+// An entry by id when it belongs to one of these authors.
+export function getAuthorsHomebrew(userIds: string[], id: string): HomebrewEntry | null {
+  for (const userId of [...new Set(userIds.filter(Boolean))]) {
+    const entry = getHomebrew(userId, id);
+    if (entry) {
+      return entry;
+    }
+  }
+  return null;
 }
 
 export function createHomebrew(userId: string, input: CreateHomebrewInput): HomebrewEntry {
@@ -169,7 +234,7 @@ export function isPublishedGearName(name: string): boolean {
 // Whose workshop counts at a table: whoever runs it. The owner made the
 // campaign and the DM seats referee it; a player's own entries are theirs to
 // write and the table's to admit, which a DM does by keeping the entry.
-function tableAuthors(campaignId: string): string[] {
+export function tableAuthors(campaignId: string): string[] {
   const row = getDatabase()
     .prepare(
       `SELECT owner_user_id, human_dm_user_id, assistant_dm_user_id FROM campaigns WHERE id = ?`,
@@ -187,6 +252,17 @@ function tableAuthors(campaignId: string): string[] {
       ),
     ),
   ];
+}
+
+export function homebrewRaceLabel(userId: string, race: string, campaignId?: string): string | undefined {
+  // Keep the admitted ID for rules and edits; resolve only its display name.
+  if (!race.startsWith("homebrew:")) return undefined;
+  const authors = campaignId ? tableAuthors(campaignId) : [userId];
+  for (const author of authors) {
+    const entry = getHomebrew(author, race.slice("homebrew:".length));
+    if (entry?.kind === "race") return entry.name;
+  }
+  return undefined;
 }
 
 // A sheet's equipment with every homebrew item's mechanics snapshotted onto
@@ -211,9 +287,11 @@ export function hydrateHomebrewGear(
     return equipment;
   }
   let items: HomebrewEntry[] | null = null;
+  // Forgotten entries too: a sheet that carries one keeps its rules
+  // (archiveHomebrew), the live one of a name first.
   const load = () =>
     (items ??= (table.campaignId ? tableAuthors(table.campaignId) : [userId]).flatMap((author) =>
-      listHomebrew(author, "item"),
+      listHomebrew(author, "item", { archived: true }),
     ));
   return equipment.map((item) => {
     const slugId = item.slug?.startsWith("homebrew:") ? item.slug.slice("homebrew:".length) : null;
@@ -232,12 +310,39 @@ export function hydrateHomebrewGear(
       delete bare.gear;
       return bare;
     }
+    // The line took the entry's weight when it was first carried; a copy's
+    // old-pack weight (issue #205) is replaced by the entry's repaired one.
+    const copied = (entry?.data.copiedFrom as { name?: unknown } | undefined)?.name;
+    const stale =
+      item.weight !== undefined &&
+      typeof copied === "string" &&
+      repairedWeight(copied, item.weight) !== item.weight;
     return {
       ...item,
       gear,
-      ...(item.weight === undefined && gear.weight !== undefined ? { weight: gear.weight } : {}),
+      ...((item.weight === undefined || stale) && gear.weight !== undefined ? { weight: gear.weight } : {}),
     };
   });
+}
+
+// Forgetting an entry archives it: it leaves its author's shelf and every
+// picker, so nothing new is made with it, and everything that already
+// carries it (a sheet's item, a feat, a spell on a list, a species, an NPC's
+// stat block) keeps its rules as last saved. restoreHomebrew brings it back;
+// deleteHomebrew removes it for good, and then what carried it keeps only
+// its name.
+export function archiveHomebrew(userId: string, id: string): boolean {
+  const result = getDatabase()
+    .prepare(`UPDATE homebrew_entries SET archived_at = ? WHERE id = ? AND user_id = ? AND archived_at IS NULL`)
+    .run(nowIso(), id, userId);
+  return result.changes > 0;
+}
+
+export function restoreHomebrew(userId: string, id: string): boolean {
+  const result = getDatabase()
+    .prepare(`UPDATE homebrew_entries SET archived_at = NULL WHERE id = ? AND user_id = ?`)
+    .run(id, userId);
+  return result.changes > 0;
 }
 
 export function deleteHomebrew(userId: string, id: string): boolean {

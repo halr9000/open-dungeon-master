@@ -9,10 +9,16 @@
 // identical to the last one applied is dropped, so a ping that changed
 // nothing for this seat leaves the previous view object in place and the
 // memoized board is not rebuilt.
+//
+// `skipSame: false` applies every answer, for lists that other events also
+// write to (notes, chat, whispers): there "the same as last time" says
+// nothing about what is on screen now. Ordering and coalescing still hold.
 export function coalesceRefresh(
   load: () => Promise<string | null>,
   apply: (body: string) => void,
+  options: { skipSame?: boolean } = {},
 ): () => Promise<void> {
+  const skipSame = options.skipSame ?? true;
   let inFlight: Promise<void> | null = null;
   let trailing = false;
   let lastBody: string | null = null;
@@ -27,7 +33,7 @@ export function coalesceRefresh(
         // Transient; the next ping retries, exactly as the plain fetch did.
         body = null;
       }
-      if (body !== null && body !== lastBody) {
+      if (body !== null && (!skipSame || body !== lastBody)) {
         lastBody = body;
         apply(body);
       }

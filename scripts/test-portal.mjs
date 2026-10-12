@@ -7,11 +7,13 @@ register("./lib/register-alias.mjs", import.meta.url);
 
 const {
   PORTAL_ORIGIN_COOKIE,
+  PORTAL_SIG_COOKIE,
   PORTAL_TOKEN_COOKIE,
   forwardHeaders,
   isPortalPath,
   portalFromCookies,
   portalOrigin,
+  portalSignature,
   portalTargetUrl,
 } = await import("../src/lib/portal.ts");
 
@@ -22,6 +24,9 @@ function test(name, fn) {
 }
 
 const TOKEN = "abcdefghijklmnopqrstuvwxyz0123456789_-";
+const SECRET = "s".repeat(16) + "0123456789abcdef0123456789";
+const HOST = "https://host.example";
+const SIG = portalSignature(SECRET, HOST, TOKEN);
 
 test("portalOrigin accepts a bare http or https origin and nothing more", () => {
   assert.equal(portalOrigin("https://play-abcd.opendungeonmaster.com"), "https://play-abcd.opendungeonmaster.com");
@@ -37,13 +42,42 @@ test("portalOrigin accepts a bare http or https origin and nothing more", () => 
 });
 
 test("portalFromCookies needs both cookies and a token-shaped token", () => {
-  const jar = { [PORTAL_ORIGIN_COOKIE]: "https://host.example", [PORTAL_TOKEN_COOKIE]: TOKEN };
-  assert.deepEqual(portalFromCookies((name) => jar[name]), { origin: "https://host.example", token: TOKEN });
-  assert.equal(portalFromCookies((name) => ({ ...jar, [PORTAL_TOKEN_COOKIE]: "" })[name]), null);
-  assert.equal(portalFromCookies((name) => ({ ...jar, [PORTAL_TOKEN_COOKIE]: "short" })[name]), null);
-  assert.equal(portalFromCookies((name) => ({ ...jar, [PORTAL_TOKEN_COOKIE]: "bad token!" })[name]), null);
-  assert.equal(portalFromCookies((name) => ({ [PORTAL_TOKEN_COOKIE]: TOKEN })[name]), null);
-  assert.equal(portalFromCookies(() => undefined), null);
+  const jar = { [PORTAL_ORIGIN_COOKIE]: HOST, [PORTAL_TOKEN_COOKIE]: TOKEN, [PORTAL_SIG_COOKIE]: SIG };
+  assert.deepEqual(portalFromCookies((name) => jar[name], SECRET), { origin: HOST, token: TOKEN });
+  assert.equal(portalFromCookies((name) => ({ ...jar, [PORTAL_TOKEN_COOKIE]: "" })[name], SECRET), null);
+  assert.equal(portalFromCookies((name) => ({ ...jar, [PORTAL_TOKEN_COOKIE]: "short" })[name], SECRET), null);
+  assert.equal(portalFromCookies((name) => ({ ...jar, [PORTAL_TOKEN_COOKIE]: "bad token!" })[name], SECRET), null);
+  assert.equal(portalFromCookies((name) => ({ [PORTAL_TOKEN_COOKIE]: TOKEN })[name], SECRET), null);
+  assert.equal(portalFromCookies(() => undefined, SECRET), null);
+});
+
+test("a server the app did not start has no portal, whatever the cookies say", () => {
+  const jar = { [PORTAL_ORIGIN_COOKIE]: HOST, [PORTAL_TOKEN_COOKIE]: TOKEN, [PORTAL_SIG_COOKIE]: SIG };
+  assert.equal(portalFromCookies((name) => jar[name], undefined), null);
+  assert.equal(portalFromCookies((name) => jar[name], ""), null);
+  assert.equal(portalFromCookies((name) => jar[name], "too-short-a-secret"), null);
+});
+
+test("forged cookies are refused: no signature, a wrong one, or one made for another host", () => {
+  const base = { [PORTAL_ORIGIN_COOKIE]: HOST, [PORTAL_TOKEN_COOKIE]: TOKEN };
+  assert.equal(portalFromCookies((name) => base[name], SECRET), null);
+  assert.equal(portalFromCookies((name) => ({ ...base, [PORTAL_SIG_COOKIE]: "x".repeat(43) })[name], SECRET), null);
+  const otherSecret = portalSignature("o".repeat(40), HOST, TOKEN);
+  assert.equal(portalFromCookies((name) => ({ ...base, [PORTAL_SIG_COOKIE]: otherSecret })[name], SECRET), null);
+  // A signature lifted from one host does not carry the request to another,
+  // a private address included.
+  for (const elsewhere of ["http://127.0.0.1:8080", "http://[::1]:3005", "http://169.254.169.254", "https://host.example:8443"]) {
+    const jar = { ...base, [PORTAL_ORIGIN_COOKIE]: elsewhere, [PORTAL_SIG_COOKIE]: SIG };
+    assert.equal(portalFromCookies((name) => jar[name], SECRET), null, elsewhere);
+  }
+  // Nor to the same host with another token.
+  const swapped = { ...base, [PORTAL_TOKEN_COOKIE]: TOKEN.replace("a", "b"), [PORTAL_SIG_COOKIE]: SIG };
+  assert.equal(portalFromCookies((name) => swapped[name], SECRET), null);
+});
+
+test("the signature is made over the normalized origin", () => {
+  const jar = { [PORTAL_ORIGIN_COOKIE]: "https://Host.Example/", [PORTAL_TOKEN_COOKIE]: TOKEN, [PORTAL_SIG_COOKIE]: SIG };
+  assert.deepEqual(portalFromCookies((name) => jar[name], SECRET), { origin: HOST, token: TOKEN });
 });
 
 test("data paths are forwarded, the UI's own are not", () => {

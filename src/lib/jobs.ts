@@ -7,16 +7,19 @@ import {
   markCampaignNudged,
 } from "@/lib/db/campaigns";
 import { notifyUsers } from "@/lib/db/notifications";
+import { retentionDue, runRetention } from "@/lib/ops/retention";
+import { pruneExpiredSessions } from "@/lib/db/users";
 import {
   listSessionsAwaitingReminder,
   sessionWhen,
   setSessionReminderStage,
 } from "@/lib/db/scheduling";
 
-// Background chores: session reminders and the idle-table nudge. One
-// interval on globalThis (login-throttle pattern), started from
-// src/instrumentation.ts, because a standalone Next server has no custom
-// entry point of its own and dev HMR would strand a module-scoped timer.
+// Background chores: session reminders, the idle-table nudge, the daily
+// storage tidy. One interval on globalThis (login-throttle pattern),
+// started from src/instrumentation.ts, because a standalone Next server has
+// no custom entry point of its own and dev HMR would strand a module-scoped
+// timer.
 //
 // The decision logic is pure and takes the clock as an argument so the test
 // harness can drive time (scripts/test-jobs.mjs); the tick functions only
@@ -125,6 +128,12 @@ function idleCampaignJob(now: number) {
   }
 }
 
+// Expired sign-ins. The session lookup refuses them by date already; this
+// only keeps the table from growing (src/lib/db/users.ts).
+function expiredSessionsJob(now: number) {
+  pruneExpiredSessions(new Date(now).toISOString());
+}
+
 // Accounts whose deletion grace period has run out (src/lib/account-deletion.ts).
 function accountPurgeJob(now: number) {
   purgeDueAccounts(now);
@@ -137,11 +146,21 @@ function assistantRelayJob(now: number) {
   void syncAssistantRelay(now).catch((error) => console.error("[jobs] assistant-relay failed", error));
 }
 
+// The daily tidy of what nothing reads back (src/lib/ops/retention.ts).
+// Async and batched, so a long event log never holds the table up.
+function retentionJob(now: number) {
+  if (retentionDue(now)) {
+    void runRetention(now).catch((error) => console.error("[jobs] retention failed", error));
+  }
+}
+
 const jobs: Array<[name: string, run: (now: number) => void]> = [
+  ["expired-sessions", expiredSessionsJob],
   ["session-reminders", sessionReminderJob],
   ["idle-campaigns", idleCampaignJob],
   ["account-purge", accountPurgeJob],
   ["assistant-relay", assistantRelayJob],
+  ["retention", retentionJob],
 ];
 
 // One pass over every job. Exported so the test harness can drive ticks with

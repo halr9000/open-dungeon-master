@@ -43,6 +43,9 @@ export type TurnBudget = {
   // The Attack action was taken this turn with a light melee weapon, which
   // is what earns the bonus-action swing of two-weapon fighting.
   lightMeleeAttack?: boolean;
+  // ... or with a melee weapon held in one hand, which is what earns it
+  // with Dual Wielder (the feat lifts "light", not "one-handed").
+  oneHandMeleeAttack?: boolean;
   // Loading weapons already fired inside the action now being spent. One
   // shot each per action, however many attacks the action holds.
   loadingFired?: string[];

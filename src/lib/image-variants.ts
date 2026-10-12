@@ -161,10 +161,11 @@ function runWorker(job: {
 }): Promise<VariantResult> {
   return new Promise((resolve) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined = undefined;
     const finish = (result: VariantResult) => {
       if (!settled) {
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve(result);
       }
     };
@@ -180,7 +181,7 @@ function runWorker(job: {
       finish({ written: [], skipped: [], error: error instanceof Error ? error.message : String(error) });
       return;
     }
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       void worker.terminate();
       finish({ written: [], skipped: [], error: "timed out" });
     }, JOB_TIMEOUT_MS);
@@ -275,11 +276,15 @@ function enqueue(source: string): Promise<VariantResult> {
 // the event loop, after the caller has returned its response.
 export function scheduleImageVariants(source: string): void {
   setImmediate(() => {
-    void enqueue(source).then((result) => {
-      if (result.error) {
-        console.warn(`[image-variants] ${path.basename(source)}: ${result.error}`);
-      }
-    });
+    void enqueue(source)
+      .then((result) => {
+        if (result.error) {
+          console.warn(`[image-variants] ${path.basename(source)}: ${result.error}`);
+        }
+      })
+      .catch((error) => {
+        console.warn(`[image-variants] ${path.basename(source)}: ${error instanceof Error ? error.message : String(error)}`);
+      });
   });
 }
 
@@ -308,7 +313,7 @@ export async function servedSegments(
   if (!name || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     return segments;
   }
-  const root = path.join(process.cwd(), "public", rootDir);
+  const root = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", rootDir);
   const original = path.resolve(root, ...segments);
   if (!original.startsWith(root + path.sep)) {
     return segments;

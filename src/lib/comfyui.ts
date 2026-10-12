@@ -3,11 +3,21 @@ import path from "node:path";
 import { configValue, getGlobalConfig } from "@/lib/app-config";
 import { sniffImage } from "@/lib/image-format";
 import { scheduleImageVariants } from "@/lib/image-variants";
+import {
+  Z_IMAGE_SLOTS,
+  pickZImageFiles,
+  readComfyFiles,
+  zImageMissing,
+  type ZImageFiles,
+  type ZImageSlot,
+} from "@/lib/setup/discovery-logic";
 import type { AspectPreset, GeneratedImage, ImageMode } from "@/lib/types";
+import { recordMediaFile } from "@/lib/media-access";
 
 // First-party ComfyUI backend: the app submits a plain text-to-image workflow
 // over ComfyUI's HTTP API and saves the result exactly like the FLUX worker
-// does. Any running ComfyUI instance works — the user picks the checkpoint.
+// does. Any running ComfyUI instance works: the admin picks a checkpoint, or
+// Z-Image Turbo, whose three files are found in that ComfyUI's own lists.
 
 const DEFAULT_COMFY_URL = "http://127.0.0.1:8188";
 const STATUS_TIMEOUT_MS = 4_000;
@@ -123,43 +133,87 @@ export type ComfyStatus = {
   // dropdowns; empty when the server has none.
   clipName?: string;
   vaeName?: string;
+  // The Z-Image Turbo files this ComfyUI has, "" for each one it lacks.
+  zImage: ZImageFiles;
 };
 
-// A dropdown value list from /object_info/<Node>, flattened to strings.
-async function objectOptions(url: string, node: string, input: string, signal: AbortSignal): Promise<string[]> {
-  const response = await comfyFetch(`${url}/object_info/${node}`, { cache: "no-store", signal });
+const NO_Z_IMAGE: ZImageFiles = { unet: "", clip: "", vae: "" };
+
+// A loader's file list, or none when ComfyUI does not know the node or its
+// answer is not JSON. A redirect or a flood still refuses the whole check.
+async function readFileList(response: Response, node: string, input: string): Promise<string[]> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     return [];
   }
-  const info = await readJson<Record<string, { input?: { required?: Record<string, unknown[]> } }>>(response);
-  const field = info[node]?.input?.required?.[input]?.[0];
-  return Array.isArray(field) ? field.filter((name): name is string => typeof name === "string") : [];
+  try {
+    return readComfyFiles(await readJson<unknown>(response), node, input);
+  } catch (error) {
+    if (error instanceof ComfyRefusal) {
+      throw error;
+    }
+    return [];
+  }
 }
 
-// One call powers the Images panel: reachability plus the model lists the
-// checkpoint and unet loaders each declare.
+// One call powers the Images panel: reachability, the model lists the
+// checkpoint, unet, clip and VAE loaders each declare, and the Z-Image
+// Turbo files from the three loaders that workflow uses.
 export async function comfyStatus(rawUrl: string | undefined): Promise<ComfyStatus> {
   const url = resolveComfyUrl(rawUrl);
   const timeout = timeoutSignal(STATUS_TIMEOUT_MS);
+  const slots = Object.keys(Z_IMAGE_SLOTS) as ZImageSlot[];
 
   try {
-    const stats = await comfyFetch(`${url}/system_stats`, { cache: "no-store", signal: timeout.signal });
-    if (!stats.ok) {
-      return { ok: false, error: `ComfyUI answered ${stats.status}.`, checkpoints: [] };
-    }
-
-    const [checkpoints, unets, clips, vaes] = await Promise.all([
-      objectOptions(url, "CheckpointLoaderSimple", "ckpt_name", timeout.signal),
-      objectOptions(url, "UNETLoader", "unet_name", timeout.signal),
-      objectOptions(url, "CLIPLoader", "clip_name", timeout.signal),
-      objectOptions(url, "VAELoader", "vae_name", timeout.signal),
+    // One object_info call per loader node, de-duplicated: the Z-Image Turbo
+    // slots load through the same UNET/CLIP/VAE loaders the Krea discovery
+    // reads, so both features share the answers.
+    const nodeNames = [
+      ...new Set([
+        "CheckpointLoaderSimple",
+        "UNETLoader",
+        "CLIPLoader",
+        "VAELoader",
+        ...slots.map((slot) => Z_IMAGE_SLOTS[slot].node),
+      ]),
+    ];
+    const [stats, ...infoResponses] = await Promise.all([
+      comfyFetch(`${url}/system_stats`, { cache: "no-store", signal: timeout.signal }),
+      ...nodeNames.map((node) => comfyFetch(`${url}/object_info/${node}`, { cache: "no-store", signal: timeout.signal })),
     ]);
+    if (!stats.ok) {
+      await Promise.all(infoResponses.map((response) => response.body?.cancel().catch(() => {})));
+      return { ok: false, error: `ComfyUI answered ${stats.status}.`, checkpoints: [], zImage: NO_Z_IMAGE };
+    }
+    const parsedLists = new Map<string, string[]>();
+    const list = (node: string, input: string): string[] => {
+      const index = nodeNames.indexOf(node);
+      if (index < 0) {
+        return [];
+      }
+      const key = `${node}:${input}`;
+      let files = parsedLists.get(key);
+      if (!files) {
+        files = readFileList(infoResponses[index], node, input);
+        parsedLists.set(key, files);
+      }
+      return files;
+    };
+
+    const checkpoints = list("CheckpointLoaderSimple", "ckpt_name");
+    const unets = list("UNETLoader", "unet_name");
+    const clips = list("CLIPLoader", "clip_name");
+    const vaes = list("VAELoader", "vae_name");
+    const zImage = pickZImageFiles({
+      unet: list(Z_IMAGE_SLOTS.unet.node, Z_IMAGE_SLOTS.unet.input),
+      clip: list(Z_IMAGE_SLOTS.clip.node, Z_IMAGE_SLOTS.clip.input),
+      vae: list(Z_IMAGE_SLOTS.vae.node, Z_IMAGE_SLOTS.vae.input),
+    });
 
     // The pick-one-list the panel shows: unet-file models first (what this
     // server is set up to run), then plain checkpoints. The Krea/Flux
     // encoder and VAE defaults come from these same dropdowns.
-    const status: ComfyStatus = { ok: true, checkpoints: [...unets, ...checkpoints], unets };
+    const status: ComfyStatus = { ok: true, checkpoints: [...unets, ...checkpoints], unets, zImage };
     const clip = clips.find((name) => KREA_CLIP_MATCH.test(name));
     const vae = vaes.find((name) => KREA_VAE_MATCH.test(name));
     if (clip) status.clipName = clip;
@@ -167,12 +221,13 @@ export async function comfyStatus(rawUrl: string | undefined): Promise<ComfyStat
     return status;
   } catch (error) {
     if (error instanceof ComfyRefusal) {
-      return { ok: false, error: error.message, checkpoints: [] };
+      return { ok: false, error: error.message, checkpoints: [], zImage: NO_Z_IMAGE };
     }
     return {
       ok: false,
       error: `Could not reach ComfyUI at ${url}. Start ComfyUI and check the URL.`,
       checkpoints: [],
+      zImage: NO_Z_IMAGE,
     };
   } finally {
     timeout.clear();
@@ -192,7 +247,7 @@ function comfyDimensions(mode: ImageMode, aspect: AspectPreset) {
   return { width: longSide, height: longSide };
 }
 
-function buildWorkflow(options: {
+export function buildCheckpointWorkflow(options: {
   checkpoint: string;
   prompt: string;
   width: number;
@@ -303,6 +358,85 @@ function buildWorkflow(options: {
   };
 }
 
+// The Z-Image Turbo graph from the supplied ComfyUI API workflow. Only the
+// positive text, latent dimensions, and seed vary between generations, and
+// the three file names, which come from this ComfyUI's own lists (comfyStatus).
+//
+// It runs at CFG 1 with a zeroed negative, so a table boundary's picture
+// negatives have nowhere to go. They are not folded into the prompt either:
+// "Leave out: blood, wounds" in a positive prompt paints blood and wounds.
+export function buildZTurboWorkflow(options: {
+  prompt: string;
+  width: number;
+  height: number;
+  seed: number;
+  files: ZImageFiles;
+}) {
+  return {
+    "9": {
+      class_type: "SaveImage",
+      inputs: { filename_prefix: "z-image-turbo", images: ["57:8", 0] },
+      _meta: { title: "Save Image" },
+    },
+    "57:30": {
+      class_type: "CLIPLoader",
+      inputs: { clip_name: options.files.clip, type: "lumina2", device: "default" },
+      _meta: { title: "Load CLIP" },
+    },
+    "57:29": {
+      class_type: "VAELoader",
+      inputs: { vae_name: options.files.vae },
+      _meta: { title: "Load VAE" },
+    },
+    "57:33": {
+      class_type: "ConditioningZeroOut",
+      inputs: { conditioning: ["57:27", 0] },
+      _meta: { title: "Conditioning Zero Out" },
+    },
+    "57:8": {
+      class_type: "VAEDecode",
+      inputs: { samples: ["57:3", 0], vae: ["57:29", 0] },
+      _meta: { title: "VAE Decode" },
+    },
+    "57:28": {
+      class_type: "UNETLoader",
+      inputs: { unet_name: options.files.unet, weight_dtype: "default" },
+      _meta: { title: "Load Diffusion Model" },
+    },
+    "57:27": {
+      class_type: "CLIPTextEncode",
+      inputs: { text: options.prompt, clip: ["57:30", 0] },
+      _meta: { title: "CLIP Text Encode (Prompt)" },
+    },
+    "57:13": {
+      class_type: "EmptySD3LatentImage",
+      inputs: { width: options.width, height: options.height, batch_size: 1 },
+      _meta: { title: "EmptySD3LatentImage" },
+    },
+    "57:11": {
+      class_type: "ModelSamplingAuraFlow",
+      inputs: { shift: 3, sampling: "flow", model: ["57:28", 0] },
+      _meta: { title: "ModelSamplingAuraFlow" },
+    },
+    "57:3": {
+      class_type: "KSampler",
+      inputs: {
+        seed: options.seed,
+        steps: 8,
+        cfg: 1,
+        sampler_name: "res_multistep",
+        scheduler: "beta",
+        denoise: 1,
+        model: ["57:11", 0],
+        positive: ["57:27", 0],
+        negative: ["57:33", 0],
+        latent_image: ["57:13", 0],
+      },
+      _meta: { title: "KSampler" },
+    },
+  };
+}
+
 type HistoryEntry = {
   status?: { completed?: boolean; status_str?: string; messages?: unknown[] };
   outputs?: Record<string, { images?: Array<{ filename?: string; subfolder?: string; type?: string }> }>;
@@ -335,18 +469,31 @@ export async function generateComfyImage(options: {
   const startedAt = Date.now();
   const deadline = startedAt + GENERATE_TIMEOUT_MS;
 
+  const preset = getGlobalConfig().images.comfyWorkflowPreset;
+  // The status also carries the unet-file list and the Krea encoder/VAE
+  // defaults, so a checkpoint generation reads it even with a checkpoint set.
   const status = await comfyStatus(url);
   if (!status.ok) {
     throw new Error(status.error || `Could not reach ComfyUI at ${url}.`);
   }
   let checkpoint = (options.checkpoint || "").trim();
-  if (!checkpoint) {
+  if (preset !== "z_turbo" && !checkpoint) {
     checkpoint = status.checkpoints[0] || "";
     if (!checkpoint) {
       throw new Error(
         "ComfyUI has no models installed. Put a checkpoint or unet file in ComfyUI's models folders and refresh.",
       );
     }
+  }
+  let zImage = NO_Z_IMAGE;
+  if (preset === "z_turbo") {
+    // The files this ComfyUI has, whatever precision it downloaded; a
+    // missing one is named here rather than in ComfyUI's validation error.
+    const missing = zImageMissing(status.zImage);
+    if (missing.length) {
+      throw new Error(`ComfyUI is missing ${missing.join(", ")} for Z-Image Turbo. Add it, or pick a checkpoint in Admin > Images.`);
+    }
+    zImage = status.zImage;
   }
   // The clip/vae defaults come from the same discovery pass, so a Krea-class
   // graph is only built when the server actually has the encoder and VAE.
@@ -355,17 +502,19 @@ export async function generateComfyImage(options: {
 
   const seed = options.seed ?? Math.floor(Math.random() * 2_147_483_647);
   const { width, height } = comfyDimensions(options.mode, options.aspect);
-  const workflow = buildWorkflow({
-    checkpoint,
-    prompt: options.prompt,
-    width,
-    height,
-    seed,
-    negative: options.negative,
-    clipName,
-    vaeName,
-    unets: status.unets ?? [],
-  });
+  const workflow = preset === "z_turbo"
+    ? buildZTurboWorkflow({ prompt: options.prompt, width, height, seed, files: zImage })
+    : buildCheckpointWorkflow({
+        checkpoint,
+        prompt: options.prompt,
+        width,
+        height,
+        seed,
+        negative: options.negative,
+        clipName,
+        vaeName,
+        unets: status.unets ?? [],
+      });
 
   const submitTimeout = timeoutSignal(STATUS_TIMEOUT_MS * 2);
   let promptId = "";
@@ -432,7 +581,7 @@ export async function generateComfyImage(options: {
     }
     if (entry.status?.status_str === "error") {
       throw new Error(
-        "ComfyUI failed to run the workflow. Check the ComfyUI console — usually a missing checkpoint or out-of-memory.",
+        "ComfyUI failed to run the workflow. Check the ComfyUI console: it is usually a missing model file or out-of-memory.",
       );
     }
     const images = Object.values(entry.outputs || {}).flatMap((output) => output.images || []);
@@ -472,15 +621,16 @@ export async function generateComfyImage(options: {
     throw new Error("ComfyUI returned something that is not a PNG, JPEG or WebP image.");
   }
 
-  const generatedDir = path.join(process.cwd(), "public", "generated");
+  const generatedDir = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", "generated");
   mkdirSync(generatedDir, { recursive: true });
   const filename = `${Date.now()}-${seed}-comfyui-${promptSlug(options.prompt)}.${kind.ext}`;
-  const saved = path.join(generatedDir, filename);
+  const saved = path.join(/*turbopackIgnore: true*/ generatedDir, filename);
   writeFileSync(saved, bytes);
   // The smaller WebP copies the table draws, written after the fact; the
   // original is what the campaign stores and what a client without them gets.
   scheduleImageVariants(saved);
 
+  recordMediaFile(`/generated/${filename}`);
   return {
     id: crypto.randomUUID(),
     url: `/generated/${filename}`,

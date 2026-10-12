@@ -77,6 +77,16 @@ export type RulebookPageResponse = {
   chapter: { id: string; numeral: string; title: string };
   prev: PageLink | null;
   next: PageLink | null;
+  // Where the page goes in ODM and how the table runs it
+  // (src/lib/rulebook/crosswalk.ts). Absent from older servers.
+  crosswalk?: {
+    editor: "spell" | "item" | "race" | "archetype" | "monster" | null;
+    catalogName?: string;
+    classId?: string;
+    template?: string;
+    support: "engine" | "structured" | "editable" | "reference";
+    where: string;
+  };
 };
 
 export type SearchHit = {
@@ -90,7 +100,10 @@ export type SearchHit = {
   heading?: string;
   at?: string;
   snippet: string;
+  // The page's words the query matched, as written (lower case), for the
+  // reader to mark.
+  words: string[];
   score: number;
 };
 
-export type SearchResponse = { hits: SearchHit[]; terms: string[] };
+export type SearchResponse = { hits: SearchHit[] };

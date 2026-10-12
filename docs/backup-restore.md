@@ -41,3 +41,9 @@ node scripts/odm-restore.mjs /path/to/odm-backup-....tar.gz --live
 The command refuses a live restore while the application is listening on its configured `PORT` (3005 by default). It verifies the staged restore first and only then replaces the managed state paths from the archive.
 
 After a live restore, start ODM normally and verify the campaign before deleting any older backup.
+
+## From the admin panel
+
+The admin panel's Backups section takes the same archive while the server keeps playing: the database is snapshotted with `VACUUM INTO` in a separate process, files are copied and compressed off the request thread, and only one backup, verify or restore runs at a time. Downloaded models are left out unless **Include downloaded models** is switched on, since they download again on first use. A backup that would not fit is refused before anything is written, with the free space it found.
+
+A live restore from the panel verifies the archive first. Once the files are in place the server stops taking play: every API request answers 503, live streams close and the database is closed, so nothing is written to the replaced file. Restart the server to load the restored world.

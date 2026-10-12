@@ -21,6 +21,8 @@
 
 import type { Campaign } from "@/lib/db/campaigns";
 import { getBattleMapForEncounter, getTokenByRef } from "@/lib/db/battle-maps";
+import { tilesApart } from "@/lib/dm/board-reach";
+
 import {
   getActiveEncounter,
   listEnemies,
@@ -89,7 +91,7 @@ export function characterEscape(
     : null;
   if (!held) {
     // A spell's hold (Entangle, Web): src/lib/dm/spell-escape.ts.
-    return characterSpellHold(sheet)
+    return characterSpellHold(campaign, sheet)
       ? characterSpellEscape(campaign, turn, sheet, spend)
       : { error: `${sheet.name} is not grappled; there is nothing to escape.` };
   }
@@ -170,7 +172,7 @@ export function enemyEscape(
     ? grappleOf(enemy.conditionMeta)
     : null;
   if (!held) {
-    return enemySpellHold(enemy)
+    return enemySpellHold(campaign, enemy)
       ? enemySpellEscape(campaign, turn, enemy)
       : { error: `${enemy.displayName} is not grappled; there is nothing to escape.` };
   }
@@ -236,7 +238,8 @@ export function releaseGrapplesOutOfReach(campaign: Campaign): string[] {
   const apart = (a: string, b: string): number | null => {
     const one = getTokenByRef(map.id, a);
     const two = getTokenByRef(map.id, b);
-    return one && two ? Math.max(Math.abs(one.x - two.x), Math.abs(one.y - two.y)) : null;
+    return one && two ? tilesApart(one, two) : null;
+
   };
   const released: string[] = [];
   for (const enemy of enemies) {

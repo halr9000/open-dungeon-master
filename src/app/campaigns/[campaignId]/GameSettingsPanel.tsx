@@ -29,9 +29,13 @@ import {
   COMPANION_LABELS,
   HP_METHODS,
   STARTING_WEALTH,
+  TABLE_LANGUAGE_HELP,
+  TABLE_LANGUAGE_LABELS,
+  TABLE_LANGUAGES,
   type CampaignLengthSetting,
   type DicePolicy,
   type Genre,
+  type TableLanguage,
 } from "@/lib/schemas/game-settings-options";
 
 // Short forms of the character-rule settings for a settings row; the long
@@ -99,6 +103,7 @@ export function GameSettingsPanel({
   // powers the hint on the Ambience row. Defaults to true so the hint never
   // flashes on installs that are fine while the answer is in flight.
   const [ambienceInstalled, setAmbienceInstalled] = useState(true);
+  const [ambienceCounts, setAmbienceCounts] = useState<Record<"bed" | "music" | "sting", { installed: number; total: number }> | null>(null);
 
   // Installed world packs, so the lead can switch worlds after creation. An
   // empty list simply hides the row.
@@ -130,6 +135,7 @@ export function GameSettingsPanel({
       .then((data) => {
         if (!cancelled) {
           setAmbienceInstalled(Object.keys(data.tracks ?? {}).length > 0);
+          setAmbienceCounts(data.counts ?? null);
         }
       })
       .catch(() => undefined);
@@ -348,6 +354,18 @@ export function GameSettingsPanel({
             />
           </div>
         ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="pk-rowlabel">Language</span>
+          <Select<TableLanguage>
+            size="sm"
+            label="Table language"
+            value={settings.tableLanguage}
+            onChange={(tableLanguage) => patch({ tableLanguage })}
+            options={TABLE_LANGUAGES.map((value) => ({ value, label: TABLE_LANGUAGE_LABELS[value] }))}
+            className={selectClass}
+          />
+          <span className="text-stone-500">{TABLE_LANGUAGE_HELP}</span>
+        </div>
         {aiNarrates ? (
         <div className="reveal flex flex-wrap items-center gap-2">
           <span className="pk-rowlabel">Length</span>
@@ -439,8 +457,15 @@ export function GameSettingsPanel({
             // toggle above is currently a promise of silence. Say so where
             // it is being switched on rather than letting the table wonder.
             <span className="text-stone-500">
-              No ambience audio is installed yet, so this plays silence. Run npm run fetch-ambience
-              on the server; setting a FREESOUND_API_KEY first widens the sources.
+              This server has no sound library on disk, so this plays silence. The library ships with
+              the game; the server admin can restore it from the admin panel (Sound library).
+            </span>
+          ) : settings.ambienceEnabled && ambienceCounts ? (
+            <span className="text-stone-500">
+              Audio for {ambienceCounts.bed.installed} of {ambienceCounts.bed.total} rooms,{" "}
+              {ambienceCounts.music.installed} of {ambienceCounts.music.total} moods and{" "}
+              {ambienceCounts.sting.installed} of {ambienceCounts.sting.total} sounds. The speaker in the
+              table header opens the sound panel.
             </span>
           ) : null}
         </div>
@@ -747,8 +772,13 @@ export function GameSettingsPanel({
                 : "Standing is tracked per character; romance is off."}
           </span>
         </div>
-        {aiNarrates ? (
-        <div className="reveal flex flex-wrap items-center gap-2">
+        {/* At a table a person runs, Auto already allows the lasting allies
+            the DM plays by hand, so the row stays out of the way; it shows
+            when an Off or guests-only setting carried over from an AI table
+            shuts them out, which is where the Party panel's handoff points
+            (issue 209). */}
+        {aiNarrates || settings.companions === "off" || settings.companions === "guests" ? (
+        <div data-settings-row="allies" className="reveal flex flex-wrap items-center gap-2">
           <span className="pk-rowlabel">Allies</span>
           <Tooltip content="AI companions the DM plays: 'party members' travel with the party until dismissed; 'guests' are temporary allies for one scene or battle (a town soldier helping defend) and leave automatically when the fight ends. Auto picks full for solo play, guests only for multiplayer.">
             <span className="inline-flex min-w-0 max-w-full">

@@ -221,4 +221,103 @@ test("Font of Magic variants parse direction and slot level", () => {
   assert.equal(parseFontOfMagic(undefined), null);
 });
 
+// What a use costs of the turn (ResourceDef.action), charged by use_resource
+// (src/lib/dm/resource-turn.ts). A feature whose text names a cost carries
+// it, or is listed here with the reason the turn is someone else's to charge.
+// The costs are the books' (2014 rules), the genre classes' their catalogs'.
+const NAMES_A_COST = /\b(?:bonus[- ]action|reaction|an action|action:)/i;
+const CHARGED_ELSEWHERE = {
+  ki: "each use (Flurry, Patient Defense, Step of the Wind) costs its own",
+  sorcery_points: "Metamagic and slot conversion cost different things",
+  luck_points: "spent on a roll, no action",
+  cyberpunk_surge_momentum: "the cantrip's cast is the cost",
+  horror_the_rite_remembers: "the cantrip's cast is the cost",
+  post_apocalyptic_surge_of_change: "the cantrip's cast is the cost",
+  steampunk_surge_casting: "the cantrip's cast is the cost",
+  dark_fantasy_the_crown_descends: "the reactions named are the enemies'",
+  steampunk_arc_coil: "the reactions named are the target's",
+  horror_last_one_out: "the reactions named are the allies'",
+  mystery_general_strike: "the reactions named are the party's attacks",
+  horror_adrenaline_surge: "take_action's bonus route charges the bonus action and spends the use",
+  mystery_vanish: "take_action's bonus route charges the bonus action and spends the use",
+  // The bonus attack is pc_attack's to charge, which does not offer these
+  // three yet (authored-economy.ts authoredBonusAttackProblem knows none).
+  sub_war_priest: "the bonus attack, not the use, costs the bonus action",
+  race_hungry_jaws: "the bonus attack, not the use, costs the bonus action",
+  sub_unwavering_mark: "the bonus attack, not the use, costs the bonus action",
+  sub_telekinetic_master: "the slotless cast, then pc_attack's bonus attack",
+  sub_embodiment_of_the_law: "the enchantment spell's cast is the cost",
+};
+
+test("every feature whose text names a cost carries it", () => {
+  const uncosted = RESOURCE_DEFS.filter((def) => !def.action && !def.passive && NAMES_A_COST.test(def.guidance)).map((def) => def.id);
+  assert.deepEqual(uncosted.sort(), Object.keys(CHARGED_ELSEWHERE).sort());
+  for (const def of RESOURCE_DEFS) {
+    assert.ok([undefined, "action", "bonus", "reaction", "none"].includes(def.action), def.id);
+  }
+});
+
+test("a cost matches the text that names it", () => {
+  const leads = [
+    [/^A bonus[- ]action\b/, "bonus"],
+    [/^A reaction\b/, "reaction"],
+    [/^An action\b/, "action"],
+  ];
+  for (const def of RESOURCE_DEFS) {
+    const lead = leads.find(([pattern]) => pattern.test(def.guidance));
+    if (lead && !CHARGED_ELSEWHERE[def.id]) {
+      assert.equal(def.action, lead[1], def.id);
+    }
+  }
+  assert.equal(resourceDef("sub_hexblades_curse").action, "bonus");
+  assert.equal(resourceDef("sub_healing_light").action, "bonus");
+  assert.equal(resourceDef("sub_warding_flare").action, "reaction");
+  assert.equal(resourceDef("divine_sense").action, "action");
+  // The genre catalogs' prose, read by scripts/generate-class-resources.mjs.
+  assert.equal(resourceDef("cyberpunk_bullet_time").action, "reaction");
+  assert.equal(resourceDef("horror_blood_ward").action, "reaction");
+  assert.equal(resourceDef("dark_fantasy_vanish_below").action, "reaction");
+  assert.equal(resourceDef("cyberpunk_static_shield").action, "bonus");
+  assert.equal(resourceDef("post_apocalyptic_regenerative_strain").action, "bonus");
+  assert.equal(resourceDef("horror_rite_of_repulsion").action, "action");
+  assert.equal(resourceDef("horror_stitch_the_tear").action, "action");
+  assert.equal(resourceDef("steampunk_full_throttle").action, undefined);
+});
+
+// The authored summaries named no cost, or the wrong one, for these; each is
+// the book's own (2014 rules).
+test("the costs the authored summaries got wrong are the books'", () => {
+  const books = {
+    art_eldritch_cannon: "action", // Tasha's: an action creates it, a bonus action activates it
+    sub_call_the_hunt: "none", // Tasha's: used when entering the rage
+    sub_eyes_of_night: "action",
+    sub_shadow_lore: "action",
+    sub_bolstering_magic: "action",
+    sub_fathomless_plunge: "action",
+    sub_spirit_projection: "action",
+    sub_genies_vessel: "action", // Bottled Respite
+    sub_limited_wish: "action",
+    sub_clockwork_cavalcade: "action",
+    sub_warping_implosion: "action",
+    sub_benign_transposition: "action",
+    sub_momentary_stasis: "action",
+    sub_event_horizon: "action",
+    sub_detect_portal: "action",
+    sub_drake_companion: "action",
+    sub_drakes_breath: "action",
+    sub_psychic_veil: "action",
+    sub_wholeness_of_body_mercy: "action", // Hand of Ultimate Mercy
+    race_healing_hands: "action",
+    sub_trance_of_order: "bonus",
+    sub_lunar_phenomenon: "bonus",
+    race_celestial_revelation: "bonus", // Monsters of the Multiverse
+    sub_necrotic_husk: "reaction",
+    sub_one_with_the_word: "reaction",
+    sub_hidden_paths: "bonus",
+  };
+  for (const [id, cost] of Object.entries(books)) {
+    assert.equal(resourceDef(id).action, cost, id);
+  }
+});
+
 console.log(`test-class-resources: ${passed} tests passed`);

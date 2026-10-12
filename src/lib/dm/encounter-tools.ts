@@ -1,4 +1,7 @@
+import type { SystemGlyph } from "@/lib/system-glyphs";
 import { fieldedSheets } from "@/lib/dm/roster";
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
+import { sceneIds } from "@/lib/ambience/catalog";
 import { z } from "zod";
 import {
   allocateSeq,
@@ -15,6 +18,7 @@ import {
 import {
   createEncounter,
   getActiveEncounter,
+  getEncounter,
   getLatestEndedEncounter,
   insertEnemy,
   listEnemies,
@@ -55,7 +59,7 @@ import {
   oweEnemiesAnAction,
 } from "@/lib/dm/can-act";
 import { acWithEffects, enemyAcWithEffects } from "@/lib/dm/ac-effects";
-import { rollEffectExtras } from "@/lib/dm/effect-tools";
+import { characterInitiativeExpression } from "@/lib/dm/contest-roll";
 import { followCombatAmbience } from "@/lib/dm/ambience-tools";
 import {
   createBattleMapForEncounter,
@@ -98,15 +102,18 @@ import {
   handleTakeAction,
   handleUseReaction,
 } from "@/lib/dm/action-tools";
-import { isIncapacitated, mergeAdvantage } from "@/lib/dm/condition-logic";
-import { startTurnConditions, tickEncounterConditions } from "@/lib/dm/condition-tick";
+import { isIncapacitated } from "@/lib/dm/condition-logic";
+import { endTurnSaves, startTurnConditions, tickEncounterConditions } from "@/lib/dm/condition-tick";
 import { endTurns } from "@/lib/dm/turn-end";
 import { turnStartEffects } from "@/lib/dm/turn-start-effects";
 import { damageEnemyTool, endEncounterTool, endTurnTool, enemyAttackTool, startEncounterTool, type ToolDef } from "@/lib/dm/encounter-tool-defs";
 import { RUN_PREPARED_ENCOUNTER, runPreparedEncounter } from "@/lib/dm/prepared-encounter-tool";
 import { rollDeathSave } from "@/lib/dm/death";
 import { getBattleMapForEncounter, getTokenByRef, resetRoundBudgets, resetTurnBudgets } from "@/lib/db/battle-maps";
+import { tilesApart } from "@/lib/dm/board-reach";
+
 import { initLegendaryPools } from "@/lib/dm/legendary-tools";
+import { lairCountPassed } from "@/lib/dm/legendary-logic";
 import { publishTitleCard } from "@/lib/dm/scene-state";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { VIGILANT_PREFIX } from "@/lib/srd/authored-effects-more";
@@ -179,7 +186,7 @@ const startArgsSchema = z.object({
   summary: z.string().optional(),
   surprised: z.enum(["none", "enemies", "party"]).optional(),
   ambush: z.enum(["enemies", "party"]).optional(),
-  battlefield: z.string().max(300).optional(),
+  scene: z.string().max(40).optional(),
   // Feet between the party and the nearest enemy as the fight opens. A
   // value that is no distance (null, "", 0 from a weak tool caller) is the
   // same as none given, never a reason to refuse the fight.
@@ -204,13 +211,12 @@ function parseStartArgs(rawArguments: string): z.infer<typeof startArgsSchema> |
     return nested.data;
   }
   const flat = enemyRequestSchema
-    .extend({ summary: z.string().optional(), battlefield: z.string().max(300).optional() })
+    .extend({ summary: z.string().optional() })
     .safeParse(raw);
   if (flat.success) {
     return {
       enemies: [{ monster: flat.data.monster, name: flat.data.name, count: flat.data.count, cr: flat.data.cr }],
       summary: flat.data.summary,
-      battlefield: flat.data.battlefield,
     };
   }
   return null;
@@ -238,6 +244,9 @@ function handleStartEncounter(
         'Invalid start_encounter arguments. Send {"enemies":[{"monster":"goblin","count":3}],"summary":"..."}.',
     };
   }
+  if (args.scene !== undefined && !sceneIds().includes(args.scene)) {
+    return { error: `Unknown scene "${args.scene}"; use one of: ${sceneIds().join(", ")}.` };
+  }
   if (getActiveEncounter(campaign.id)) {
     return {
       error:
@@ -254,7 +263,7 @@ function handleStartEncounter(
   }
 
   // Resolve every requested enemy before creating anything.
-  const outcome = resolveEnemyRequests(campaign.gameSettings, args.enemies, campaign.ownerUserId);
+  const outcome = resolveEnemyRequests(campaign.gameSettings, args.enemies, spellAuthorsFor(campaign), campaign.id);
   if ("unknownMonster" in outcome) {
     return {
       error: `Unknown monster "${outcome.unknownMonster}". Use a real monster slug or name, or pass cr for an invented enemy. Good picks for this world: ${suggestionLines(campaign, sheets)}.`,
@@ -317,7 +326,7 @@ function handleStartEncounter(
   // plan.md 4.1), written with the fight so the tracker shows them at once.
   initLegendaryPools(encounter, enemies, args.lair === true);
   saveEncounter(encounter);
-  createBattleMapForEncounter(campaign, encounter, enemies, sheets, args.battlefield, args.distanceFeet);
+  createBattleMapForEncounter(campaign, encounter, enemies, sheets, args.distanceFeet, args.scene);
   publishEncounter(campaign.id);
   // The fight's card: the opening line in ember, "Ambush" when the party
   // was caught, with the combat sting (SceneTitle.tsx).
@@ -605,6 +614,10 @@ export function recordInitiativeRoll(
   }
   encounter.orderReady = true;
   encounter.turnIndex = first.turnIndex;
+  // A lair whose count 20 comes before the first character's turn acts now.
+  if (encounter.legendary.lair && lairCountPassed(encounter.order, -1, first.turnIndex)) {
+    encounter.legendary.lairDue = encounter.round;
+  }
   encounter.waitingSeq = latestSeq(campaignId);
   saveEncounter(encounter);
   const campaign = getCampaignById(campaignId);
@@ -701,17 +714,9 @@ export function ensureInitiativeProgress(campaign: Campaign): string | null {
   }
   let note: string | null = null;
   for (const sheet of missing) {
-    // The same roll request_roll would make: effects on initiative count.
-    const effects = rollEffectExtras(campaign.id, sheet.id, "initiative");
-    const outcome = rollExpression(
-      d20Expression(
-        computeSheetDerived(sheet).initiative + (effects.effectBonus ?? 0),
-        mergeAdvantage([
-          ...(effects.effectAdvantage ? ["advantage" as const] : []),
-          ...(effects.effectDisadvantage ? ["disadvantage" as const] : []),
-        ]),
-      ),
-    );
+    // The same roll request_roll would make (src/lib/dm/contest-roll.ts):
+    // effects on initiative, Feral Instinct, exhaustion, Lucky.
+    const outcome = rollExpression(characterInitiativeExpression(campaign, sheet, computeSheetDerived(sheet).initiative));
     const roll = insertRoll({
       campaignId: campaign.id,
       characterId: sheet.id,
@@ -1206,7 +1211,9 @@ function passOnFrom(campaign: Campaign, before: TurnHolder | null) {
 function advancePointer(
   campaign: Campaign,
   encounter: Encounter,
-  options?: { announce?: boolean | ((next: OrderEntry) => string); leaving?: OrderEntry; hold?: boolean },
+  // chained: a second step of the same move, which keeps the lair count
+  // the first step passed.
+  options?: { announce?: boolean | ((next: OrderEntry) => string); leaving?: OrderEntry; hold?: boolean; chained?: boolean },
 ): { enemiesPassed: string[]; wrapped: boolean } | null {
   const enemiesById = new Map(listEnemies(encounter.id).map((enemy) => [enemy.id, enemy]));
   const leaving = options?.leaving ?? encounter.order[encounter.turnIndex];
@@ -1255,6 +1262,28 @@ function advancePointer(
     ...(leaving ? [orderEntryId(leaving)] : []),
     ...enemiesById.keys(),
   ]);
+  // A save that ends a condition "at the end of each of its turns" (SRD 5.1,
+  // Hold Person) is made as the turn ends: by the character whose turn it
+  // was, by the characters the pointer walks past (their turns start and end
+  // in this move), and by the enemies walked past last move, whose turns the
+  // DM turn since has taken (src/lib/dm/condition-tick.ts endTurnSaves).
+  const landingId = orderEntryId(encounter.order[next.turnIndex]);
+  const savers = new Set<string>([
+    ...(leaving && leaving.kind === "pc" ? [orderEntryId(leaving)] : []),
+    ...starting.filter((id) => id !== landingId && !enemiesById.has(id)),
+    ...(encounter.legendary.walked ?? []).filter((id) => enemiesById.has(id)),
+  ]);
+  endTurnSaves(campaign, encounter, [...savers]);
+  encounter.legendary.walked = starting.filter((id) => enemiesById.has(id));
+  // Initiative count 20, losing ties: the lair acts in the DM turn that
+  // follows the move that passes it, or that round it does not
+  // (src/lib/dm/legendary-tools.ts handleLairAction).
+  const lairPassed = encounter.legendary.lair ? lairCountPassed(encounter.order, encounter.turnIndex, next.turnIndex) : null;
+  if (lairPassed) {
+    encounter.legendary.lairDue = lairPassed === "after" ? encounter.round + 1 : encounter.round;
+  } else if (!options?.chained) {
+    delete encounter.legendary.lairDue;
+  }
   encounter.turnIndex = next.turnIndex;
   // The action economy belongs to whoever was acting; the next combatant
   // starts clean (src/lib/dm/action-budget.ts). What the turn that is ending
@@ -1300,6 +1329,21 @@ function advancePointer(
       publishBattleMapUpdate(campaign.id);
     }
   }
+  // The saves rolled in this move write the encounter row themselves (a
+  // Legendary Resistance spent, the failed save legendary_resist answers);
+  // the row this move saves must carry them. Resistances only ever go down
+  // in a fight, so the lower count is the true one; the actions are this
+  // move's own (a creature whose turn began refilled them here).
+  const stored = getEncounter(encounter.id);
+  if (stored) {
+    for (const [id, pool] of Object.entries(stored.legendary.pools)) {
+      const own = encounter.legendary.pools[id];
+      encounter.legendary.pools[id] = own ? { ...own, resistances: Math.min(own.resistances, pool.resistances) } : pool;
+    }
+    if (stored.legendary.failedSave) {
+      encounter.legendary.failedSave = stored.legendary.failedSave;
+    }
+  }
   encounter.waitingSeq = latestSeq(campaign.id);
   saveEncounter(encounter);
   const landed = { order: [...encounter.order], turnIndex: next.turnIndex };
@@ -1325,7 +1369,7 @@ function advancePointer(
     for (const characterId of next.pcsPassed) {
       rollDeathSave(campaign, characterId);
     }
-    const after = advancePointer(campaign, encounter, { ...options, leaving: landed.order[landed.turnIndex] });
+    const after = advancePointer(campaign, encounter, { ...options, leaving: landed.order[landed.turnIndex], chained: true });
     return {
       enemiesPassed: [...next.enemiesPassed, ...(after?.enemiesPassed ?? [])],
       wrapped: next.wrapped || Boolean(after?.wrapped),
@@ -1339,9 +1383,9 @@ function advancePointer(
   // The pointer move is announced as a table note so the transcript can
   // never silently disagree with the banner about whose turn it is.
   if (typeof options?.announce === "function") {
-    tableNote(campaign, options.announce(encounter.order[encounter.turnIndex]));
+    tableNote(campaign, options.announce(encounter.order[encounter.turnIndex]), "cue-battle");
   } else if (options?.announce !== false) {
-    announceTurn(campaign, encounter, next.wrapped && encounter.legendary.lair ? LAIR_NOTE : "");
+    announceTurn(campaign, encounter, lairOpen(encounter) ? LAIR_NOTE : "");
   }
   // Downed PCs the pointer skipped make their death saves now, once per
   // pass, announced to the table as system messages and dice cards.
@@ -1449,6 +1493,7 @@ export function autoActSkippedEnemies(
       campaignId: campaign.id,
       seq,
       authorType: "system",
+      glyph: "cue-battle",
       content: play ? `Skipped enemy turns resolve automatically: ${notes.join(" ")}` : notes.join(" "),
     });
     publishWithSeq(campaign.id, seq, "message_added", { message });
@@ -1506,7 +1551,7 @@ function advanceAfterNarration(campaign: Campaign, turn?: DmTurn) {
     // The pass the model's end_turn made, said now that the narration is in.
     const live = getActiveEncounter(campaign.id);
     if (live) {
-      announceTurn(campaign, live, handoff.wrapped && live.legendary.lair ? LAIR_NOTE : "");
+      announceTurn(campaign, live, lairOpen(live) ? LAIR_NOTE : "");
     }
     // The turn they led to is one its owner cannot take: it is ended below,
     // now. A wake alone could find nothing posted since this turn's
@@ -1642,6 +1687,7 @@ function idledOut(campaign: Campaign, encounter: Encounter): boolean {
     tableNote(
       campaign,
       `Nobody has been able to act for ${IDLE_ROUNDS} rounds: the fight waits for the table. End Turn or the lead's skip moves it on.`,
+      "cue-battle",
     );
   }
   return true;
@@ -1667,16 +1713,22 @@ function wake(campaign: Campaign, encounter: Encounter) {
 
 const LAIR_NOTE = " Initiative 20: the lair stirs (lair_action).";
 
+// The lair's count 20 has passed this move and the lair has not acted on it.
+function lairOpen(encounter: Encounter): boolean {
+  const due = encounter.legendary.lairDue;
+  return encounter.legendary.lair && due !== undefined && encounter.legendary.lairUsedRound !== due;
+}
+
 function announceTurn(campaign: Campaign, encounter: Encounter, extra = "") {
   const current = encounter.order[encounter.turnIndex];
   if (current) {
-    tableNote(campaign, `It is now ${current.name}'s turn (round ${encounter.round}).${extra}`);
+    tableNote(campaign, `It is now ${current.name}'s turn (round ${encounter.round}).${extra}`, "cue-battle");
   }
 }
 
-function tableNote(campaign: Campaign, content: string) {
+function tableNote(campaign: Campaign, content: string, glyph: SystemGlyph) {
   const seq = allocateSeq(campaign.id);
-  const message = insertCampaignMessage({ campaignId: campaign.id, seq, authorType: "system", content });
+  const message = insertCampaignMessage({ campaignId: campaign.id, seq, authorType: "system", glyph, content });
   publishWithSeq(campaign.id, seq, "message_added", { message });
 }
 
@@ -1714,9 +1766,9 @@ function partyFallen(campaign: Campaign, couldRise: boolean) {
       turn.status = "done";
       saveDmTurn(turn);
     }
-    tableNote(campaign, "Every character has fallen: the fight is lost.");
+    tableNote(campaign, "Every character has fallen: the fight is lost.", "cue-death");
   } else if (couldRise) {
-    tableNote(campaign, "Every character is down and none can rise on their own.");
+    tableNote(campaign, "Every character is down and none can rise on their own.", "cue-death");
   } else {
     return;
   }
@@ -1772,8 +1824,9 @@ function companionAutoAct(
       if (!token) {
         continue;
       }
-      const distance = Math.max(Math.abs(token.x - myToken.x), Math.abs(token.y - myToken.y));
+      const distance = tilesApart(token, myToken);
       if (distance < best) {
+
         best = distance;
         target = enemy;
       }
@@ -1804,6 +1857,7 @@ function companionAutoAct(
     campaignId: campaign.id,
     seq,
     authorType: "system",
+    glyph: "cue-battle",
     content: `${sheet.name}'s turn resolves automatically: ${note}`,
   });
   publishWithSeq(campaign.id, seq, "message_added", { message });

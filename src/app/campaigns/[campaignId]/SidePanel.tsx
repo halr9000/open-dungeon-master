@@ -130,7 +130,7 @@ function SidePanelInner({
         {glance}
         {/* Keyed by tab so the incoming panel rises in instead of cutting. */}
         <div key={tab} className="motion-tab mx-auto w-full max-w-2xl lg:max-w-none">
-          <SidePanelRouter {...content} visible={visible} />
+          <SidePanelRouter {...content} visible={visible} onOpenTab={onTabChange} />
         </div>
       </div>
       {/* The rail sits on the outer edge, away from the chat, so the eye

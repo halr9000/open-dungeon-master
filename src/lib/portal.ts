@@ -7,11 +7,23 @@
 // static assets stay local, so a tunnel only ever carries game data and
 // the controls are always the app's own.
 //
+// Only a server the app itself started is ever a portal: the app hands it a
+// secret (ODM_PORTAL_SECRET) and signs the two cookies with it, so a caller
+// who reaches a shared or hosted server cannot name a host of their own and
+// have this server fetch it for them. Without the secret, or without a
+// signature that matches it, the cookies are ignored.
+//
 // Pure functions, no "@/" imports: scripts/test-portal.mjs loads this file
 // straight from disk.
 
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 export const PORTAL_ORIGIN_COOKIE = "odm_portal_origin";
 export const PORTAL_TOKEN_COOKIE = "odm_portal_token";
+export const PORTAL_SIG_COOKIE = "odm_portal_sig";
+
+// The secret's shortest acceptable length; a shorter one is treated as unset.
+const MIN_SECRET_LENGTH = 32;
 
 // Everything the UI fetches as data rather than as its own code: the API,
 // player uploads, generated art and narration, and the ambience library.
@@ -41,12 +53,29 @@ export function portalOrigin(raw: string | null | undefined): string | null {
   return url.origin;
 }
 
+// What the app plants beside the two cookies: an HMAC of both made with
+// the secret it started this server with. The client computes the same
+// value (client src/main/local-server.ts).
+export function portalSignature(secret: string, origin: string, token: string): string {
+  return createHmac("sha256", secret).update(`${origin}\n${token}`).digest("base64url");
+}
+
+function signatureMatches(secret: string, origin: string, token: string, given: string | undefined): boolean {
+  if (!given) return false;
+  const expected = Buffer.from(portalSignature(secret, origin, token));
+  const actual = Buffer.from(given.trim());
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
 export function portalFromCookies(
   read: (name: string) => string | undefined,
+  secret: string | undefined,
 ): PortalTarget | null {
+  if (!secret || secret.length < MIN_SECRET_LENGTH) return null;
   const origin = portalOrigin(read(PORTAL_ORIGIN_COOKIE));
   const token = (read(PORTAL_TOKEN_COOKIE) ?? "").trim();
   if (!origin || !token || !/^[A-Za-z0-9_-]{16,512}$/.test(token)) return null;
+  if (!signatureMatches(secret, origin, token, read(PORTAL_SIG_COOKIE))) return null;
   return { origin, token };
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { isThievesTools, THIEVES_TOOLS } from "@/lib/srd/features";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Dices, Loader2, Sparkles, X } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -255,9 +256,15 @@ export function LevelUpDialog({
   // Summed over every class the character holds, as the server sums it
   // (U:UB4): a rogue 6 taking bard 3 has bard's two on top of the rogue's.
   const expertiseToPick = expertiseOpen(sheet, nextClasses);
-  const expertiseOptions = sheet.proficiencies.skills.filter(
-    (skill) => !currentExpertise.includes(skill),
-  );
+  // A rogue may take thieves' tools in place of a skill (features.ts).
+  const toolExpertise =
+    nextClasses.some((entry) => entry.id === "rogue") && (sheet.proficiencies.tools ?? []).some(isThievesTools) && !currentExpertise.some(isThievesTools)
+      ? [THIEVES_TOOLS]
+      : [];
+  const expertiseOptions = [
+    ...sheet.proficiencies.skills.filter((skill) => !currentExpertise.includes(skill)),
+    ...toolExpertise,
+  ];
   const needsExpertise = expertiseToPick > 0 && expertiseOptions.length > 0;
 
   // Fighting styles: the class grants the slot, the player picks which one,
@@ -286,7 +293,11 @@ export function LevelUpDialog({
     (chosenEntry?.level ?? 0) < subclassLevel &&
     subclassLevel <= classLevelAfter;
   const builtInSubclasses = subclassNamesFor(classChoice);
-  const archetypes = useArchetypes(needsSubclass ? classChoice : "");
+  // Fetched for the class levelled either way: a workshop or pack subclass
+  // the sheet already holds has its features in these rows, and the preview
+  // below grants them from here (src/lib/srd/features.ts browser extras).
+  const fetchedArchetypes = useArchetypes(entrySubclass.trim() || needsSubclass ? classChoice : "");
+  const archetypes = needsSubclass ? fetchedArchetypes : [];
   // The subclasses with real feature tables come first; content-pack
   // archetypes are prose only and fill in behind them.
   const subclassOptions = [...builtInSubclasses];

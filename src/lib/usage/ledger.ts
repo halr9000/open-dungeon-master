@@ -9,7 +9,9 @@ import { currentUsageScope } from "@/lib/usage/scope";
 // model, tokens, units and who it was for, which is all an admin planning
 // capacity or sharing a key needs. Costs are deliberately not estimated;
 // with this many backends and models there is no honest number, so the
-// admin reads tokens and applies their own prices.
+// admin reads tokens and applies their own prices. Rows older than 90 days
+// are merged into one per month and kind of call (src/lib/ops/retention.ts);
+// the totals read here come out the same.
 
 export type UsageKind = "text" | "image" | "tts" | "stt" | "agent";
 
@@ -143,7 +145,7 @@ type TotalsRow = {
 };
 
 const TOTALS_SELECT = `
-  COUNT(*) AS calls,
+  SUM(calls) AS calls,
   SUM(CASE WHEN paid = 1 AND kind IN ('text','agent') THEN input_tokens ELSE 0 END) AS paid_in,
   SUM(CASE WHEN paid = 1 AND kind IN ('text','agent') THEN output_tokens ELSE 0 END) AS paid_out,
   SUM(CASE WHEN paid = 0 AND kind IN ('text','agent') THEN input_tokens ELSE 0 END) AS local_in,
@@ -154,7 +156,7 @@ const TOTALS_SELECT = `
   SUM(CASE WHEN paid = 0 AND kind = 'tts' THEN units ELSE 0 END) AS local_speech,
   SUM(CASE WHEN paid = 1 AND kind = 'stt' THEN units ELSE 0 END) AS paid_clips,
   SUM(CASE WHEN paid = 0 AND kind = 'stt' THEN units ELSE 0 END) AS local_clips,
-  SUM(CASE WHEN kind = 'agent' THEN 1 ELSE 0 END) AS agent_turns,
+  SUM(CASE WHEN kind = 'agent' THEN calls ELSE 0 END) AS agent_turns,
   MAX(at) AS last_at`;
 
 function totalsFrom(row: TotalsRow | undefined): UsageTotals {
@@ -211,7 +213,7 @@ export function storageBytesFor(urls: Iterable<string>): number {
     seen.add(url);
     const root = url.startsWith("/generated/") ? "generated" : "uploads";
     const name = url.slice(`/${root}/`.length);
-    const dir = path.join(process.cwd(), "public", root);
+    const dir = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", root);
     let entries: string[] = [];
     try {
       const stem = name.replace(/\.[a-z0-9]+$/i, "");

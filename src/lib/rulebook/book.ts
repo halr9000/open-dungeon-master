@@ -3,7 +3,7 @@
 // neighbours, and search. The book is read once per process and never
 // changes while it runs; the search index is built on the first search.
 import data from "./srd-5.1.json";
-import { buildIndex, queryTerms, searchRulebook, type RulebookIndex } from "./search";
+import { buildIndex, buildIndexInSlices, searchRulebook, type RulebookIndex } from "./search";
 import type {
   ContentsChapter,
   QuickLink,
@@ -84,7 +84,22 @@ export function rulebookPage(id: string): RulebookPageResponse | null {
 
 export function rulebookSearch(query: string, limit?: number): SearchResponse {
   index ??= buildIndex(book.pages, book.chapters);
-  return { hits: searchRulebook(index, query, limit), terms: queryTerms(query) };
+  return { hits: searchRulebook(index, query, limit) };
+}
+
+// What the search route calls: the first search builds the index in slices
+// (buildIndexInSlices) and every search that arrives meanwhile waits on the
+// same build.
+let building: Promise<RulebookIndex> | null = null;
+
+export async function rulebookSearchAsync(query: string, limit?: number): Promise<SearchResponse> {
+  if (!index) {
+    building ??= buildIndexInSlices(book.pages, book.chapters).finally(() => {
+      building = null;
+    });
+    index = await building;
+  }
+  return { hits: searchRulebook(index, query, limit) };
 }
 
 export function rulebookPages(): RulebookPage[] {

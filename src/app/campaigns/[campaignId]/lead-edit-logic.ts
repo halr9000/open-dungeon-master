@@ -28,6 +28,25 @@ export function spellListOf(sheet: Pick<CharacterSheet, "class" | "subclass">): 
   return isThirdCaster(sheet.class, sheet.subclass) ? THIRD_CASTER_LIST : spellClassFor(sheet.class);
 }
 
+// Round and clamp shared slot edits before the Adjust dialog sends them. A
+// zero maximum is intentional; only a missing or invalid edit uses the sheet.
+export function editedSpellSlots(
+  original: NonNullable<CharacterSheet["spellcasting"]>["slots"],
+  edits: Record<string, { max: string; used: string }>,
+): NonNullable<CharacterSheet["spellcasting"]>["slots"] {
+  return Object.fromEntries(
+    Object.entries(original).map(([level, slot]) => {
+      const edited = edits[level];
+      const enteredMax = Number(edited?.max);
+      const max = edited?.max?.trim() && Number.isFinite(enteredMax)
+        ? Math.max(0, Math.round(enteredMax))
+        : slot.max;
+      const used = Math.min(max, Math.max(0, Math.round(Number(edited?.used ?? slot.used)) || 0));
+      return [level, { max, used }];
+    }),
+  );
+}
+
 // One item row in the dialog. `base` is the stored item whole, so a save
 // that only changed a name or a count keeps worn, attuned, identified and
 // charges (U:UC1: rows used to be rebuilt from name, qty and slug, and every

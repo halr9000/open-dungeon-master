@@ -17,6 +17,7 @@ process.chdir(dir);
 register("./lib/register-alias.mjs", import.meta.url);
 
 const { clipRecap, homeGlanceFor, partyFacesByCampaign } = await import("../src/lib/db/home-glance.ts");
+const { recapParagraphs } = await import("../src/lib/recap.ts");
 const { agoLabel, chapterLine, pickContinue, romanNumeral, seatLine, slotLine } = await import("../src/app/home/types.ts");
 const { createUser } = await import("../src/lib/db/users.ts");
 const { getDatabase } = await import("../src/lib/db/core.ts");
@@ -64,6 +65,24 @@ test("clipRecap falls back to a word boundary and an ellipsis when no sentence f
   const clipped = clipRecap(long, 100);
   assert.ok(clipped.endsWith("…"));
   assert.ok(clipped.length <= 101);
+});
+
+// ---- recapParagraphs (the table's chronicle scroll reads every paragraph, never clipped) ----
+
+test("recapParagraphs keeps every paragraph in order, without markers or emphasis", () => {
+  const passage =
+    "The *bolt* dies against wet salt.\n\n[roll:7183e805-0eb0-43ae-ac40-7b0922358b2d]\n\nThe husk turns.\r\n\r\n_What_ do you do?";
+  assert.deepEqual(recapParagraphs(passage), ["The bolt dies against wet salt.", "The husk turns.", "What do you do?"]);
+});
+
+test("recapParagraphs never shortens a paragraph", () => {
+  const long = "The lantern above you is still lit, and nobody can say who lit it. ".repeat(30).trim();
+  assert.deepEqual(recapParagraphs(long), [long]);
+});
+
+test("recapParagraphs drops what was only dice or blank", () => {
+  assert.deepEqual(recapParagraphs("[roll:7183e805-0eb0-43ae-ac40-7b0922358b2d]"), []);
+  assert.deepEqual(recapParagraphs(""), []);
 });
 
 // ---- the home helpers ----

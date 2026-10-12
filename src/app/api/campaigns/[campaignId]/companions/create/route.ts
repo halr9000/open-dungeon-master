@@ -5,7 +5,7 @@ import { getCharacterForUser } from "@/lib/db/characters";
 import { adaptSheetToLevel } from "@/lib/characters/adapt";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { listSheets } from "@/lib/db/sheets";
-import { companionMode, finalizeNewCompanion, listCompanions } from "@/lib/dm/companion-tools";
+import { finalizeNewCompanion, lastingCompanionProblem } from "@/lib/dm/companion-tools";
 import { requestDmTurn } from "@/lib/dm/loop";
 import { admitSheet, refusal } from "@/lib/characters/admit";
 import { createSheetSchema } from "@/lib/schemas/sheet";
@@ -39,19 +39,17 @@ export async function POST(
   }
   const campaign = context.campaign;
 
-  if (companionMode(campaign) !== "full") {
+  // Said with the setting that holds it and the way to allow it, as the
+  // handoff says it (issue 209).
+  const blocked = lastingCompanionProblem(campaign);
+  if (blocked) {
     return Response.json(
-      { error: "Building a party companion is not available at this table." },
-      { status: 409 },
-    );
-  }
-
-  const partyCompanions = listCompanions(listSheets(campaignId)).filter(
-    (sheet) => sheet.companionKind !== "guest",
-  ).length;
-  if (partyCompanions >= campaign.gameSettings.maxCompanions) {
-    return Response.json(
-      { error: "The party already has its full number of companions." },
+      {
+        error: `A companion cannot join the party here yet. ${blocked.reason} ${blocked.remedy}`,
+        code: blocked.code,
+        reason: blocked.reason,
+        remedy: blocked.remedy,
+      },
       { status: 409 },
     );
   }
@@ -119,6 +117,7 @@ export async function POST(
       campaignId,
       seq,
       authorType: "system",
+      glyph: "system-party",
       content: `${context.user.username} brings a companion into the party: ${sheet.name}, a ${sheet.race.replaceAll("_", " ")} ${sheet.class}. Introduce them into the scene at the next natural moment.`,
     });
     publishWithSeq(campaignId, seq, "message_added", { message });

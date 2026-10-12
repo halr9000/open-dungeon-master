@@ -1,20 +1,30 @@
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import { touchCampaign } from "@/lib/db/campaigns";
-import { effectiveMaxHp } from "@/lib/dm/condition-logic";
+import { effectiveMaxHp, maxHpRiders, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { populateFeaturesForClasses } from "@/lib/srd/features";
 import { populateResources } from "@/lib/srd/class-resources";
 import { XP_THRESHOLDS, deriveAc } from "@/lib/srd";
 import { settleLevelChange, withoutDuplicateClasses } from "@/lib/srd/level-change";
 import { normalizeSpellcasting } from "@/lib/srd/spell-lists";
 import { settleAttunement, type Wearer } from "@/lib/srd/magic-items";
-import { itemWeightByName } from "@/lib/content";
-import { hydrateHomebrewGear } from "@/lib/db/homebrew";
+import { itemWeightByName, repairedWeight } from "@/lib/content";
+import { homebrewRaceLabel, hydrateHomebrewGear } from "@/lib/db/homebrew";
+import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
+import { storedGender } from "@/lib/gender";
 import { backgroundFeatureFor } from "@/lib/backgrounds";
+import { registerSpeciesReader } from "@/lib/srd/race-id";
+import { featsAsRun } from "@/lib/srd/feat-effects";
+import { serverSpeciesRules } from "@/lib/characters/species-rules";
 import type {
   CharacterSheet,
   CreateSheetInput,
   FullPatchSheetInput,
 } from "@/lib/schemas/sheet";
+
+// Every rule that reads a species by id reads a pack or workshop species
+// through this (src/lib/srd/race-id.ts); every sheet the engines touch
+// comes through this module first.
+registerSpeciesReader(serverSpeciesRules);
 
 type SheetRow = {
   id: string;
@@ -56,6 +66,7 @@ type SheetRow = {
   exhaustion: number | null;
   death_saves_json: string | null;
   concentrating_on: string | null;
+  concentration_rounds?: number | null;
   portrait_json: string | null;
   notes: string;
   backstory: string | null;
@@ -84,6 +95,7 @@ function mapSheet(row: SheetRow): CharacterSheet {
   }
   // Sheets from before the cantrip list kept cantrips in prepared/known.
   const spellcasting = normalizeSpellcasting(parsedCasting);
+  const raceLabel = homebrewRaceLabel(row.user_id, row.race, row.campaign_id);
   return {
     id: row.id,
     campaignId: row.campaign_id,
@@ -91,11 +103,12 @@ function mapSheet(row: SheetRow): CharacterSheet {
     libraryCharacterId: row.library_character_id,
     name: row.name,
     race: row.race,
+    ...(raceLabel ? { raceLabel } : {}),
     class: row.class,
     subclass: row.subclass ?? "",
     background: row.background,
     alignment: row.alignment,
-    gender: row.gender ?? "",
+    gender: storedGender(row.gender),
     level: row.level,
     xp: row.xp,
     abilities: parseJson(row.abilities_json, { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 }),
@@ -135,6 +148,7 @@ function mapSheet(row: SheetRow): CharacterSheet {
     exhaustion: row.exhaustion ?? 0,
     deathSaves: parseJson<CharacterSheet["deathSaves"]>(row.death_saves_json, null),
     concentratingOn: row.concentrating_on ?? null,
+    concentrationRounds: row.concentration_rounds ?? null,
     portrait: parseJson<CharacterSheet["portrait"]>(row.portrait_json, null),
     notes: row.notes,
     backstory: row.backstory ?? "",
@@ -155,7 +169,7 @@ const SHEET_COLUMNS = `
   abilities_json, max_hp, current_hp, temp_hp, ac, ac_override, speed, hit_dice_json,
   classes_json, hit_dice_pools_json,
   proficiencies_json, equipment_json, gold, copper, feats_json, features_json,
-  spellcasting_json, conditions_json, condition_meta_json, resources_json, wild_shape_json, pets_json, summon_json, exhaustion, death_saves_json, concentrating_on,
+  spellcasting_json, conditions_json, condition_meta_json, resources_json, wild_shape_json, pets_json, summon_json, exhaustion, death_saves_json, concentrating_on, concentration_rounds,
   portrait_json, notes, backstory, is_companion, companion_kind, personality, created_at, updated_at
 `;
 
@@ -171,6 +185,24 @@ export function markSheetAsCompanion(
       `UPDATE character_sheets SET is_companion = 1, companion_kind = ?, personality = ? WHERE id = ?`,
     )
     .run(kind, personality, sheetId);
+  return getSheetById(sheetId);
+}
+
+// A sheet seated as a player character that its library row files as an
+// ally the DM plays (issue 192) becomes the party companion it was meant to
+// be: the bot takes ownership and the mark is set. Everything else on the
+// row, hit points, experience, gear, conditions, stays as play left it, and
+// the id stays, so an initiative slot or a token keeps pointing at it.
+export function adoptSheetAsCompanion(
+  sheetId: string,
+  botUserId: string,
+  personality: string,
+): CharacterSheet | null {
+  getDatabase()
+    .prepare(
+      `UPDATE character_sheets SET user_id = ?, is_companion = 1, companion_kind = 'party', personality = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(botUserId, personality, nowIso(), sheetId);
   return getSheetById(sheetId);
 }
 
@@ -212,13 +244,19 @@ function withBackgroundFeature(
 // player typed by hand survives. The lookup is an in-memory map; the
 // optional encumbrance rule (src/lib/srd/encumbrance.ts) is the only
 // consumer and falls back to the SRD armor table for what is still missing.
+// A filled weight is saved with the next write, so a weight an old pack got
+// wrong (a dart at 14 lb, issue #205) is put right here first; any other
+// number is left as it is.
 function withItemWeights(equipment: CharacterSheet["equipment"]): CharacterSheet["equipment"] {
   return equipment.map((item) => {
-    if (typeof item.weight === "number") {
-      return item;
+    const stored = repairedWeight(item.name, item.weight);
+    if (typeof stored === "number") {
+      return stored === item.weight ? item : { ...item, weight: stored };
     }
+    const line = { ...item };
+    delete line.weight;
     const weight = itemWeightByName(item.name);
-    return weight === null ? item : { ...item, weight };
+    return weight === null ? (item.weight === undefined ? item : line) : { ...line, weight };
   });
 }
 
@@ -258,7 +296,9 @@ export function createSheet(
     withBackgroundFeature(input.features ?? [], input.background),
     classList,
     input.race,
-    input.feats,
+    featsAsRun(input.feats, campaignId),
+    // A workshop or pack subclass's features, read from the table's tables.
+    subclassExtrasForTable(campaignId, userId),
   );
   // Limited-use counters (Rage, Ki, Second Wind...) sized for the features
   // just granted; the resource engine spends and refills them.
@@ -275,6 +315,7 @@ export function createSheet(
     undefined,
     classList.length > 1 ? classList : undefined,
     input.feats,
+    campaignId,
   );
   // Unless the AC is pinned, it comes from the gear they are actually
   // carrying rather than the builder's suggestion. An absent flag means a
@@ -283,7 +324,7 @@ export function createSheet(
   const acOverride = input.acOverride ?? true;
   // Homebrew armour is read with its mechanics, so a sheet created in it
   // stores its armor class at once.
-  const equipment = capAttunement(input.equipment ?? [], input);
+  const equipment = capAttunement(input.equipment ?? [], { ...input, level });
   const ac = acOverride
     ? input.ac
     : deriveAc({
@@ -414,6 +455,19 @@ export function listSheetsForUser(campaignId: string, userId: string): Character
 export function deleteSheetForUser(campaignId: string, userId: string): CharacterSheet | null {
   const existing = getSheetForUser(campaignId, userId);
   if (!existing) {
+    return null;
+  }
+  getDatabase().prepare(`DELETE FROM character_sheets WHERE id = ?`).run(existing.id);
+  touchCampaign(campaignId);
+  return existing;
+}
+
+// One named sheet of the player's, for a lobby edit that replaces the copy
+// of the character it edited rather than whichever sheet the seat is on: at
+// a table where a player fields several, those differ.
+export function deleteSheetById(campaignId: string, userId: string, sheetId: string): CharacterSheet | null {
+  const existing = getSheetById(sheetId);
+  if (!existing || existing.campaignId !== campaignId || existing.userId !== userId) {
     return null;
   }
   getDatabase().prepare(`DELETE FROM character_sheets WHERE id = ?`).run(existing.id);
@@ -610,6 +664,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
             existing.resources,
             classes.length ? classes : undefined,
             patch.feats ?? existing.feats,
+            existing.campaignId,
           )
         : existing.resources),
     equipment: patch.equipment ?? existing.equipment,
@@ -623,6 +678,13 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
     deathSaves: patch.deathSaves !== undefined ? patch.deathSaves : existing.deathSaves,
     concentratingOn:
       patch.concentratingOn !== undefined ? patch.concentratingOn : existing.concentratingOn,
+    // A new spell (or none) starts with no clock unless the patch sets one.
+    concentrationRounds:
+      patch.concentrationRounds !== undefined
+        ? patch.concentrationRounds
+        : patch.concentratingOn !== undefined && patch.concentratingOn !== existing.concentratingOn
+          ? null
+          : (existing.concentrationRounds ?? null),
     feats: patch.feats ?? existing.feats,
     features: patch.features ?? existing.features,
     subclass: usingClasses ? classes[0].subclass : (patch.subclass ?? existing.subclass),
@@ -656,6 +718,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
         loneClassBefore: existing.classes.length ? null : existing.class,
       },
       { spellcasting: patch.spellcasting !== undefined, xp: patch.xp !== undefined },
+      subclassExtrasForTable(existing.campaignId, existing.userId),
     );
     next.features = settled.features;
     next.hitDice = settled.hitDice;
@@ -677,7 +740,27 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
       patch.resources ?? existing.resources,
       next.classes.length ? next.classes : undefined,
       next.feats,
+      existing.campaignId,
     );
+  }
+
+  // Maximum hit points that ride conditions (Aid, Heroes' Feast, a Life
+  // Drain): the stored maximum follows them whichever route adds or removes
+  // the condition (a cast, a clear_condition, an expiry, a rest, a lead's
+  // edit), so a recast never stacks and an ending never leaves the bonus
+  // behind (src/lib/dm/condition-logic.ts maxHpRiders). A bonus that lands
+  // raises the current hit points with it (SRD 5.1, Aid).
+  if (patch.conditions !== undefined || patch.conditionMeta !== undefined) {
+    const before = maxHpRiders(existing.conditions, existing.conditionMeta as ConditionMetaMap);
+    const after = maxHpRiders(next.conditions, next.conditionMeta as ConditionMetaMap);
+    const bonusDelta = after.bonus - before.bonus;
+    const drainDelta = after.drain - before.drain;
+    if (bonusDelta || drainDelta) {
+      next.maxHp = Math.max(1, next.maxHp + bonusDelta - drainDelta);
+      if (bonusDelta > 0) {
+        next.currentHp = next.currentHp + bonusDelta;
+      }
+    }
   }
 
   // The armor engine owns the AC unless a human pinned it: buying a
@@ -714,7 +797,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
           speed = ?, abilities_json = ?, proficiencies_json = ?,
           current_hp = ?, temp_hp = ?, max_hp = ?, ac = ?, ac_override = ?, xp = ?, level = ?,
           gold = ?, copper = ?, conditions_json = ?, condition_meta_json = ?, resources_json = ?, equipment_json = ?, hit_dice_json = ?,
-          spellcasting_json = ?, wild_shape_json = ?, pets_json = ?, exhaustion = ?, death_saves_json = ?, concentrating_on = ?,
+          spellcasting_json = ?, wild_shape_json = ?, pets_json = ?, exhaustion = ?, death_saves_json = ?, concentrating_on = ?, concentration_rounds = ?,
           feats_json = ?, features_json = ?, subclass = ?,
           classes_json = ?, hit_dice_pools_json = ?,
           portrait_json = ?, notes = ?, backstory = ?, updated_at = ?
@@ -752,6 +835,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
       next.exhaustion,
       next.deathSaves ? JSON.stringify(next.deathSaves) : null,
       next.concentratingOn,
+      next.concentratingOn ? (next.concentrationRounds ?? null) : null,
       JSON.stringify(next.feats),
       JSON.stringify(next.features),
       next.subclass,

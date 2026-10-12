@@ -67,7 +67,7 @@ export function spendAttackEconomy(input: {
     const usesAttackAction =
       !grantedBonusAction && !args.offHand && !options.bonusAttack && !options.hordeBreaker && kind !== "spell" && !multiattack;
     if (usesAttackAction) {
-      const loading = loadingProblem({ who: sheet.name, profile, budget, feats: sheet.feats });
+      const loading = loadingProblem({ who: sheet.name, profile, budget, feats: sheet.feats, campaignId: sheet.campaignId });
       // A new action (Action Surge, Haste) reloads; only a swing that would
       // ride the action already fired from is refused.
       if (loading && attacksLeft(budget) > 0 && budget.attacksMade > 0) {
@@ -108,6 +108,9 @@ export function spendAttackEconomy(input: {
       budget = withLoadingFired(budget, profile);
       if (!profile.ranged && (profile.properties ?? []).includes("light")) {
         budget = { ...budget, lightMeleeAttack: true };
+      }
+      if (!profile.ranged && !profile.twoHanded && profile.weapon !== "Unarmed strike") {
+        budget = { ...budget, oneHandMeleeAttack: true };
       }
       // The Attack action taken with an unarmed strike or a monk weapon opens
       // Martial Arts' bonus strike for the rest of the turn.

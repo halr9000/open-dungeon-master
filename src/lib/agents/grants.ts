@@ -6,6 +6,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getDatabase } from "@/lib/db/core";
 import { getUserById, type User } from "@/lib/db/users";
+import { closeStreamsForSession } from "@/lib/live-streams";
 
 // What a connected agent may do, in groups a player ticks when connecting.
 // Each group maps to web routes (src/lib/agents/workbench.ts), and each
@@ -191,5 +192,7 @@ function forgetGrantSession(grantId: string) {
   if (cached) {
     getDatabase().prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(cached.tokenHash);
     grantSessions().delete(grantId);
+    // A revoked agent's open streams end with it (src/lib/live-streams.ts).
+    closeStreamsForSession(cached.tokenHash);
   }
 }

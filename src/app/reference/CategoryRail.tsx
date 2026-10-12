@@ -39,10 +39,10 @@ export function CategoryRail<T extends string>({
     const place = () => {
       const chip = rail.querySelector<HTMLElement>('[aria-selected="true"]');
       if (!chip) {
-        mark.style.opacity = "0";
+        delete mark.dataset.on;
         return;
       }
-      mark.style.opacity = "1";
+      mark.dataset.on = "";
       mark.style.setProperty("--ix", `${chip.offsetLeft}px`);
       mark.style.setProperty("--iy", `${chip.offsetTop}px`);
       mark.style.setProperty("--iw", `${chip.offsetWidth}px`);

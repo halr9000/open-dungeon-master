@@ -1,38 +1,18 @@
 "use client";
 
+import { playingSheet, turnFromEncounter, turnHudBudget } from "@/lib/battlemap/hand-table";
 import { BookMarked, BookOpen, Flag, Heart, History, ListChecks, ScrollText, ShoppingBag, Users } from "lucide-react";
-import { FactionsPanel } from "@/app/campaigns/[campaignId]/FactionsPanel";
-import { MarketPanel } from "@/app/campaigns/[campaignId]/MarketPanel";
-import { useMemo, useState, type ReactNode } from "react";
-import { DmConsolePanel } from "@/app/campaigns/[campaignId]/DmConsolePanel";
-import { LeadPanel } from "@/app/campaigns/[campaignId]/LeadPanel";
+import { Suspense, useMemo, useState, type ReactNode } from "react";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { DmBeat } from "@/lib/db/dm-beats";
 import { ConsoleOutcomeBanner } from "@/app/campaigns/[campaignId]/ConsoleOutcomeBanner";
-import { BattleMapPanel } from "@/app/campaigns/[campaignId]/BattleMapPanel";
 import type { FxEvent } from "@/lib/battlemap/fx-plan";
 import type { CameraEvent, SceneState } from "@/lib/scene/state";
 import type { MapLabel } from "@/lib/battlemap/scene";
-import { DmWhisperPanel } from "@/app/campaigns/[campaignId]/DmWhisperPanel";
-import { DmInboxPanel } from "@/app/campaigns/[campaignId]/DmInboxPanel";
 import { EncounterPanel } from "@/app/campaigns/[campaignId]/EncounterPanel";
-import { EventLog } from "@/app/campaigns/[campaignId]/EventLog";
-import { BondsPanel } from "@/app/campaigns/[campaignId]/BondsPanel";
-import { FactsPanel } from "@/app/campaigns/[campaignId]/FactsPanel";
-import { LorePanel } from "@/app/campaigns/[campaignId]/LorePanel";
-import { MapPanel } from "@/app/campaigns/[campaignId]/MapPanel";
-import { NotesPanel } from "@/app/campaigns/[campaignId]/NotesPanel";
-import { OverworldPanel } from "@/app/campaigns/[campaignId]/OverworldPanel";
 import { PartyPanel } from "@/app/campaigns/[campaignId]/PartyPanel";
-import { ContextPanel } from "@/app/campaigns/[campaignId]/ContextPanel";
-import { PinsPanel } from "@/app/campaigns/[campaignId]/PinsPanel";
-import { SessionSettings } from "@/app/campaigns/[campaignId]/SessionSettings";
-import { SideChatPanel } from "@/app/campaigns/[campaignId]/SideChatPanel";
-import { StoryPanel } from "@/app/campaigns/[campaignId]/StoryPanel";
-import { attributeSpeech, speakersIn } from "@/lib/dm/speech";
+import { segmentsOf, speakersIn } from "@/lib/dm/speech";
 import type { CastMember } from "@/lib/dm/cast";
-import { QuestsPanel } from "@/app/campaigns/[campaignId]/QuestsPanel";
-import { TimelinePanel } from "@/app/campaigns/[campaignId]/TimelinePanel";
 import {
   SubTabs,
   type PanelTab,
@@ -57,9 +37,22 @@ import type { DmWhisper, InboxWhisper } from "@/lib/db/dm-whispers";
 import type { SideThread } from "@/lib/db/side-chat";
 import type { PlayerMapView } from "@/lib/battlemap/view";
 import type { MapPing } from "@/lib/dm/board-logic";
-import { companionSlotsFree, resolveCompanionMode } from "@/lib/schemas/game-settings";
+import { companionSlotsFree, lastingCompanionBlock, resolveCompanionMode } from "@/lib/schemas/game-settings";
 import { hasHumanDm, partySlotCount } from "@/lib/dm/viewer";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { LeadPanel as LeadPanelComponent } from "@/app/campaigns/[campaignId]/LeadPanel";
+import type { SessionSettings as SessionSettingsComponent } from "@/app/campaigns/[campaignId]/SessionSettings";
+import { PanelLoading, panels } from "@/app/campaigns/[campaignId]/side-panel-loaders";
+
+// Every panel but the party roster (the tab a table opens on) is its own
+// download, fetched when its tab is first opened or, sooner, when the
+// browser is idle after the table is up (side-panel-loaders.ts). Each waits
+// behind its own Suspense, so a section's tabs stay put while it arrives.
+const {
+  BattleMapPanel, BondsPanel, ContextPanel, DmConsolePanel, DmInboxPanel, DmWhisperPanel, EventLog, FactionsPanel,
+  FactsPanel, LeadPanel, LorePanel, MapPanel, MarketPanel, NotesPanel, OverworldPanel, PinsPanel, QuestsPanel,
+  SessionSettings, SideChatPanel, StoryPanel, TimelinePanel,
+} = panels;
 
 // Everything the side panel's content needs. SidePanel adds the rail's own
 // props (the tab list, badges, the mobile switch) on top of these.
@@ -90,7 +83,7 @@ export type SidePanelRouterProps = {
   // Story the DM has already written down, newest first.
   beats: DmBeat[];
   // The stream's director flag, for the armed banner on the lead's desk.
-  directorArm?: Parameters<typeof LeadPanel>[0]["directorArm"];
+  directorArm?: Parameters<typeof LeadPanelComponent>[0]["directorArm"];
   leadUserId: string;
   canTransferLead: boolean;
   spotlightUserIds: string[];
@@ -121,7 +114,7 @@ export type SidePanelRouterProps = {
   midGameJoinOpen?: boolean;
   // The settings panel's shape plus the two DM seats, which the lead's desk
   // needs to keep them out of the "make lead" list.
-  campaign?: Parameters<typeof SessionSettings>[0]["campaign"] & {
+  campaign?: Parameters<typeof SessionSettingsComponent>[0]["campaign"] & {
     dmUserId?: string | null;
     assistantDmUserId?: string | null;
   };
@@ -168,6 +161,9 @@ export type SidePanelRouterProps = {
   // the chat, so the panels with animation loops (the region map's pulse,
   // the board's weather) rest on this rather than on document.hidden alone.
   visible?: boolean;
+  // Switches the side panel to another tab (SidePanel's rail), for a panel
+  // that points somewhere else: the Party panel's way to the Setup tab.
+  onOpenTab?: (tab: PanelTab) => void;
 };
 
 // Which panel the active tab shows. Every PanelTab has an explicit branch;
@@ -234,6 +230,7 @@ export function SidePanelRouter({
   questsVersion,
   relationshipsEnabled,
   visible = true,
+  onOpenTab,
   adjudicates,
   messages,
   dmIntents,
@@ -283,7 +280,7 @@ export function SidePanelRouter({
     }
     const speakers = latest.speaker
       ? [latest.speaker]
-      : speakersIn(attributeSpeech(latest.content, cast.map((member) => ({ kind: "npc" as const, id: member.id, name: member.name, aliases: member.aliases }))));
+      : speakersIn(segmentsOf(latest.content, latest.speech.filter((entry) => entry.speaker.kind === "npc")));
     return { speakers, cast, messageId: latest.id };
   }, [campaign?.gameSettings?.presentation, messages, cast]);
   const partySize = partySlotCount(
@@ -294,7 +291,8 @@ export function SidePanelRouter({
   const tab: PanelTab = stageBoard && rawTab === "battle" ? "party" : rawTab;
   if (tab === "dm" && adjudicates) {
     return (
-      <DmConsolePanel
+      <Suspense fallback={<PanelLoading />}>
+<DmConsolePanel
         campaignId={campaignId}
         sheets={sheets}
         encounter={encounter ?? null}
@@ -312,13 +310,15 @@ export function SidePanelRouter({
           criticalDamageMods: campaign?.gameSettings?.variantRules?.criticalDamageMods ?? false,
         }}
       />
+</Suspense>
     );
   }
   if (tab === "lead" && isLead && campaign) {
     // useSessionTabs falls off this tab when the seat moves, but a stale
     // selection must not show a player the invite code.
     return (
-      <LeadPanel
+      <Suspense fallback={<PanelLoading />}>
+<LeadPanel
         campaignId={campaignId}
         campaign={campaign}
         floor={floor}
@@ -336,6 +336,7 @@ export function SidePanelRouter({
         encounter={encounter}
         directorArm={directorArm}
       />
+</Suspense>
     );
   }
   if (tab === "party") {
@@ -349,18 +350,25 @@ export function SidePanelRouter({
         ) : null}
         <div key={partySection} className="motion-tab">
           {partySection === "bonds" ? (
-            <BondsPanel campaignId={campaignId} refreshKey={relationshipsVersion} />
+            <Suspense fallback={<PanelLoading />}>
+              <BondsPanel campaignId={campaignId} refreshKey={relationshipsVersion} />
+            </Suspense>
           ) : partySection === "factions" ? (
-            <FactionsPanel campaignId={campaignId} steersStory={steersStory} refreshKey={factionsVersion} />
+            <Suspense fallback={<PanelLoading />}>
+              <FactionsPanel campaignId={campaignId} steersStory={steersStory} refreshKey={factionsVersion} />
+            </Suspense>
           ) : partySection === "market" ? (
+            <Suspense fallback={<PanelLoading />}>
             <MarketPanel
               campaignId={campaignId}
               steersStory={steersStory}
               isDm={adjudicates}
-              mySheet={sheets.find((sheet) => sheet.id === activeSheetId) ?? sheets.find((sheet) => sheet.userId === meUserId && !sheet.isCompanion) ?? null}
+              mySheet={playingSheet(sheets, meUserId, activeSheetId)}
+
               refreshKey={shopsVersion}
               coins={coins}
             />
+            </Suspense>
           ) : (
             <>
               {encounter ? (
@@ -418,6 +426,17 @@ export function SidePanelRouter({
                         .length < campaign.gameSettings.maxCompanions
                     : false
                 }
+                companionBlock={
+                  campaign?.gameSettings
+                    ? lastingCompanionBlock(
+                        campaign.gameSettings,
+                        partySize,
+                        sheets.filter((sheet) => sheet.isCompanion && sheet.companionKind !== "guest").length,
+                        humanDmTable,
+                      )
+                    : null
+                }
+                onOpenSettings={onOpenTab ? () => onOpenTab("settings") : undefined}
                 humanDmTable={humanDmTable}
                 companionGenre={campaign?.gameSettings?.genre}
                 companionLevel={(() => {
@@ -437,21 +456,34 @@ export function SidePanelRouter({
     );
   }
   if (tab === "battle" && battleMap) {
+    const playing = playingSheet(sheets, meUserId, activeSheetId);
     return (
       // board-dock: the side panel and the phone hold the board in a fixed
       // window too, so its header and footer stay on screen (issue 87).
       <div className="board-dock">
       {adjudicates ? <ConsoleOutcomeBanner campaignId={campaignId} /> : null}
+      <Suspense fallback={<PanelLoading />}>
       <BattleMapPanel
         campaignId={campaignId}
+        meUserId={meUserId}
+        activeSheetId={activeSheetId}
+        multiCharacter={campaign?.gameSettings?.multiCharacter ?? "off"}
         view={battleMap}
+
         intents={battleMap.intents}
         genre={campaign?.gameSettings?.genre ?? null}
         turnBudget={
-          encounter?.turn && sheets.some((sheet) => sheet.id === encounter.turn?.ownerId && sheet.userId === meUserId)
-            ? { action: !encounter.turn.actionUsed, bonus: !encounter.turn.bonusUsed, reaction: !encounter.turn.reactionUsed }
+          // The character being played, as the Hand reads it
+          // (src/lib/battlemap/hand-table.ts): any owned sheet's turn put
+          // the other character's budget on the board after Play as. The
+          // count is the main board's (SessionView.tsx): drawn from the
+          // turn's start, before anything is spent, with a spent reaction
+          // from reactionsUsed and an action Haste or Action Surge leave.
+          playing && !playing.isCompanion && encounter
+            ? turnHudBudget(turnFromEncounter(encounter, playing, { myTurn: encounter.turn?.ownerId === playing.id }))
             : null
         }
+
         canDirect={adjudicates}
         canFocusPing={steersStory}
         ping={mapPing ?? null}
@@ -469,11 +501,13 @@ export function SidePanelRouter({
         chronicle={tabletopChronicle}
         visible={visible}
       />
+      </Suspense>
       </div>
     );
   }
   if (tab === "map") {
     return (
+      <Suspense fallback={<PanelLoading />}>
       <div className="space-y-3">
         <OverworldPanel
           campaignId={campaignId}
@@ -491,6 +525,7 @@ export function SidePanelRouter({
           inserts={theatreInserts}
         />
       </div>
+      </Suspense>
     );
   }
   if (tab === "story") {
@@ -498,6 +533,7 @@ export function SidePanelRouter({
       <>
         <SubTabs tabs={storySubTabs} value={storySection} onChange={setStorySection} />
         <div key={storySection} className="motion-tab">
+          <Suspense fallback={<PanelLoading />}>
           {storySection === "facts" ? (
             <div className="reveal space-y-3">
               <PinsPanel campaignId={campaignId} version={pinsVersion} />
@@ -524,12 +560,14 @@ export function SidePanelRouter({
           ) : (
             <StoryPanel campaignId={campaignId} chapters={chapters} steersStory={steersStory} />
           )}
+          </Suspense>
         </div>
       </>
     );
   }
   if (tab === "notes") {
     return (
+      <Suspense fallback={<PanelLoading />}>
       <NotesPanel
         campaignId={campaignId}
         notes={notes}
@@ -538,10 +576,12 @@ export function SidePanelRouter({
         steersStory={steersStory}
         refreshNotes={refreshNotes}
       />
+      </Suspense>
     );
   }
   if (tab === "chat") {
     return (
+      <Suspense fallback={<PanelLoading />}>
       <div className="space-y-3">
         {adjudicates && humanDmTable ? (
           // The DM seat's side of the private line: what the players sent,
@@ -567,13 +607,22 @@ export function SidePanelRouter({
           onOpenHandled={onChatTargetHandled}
         />
       </div>
+      </Suspense>
     );
   }
   if (tab === "context" && steersStory) {
-    return <ContextPanel campaignId={campaignId} />;
+    return (
+      <Suspense fallback={<PanelLoading />}>
+        <ContextPanel campaignId={campaignId} />
+      </Suspense>
+    );
   }
   if (tab === "settings" && campaign) {
-    return <SessionSettings campaign={campaign} isLead={isLead} steersStory={steersStory} isDm={adjudicates} />;
+    return (
+      <Suspense fallback={<PanelLoading />}>
+        <SessionSettings campaign={campaign} isLead={isLead} steersStory={steersStory} isDm={adjudicates} />
+      </Suspense>
+    );
   }
   // Only reached when a tab's guard fails: battle with no map, or context
   // for a non-lead. Both are prevented upstream (useSessionTabs resets off

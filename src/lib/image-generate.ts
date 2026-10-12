@@ -1,3 +1,4 @@
+import { getGlobalConfig } from "@/lib/app-config";
 import { generateComfyImage } from "@/lib/comfyui";
 import { generateFalImage, falImagesConfigured, falImageKey, falImageModel } from "@/lib/fal-images";
 import { generateOpenAiImage, openAiImagesConfigured, openAiImagesPaid } from "@/lib/openai-images";
@@ -80,11 +81,23 @@ export async function generateStoryImage(
   recordUsage({
     kind: "image",
     role: request.mode,
+<<<<<<< HEAD
     backend:
       settings.imageBackend === "openai" || settings.imageBackend === "fal" || settings.imageBackend === "harness"
         ? settings.imageBackend
         : "comfyui",
     model: settings.imageBackend === "comfyui" ? settings.comfyCheckpoint : settings.imageBackend === "fal" ? falImageModel() : "",
+=======
+    backend: settings.imageBackend === "openai" || settings.imageBackend === "harness" ? settings.imageBackend : "comfyui",
+    // Z-Image Turbo is the server's choice for every ComfyUI picture
+    // (src/lib/comfyui.ts), whatever checkpoint the campaign kept.
+    model:
+      settings.imageBackend !== "comfyui"
+        ? ""
+        : getGlobalConfig().images.comfyWorkflowPreset === "z_turbo"
+          ? "Z-Image Turbo"
+          : settings.comfyCheckpoint,
+>>>>>>> upstream/main
     paid,
     units: 1,
     durationMs: Date.now() - started,

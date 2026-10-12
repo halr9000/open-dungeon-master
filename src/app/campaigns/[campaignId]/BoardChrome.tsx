@@ -162,9 +162,9 @@ export function InitiativeRail({
   );
 }
 
-// The action economy, when the projection carries it. It does not yet: the
-// budget lives in src/lib/dm/action-budget.ts on the server and is not
-// projected, so the pips are drawn only for a seat that was sent one.
+// The action economy, as the projection carries it (src/lib/db/encounter-view.ts
+// turn and reactionsUsed, read by src/lib/battlemap/hand-table.ts
+// turnHudBudget): the pips are drawn only for a seat that was sent one.
 export type TurnHudBudget = { action: boolean; bonus: boolean; reaction: boolean };
 
 const PIPS: Array<{ key: keyof TurnHudBudget; label: string }> = [

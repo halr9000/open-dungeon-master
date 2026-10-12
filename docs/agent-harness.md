@@ -38,7 +38,7 @@ The program never sees the server's database key or any provider key.
 | --- | --- | --- |
 | Claude Code | `claude -p`, stream JSON | removed (`--tools ""`), checked every turn |
 | opencode | `opencode serve`, HTTP | removed (deny-all agent), checked on this machine |
-| Codex | `codex app-server`, JSON-RPC | boxed in: shell off, read-only, approvals refused |
+| Codex | `codex app-server`, JSON-RPC | boxed in: shell, image viewer and sub-agents off, read-only, approvals refused; its patch tool has no switch. A setting the installed Codex no longer recognises is named on the admin card |
 | Grok Build | `grok agent stdio`, ACP | boxed in: dontAsk, only ODM tools allowed |
 
 Codex and Grok Build show **(untested)** until a Test the table run passes
@@ -105,6 +105,11 @@ Every tool is a web route called as you, so the agent can do exactly what
 you can do in the browser and nothing more. It can never change backend
 URLs or keys, accounts, passwords, the admin panel, backups or raw sheets.
 Revoke it any time; changing your password disconnects every agent.
+
+For a connected player agent that should wake when its character has a
+decision, see [Player webhooks](player-webhooks.md). This opt-in server
+feature includes a Codex receiver on the player's computer. Other clients
+need their own wake adapter; an MCP connection alone does not start turns.
 
 Live check (spends a little of the plan):
 `HARNESS=claude HARNESS_MODEL=haiku node scripts/smoke-harness.mjs`.

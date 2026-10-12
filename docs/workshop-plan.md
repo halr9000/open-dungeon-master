@@ -4,7 +4,7 @@ A phased plan for a user-scoped place where a DM builds maps, NPCs, monsters,
 story and rules before a table exists, and imports any of it into a campaign at
 creation time.
 
-Companion to `docs/human-dm-plan.md`, which built the human DM seat *inside* a
+Companion to `docs/archive/human-dm-plan.md`, which built the human DM seat *inside* a
 running campaign (phases 1 to 8, all shipped). This plan builds the room the DM
 works in *before* the session.
 
@@ -53,7 +53,7 @@ We want the same shape for world content, but world content is nine tables
 `campaign_id` on every content table, with a CHECK that exactly one is set.
 Then every DB rim, every route guard, every SSE projection and every panel
 grows a second code path. Roughly nine table migrations and forty call sites,
-and each one is a chance to get a visibility rule backwards. `human-dm-plan.md`
+and each one is a chance to get a visibility rule backwards. `archive/human-dm-plan.md`
 section 2.3 already warns about exactly this failure mode.
 
 **Option B, the shadow campaign:** a workshop **is** a `campaigns` row with
@@ -148,7 +148,7 @@ renames.
 
 ## 3. Design rules for the workspace
 
-`human-dm-plan.md` section 4 set these for the console. The workshop needs its
+`archive/human-dm-plan.md` section 4 set these for the console. The workshop needs its
 own, because prep is a different job from running a table.
 
 1. **The workshop is a shelf, not a wizard.** Every artifact stands alone and
@@ -200,7 +200,7 @@ verdicts:
   exported files where the format is documented; vendor nothing. Verify each
   license before doing even that.
 - **`foundryvtt/foundryvtt` core.** Documentation only, no source, proprietary
-  EULA. Read the articles as a spec, exactly as `human-dm-plan.md` section 0
+  EULA. Read the articles as a spec, exactly as `archive/human-dm-plan.md` section 0
   established. Copy nothing.
 
 The pattern across all of these: **import formats, not dependencies.** ODM is
@@ -790,7 +790,7 @@ reordered by what the table actually wants next.
 
 ## 8. Conventions this plan commits to
 
-Inherited from `docs/human-dm-plan.md` and worth restating because they are
+Inherited from `docs/archive/human-dm-plan.md` and worth restating because they are
 what keeps the codebase testable:
 
 - Pure logic modules with no `@/` imports and no DB access, so the

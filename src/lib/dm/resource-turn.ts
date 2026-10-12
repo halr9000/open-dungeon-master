@@ -22,6 +22,7 @@ import {
   attacksAllowedFor,
   budgetFor,
   grantActionSurge,
+  prepareReaction,
   storeBudget,
 } from "@/lib/dm/turn-budget";
 
@@ -61,6 +62,9 @@ export function prepareResourceCharge(
     sheet.features.some((feature) => feature.name.toLowerCase().includes("combat wild shape"))
       ? "bonus"
       : def.action;
+  if (action === "reaction") {
+    return prepareReaction(encounter, sheet, def.displayName);
+  }
   const kind = action === "none" ? "free" : action;
   const able = canAct({ sheet, encounter, kind });
   if (!able.ok) {

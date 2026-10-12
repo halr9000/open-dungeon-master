@@ -1,5 +1,7 @@
 "use client";
 
+import { selectedCharacter, initiativeCharacter } from "@/lib/player-characters";
+
 import { ChevronDown, CircleHelp } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
@@ -25,6 +27,7 @@ import {
 } from "@/lib/battlemap/hand-play";
 import { reactionAim, reactionCards, withReactions } from "@/lib/battlemap/hand-react";
 import { turnFromEncounter, turnPips, turnSignature } from "@/lib/battlemap/hand-table";
+
 import type { TargetEdge } from "@/lib/battlemap/view-tactics";
 import { replayAnimation } from "@/lib/motion/replay";
 import { markTourSeen, tourSeen } from "@/lib/tours/logic";
@@ -77,6 +80,7 @@ function HandInner({
   campaignId,
   sheets,
   meUserId,
+  activeSheetId,
   encounter,
   floor,
   inputBlocked,
@@ -92,6 +96,7 @@ function HandInner({
   campaignId: string;
   sheets: CharacterSheet[];
   meUserId: string;
+  activeSheetId?: string;
   encounter: PublicEncounter;
   floor: Floor;
   inputBlocked: boolean;
@@ -109,8 +114,8 @@ function HandInner({
   edges?: Record<string, TargetEdge>;
 }) {
   const sheet = useMemo(
-    () => sheets.find((entry) => entry.userId === meUserId && !entry.isCompanion) ?? null,
-    [sheets, meUserId],
+    () => initiativeCharacter(sheets, meUserId, encounter.acting?.id) ?? selectedCharacter(sheets, meUserId, activeSheetId),
+    [sheets, meUserId, activeSheetId, encounter.acting?.id],
   );
   const floorTurn = floor.mode === "initiative" ? floor.userIds.includes(meUserId) : !inputBlocked;
   const floorName = floor.mode === "initiative" ? floor.currentName : undefined;
@@ -281,7 +286,7 @@ function HandInner({
         : await fetch(`/api/campaigns/${campaignId}/actions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: sentence, kind: "do", intent: intentBody(picked, aim, attachedRiders, choices) }),
+            body: JSON.stringify({ content: sentence, kind: "do", characterId: sheet?.id, intent: intentBody(picked, aim, attachedRiders, choices) }),
           });
       if (!response.ok) {
         // The engine's own reason (the actions route asks canAct and the

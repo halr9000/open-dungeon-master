@@ -38,7 +38,7 @@ files, it reported only the table's tool). Codex and Grok Build adapters are
 written against their published protocols and marked untested until run
 (Codex verification is deferred by Kaleb's call). Native pictures stay
 locked until "Paint a test picture" succeeds. H8 (Docker host bridge) is not
-built. User guide: [agent-harness.md](agent-harness.md).
+built. User guide: [agent-harness.md](../agent-harness.md).
 
 ## 0. Decisions made in this plan
 

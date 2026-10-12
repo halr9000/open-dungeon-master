@@ -1,4 +1,6 @@
-import { currentUser } from "@/lib/auth";
+import { currentSessionTokenHash, currentUser } from "@/lib/auth";
+import { sessionHolder } from "@/lib/db/users";
+import { streamCapacityLeft, trackStream } from "@/lib/live-streams";
 import { subscribeUser } from "@/lib/user-events";
 
 export const runtime = "nodejs";
@@ -15,8 +17,13 @@ export async function GET(request: Request) {
   if (!user) {
     return Response.json({ error: "Not signed in." }, { status: 401 });
   }
+  if (!streamCapacityLeft()) {
+    return Response.json({ error: "Too many live connections." }, { status: 503, headers: { "Retry-After": "30" } });
+  }
+  const tokenHash = await currentSessionTokenHash();
 
   const encoder = new TextEncoder();
+  let cleanup = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
@@ -32,15 +39,31 @@ export async function GET(request: Request) {
       };
 
       const unsubscribe = subscribeUser(user.id, send);
-      const heartbeat = setInterval(() => send(": ping\n\n"), HEARTBEAT_MS);
+      // Ended at once by signing out or a password change, and checked on
+      // every beat for a session that simply ran out (src/lib/live-streams.ts).
+      const untrack = trackStream({ tokenHash, userId: user.id, campaignId: null, close: () => cleanup() });
+      const heartbeat = setInterval(() => {
+        let allowed = true;
+        try {
+          allowed = !!tokenHash && sessionHolder(tokenHash) === user.id;
+        } catch {
+          // A failed read keeps the stream; the next beat asks again.
+        }
+        if (!allowed) {
+          cleanup();
+          return;
+        }
+        send(": ping\n\n");
+      }, HEARTBEAT_MS);
 
-      const cleanup = () => {
+      cleanup = () => {
         if (closed) {
           return;
         }
         closed = true;
         clearInterval(heartbeat);
         unsubscribe();
+        untrack();
         try {
           controller.close();
         } catch {
@@ -48,7 +71,10 @@ export async function GET(request: Request) {
         }
       };
 
-      request.signal.addEventListener("abort", cleanup);
+      request.signal.addEventListener("abort", () => cleanup());
+    },
+    cancel() {
+      cleanup();
     },
   });
 

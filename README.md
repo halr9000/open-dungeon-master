@@ -244,6 +244,7 @@ and clamped by code.
 - **TTS narration** - local Kokoro renders each DM message on the serial media queue, autoplayed latest-only with per-user mute.
 - **STT push-to-talk** - proxies audio to a local faster-whisper service, kept off the network.
 - **Portrait generation** - a one-shot ComfyUI character portrait at creation, with an icon fallback.
+- **Table language** - each campaign plays in one of 15 languages (English, Danish, Dutch, Finnish, French, German, Hungarian, Indonesian, Irish, Italian, Norwegian, Portuguese, Russian, Spanish, Swedish). The DM narrates and every prose call writes in it; nothing reads story text through English word lists: one utility call per narrated reply reads its claims (a hit, a kill, a spell, a roll asked in words) for the engine to check, word matching stems with each language's Snowball stemmer and stop list, and a place's kind of scene is picked from a list rather than read from its name. Rules names, the interface and the SRD rulebook stay English, image prompts are rewritten into English, and a non-English table needs a multilingual embedding model (below).
 
 ### Human DM and the workshop
 
@@ -362,10 +363,10 @@ longer bundled in the repo. transformers.js downloads it from HuggingFace into
 `npm run fetch-model` fetches it ahead of time.
 
 The default, `Xenova/all-MiniLM-L6-v2`, understands English only. For a table that
-plays in another language, set a multilingual model in `.env.server`:
+plays in another language (its Table language setting), set a multilingual model in `.env.server`:
 
 ```bash
-EMBEDDING_MODEL=Xenova/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL=Xenova/multilingual-e5-small
 EMBEDDING_DTYPE=q8
 ```
 
@@ -658,8 +659,9 @@ OpenAI-compatible speech server, the built-in Whisper):
 - **Ambience and music**: a library of public-domain cues (dungeons, forests,
   deserts, rivers, towns, crowds, taverns, wind, plus music and one-shot
   stings) that the AI DM, a human DM, or the engine following the scene can
-  trigger. Volume and mute are per listener. No audio ships with the project;
-  `npm run fetch-ambience` pulls it from public archives. See
+  trigger from the table's sound panel. Volume and mute are per listener. The
+  library ships with the project: public-domain and Creative Commons
+  recordings, each credited on the licenses page. See
   [docs/configuration.md](docs/configuration.md#ambience-and-music).
 
 ## Configuration and settings precedence
@@ -848,6 +850,9 @@ wherever it appears. Only original works are bundled in this repository.
   (its MIT `dnd5e` and Simple Worldbuilding systems) and from
   [NarrativeEngine-P](https://github.com/Sagesheep/NarrativeEngine-P). No code
   from either is in this repository; what each one shaped is listed in
+  [docs/LICENSES.md](docs/LICENSES.md).
+- The workshop's WorldForge tool is ported from WorldForge, Smoebo's
+  world-building app, with their permission. What came from it is listed in
   [docs/LICENSES.md](docs/LICENSES.md).
 - Game rules data derives from the System Reference Document 5.1 by Wizards of the
   Coast LLC, licensed under CC-BY-4.0. See [docs/LICENSES.md](docs/LICENSES.md).

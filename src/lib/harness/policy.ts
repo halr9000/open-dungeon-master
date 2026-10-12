@@ -1,6 +1,6 @@
 // Which campaigns may narrate with the server's agent program. The program
 // runs on the admin's own plan, so the admin decides: the whole server (the
-// default, docs/harness-mcp-plan.md 13) or only campaigns an administrator
+// default, docs/archive/harness-mcp-plan.md 13) or only campaigns an administrator
 // leads.
 
 import { getUserById } from "@/lib/db/users";

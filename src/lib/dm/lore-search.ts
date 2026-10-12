@@ -1,8 +1,11 @@
+import { campaignLanguage } from "@/lib/db/campaigns";
 import { getDatabase } from "@/lib/db/core";
 import { listLoreWithEmbeddings } from "@/lib/db/lore";
 import { embed, similarityOf } from "@/lib/embeddings";
 import { searchScenes } from "@/lib/dm/memory-index";
 import { computeIdf, fuseRanked, lexicalScore } from "@/lib/dm/fusion-logic";
+import { hasWorldDoc, worldView } from "@/lib/db/world-forge";
+import { typeFor } from "@/lib/worldforge/model";
 
 // search_lore: the DM's world-knowledge search. One query runs against
 // every canon source at once: the lead's world lore entries, the
@@ -48,7 +51,6 @@ export const searchLoreTool = {
 
 const RESULT_LIMIT = 8;
 const TEXT_CLIP = 400;
-const VECTOR_FLOOR = 0.28;
 
 // Fact categories that a tool-call category filter maps onto.
 const FACT_CATEGORY_MAP: Record<string, string[]> = {
@@ -99,8 +101,9 @@ export async function handleSearchLore(
   let queryVector: Float32Array | null = null;
   try {
     [queryVector] = await embed([query]);
-  } catch {
+  } catch (error) {
     // Keyword fallback carries the search.
+    console.error("[lore-search] embedding failed", error);
   }
 
   const candidates: LoreCandidate[] = [];
@@ -123,6 +126,16 @@ export async function handleSearchLore(
         haystack: `${entry.title} ${entry.tags.join(" ")} ${entry.body}`,
         embedding,
       });
+    }
+  }
+
+  // The table's WorldForge (src/lib/worldforge/model.ts): each entry's
+  // article, fields and hidden truth, and the dated events of its history.
+  // The DM is the caller, so the hidden truths come too, marked as such; a
+  // retired entry is history the world no longer holds to.
+  if (category === "any" || ["npc", "location", "factions", "history", "geography", "culture", "religion", "magic"].includes(category)) {
+    for (const candidate of worldForgeCandidates(campaignId, category)) {
+      candidates.push(candidate);
     }
   }
 
@@ -198,18 +211,19 @@ export async function handleSearchLore(
     // Chapter memory unavailable; the other sources still answer.
   }
 
-  const idf = computeIdf(candidates.map((candidate) => candidate.haystack));
+  const language = campaignLanguage(campaignId);
+  const idf = computeIdf(candidates.map((candidate) => candidate.haystack), language);
   const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   const results = fuseRanked(
     candidates.map((candidate) => ({
       id: candidate.id,
-      lexical: lexicalScore(query, candidate.haystack, idf),
+      lexical: lexicalScore(query, candidate.haystack, idf, language),
       similarity:
         candidate.similarity !== undefined
           ? candidate.similarity
           : similarityOf(queryVector, candidate.embedding),
     })),
-    { similarityFloor: VECTOR_FLOOR, limit: RESULT_LIMIT },
+    { limit: RESULT_LIMIT },
   )
     .map((id) => byId.get(id))
     .filter((candidate): candidate is LoreCandidate => candidate !== undefined)
@@ -222,6 +236,63 @@ export async function handleSearchLore(
   }
   return {
     results,
-    note: "These are established canon; stay strictly consistent with them.",
+    // Retrieval has no relevance cut-off (fusion-logic.ts).
+    note: "These are established canon, nearest to your query first; some may not concern it. Stay strictly consistent with every one that does. If none does, this detail is not established and you may invent it, consistent with what you do know.",
   };
+}
+
+const SHELF_CATEGORY: Record<string, string[]> = {
+  npc: ["npc"],
+  location: ["location", "geography"],
+  faction: ["factions"],
+  lore: ["history", "magic", "culture", "religion", "geography"],
+};
+
+function worldForgeCandidates(campaignId: string, category: string): LoreCandidate[] {
+  if (!hasWorldDoc(campaignId)) {
+    return [];
+  }
+  const { doc, entities } = worldView(campaignId);
+  const out: LoreCandidate[] = [];
+  for (const entity of entities) {
+    if (entity.entry.canon === "retired" || (category !== "any" && !(SHELF_CATEGORY[entity.shelf] ?? []).includes(category))) {
+      continue;
+    }
+    const type = typeFor(doc, entity.shelf, entity.entry.typeId);
+    const fields = type.fields
+      .filter((def) => !def.authorOnly && entity.entry.fields[def.id] !== undefined)
+      .map((def) => {
+        const value = entity.entry.fields[def.id];
+        return `${def.name}: ${typeof value === "object" && value ? value.year : String(value)}`;
+      })
+      .join("; ");
+    const article = entity.entry.article || entity.text;
+    const body = [article, fields, entity.entry.hiddenTruth ? `(secretly: ${entity.entry.hiddenTruth})` : ""].filter(Boolean).join(" ");
+    if (!body.trim()) {
+      continue;
+    }
+    out.push({
+      id: `world:${entity.ref}`,
+      source: entity.entry.canon === "canon" ? "worldforge" : `worldforge (${entity.entry.canon})`,
+      ref: `${type.name}: ${entity.name}`,
+      text: body.slice(0, TEXT_CLIP),
+      haystack: `${entity.name} ${entity.aliases.join(" ")} ${entity.entry.aliases.join(" ")} ${entity.tags.join(" ")} ${body}`,
+      embedding: null,
+    });
+  }
+  if (category === "any" || category === "history") {
+    const nameOf = new Map(entities.map((entity) => [entity.ref, entity.name]));
+    for (const event of doc.events.filter((entry) => entry.canon !== "retired")) {
+      const names = event.refs.map((ref) => nameOf.get(ref)).filter(Boolean).join(", ");
+      out.push({
+        id: `world-event:${event.id}`,
+        source: "worldforge timeline",
+        ref: `${event.when.year ? `${event.when.year}: ` : ""}${event.title}`,
+        text: `${event.body}${names ? ` (involves ${names})` : ""}`.slice(0, TEXT_CLIP),
+        haystack: `${event.title} ${event.era} ${event.body} ${names}`,
+        embedding: null,
+      });
+    }
+  }
+  return out;
 }

@@ -1,0 +1,32 @@
+name: dependency-audit
+
+# Every high or critical advisory npm reports needs a decision in
+# scripts/audit-exceptions.json (a reason and an expiry) or a fix
+# (scripts/check-audit.mjs). Weekly and on lockfile changes rather than on
+# every push, so an advisory published overnight does not fail unrelated work.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - package-lock.json
+      - scripts/audit-exceptions.json
+  push:
+    branches: [main]
+    paths:
+      - package-lock.json
+      - scripts/audit-exceptions.json
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-audit.mjs

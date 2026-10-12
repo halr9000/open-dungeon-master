@@ -46,6 +46,40 @@ export const loginMediaRewrites = LOGIN_MEDIA_ROOTS.map((root) => ({
   destination: `/api/media/${root}/:path*`,
 }));
 
+// Security headers for every response (audit S7). Enforced: nothing may
+// frame these pages but themselves (the lore panel frames its own PDFs), no
+// plugin objects, no <base> or form target elsewhere, no type sniffing, and
+// only the origin goes out as a referrer. The resource policy (where
+// scripts, pictures, sound and connections may come from) is report-only:
+// the 3D dice and the picture codecs compile WebAssembly, voice opens
+// WebRTC and sockets, and a host may point the table at its own picture or
+// speech server, so it is reported in the console rather than enforced
+// until every one of those has been seen running under it. A table page
+// reports two string evals today; both are feature probes inside a try
+// with a fallback (Zod's JIT check and is-generator-function), not code
+// that needs 'unsafe-eval'.
+const enforcedCsp = ["object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'", "form-action 'self'"].join("; ");
+const reportedCsp = [
+  "default-src 'self'",
+  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${process.env.NODE_ENV === "production" ? "" : " 'unsafe-eval'"}`,
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' data: blob: https: http:",
+  "font-src 'self' data:",
+  "connect-src 'self' ws: wss: https: http:",
+  "worker-src 'self' blob:",
+  "frame-src 'self' blob:",
+  "manifest-src 'self'",
+].join("; ");
+
+export const securityHeaders = [
+  { key: "Content-Security-Policy", value: enforcedCsp },
+  { key: "Content-Security-Policy-Report-Only", value: reportedCsp },
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+];
+
 const nextConfig: NextConfig = {
   env: {
     ODM_BUILD_COMMIT: buildCommit,
@@ -57,17 +91,38 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return { beforeFiles: loginMediaRewrites, afterFiles: [], fallback: [] };
   },
+  async headers() {
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // A session token or a password must never sit in a cache.
+      { source: "/api/auth/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
+      // HSTS only where the request really arrived over https (a TLS proxy in
+      // front says so); a browser ignores it over plain http, so a LAN
+      // server's http address is never pinned. No includeSubDomains: the
+      // server cannot speak for its neighbours.
+      {
+        source: "/:path*",
+        has: [{ type: "header", key: "x-forwarded-proto", value: "https" }],
+        headers: [{ key: "Strict-Transport-Security", value: "max-age=15552000" }],
+      },
+    ];
+  },
   // mediasoup spawns a native worker binary and resolves it by path, so
   // bundling it breaks the lookup exactly the way it does for better-sqlite3.
-  serverExternalPackages: ["better-sqlite3-multiple-ciphers", "mediasoup"],
+  // multilingual-stemmer reads its .wasm beside its own module the same way.
+  serverExternalPackages: ["better-sqlite3-multiple-ciphers", "mediasoup", "multilingual-stemmer"],
   turbopack: {
     root: process.cwd(),
   },
   experimental: {
-    // Portal mode (src/proxy.ts) forwards the apps' data requests through
-    // the proxy, which buffers request bodies. An 8 MB image upload rides
-    // as base64 JSON, past the 10 MB default.
-    proxyClientMaxBodySize: "16mb",
+    // Every /api request passes the proxy (src/proxy.ts: app CORS, portal
+    // mode, body budgets), and Next copies the body of each into memory up
+    // to this size, then hands the route only that much without an error.
+    // It must be the largest budget in src/lib/body-limits.ts (a 64 MB
+    // workshop bundle as JSON); the proxy refuses anything a route would not
+    // accept before it is copied (scripts/test-body-limits.mjs holds the two
+    // together).
+    proxyClientMaxBodySize: "80mb",
   },
   ...(dockerBuild
     ? {
@@ -89,6 +144,9 @@ const nextConfig: NextConfig = {
         // The WASM picture codecs (src/lib/image-variants.ts) are loaded
         // inside a worker thread from a code string, so nothing imports
         // them statically and the tracer would miss them too.
+        // LICENSE is read by nothing, so nothing traces it, but the MIT
+        // notice has to travel with every copy: the image's /app and the
+        // apps' server payload (whose prune keeps it) both start from here.
         outputFileTracingIncludes: {
           "/*": [
             "node_modules/better-sqlite3-multiple-ciphers/**/*",
@@ -99,6 +157,7 @@ const nextConfig: NextConfig = {
             "node_modules/mediasoup/worker/out/Release/**/*",
             "node_modules/@jsquash/**/*",
             "node_modules/wasm-feature-detect/**/*",
+            "LICENSE",
           ],
         },
       }

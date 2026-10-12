@@ -18,7 +18,7 @@ import { planPcAttack, type AttackPlan } from "@/lib/dm/pc-attack-plan";
 import { rollPcAttack, strikeToHit } from "@/lib/dm/pc-attack-resolve";
 import { castAttackSpell } from "@/lib/dm/pc-attack-spell";
 import { resolveSheetRef } from "@/lib/dm/rolls";
-import { storeBudget } from "@/lib/dm/turn-budget";
+import { markReactionUsed, storeBudget } from "@/lib/dm/turn-budget";
 import { spendReadied } from "@/lib/dm/object-actions";
 import { spendGiantKiller } from "@/lib/dm/reaction-attacks";
 import { withAmmoCount } from "@/lib/srd/ammunition";
@@ -322,8 +322,7 @@ function spendPcAttack(plan: AttackPlan) {
   if (plan.castsSpell) {
     castAttackSpell(plan);
   } else if (!budget) {
-    encounter.reactionsUsed = [...encounter.reactionsUsed, sheet.id];
-    saveEncounter(encounter);
+    markReactionUsed(encounter, sheet.id);
     // The readied action (or the Giant Killer answer) this attack is spends
     // with it.
     if (plan.extras.giantKiller) {

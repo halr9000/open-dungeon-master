@@ -16,11 +16,12 @@ import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { EmptyState } from "@/components/EmptyState";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
+import { Switch } from "@/components/ui/Switch";
 
 // Verified backups of the campaign state, mirroring scripts/odm-backup.mjs
 // and scripts/odm-restore.mjs. An archive holds the encrypted database plus
-// uploads, generated media, models and .env.server, so it carries the
-// encryption key: treat it like a password.
+// uploads, generated media, .env.server and, when asked, the downloaded
+// models, so it carries the encryption key: treat it like a password.
 type BackupEntry = {
   name: string;
   sizeBytes: number;
@@ -48,6 +49,23 @@ export function AdminBackupSection() {
   const [verified, setVerified] = useState<Record<string, Proof>>({});
   const [restoredName, setRestoredName] = useState("");
   const [error, setError] = useState("");
+  const [includeModels, setIncludeModels] = useState(false);
+  // What the running backup is doing now, read from the list route while
+  // it works (src/lib/ops/backup.ts).
+  const [phase, setPhase] = useState("");
+
+  useEffect(() => {
+    if (!creating) {
+      return;
+    }
+    const timer = setInterval(() => {
+      fetch("/api/admin/backup")
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: { job?: { phase?: string } | null } | null) => setPhase(data?.job?.phase ?? ""))
+        .catch(() => undefined);
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [creating]);
 
   useEffect(() => {
     readLoad<{ backups?: BackupEntry[]; dir?: string }>(
@@ -63,10 +81,15 @@ export function AdminBackupSection() {
   }, [reloads, settle]);
 
   async function create() {
+    setPhase("");
     setCreating(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/backup", { method: "POST" });
+      const response = await fetch("/api/admin/backup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeModels }),
+      });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(data.error || "Could not create the backup.");
@@ -109,7 +132,7 @@ export function AdminBackupSection() {
 
   async function restore(name: string) {
     const sure = await appConfirm(
-      `Restore ${name}? Everything now on this server — campaigns, accounts, uploads and settings — is replaced by the contents of this archive. Restart the server immediately afterwards; anything played before the restart is lost.`,
+      `Restore ${name}? Everything now on this server — campaigns, accounts, uploads and settings — is replaced by the contents of this archive. The server stops taking play the moment the files are in place; restart it to load the restored world.`,
       { title: "Restore this backup?", actionLabel: "Restore", tone: "danger" },
     );
     if (!sure) return;
@@ -176,10 +199,17 @@ export function AdminBackupSection() {
   return (
     <div className="space-y-3">
       <p className="text-xs leading-5 text-stone-500">
+<<<<<<< HEAD
         A backup snapshots the encrypted campaign database, uploads, generated
         media, models and server settings into one archive. The archive carries
         the database encryption key, so keep it like a password: whoever holds
         it can read every campaign.{" "}
+=======
+        A backup snapshots the encrypted campaign database, uploads, generated media and server
+        settings into one archive. Downloaded models are left out unless you include them; they
+        download again on first use. The archive carries the database encryption key, so keep it
+        like a password: whoever holds it can read every campaign.{" "}
+>>>>>>> upstream/main
         {dir ? <span className="font-mono text-stone-600">{dir}</span> : null}
       </p>
       <div className="flex flex-wrap items-center gap-3">
@@ -197,9 +227,18 @@ export function AdminBackupSection() {
           )}
           Take backup now
         </button>
+        <label className="flex items-center gap-2 text-xs text-stone-400">
+          <Switch label="Include downloaded models" on={includeModels} onChange={setIncludeModels} disabled={creating} />
+          Include downloaded models
+        </label>
         {creating ? (
+<<<<<<< HEAD
           <span className="text-xs text-stone-500">
             Snapshotting the database and packing the archive…
+=======
+          <span key={phase} className="live-in text-xs text-stone-500">
+            {phase ? `${phase[0].toUpperCase()}${phase.slice(1)}…` : "Snapshotting the database and packing the archive…"}
+>>>>>>> upstream/main
           </span>
         ) : null}
       </div>
@@ -211,8 +250,13 @@ export function AdminBackupSection() {
       {restoredName ? (
         <p role="status" className="live-in text-sm text-amber-300">
           <TriangleAlert className="mr-1 inline size-4" />
+<<<<<<< HEAD
           Restored {restoredName}. Restart the server now to load it; play
           continued before the restart is lost.
+=======
+          Restored {restoredName}. The server has stopped taking play; restart it now to load the
+          restored world.
+>>>>>>> upstream/main
         </p>
       ) : null}
       {backups.length === 0 ? (

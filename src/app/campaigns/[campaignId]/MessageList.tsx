@@ -306,9 +306,15 @@ export function MessageList({
       bottomRef.current?.scrollIntoView({ behavior });
     });
   }, []);
+  // Keyed on the newest message and its length as well as the count: the
+  // list is capped at 200 (useCampaignStream), so past that a new line
+  // leaves the count where it was, and an edit or a continued scene never
+  // changes it (the Chronicle's issue 212, here too).
+  const newest = messages.length ? messages[messages.length - 1] : null;
+  const newestKey = newest ? `${newest.id}:${newest.content.length}` : "";
   useEffect(() => {
     follow("smooth");
-  }, [messages.length, dmStatus, follow]);
+  }, [messages.length, newestKey, dmStatus, follow]);
 
   // The streaming passage sits at the bottom, unless a player answered it
   // mid-stream: then it already holds a seq before that reply (issue 68) and

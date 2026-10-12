@@ -86,6 +86,25 @@ export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
       },
     ],
   },
+  // XGtE: a bonus action to teleport the druid, an action to teleport a
+  // willing creature they touch.
+  "druid::Hidden Paths": {
+    subclass: "Circle of Dreams",
+    counter: "sub_hidden_paths",
+    spends: [
+      {
+        name: "Hidden Paths",
+        pool: { id: "sub_hidden_paths" },
+        does: {
+          kind: "variants",
+          options: {
+            self: { does: { kind: "teleport", feet: 60 }, action: "bonus" },
+            touch: { does: { kind: "teleport", feet: 30, touched: true }, action: "action" },
+          },
+        },
+      },
+    ],
+  },
 
   // ---- fighter ----
   "fighter::Know Your Enemy": {

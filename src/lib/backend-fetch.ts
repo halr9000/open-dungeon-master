@@ -16,10 +16,45 @@ const MAX_BACKEND_REDIRECTS = 3;
 
 export class BackendRefusal extends Error {}
 
+// A request whose connection dropped before the backend said anything:
+// the pooled keep-alive socket was closed by the other side (a local
+// llama-server or Ollama idles its connections out, Node's own servers
+// after five seconds) in the same instant the request was written to it.
+// Nothing was answered, so asking again on a fresh socket is the right
+// move; a refusal, a timeout (the caller's signal) or a body that failed
+// mid-read is not retried.
+const DROPPED_CODES = new Set(["ECONNRESET", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
+
+export function connectionDropped(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const { code, message, cause } = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof code === "string" && DROPPED_CODES.has(code)) {
+      return true;
+    }
+    if (typeof message === "string" && /other side closed|socket hang up/i.test(message)) {
+      return true;
+    }
+    current = cause;
+  }
+  return false;
+}
+
 export async function fetchBackend(url: string, init: RequestInit): Promise<Response> {
   let current = new URL(url);
+  let retried = false;
   for (let hops = 0; ; hops += 1) {
-    const response = await fetch(current.href, { ...init, redirect: "manual" });
+    let response: Response;
+    try {
+      response = await fetch(current.href, { ...init, redirect: "manual" });
+    } catch (error) {
+      if (retried || init.signal?.aborted || !connectionDropped(error)) {
+        throw error;
+      }
+      retried = true;
+      hops -= 1;
+      continue;
+    }
     if (response.status < 300 || response.status >= 400) {
       return response;
     }

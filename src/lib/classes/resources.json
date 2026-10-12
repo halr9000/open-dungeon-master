@@ -49,7 +49,8 @@
       "ability": null,
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Reaction: +3 AC against one ranged attack you can see, 3/long rest."
+      "guidance": "Reaction: +3 AC against one ranged attack you can see, 3/long rest.",
+      "action": "reaction"
     },
     {
       "id": "cyberpunk_daemon_swarm",
@@ -273,7 +274,8 @@
       "ability": null,
       "recharge": "short",
       "upgrades": [],
-      "guidance": "Reaction: impose disadvantage on an attack against an ally you can see, 2/rest."
+      "guidance": "Reaction: impose disadvantage on an attack against an ally you can see, 2/rest.",
+      "action": "reaction"
     },
     {
       "id": "cyberpunk_plague_breaker",
@@ -397,7 +399,8 @@
       "ability": null,
       "recharge": "short",
       "upgrades": [],
-      "guidance": "1/short rest, bonus action: +2 AC until the start of your next turn."
+      "guidance": "1/short rest, bonus action: +2 AC until the start of your next turn.",
+      "action": "bonus"
     },
     {
       "id": "cyberpunk_stim_injector",
@@ -416,7 +419,8 @@
       "fx": {
         "kind": "heal_target",
         "dice": "1d6+wis"
-      }
+      },
+      "action": "bonus"
     },
     {
       "id": "cyberpunk_storm_of_blades",
@@ -515,7 +519,8 @@
       "fx": {
         "kind": "heal_target",
         "dice": "10+level"
-      }
+      },
+      "action": "bonus"
     },
     {
       "id": "dark_fantasy_apotheosis_of_suffering",
@@ -853,7 +858,8 @@
       "fx": {
         "kind": "teleport",
         "feet": 30
-      }
+      },
+      "action": "bonus"
     },
     {
       "id": "dark_fantasy_purging_flame",
@@ -932,7 +938,8 @@
       "fx": {
         "kind": "inspire",
         "die": "d6"
-      }
+      },
+      "action": "bonus"
     },
     {
       "id": "dark_fantasy_song_that_ends",
@@ -1112,7 +1119,8 @@
       "ability": null,
       "recharge": "short",
       "upgrades": [],
-      "guidance": "1/rest, drop through a grate, crack, or shadow as a reaction when targeted; the attack misses and you move 15 ft."
+      "guidance": "1/rest, drop through a grate, crack, or shadow as a reaction when targeted; the attack misses and you move 15 ft.",
+      "action": "reaction"
     },
     {
       "id": "dark_fantasy_voice_like_embers",
@@ -1252,7 +1260,8 @@
       "ability": null,
       "recharge": "short",
       "upgrades": [],
-      "guidance": "1/rest, reaction when hit: gain resistance to that damage type until your next turn."
+      "guidance": "1/rest, reaction when hit: gain resistance to that damage type until your next turn.",
+      "action": "reaction"
     },
     {
       "id": "horror_borrowed_eyes",
@@ -1462,7 +1471,8 @@
       "ability": "wis",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Action: fiends, undead, and spirits within 30 ft save (WIS) or must move away from you for 1 minute. WIS-mod uses per long rest."
+      "guidance": "Action: fiends, undead, and spirits within 30 ft save (WIS) or must move away from you for 1 minute. WIS-mod uses per long rest.",
+      "action": "action"
     },
     {
       "id": "horror_rite_of_severance",
@@ -1552,7 +1562,8 @@
       "ability": null,
       "recharge": "long",
       "upgrades": [],
-      "guidance": "1/long rest, close a portal, summoning, or breach of CR/level 5 or lower as an action."
+      "guidance": "1/long rest, close a portal, summoning, or breach of CR/level 5 or lower as an action.",
+      "action": "action"
     },
     {
       "id": "horror_terminal_focus",
@@ -1856,7 +1867,8 @@
       "ability": "int",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Reaction when attacked: your read of the attacker imposes disadvantage, INT-mod uses per long rest."
+      "guidance": "Reaction when attacked: your read of the attacker imposes disadvantage, INT-mod uses per long rest.",
+      "action": "reaction"
     },
     {
       "id": "mystery_dream_logic",
@@ -1886,7 +1898,8 @@
       "ability": "cha",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Reaction: impose disadvantage on one attack against you, CHA-mod uses per long rest."
+      "guidance": "Reaction: impose disadvantage on one attack against you, CHA-mod uses per long rest.",
+      "action": "reaction"
     },
     {
       "id": "mystery_ectoplasmic_shield",
@@ -1901,7 +1914,8 @@
       "ability": "wis",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Reaction when hit: gain resistance to that instance of damage, WIS-mod uses per long rest."
+      "guidance": "Reaction when hit: gain resistance to that instance of damage, WIS-mod uses per long rest.",
+      "action": "reaction"
     },
     {
       "id": "mystery_elementary",
@@ -2291,7 +2305,8 @@
       "ability": "wis",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Bonus action: a shielding spirit grants you or an ally +2 AC until your next turn, WIS-mod uses per long rest."
+      "guidance": "Bonus action: a shielding spirit grants you or an ally +2 AC until your next turn, WIS-mod uses per long rest.",
+      "action": "bonus"
     },
     {
       "id": "mystery_syndicated",
@@ -2617,7 +2632,8 @@
       "ability": "wis",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Bonus action: one ally within 30 ft gains temp HP equal to your level + WIS mod, WIS-mod uses per long rest."
+      "guidance": "Bonus action: one ally within 30 ft gains temp HP equal to your level + WIS mod, WIS-mod uses per long rest.",
+      "action": "bonus"
     },
     {
       "id": "post_apocalyptic_halo_of_the_core",
@@ -2857,7 +2873,8 @@
       "ability": "cha",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Spend a hit die as a bonus action to heal, CHA-mod uses per long rest."
+      "guidance": "Spend a hit die as a bonus action to heal, CHA-mod uses per long rest.",
+      "action": "bonus"
     },
     {
       "id": "post_apocalyptic_revelation",
@@ -2976,7 +2993,8 @@
       "ability": null,
       "recharge": "long",
       "upgrades": [],
-      "guidance": "1/long rest, reaction when hit: split into a swarm shape until your next turn, taking half damage from the attack and moving through gaps freely."
+      "guidance": "1/long rest, reaction when hit: split into a swarm shape until your next turn, taking half damage from the attack and moving through gaps freely.",
+      "action": "reaction"
     },
     {
       "id": "post_apocalyptic_stand_at_the_dawn",
@@ -3581,7 +3599,8 @@
       "ability": null,
       "recharge": "short",
       "upgrades": [],
-      "guidance": "1/rest, turn to crackling energy and move 30 ft through creatures and objects as a bonus action."
+      "guidance": "1/rest, turn to crackling energy and move 30 ft through creatures and objects as a bonus action.",
+      "action": "bonus"
     },
     {
       "id": "steampunk_sublimation",
@@ -3706,7 +3725,8 @@
       "ability": "int",
       "recharge": "long",
       "upgrades": [],
-      "guidance": "Reaction when hit in melee: the attacker takes 2d6 acid as an ampoule bursts, INT-mod uses per long rest."
+      "guidance": "Reaction when hit in melee: the attacker takes 2d6 acid as an ampoule bursts, INT-mod uses per long rest.",
+      "action": "reaction"
     }
   ]
 }

@@ -28,7 +28,7 @@ import type {
 import { earnedAsiCountFor } from "@/lib/srd/asi";
 import { legacyAsiTaken, readAsiLedger, withAsiLedger } from "@/lib/srd/asi-ledger";
 import { backgroundFeatureFor } from "@/lib/backgrounds";
-import { ATTUNEMENT_SLOTS, matchArmor } from "@/lib/srd/armor";
+import { attunementSlotsFor, matchArmor } from "@/lib/srd/armor";
 import { racialTraitsFor, subclassLevelFor } from "@/lib/srd/features";
 import {
   derivedMaxHp,
@@ -404,7 +404,11 @@ export function legalizeSheet(input: CreateSheetInput, context: LegalityContext)
     die: context.classOf(entry.id)?.hitDie ?? 8,
     level: entry.level,
   }));
-  const perLevelBonus = hpBonusPerLevelFor(hpBonusPerLevel(race.id) > 0, feats.feats);
+  // A workshop feat counts as the published feat it runs as (Tough's hit points).
+  const perLevelBonus = hpBonusPerLevelFor(
+    hpBonusPerLevel(race.id) > 0,
+    feats.feats.map((feat) => context.featOf(feat)?.runsAs ?? feat),
+  );
   // Draconic Resilience's hit point per sorcerer level (trait-rules.ts).
   const extraHp = featureHitPoints({ class: input.class, subclass: input.subclass, level, classes, features: input.features });
   const hpInput = { classes: hpClasses, con: abilities.con, perLevelBonus, extraHp };
@@ -676,16 +680,17 @@ export function legalizeSheet(input: CreateSheetInput, context: LegalityContext)
     }
   }
   let attuned = 0;
+  const attunementCap = attunementSlotsFor({ class: input.class, level, classes: input.classes });
   equipment = equipment.map((item) => {
     if (!item.attuned) {
       return item;
     }
     attuned += 1;
-    return attuned <= ATTUNEMENT_SLOTS ? item : { ...item, attuned: false };
+    return attuned <= attunementCap ? item : { ...item, attuned: false };
   });
-  if (context.door === "import" && attuned > ATTUNEMENT_SLOTS) {
+  if (context.door === "import" && attuned > attunementCap) {
     problems.push(
-      `A character is attuned to at most ${ATTUNEMENT_SLOTS} magic items; the file attunes ${attuned}.`,
+      `This character is attuned to at most ${attunementCap} magic items; the file attunes ${attuned}.`,
     );
   }
 

@@ -59,6 +59,9 @@ export function usePaintedMap(view: PlayerMapView | null, genre: string | null |
         next.style.width = "100%";
         next.style.height = "100%";
         next.style.animation = "overlay-in 420ms ease-out both";
+        // Named, so the picture can be told from the sky's particle canvas
+        // (scripts/browser/scenarios/02-board-enlarged.mjs looks for it).
+        next.dataset.paintedMap = "";
         const previous = shown.current;
         shown.current = { key, canvas: next };
         setPicture({ mapId: view.mapId, canvas: next });

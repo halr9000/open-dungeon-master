@@ -15,7 +15,23 @@ const CONTENT_TYPES: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
+  // A lore entry's attachment (/api/upload stores PDFs beside the pictures).
+  // It was accepted and saved, then answered 404 here for want of this line.
+  ".pdf": "application/pdf",
 };
+
+// Shown in the browser rather than saved, under its own name; nosniff on
+// everything, so a file is only ever read as the type its name says.
+function fileHeaders(contentType: string, resolved: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (contentType === "application/pdf") {
+    headers["Content-Disposition"] = `inline; filename="${path.basename(resolved)}"`;
+  }
+  return headers;
+}
 
 // Private, because every one of these files is behind a login: a shared
 // cache in front of the server (Cloudflare, a reverse proxy) that kept a
@@ -86,7 +102,7 @@ export async function serveGeneratedFile(
   segments: string[],
   request?: Pick<Request, "headers"> | null,
 ): Promise<Response> {
-  const root = path.join(process.cwd(), "public", rootDir);
+  const root = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", rootDir);
   const resolved = path.resolve(root, ...segments);
   if (!resolved.startsWith(root + path.sep)) {
     return Response.json({ error: "Not found." }, { status: 404 });
@@ -132,7 +148,7 @@ export async function serveGeneratedFile(
     return new Response(stream, {
       status: 206,
       headers: {
-        "Content-Type": contentType,
+        ...fileHeaders(contentType, resolved),
         "Content-Length": String(range.end - range.start + 1),
         "Content-Range": `bytes ${range.start}-${range.end}/${size}`,
         "Accept-Ranges": "bytes",
@@ -143,7 +159,7 @@ export async function serveGeneratedFile(
   const stream = Readable.toWeb(createReadStream(resolved)) as ReadableStream;
   return new Response(stream, {
     headers: {
-      "Content-Type": contentType,
+      ...fileHeaders(contentType, resolved),
       "Content-Length": String(size),
       "Accept-Ranges": "bytes",
       "Cache-Control": CACHE_CONTROL,

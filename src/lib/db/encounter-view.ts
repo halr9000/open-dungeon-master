@@ -139,6 +139,12 @@ export type PublicTurn = {
   disengaged?: boolean;
   // A levelled spell already cast this turn with this kind of action.
   castThisAction?: boolean;
+  // What the Attack action was made with, which is what opens the off-hand
+  // swing of two-weapon fighting (attack-rules.ts offHandProblem). Always
+  // sent, so a Hand can tell "not earned" from a server too old to say
+  // (issue 210).
+  lightMeleeAttack?: boolean;
+  oneHandMeleeAttack?: boolean;
 };
 
 export type PublicLastHit = {
@@ -180,6 +186,8 @@ function turnView(encounter: Encounter): { turn?: PublicTurn } {
       ...(budget.dashed ? { dashed: true } : {}),
       ...(budget.disengaged ? { disengaged: true } : {}),
       ...(budget.castThisAction ? { castThisAction: true } : {}),
+      lightMeleeAttack: Boolean(budget.lightMeleeAttack),
+      oneHandMeleeAttack: Boolean(budget.oneHandMeleeAttack ?? budget.lightMeleeAttack),
     },
   };
 }

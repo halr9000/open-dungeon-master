@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
+  PasswordBusyError,
   currentSessionTokenHash,
   currentUser,
   hashPassword,
+  passwordBusyResponse,
   unauthorized,
   verifyPassword,
 } from "@/lib/auth";
@@ -47,13 +49,22 @@ export async function POST(request: Request) {
   // A Discord-only account has no current password to verify: the
   // authenticated session is the proof, and setting one enables username
   // login here and in the apps.
-  if (account.passwordHash !== NO_PASSWORD_SENTINEL) {
-    if (!verifyPassword(parsed.data.currentPassword ?? "", account.passwordHash)) {
-      return Response.json({ error: "Current password is wrong." }, { status: 403 });
+  let newHash: string;
+  try {
+    if (account.passwordHash !== NO_PASSWORD_SENTINEL) {
+      if (!(await verifyPassword(parsed.data.currentPassword ?? "", account.passwordHash))) {
+        return Response.json({ error: "Current password is wrong." }, { status: 403 });
+      }
     }
+    newHash = await hashPassword(parsed.data.newPassword);
+  } catch (error) {
+    if (error instanceof PasswordBusyError) {
+      return passwordBusyResponse();
+    }
+    throw error;
   }
 
-  setUserPassword(user.id, hashPassword(parsed.data.newPassword), false);
+  setUserPassword(user.id, newHash, false);
   const keep = await currentSessionTokenHash();
   deleteSessionsForUser(user.id, keep ?? undefined);
   return Response.json({ ok: true });

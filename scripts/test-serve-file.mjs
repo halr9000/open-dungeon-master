@@ -148,6 +148,28 @@ await test("a missing file, a non-media extension and a traversal are all 404", 
   }
 });
 
+await test("an uploaded PDF is served (it was saved and then answered 404)", async () => {
+  const uploads = path.join(dir, "public", "uploads");
+  fs.mkdirSync(uploads, { recursive: true });
+  const pdf = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
+  fs.writeFileSync(path.join(uploads, "a1b2.pdf"), pdf);
+  const response = await serveGeneratedFile("uploads", ["a1b2.pdf"], withRange(null));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/pdf");
+  assert.equal(response.headers.get("content-disposition"), 'inline; filename="a1b2.pdf"');
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), pdf);
+  const part = await serveGeneratedFile("uploads", ["a1b2.pdf"], withRange("bytes=0-3"));
+  assert.equal(part.status, 206);
+  assert.equal(Buffer.from(await part.arrayBuffer()).toString(), "%PDF");
+});
+
+await test("every served file says nosniff", async () => {
+  const response = await serveGeneratedFile("generated-audio", ["camp", "take.mp3"], withRange(null));
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  await response.arrayBuffer();
+});
+
 process.chdir(previousCwd);
 removeTempDir(dir);
 console.log(`\n${passed} serve-file tests passed.`);

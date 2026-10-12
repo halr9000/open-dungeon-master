@@ -10,7 +10,7 @@ with one easing family, respects reduced motion, and is specified to the
 duration.
 
 The plan is written to the house rules the earlier plans committed to
-(`docs/workshop-plan.md` section 8, `docs/human-dm-plan.md` "Conventions"):
+(`docs/workshop-plan.md` section 8, `docs/archive/human-dm-plan.md` "Conventions"):
 the engine owns the numbers, the model and the human narrate; a prep object
 is one the engine runs; pick, do not type; nothing is drag-only because the
 phone has no hover; every change ships with a test under `scripts/` and is

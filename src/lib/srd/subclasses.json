@@ -4872,7 +4872,7 @@
             },
             {
               "n": "Eldritch Cannon",
-              "d": "A bonus action creates a Tiny or Small cannon that acts on your command: a flamethrower cone, a force ballista that pushes, or a protector that hands out temporary hit points. Once per long rest, or by spending a spell slot."
+              "d": "An action creates a Tiny or Small cannon, and a bonus action activates it: a flamethrower cone, a force ballista that pushes, or a protector that hands out temporary hit points. Once per long rest, or by spending a spell slot."
             }
           ],
           "5": [

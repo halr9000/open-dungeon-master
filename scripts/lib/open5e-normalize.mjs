@@ -2,6 +2,8 @@
 // by scripts/import-open5e.mjs and scripts/test-content.mjs so the shape
 // contract is tested without hitting the network.
 
+import { readWeightLb } from "../../src/lib/content/weight.ts";
+
 export function slugify(value) {
   return String(value || "")
     .toLowerCase()
@@ -247,20 +249,18 @@ export function normalizeDocumentV2(raw) {
 
 // Item weight in pounds, from whichever shape the source used: v2 gear
 // carries a decimal string plus a unit ("1.000", "lb"), v1 weapons carry a
-// human string ("8 lb."), and v1 armor and magic items carry nothing at all
-// (the SRD armor table in src/lib/srd/armor.ts fills armor in). Encumbrance
-// is the only consumer, and it is off by default, so an unknown weight is 0
-// rather than a guess.
+// human string ("8 lb.", "1/4 lb."), and v1 armor and magic items carry
+// nothing at all (the SRD armor table in src/lib/srd/armor.ts fills armor
+// in). src/lib/content/weight.ts does the reading; the column stores 0 for
+// "not stated" and for a text it cannot read, which weightProblem names so
+// the importer can say so instead of storing a wrong number (issue #205).
 export function parseWeightLb(raw, unit) {
-  if (raw === null || raw === undefined || raw === "") {
-    return 0;
-  }
-  const value = Number.parseFloat(String(raw).replace(/[^\d.]/g, ""));
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-  const kilograms = String(unit ?? raw).toLowerCase().includes("kg");
-  return Math.round((kilograms ? value * 2.20462 : value) * 100) / 100;
+  return readWeightLb(raw, unit).pounds ?? 0;
+}
+
+// Why a source weight could not be read, or null.
+export function weightProblem(raw, unit) {
+  return readWeightLb(raw, unit).problem;
 }
 
 export function normalizeWeapon(raw) {

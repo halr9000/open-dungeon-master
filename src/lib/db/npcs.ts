@@ -1,7 +1,9 @@
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
-import { matchEntity, mergeAliases, normalizeName } from "@/lib/dm/entity-logic";
+import { byName } from "@/lib/language/text-logic";
+import { matchEntity, mergeAliases, normalizeName, type EntityMatch } from "@/lib/dm/entity-logic";
 import { normalizeNpcVoice, type NpcDraft, type NpcVoice } from "@/lib/npcs/forge";
 import { isUploadedImagePath } from "@/lib/uploads";
+import { storedGender, type Gender } from "@/lib/gender";
 import {
   parseBonds,
   parseGoals,
@@ -42,6 +44,10 @@ export type Npc = {
   // What they do ("merchant", "cyberpunk-fixer", or whatever the DM typed).
   // Picks the placeholder face when portraitUrl is empty; no rule reads it.
   role: string;
+  // The stat block they fight with (a monster reference), or "".
+  statBlock: string;
+  // src/lib/gender.ts; "" for unspecified.
+  gender: Gender;
   // Kept out of the Active NPCs prompt block; restored on a name mention.
   archived: boolean;
   createdAt: string;
@@ -65,8 +71,10 @@ type NpcRow = {
   arc_cast_id: string;
   portrait_url: string | null;
   role: string | null;
+  gender: string | null;
   voice_json: string | null;
   faction_id: string | null;
+  stat_block?: string | null;
   archived: number;
   created_at: string;
   updated_at: string;
@@ -81,6 +89,7 @@ function mapNpc(row: NpcRow): Npc {
     trait: row.trait,
     location: row.location,
     role: row.role ?? "",
+    gender: storedGender(row.gender),
     lastShiftTurn: row.last_shift_turn,
     aliases: parseJson<string[]>(row.aliases_json, []),
     agency: {
@@ -96,6 +105,7 @@ function mapNpc(row: NpcRow): Npc {
     portraitUrl: isUploadedImagePath(row.portrait_url) ? row.portrait_url : "",
     voice: normalizeNpcVoice(parseJson<unknown>(row.voice_json ?? "null", null)),
     factionId: row.faction_id ?? "",
+    statBlock: row.stat_block ?? "",
     archived: row.archived === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -105,60 +115,59 @@ function mapNpc(row: NpcRow): Npc {
 export function listNpcs(campaignId: string): Npc[] {
   return (
     getDatabase()
-      .prepare(`SELECT * FROM npcs WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`)
+      .prepare(`SELECT * FROM npcs WHERE campaign_id = ?`)
       .all(campaignId) as NpcRow[]
-  ).map(mapNpc);
+  )
+    .map(mapNpc)
+    .sort(byName);
 }
 
-// Looks an NPC up by any name they have answered to.
+// Looks an NPC up by any name they have answered to, by entity resolution
+// across every known name and alias, which is what keeps "marla" and
+// "MARLA", or "Église" and "église", pointing at one row with one attitude
+// and one approval meter instead of forking into two. Compared in
+// JavaScript: SQLite folds case only for ASCII letters.
 //
-// The literal spelling is tried first, so the common case stays a single
-// indexed lookup. Only when that misses does it fall back to entity
-// resolution across every known name and alias, which is what keeps
-// "Marla", "Marla Venn", and "Captain Marla" pointing at one row with one
-// attitude and one approval meter instead of forking into three.
-//
-// Fuzzy matches are deliberately NOT accepted here. "Aldric" and "Alaric"
-// may be two different people, and silently answering a social check against
-// the wrong NPC is worse than not finding one; those surface as lead-facing
+// Containment and fuzzy matches are deliberately NOT accepted here.
+// "Aldric" and "Alaric" may be two different people, and so may "Bruno the
+// smith" and "the smith"; silently answering a social check against the
+// wrong NPC is worse than not finding one, so those surface as lead-facing
 // suggestions instead (see suggestNpcMerges).
 export function getNpcByName(campaignId: string, name: string): Npc | null {
-  const trimmed = name.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const row = getDatabase()
-    .prepare(
-      `SELECT * FROM npcs WHERE campaign_id = ? AND name = ? COLLATE NOCASE LIMIT 1`,
-    )
-    .get(campaignId, trimmed) as NpcRow | undefined;
-  if (row) {
-    return mapNpc(row);
-  }
+  const found = matchRoster(campaignId, name.trim());
+  return found && !found.match.needsConfirmation ? found.npc : null;
+}
 
-  const roster = listNpcs(campaignId);
-  if (!roster.length) {
-    return null;
-  }
-  // Aliases are matched alongside canonical names, then mapped back.
-  const ownerByName = new Map<string, Npc>();
-  for (const npc of roster) {
-    ownerByName.set(npc.name, npc);
+// The roster's best match for a name, across every name and alias.
+function matchRoster(campaignId: string, name: string): { npc: Npc; match: EntityMatch } | null {
+  // Aliases are matched alongside canonical names, then mapped back. Every
+  // canonical name is listed first, so it wins a tie with another NPC's
+  // alias.
+  const npcs = listNpcs(campaignId);
+  const ownerByName = new Map<string, Npc>(npcs.map((npc) => [npc.name, npc]));
+  for (const npc of npcs) {
     for (const alias of npc.aliases) {
       if (!ownerByName.has(alias)) {
         ownerByName.set(alias, npc);
       }
     }
   }
-  const match = matchEntity(trimmed, [...ownerByName.keys()]);
-  if (!match || match.needsConfirmation) {
-    return null;
-  }
-  return ownerByName.get(match.name) ?? null;
+  const match = matchEntity(name, [...ownerByName.keys()]);
+  const npc = match ? ownerByName.get(match.name) : undefined;
+  return match && npc ? { npc, match } : null;
 }
 
-// Fuzzy near-misses across the roster, for the party lead to confirm or
-// dismiss. Never applied automatically.
+// The known NPC a name nearly matches (one name inside the other, or a typo
+// away), which getNpcByName never resolves on its own. A tool that misses
+// names it to the model, who knows whether the two are one person, so the
+// known name is used instead of a duplicate being registered.
+export function nearestNpcName(campaignId: string, name: string): string | null {
+  const found = matchRoster(campaignId, name.trim());
+  return found?.match.needsConfirmation ? found.npc.name : null;
+}
+
+// Near-misses across the roster (one name inside another, or a typo away),
+// for the party lead to confirm or dismiss. Never applied automatically.
 export function suggestNpcMerges(
   campaignId: string,
 ): Array<{ name: string; matches: string }> {
@@ -183,6 +192,7 @@ export function upsertNpc(input: {
   attitude?: Attitude;
   trait?: string;
   location?: string;
+  gender?: Gender;
 }): Npc {
   const db = getDatabase();
   const now = nowIso();
@@ -197,12 +207,13 @@ export function upsertNpc(input: {
         : mergeAliases(existing.aliases, input.name);
     db.prepare(
       `UPDATE npcs
-       SET attitude = ?, trait = ?, location = ?, aliases_json = ?, updated_at = ?
+       SET attitude = ?, trait = ?, location = ?, gender = ?, aliases_json = ?, updated_at = ?
        WHERE id = ?`,
     ).run(
       input.attitude ?? existing.attitude,
       input.trait ?? existing.trait,
       input.location ?? existing.location,
+      input.gender ?? existing.gender,
       JSON.stringify(aliases),
       now,
       existing.id,
@@ -211,8 +222,8 @@ export function upsertNpc(input: {
   }
   const id = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO npcs (id, campaign_id, name, attitude, trait, location, last_shift_turn, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)`,
+    `INSERT INTO npcs (id, campaign_id, name, attitude, trait, location, gender, last_shift_turn, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
   ).run(
     id,
     input.campaignId,
@@ -220,6 +231,7 @@ export function upsertNpc(input: {
     input.attitude ?? "indifferent",
     input.trait ?? "",
     input.location ?? "",
+    input.gender ?? "",
     now,
     now,
   );
@@ -242,10 +254,10 @@ export function createNpcFromDraft(campaignId: string, draft: NpcDraft): Npc {
   const id = crypto.randomUUID();
   db.prepare(
     `INSERT INTO npcs
-       (id, campaign_id, name, attitude, trait, location, role, last_shift_turn,
+       (id, campaign_id, name, attitude, trait, location, role, gender, last_shift_turn,
         aliases_json, personality_json, goals_json, relations_json,
-        bonds_json, pressure_json, arc_cast_id, portrait_url, voice_json, faction_id, archived, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '[]', '', '', '', ?, ?, 0, ?, ?)`,
+        bonds_json, pressure_json, arc_cast_id, portrait_url, voice_json, faction_id, stat_block, archived, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '[]', '', '', '', ?, ?, ?, 0, ?, ?)`,
   ).run(
     id,
     campaignId,
@@ -254,12 +266,14 @@ export function createNpcFromDraft(campaignId: string, draft: NpcDraft): Npc {
     draft.trait,
     draft.location,
     draft.role,
+    draft.gender,
     JSON.stringify(draft.aliases),
     draft.personality ? JSON.stringify(draft.personality) : "",
     JSON.stringify(draft.goals),
     JSON.stringify(draft.relations),
     draft.voice ? JSON.stringify(draft.voice) : null,
     draft.factionId,
+    draft.statBlock ?? "",
     now,
     now,
   );
@@ -280,8 +294,8 @@ export function updateNpcFromDraft(campaignId: string, npcId: string, draft: Npc
   }
   db.prepare(
     `UPDATE npcs
-     SET name = ?, attitude = ?, trait = ?, location = ?, role = ?, aliases_json = ?,
-         personality_json = ?, goals_json = ?, relations_json = ?, voice_json = ?, faction_id = ?, updated_at = ?
+     SET name = ?, attitude = ?, trait = ?, location = ?, role = ?, gender = ?, aliases_json = ?,
+         personality_json = ?, goals_json = ?, relations_json = ?, voice_json = ?, faction_id = ?, stat_block = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     draft.name,
@@ -289,12 +303,14 @@ export function updateNpcFromDraft(campaignId: string, npcId: string, draft: Npc
     draft.trait,
     draft.location,
     draft.role,
+    draft.gender,
     JSON.stringify(draft.aliases),
     draft.personality ? JSON.stringify(draft.personality) : "",
     JSON.stringify(draft.goals),
     JSON.stringify(draft.relations),
     draft.voice ? JSON.stringify(draft.voice) : null,
     draft.factionId,
+    draft.statBlock ?? "",
     nowIso(),
     npcId,
   );

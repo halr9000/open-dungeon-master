@@ -1,9 +1,22 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { closeDatabaseForRestore } from "@/lib/db/core";
+import { closeAllStreams } from "@/lib/live-streams";
+import { enterMaintenance } from "@/lib/maintenance";
 import { serverEnv } from "@/lib/server-env";
+
+// Every step that takes time runs off the request thread: the snapshot in a
+// child process, the copies through the file system's thread pool, tar as a
+// child. Before, VACUUM INTO, every recursive copy and tar ran synchronously
+// inside the request, and a backup of a world with its models stopped every
+// table on the server until it finished.
+const run = promisify(execFile);
 
 // Server-side twin of scripts/odm-backup.mjs and scripts/odm-restore.mjs.
 // The CLI refuses to run while the app is listening, because it checkpoints
@@ -30,11 +43,11 @@ const ARCHIVE_RE = /^odm-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.tar\.gz$/;
 // A failure the route should answer with a specific status (a missing or
 // corrupt archive is a 4xx, not a server fault).
 export class BackupError extends Error {
-  constructor(
-    message: string,
-    readonly status = 400,
-  ) {
+  readonly status: number;
+
+  constructor(message: string, status = 400) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -47,6 +60,169 @@ const INCLUDES = [
   "models",
   ".env.server",
 ];
+
+// Downloaded model weights: often the largest folder by far, and fetched
+// again on first use, so a backup leaves them out unless asked.
+const REDOWNLOADABLE = new Set(["models"]);
+
+// One backup or restore at a time, and what it is doing now, for the admin
+// panel to show while it runs.
+export type BackupJob = { kind: "backup" | "restore" | "verify"; phase: string; startedAt: string };
+
+declare global {
+  var __odmBackupJob: BackupJob | undefined;
+}
+
+export function currentBackupJob(): BackupJob | null {
+  return globalThis.__odmBackupJob ?? null;
+}
+
+async function exclusive<T>(kind: BackupJob["kind"], work: (phase: (name: string) => void) => Promise<T>): Promise<T> {
+  const running = globalThis.__odmBackupJob;
+  if (running) {
+    throw new BackupError(`A ${running.kind} is already running (${running.phase}). Try again when it has finished.`, 409);
+  }
+  const job: BackupJob = { kind, phase: "starting", startedAt: new Date().toISOString() };
+  globalThis.__odmBackupJob = job;
+  try {
+    return await work((name) => {
+      job.phase = name;
+    });
+  } finally {
+    globalThis.__odmBackupJob = undefined;
+  }
+}
+
+async function treeBytes(target: string): Promise<number> {
+  let info: fs.Stats;
+  try {
+    info = await fs.promises.lstat(target);
+  } catch {
+    return 0;
+  }
+  if (!info.isDirectory()) {
+    return info.isFile() ? info.size : 0;
+  }
+  let total = 0;
+  for (const entry of await fs.promises.readdir(target)) {
+    total += await treeBytes(path.join(target, entry));
+  }
+  return total;
+}
+
+async function freeBytes(dir: string): Promise<number> {
+  try {
+    const stats = await fs.promises.statfs(dir);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+// Room for the staged copy and the archive, with a margin, checked before
+// anything is written: a backup that filled the disk would take the
+// database's own writes down with it.
+const HEADROOM_BYTES = 256 * 1024 * 1024;
+
+async function requireRoom(needed: number, ...dirs: string[]) {
+  for (const dir of dirs) {
+    const free = await freeBytes(dir);
+    if (free < needed + HEADROOM_BYTES) {
+      const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+      throw new BackupError(
+        `Not enough free disk for this backup: it needs about ${gib(needed + HEADROOM_BYTES)} GB at ${dir}, which has ${gib(free)} GB free.`,
+        507,
+      );
+    }
+  }
+}
+
+// The database work (the consistent snapshot, and a restore's integrity
+// proof) runs in a separate Node process with the same SQLite module, so a
+// large world's VACUUM INTO or integrity_check does not hold the server's
+// event loop. The key travels in the environment, never the command line.
+const DATABASE_SCRIPT = `
+const [mode, modulePath, source, target] = process.argv.slice(1);
+const Database = require(modulePath);
+const db = new Database(source, { readonly: true });
+try {
+  const key = process.env.ODM_BACKUP_DB_KEY || "";
+  if (key) {
+    db.pragma("cipher='chacha20'");
+    db.pragma("key='" + key.replaceAll("'", "''") + "'");
+  }
+  if (mode === "vacuum") {
+    db.exec("VACUUM INTO '" + target.replaceAll("'", "''") + "'");
+  } else {
+    const integrity = db.pragma("integrity_check", { simple: true });
+    const count = (table) => db.prepare("SELECT COUNT(*) AS n FROM " + table).get().n;
+    process.stdout.write(JSON.stringify(integrity === "ok"
+      ? { integrity, campaigns: count("campaigns"), users: count("users"), messages: count("campaign_messages") }
+      : { integrity }));
+  }
+} finally {
+  db.close();
+}
+`;
+
+// Where the server's own copy of the module lives: looked up from the app
+// root (a standalone build and the Docker image keep node_modules there)
+// and then from this file (a checkout run from anywhere, and the tests).
+function sqliteModulePath(): string {
+  const bases = [path.join(/*turbopackIgnore: true*/ root(), "package.json")];
+  try {
+    bases.push(fileURLToPath(import.meta.url));
+  } catch {
+    // No file address for this module in this build; the root is enough.
+  }
+  for (const base of bases) {
+    try {
+      return createRequire(base).resolve("better-sqlite3-multiple-ciphers");
+    } catch {
+      // Try the next place.
+    }
+  }
+  return "";
+}
+
+// Runs one database job in the child process; null when the child could not
+// be used (the module did not resolve, or the process failed to start), so
+// the caller does the work in this process as before rather than failing.
+async function inChild(mode: "vacuum" | "prove", source: string, target: string, key: string): Promise<string | null> {
+  const modulePath = sqliteModulePath();
+  if (!modulePath) {
+    return null;
+  }
+  try {
+    const { stdout } = await run(process.execPath, ["-e", DATABASE_SCRIPT, mode, modulePath, source, target], {
+      env: { ...process.env, ODM_BACKUP_DB_KEY: key, ELECTRON_RUN_AS_NODE: "1" },
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout;
+  } catch (error) {
+    console.warn(`[backup] the ${mode} process failed; doing it in this process instead`, error);
+    return null;
+  }
+}
+
+async function snapshotDatabase(db: string, snapshot: string, key: string) {
+  if ((await inChild("vacuum", db, snapshot, key)) !== null) {
+    return;
+  }
+  await fs.promises.rm(snapshot, { force: true });
+  const Database = (await import("better-sqlite3-multiple-ciphers")).default;
+  const handle = new Database(db, { readonly: true });
+  try {
+    if (key) {
+      handle.pragma("cipher='chacha20'");
+      handle.pragma(`key='${key.replaceAll("'", "''")}'`);
+    }
+    handle.exec(`VACUUM INTO '${snapshot.replaceAll("'", "''")}'`);
+  } finally {
+    handle.close();
+  }
+}
 
 function root() {
   return process.cwd();
@@ -67,11 +243,11 @@ function managedPaths(manifest: { includes?: unknown }): string[] {
 }
 
 export function backupDir(): string {
-  return path.resolve(serverEnv("ODM_BACKUP_DIR") || path.join(os.homedir(), "odm-backups"));
+  return path.resolve(/*turbopackIgnore: true*/ serverEnv("ODM_BACKUP_DIR") || path.join(os.homedir(), "odm-backups"));
 }
 
 function dbPath(): string {
-  return path.resolve(serverEnv("SQLITE_DB_PATH") || path.join(root(), "data", "local-roleplay.sqlite"));
+  return path.resolve(/*turbopackIgnore: true*/ serverEnv("SQLITE_DB_PATH") || path.join(/*turbopackIgnore: true*/ root(), "data", "local-roleplay.sqlite"));
 }
 
 // Archives are the size of the whole state tree and can pass 2 GiB, where
@@ -95,7 +271,7 @@ function envValue(file: string, key: string): string {
 function encryptionKey(): string {
   const fromEnv = serverEnv("DB_ENCRYPTION_KEY").trim();
   if (fromEnv) return fromEnv;
-  const dockerKey = path.join(root(), "data", ".db-key");
+  const dockerKey = path.join(/*turbopackIgnore: true*/ root(), "data", ".db-key");
   return fs.existsSync(dockerKey) ? fs.readFileSync(dockerKey, "utf8").trim() : "";
 }
 
@@ -127,7 +303,11 @@ export function listBackups(): BackupEntry[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function createBackup(): Promise<BackupEntry> {
+export async function createBackup(options: { includeModels?: boolean } = {}): Promise<BackupEntry> {
+  return exclusive("backup", (phase) => buildBackup(options, phase));
+}
+
+async function buildBackup(options: { includeModels?: boolean }, phase: (name: string) => void): Promise<BackupEntry> {
   const appRoot = root();
   const db = dbPath();
   const relativeDb = path.relative(appRoot, db);
@@ -137,70 +317,80 @@ export async function createBackup(): Promise<BackupEntry> {
   if (!fs.existsSync(db)) {
     throw new Error(`database not found: ${db}`);
   }
+  const includes = INCLUDES.filter(
+    (rel) =>
+      (options.includeModels || !REDOWNLOADABLE.has(rel)) &&
+      fs.existsSync(path.join(/*turbopackIgnore: true*/ appRoot, rel)),
+  );
+
+  phase("measuring");
+  let needed = 0;
+  for (const rel of includes) {
+    needed += await treeBytes(path.join(/*turbopackIgnore: true*/ appRoot, rel));
+  }
+  const dir = backupDir();
+  await fs.promises.mkdir(dir, { recursive: true });
+  await requireRoom(needed, os.tmpdir(), dir);
 
   // A consistent copy while the server keeps playing: VACUUM INTO writes a
   // snapshot from a read transaction, WAL included, without pausing writers.
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "odm-backup-"));
+  const stage = await fs.promises.mkdtemp(path.join(os.tmpdir(), "odm-backup-"));
   try {
+    phase("snapshotting the database");
     const snapshot = path.join(stage, "snapshot.sqlite");
-    const Database = (await import("better-sqlite3-multiple-ciphers")).default;
-    const handle = new Database(db, { readonly: true });
-    try {
-      const key = encryptionKey();
-      if (key) {
-        handle.pragma("cipher='chacha20'");
-        handle.pragma(`key='${key.replaceAll("'", "''")}'`);
-      }
-      handle.exec(`VACUUM INTO '${snapshot.replaceAll("'", "''")}'`);
-    } finally {
-      handle.close();
-    }
+    await snapshotDatabase(db, snapshot, encryptionKey());
 
-    for (const rel of INCLUDES) {
-      const src = path.join(appRoot, rel);
-      if (!fs.existsSync(src)) continue;
-      const dst = path.join(stage, rel);
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
+    phase("copying files");
+    const liveDb = path.resolve(db);
+    for (const rel of includes) {
+      const src = path.join(/*turbopackIgnore: true*/ appRoot, rel);
+      const dst = path.join(/*turbopackIgnore: true*/ stage, rel);
+      await fs.promises.mkdir(path.dirname(dst), { recursive: true });
       // WAL/SHM sidecars belong to the live database, not to the VACUUM INTO
       // snapshot that replaces it; shipping them makes the archive corrupt.
-      fs.cpSync(src, dst, { recursive: true, filter: (s) => !/-(?:wal|shm)$/.test(s) });
+      // The live database itself is skipped too: the snapshot takes its
+      // place, and copying it first doubled the largest file for nothing.
+      await fs.promises.cp(src, dst, {
+        recursive: true,
+        filter: (from) => !/-(?:wal|shm)$/.test(from) && path.resolve(from) !== liveDb,
+      });
     }
     const stagedDb = path.join(stage, relativeDb);
-    fs.mkdirSync(path.dirname(stagedDb), { recursive: true });
-    fs.rmSync(stagedDb, { force: true });
-    fs.renameSync(snapshot, stagedDb);
+    await fs.promises.mkdir(path.dirname(stagedDb), { recursive: true });
+    await fs.promises.rm(stagedDb, { force: true });
+    await fs.promises.rename(snapshot, stagedDb);
 
     const createdAt = new Date();
     const manifest = {
       format: 1,
       createdAt: createdAt.toISOString(),
       database: relativeDb.replaceAll(path.sep, "/"),
-      includes: INCLUDES.filter((rel) => fs.existsSync(path.join(appRoot, rel))),
+      includes,
       source: "app",
     };
-    fs.writeFileSync(path.join(stage, "odm-backup.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
+    await fs.promises.writeFile(path.join(stage, "odm-backup.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
       mode: 0o600,
     });
 
-    const dir = backupDir();
-    fs.mkdirSync(dir, { recursive: true });
     try {
-      fs.chmodSync(dir, 0o700);
+      await fs.promises.chmod(dir, 0o700);
     } catch {
       // chmod is best-effort on Windows.
     }
 
+    phase("compressing");
     const stamp = createdAt.toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const name = `odm-backup-${stamp}.tar.gz`;
     const archive = path.join(dir, name);
-    execFileSync("tar", ["-czf", archive, "-C", stage, "."], { stdio: "pipe" });
+    await run("tar", ["-czf", archive, "-C", stage, "."], { maxBuffer: 16 * 1024 * 1024 });
 
+    phase("hashing");
     const sha256 = await hashFile(archive);
-    fs.writeFileSync(`${archive}.sha256`, `${sha256}\n`, { mode: 0o600 });
+    await fs.promises.writeFile(`${archive}.sha256`, `${sha256}\n`, { mode: 0o600 });
 
-    return { name, sizeBytes: fs.statSync(archive).size, createdAt: createdAt.toISOString(), sha256 };
+    return { name, sizeBytes: (await fs.promises.stat(archive)).size, createdAt: createdAt.toISOString(), sha256 };
   } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
+    await fs.promises.rm(stage, { recursive: true, force: true });
   }
 }
 
@@ -216,12 +406,16 @@ export function deleteBackup(name: string): boolean {
 // traversal paths, open the encrypted database with the archived key, run
 // PRAGMA integrity_check and count the campaign tables.
 export async function verifyBackup(name: string): Promise<{ proof: RestoreProof; sha256: string }> {
+  return exclusive("verify", () => proveArchive(name));
+}
+
+async function proveArchive(name: string): Promise<{ proof: RestoreProof; sha256: string }> {
   const archive = resolveArchive(name);
   if (!archive) {
     throw new BackupError("No such backup archive.", 404);
   }
 
-  const listing = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" });
+  const { stdout: listing } = await run("tar", ["-tzf", archive], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   for (const raw of listing.split(/\r?\n/)) {
     const entry = raw.trim().replace(/^\.\//, "");
     if (!entry) continue;
@@ -230,9 +424,9 @@ export async function verifyBackup(name: string): Promise<{ proof: RestoreProof;
     }
   }
 
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "odm-restore-"));
+  const stage = await fs.promises.mkdtemp(path.join(os.tmpdir(), "odm-restore-"));
   try {
-    execFileSync("tar", ["-xzf", archive, "-C", stage], { stdio: "pipe" });
+    await run("tar", ["-xzf", archive, "-C", stage], { maxBuffer: 16 * 1024 * 1024 });
     const manifestPath = path.join(stage, "odm-backup.json");
     if (!fs.existsSync(manifestPath)) {
       throw new Error("archive is missing odm-backup.json");
@@ -262,70 +456,88 @@ export async function verifyBackup(name: string): Promise<{ proof: RestoreProof;
     // Prefer the key the archive carries (it matches the archive's data);
     // fall back to this server's key for archives made without one.
     const key =
-      envValue(path.join(stage, ".env.server"), "DB_ENCRYPTION_KEY") ||
-      (fs.existsSync(path.join(stage, "data", ".db-key"))
-        ? fs.readFileSync(path.join(stage, "data", ".db-key"), "utf8").trim()
+      envValue(path.join(/*turbopackIgnore: true*/ stage, ".env.server"), "DB_ENCRYPTION_KEY") ||
+      (fs.existsSync(path.join(/*turbopackIgnore: true*/ stage, "data", ".db-key"))
+        ? fs.readFileSync(path.join(/*turbopackIgnore: true*/ stage, "data", ".db-key"), "utf8").trim()
         : "") ||
       encryptionKey();
 
-    const Database = (await import("better-sqlite3-multiple-ciphers")).default;
-    const db = new Database(dbInStage, { readonly: true });
-    try {
-      if (key) {
-        db.pragma("cipher='chacha20'");
-        db.pragma(`key='${key.replaceAll("'", "''")}'`);
+    const fromChild = await inChild("prove", dbInStage, "", key);
+    let proof: RestoreProof;
+    if (fromChild !== null) {
+      const result = JSON.parse(fromChild) as Partial<RestoreProof> & { integrity?: string };
+      if (result.integrity !== "ok") {
+        throw new Error(`restored database integrity check failed: ${result.integrity}`);
       }
-      const integrity = db.pragma("integrity_check", { simple: true });
-      if (integrity !== "ok") {
-        throw new Error(`restored database integrity check failed: ${integrity}`);
+      proof = { campaigns: Number(result.campaigns), users: Number(result.users), messages: Number(result.messages) };
+    } else {
+      const Database = (await import("better-sqlite3-multiple-ciphers")).default;
+      const db = new Database(dbInStage, { readonly: true });
+      try {
+        if (key) {
+          db.pragma("cipher='chacha20'");
+          db.pragma(`key='${key.replaceAll("'", "''")}'`);
+        }
+        const integrity = db.pragma("integrity_check", { simple: true });
+        if (integrity !== "ok") {
+          throw new Error(`restored database integrity check failed: ${integrity}`);
+        }
+        const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+        proof = { campaigns: count("campaigns"), users: count("users"), messages: count("campaign_messages") };
+      } finally {
+        db.close();
       }
-      const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
-      const proof: RestoreProof = {
-        campaigns: count("campaigns"),
-        users: count("users"),
-        messages: count("campaign_messages"),
-      };
-      const sha256 = await hashFile(archive);
-      return { proof, sha256 };
-    } finally {
-      db.close();
     }
+    const sha256 = await hashFile(archive);
+    return { proof, sha256 };
   } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
+    await fs.promises.rm(stage, { recursive: true, force: true });
   }
 }
 
-// Replace the live state with a verified archive. The running server keeps
-// its open handle on the old database until it restarts, so callers must say
-// so loudly; the stale WAL/SHM sidecars go with the file they belong to.
+// Replace the live state with a verified archive. The proof runs first and
+// touches nothing; only then does the server stop taking play (maintenance:
+// every API request is refused, every stream closed, the database closed),
+// so nothing is written to the old file after the new one is in place and
+// lost at the restart. The server stays in maintenance until it restarts.
 export async function restoreBackup(name: string): Promise<{ proof: RestoreProof }> {
-  const { proof } = await verifyBackup(name);
-  const archive = resolveArchive(name);
-  if (!archive) {
-    throw new BackupError("No such backup archive.", 404);
-  }
-
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "odm-restore-"));
-  try {
-    execFileSync("tar", ["-xzf", archive, "-C", stage], { stdio: "pipe" });
-    const manifest = JSON.parse(fs.readFileSync(path.join(stage, "odm-backup.json"), "utf8")) as {
-      includes?: string[];
-    };
-    for (const rel of managedPaths(manifest)) {
-      const src = path.join(stage, rel);
-      if (!fs.existsSync(src)) continue;
-      const dst = path.join(root(), rel);
-      fs.rmSync(dst, { recursive: true, force: true });
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
-      fs.cpSync(src, dst, { recursive: true });
+  return exclusive("restore", async (phase) => {
+    phase("verifying");
+    const { proof } = await proveArchive(name);
+    const archive = resolveArchive(name);
+    if (!archive) {
+      throw new BackupError("No such backup archive.", 404);
     }
-    // The sidecars belong to the database file that was just replaced; the
-    // live handle recreates its own, and a restart opens a fresh pair.
-    const db = dbPath();
-    fs.rmSync(`${db}-wal`, { force: true });
-    fs.rmSync(`${db}-shm`, { force: true });
-    return { proof };
-  } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
-  }
+
+    const stage = await fs.promises.mkdtemp(path.join(os.tmpdir(), "odm-restore-"));
+    try {
+      phase("extracting");
+      await run("tar", ["-xzf", archive, "-C", stage], { maxBuffer: 16 * 1024 * 1024 });
+      const manifest = JSON.parse(await fs.promises.readFile(path.join(stage, "odm-backup.json"), "utf8")) as {
+        includes?: string[];
+      };
+      const paths = managedPaths(manifest);
+
+      phase("replacing the world");
+      enterMaintenance(`restoring ${name}`);
+      closeAllStreams();
+      closeDatabaseForRestore();
+      for (const rel of paths) {
+        const src = path.join(stage, rel);
+        if (!fs.existsSync(src)) continue;
+        const dst = path.join(/*turbopackIgnore: true*/ root(), rel);
+        await fs.promises.rm(dst, { recursive: true, force: true });
+        await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+        await fs.promises.cp(src, dst, { recursive: true });
+      }
+      // The sidecars belong to the database file that was just replaced; a
+      // restart opens a fresh pair.
+      const db = dbPath();
+      await fs.promises.rm(`${db}-wal`, { force: true });
+      await fs.promises.rm(`${db}-shm`, { force: true });
+      return { proof };
+    } finally {
+      await fs.promises.rm(stage, { recursive: true, force: true });
+    }
+  });
 }

@@ -26,9 +26,11 @@ import { generateBattleMap, fnv1a } from "@/lib/battlemap/generate";
 import { findPath, speedToTiles, squeezedAt, walkPathWithBudget } from "@/lib/battlemap/movement";
 import { coverBetween, hasLineOfSight } from "@/lib/battlemap/los";
 import { footprintLookup, occupiedTiles } from "@/lib/battlemap/view";
+import { nearestSquares, tilesApart } from "@/lib/dm/board-reach";
+
 import {
   blocksMove,
-  chebyshev,
+
   tileAt,
   tileIndex,
   TILE_FEET,
@@ -88,18 +90,17 @@ export function createBattleMapForEncounter(
   encounter: Encounter,
   enemies: EncounterEnemy[],
   sheets: CharacterSheet[],
-  battlefield: string | undefined,
   // How far the nearest enemy stands as the fight opens, when the story
   // said (start_encounter's distanceFeet); a tile is five feet.
   distanceFeet?: number,
+  // The ground the fight is on when it is not the place's own
+  // (start_encounter's scene).
+  scene?: string,
 ): BattleMap | null {
   const location = getCurrentLocation(campaign.id);
   const generated = generateBattleMap({
     seed: fnv1a(encounter.id),
-    genre: campaign.gameSettings.genre,
-    locationName: location?.name,
-    layoutDescription: location?.layoutDescription,
-    hint: battlefield,
+    scene: scene ?? location?.ambience?.bed ?? null,
     pcCount: sheets.length,
     enemyCount: enemies.length,
     enemyDistanceTiles: distanceFeet ? Math.max(1, Math.round(distanceFeet / 5)) : undefined,
@@ -725,7 +726,8 @@ export function allyAdjacentToEnemy(
     (token) =>
       token.kind === "pc" &&
       token.refId !== attackerCharacterId &&
-      chebyshev(token.x, token.y, target.x, target.y) <= 1 &&
+      tilesApart(token, target) <= 1 &&
+
       allyCanThreaten(token.refId),
   );
 }
@@ -771,10 +773,15 @@ export function pcAttackSpatials(
   if (!attacker || !target) {
     return none;
   }
-  const distance = chebyshev(attacker.x, attacker.y, target.x, target.y);
+  // Nearest square to nearest square: a Large target's space is four
+  // squares, and the sight and cover lines go to the one the attacker faces
+  // (src/lib/dm/board-reach.ts).
+  const distance = tilesApart(attacker, target);
+  const line = nearestSquares(attacker, target);
   return {
     // Blade Barrier's three-quarters cover counts as a wall's (zone-rules.ts).
-    cover: Math.max(coverBetween(map.terrain, map.width, map.height, attacker.x, attacker.y, target.x, target.y), zoneCoverBetween(encounterId, characterId, enemyId)) as 0 | 2 | 5,
+    cover: Math.max(coverBetween(map.terrain, map.width, map.height, line.from.x, line.from.y, line.to.x, line.to.y), zoneCoverBetween(encounterId, characterId, enemyId)) as 0 | 2 | 5,
+
     // Past the weapon's normal range but inside its long range: the SRD
     // penalty is disadvantage, and checkPcAttackRange allows up to double.
     longRange: (options.ranged || options.thrown) && distance > options.rangeTiles,
@@ -807,17 +814,19 @@ export function checkPcAttackRange(
   if (!attacker || !target) {
     return null;
   }
-  const distance = chebyshev(attacker.x, attacker.y, target.x, target.y);
+  const distance = tilesApart(attacker, target);
+  const line = nearestSquares(attacker, target);
   const maxTiles = options.longRangeTiles ?? options.rangeTiles * 2;
   const sighted = hasLineOfSight(
     map.terrain,
     map.width,
     map.height,
-    attacker.x,
-    attacker.y,
-    target.x,
-    target.y,
+    line.from.x,
+    line.from.y,
+    line.to.x,
+    line.to.y,
   );
+
   if (!options.ranged && distance <= options.reachTiles) {
     // In reach. Toe to toe nothing can stand between; a reach weapon at 10
     // feet does not strike through the wall square in the middle.

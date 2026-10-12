@@ -4,10 +4,12 @@
 // (src/lib/dm/invoke.ts). The board's entries (pets, tokens, legendary
 // creatures) live in catalog-board.ts and are spread in at the end.
 import type { CatalogEntry } from "@/lib/dm/catalog-types";
+import { sceneOptions } from "@/lib/ambience/catalog";
 import { BOARD_ADJUDICATIONS } from "@/lib/dm/catalog-board";
 import { summonFormNames } from "@/lib/srd/summon-forms";
 import { familiarFormNames } from "@/lib/srd/familiar-forms";
 import { BEAST_FORMS } from "@/lib/srd/beast-forms";
+import { SAMPLE_TRAPS } from "@/lib/srd/trap-specs";
 import {
   ABILITY_OPTIONS as ABILITIES,
   AREA_PLACEMENT_FIELDS,
@@ -83,7 +85,13 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
         ],
         help: "Overrides the ambush roll for a whole side.",
       },
-      { name: "battlefield", label: "Battlefield", kind: "text" },
+      {
+        name: "scene",
+        label: "Ground",
+        kind: "select",
+        options: sceneOptions(),
+        help: "The kind of place the battle map is drawn as. Blank: the current place's.",
+      },
       {
         name: "distanceFeet",
         label: "Opening distance (feet)",
@@ -182,6 +190,7 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
     fields: [
       { name: "enemyId", label: "Enemy", kind: "enemy", required: true },
       { name: "amount", label: "Damage", kind: "number", min: 1, max: 200, help: "Leave empty for a fall." },
+      { name: "dice", label: "Or dice", kind: "text", help: "4d10: the server rolls them." },
       { name: "fallFeet", label: "Falls (feet)", kind: "number", min: 1, max: 1000, help: "The server rolls 1d6 per 10 feet and lays it prone." },
       damageTypeField("type", "Type"),
       { name: "magical", label: "From a spell or a magic weapon", kind: "boolean", help: "Resistance to nonmagical attacks does not apply to it." },
@@ -312,7 +321,8 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
     category: "combat",
     summary: "One rolled total on several creatures, each at full, half, double or none.",
     fields: [
-      { name: "amount", label: "Damage rolled", kind: "number", required: true, min: 1, max: 500 },
+      { name: "amount", label: "Damage rolled", kind: "number", requiredUnless: "dice", min: 1, max: 500 },
+      { name: "dice", label: "Or dice", kind: "text", help: "8d6: the server rolls the total once." },
       damageTypeField("type", "Type"),
       {
         name: "targets",
@@ -470,6 +480,14 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
       { name: "characterIds", label: "Caught in it", kind: "characters", required: true },
       { name: "feet", label: "Feet fallen", kind: "number", min: 0, max: 1000 },
       { name: "severity", label: "Trap severity", kind: "select", options: TRAP_SEVERITY_OPTIONS, help: "Sets the save DC and the damage for each victim's level." },
+      {
+        name: "trap",
+        label: "A trap by name",
+        kind: "select",
+        options: SAMPLE_TRAPS.map((trap) => ({ value: trap.name, label: trap.name })),
+        other: { label: "One of this table's traps", placeholder: "Scything Blade" },
+        help: "Runs the trap's own numbers instead of the severity table: an SRD sample trap, or a trap from this table's workshop.",
+      },
       { name: "hours", label: "Hours of exposure", kind: "number", min: 1, max: 48, help: "Extreme cold or heat: one CON save an hour, a level of exhaustion for each failure." },
       { name: "damage", label: "Damage", kind: "dice", help: "Only for a hazard of your own." },
       damageTypeField("damageType", "Damage type", "Resistances apply."),

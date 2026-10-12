@@ -180,6 +180,7 @@ export async function embedRuleChunks(campaignId: string) {
     }
     const vectors = await embed(
       pending.map((chunk) => (chunk.heading ? `${chunk.heading}\n${chunk.text}` : chunk.text)),
+      { background: true },
     );
     const update = db.prepare(`UPDATE rule_chunks SET embedding = ? WHERE id = ?`);
     pending.forEach((chunk, index) => {

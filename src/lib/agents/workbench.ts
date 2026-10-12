@@ -15,10 +15,12 @@ import { WORLD_LORE_CATEGORIES, type WorldLoreCategory } from "@/lib/dm/world-lo
 import { harnessMcpUrl } from "@/lib/harness/bridge";
 import { grantSessionToken, grantUser, type AgentScope, type ConnectionGrant } from "@/lib/agents/grants";
 import type { McpToolDefinition } from "@/lib/harness/types";
+import { createHash } from "node:crypto";
+import { boundResultText, campaignForAgent, historyForAgent } from "@/lib/agents/agent-results";
+import { finishWebhookWrite, playerWebhooksEnabled, releaseWebhookWrite, reserveWebhookWrite } from "@/lib/agents/webhooks";
+import { isWebhookTool, WEBHOOK_GUARD_PROPS, webhookToolCall, webhookTools } from "@/lib/agents/webhook-tools";
+import { ASK_SCOPES, ASK_VISIBILITIES, QUESTION_MAX_CHARS } from "@/lib/dm/ask-logic";
 
-// Claude Code drops tool results over roughly 25K tokens; staying well under
-// it keeps a big campaign snapshot readable rather than silently lost.
-const MAX_RESULT_CHARS = 60_000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 type Args = Record<string, unknown>;
@@ -39,6 +41,9 @@ type WorkbenchTool = {
   body?: (args: Args) => unknown;
   // Guard evaluated before the call, e.g. an explicit confirm.
   check?: (args: Args) => string | null;
+  // Reshapes a successful answer for an agent, under the result cap
+  // (src/lib/agents/agent-results.ts). Others are only bounded.
+  shape?: (text: string) => string;
 };
 
 const campaignIdProp = { campaignId: { type: "string", description: "The campaign's id (from odm_list_campaigns)." } };
@@ -84,11 +89,55 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
   {
     name: "odm_get_campaign",
     scope: "read",
-    description: "Read one campaign as you see it at the table: scene, recent messages, party, encounter (secrets only if you hold the DM seat or steer the story).",
+    description: "The live table, current to the newest message: call this first to see what is happening now and what you may do. Read one campaign as you see it at the table (secrets only if you hold the DM seat or steer the story). First the state that decides what you may do now: safety pause, DM status, floor, your caps, pending rolls, encounter, disputes; then the party, then the newest messages that fit, then recent rolls, notes and chapters. history.olderBefore pages back with odm_get_messages. Whispers the DM sent you alone are not here: odm_get_whispers reads them.",
     properties: campaignIdProp,
     required: ["campaignId"],
     method: "GET",
     path: (a) => `/api/campaigns/${seg(a.campaignId)}`,
+    shape: campaignForAgent,
+  },
+  {
+    name: "odm_get_messages",
+    scope: "read",
+    description: "Read a campaign's transcript a page at a time, oldest first within the page. Leave out before for the newest page; pass before = olderBefore (from this tool or odm_get_campaign's history) to read further back. olderBefore is null at the start of the campaign.",
+    properties: {
+      ...campaignIdProp,
+      before: { type: "integer", minimum: 1, description: "Read messages older than this seq." },
+      limit: { type: "integer", minimum: 1, maximum: 100, description: "How many messages (default 30)." },
+    },
+    required: ["campaignId"],
+    method: "GET",
+    path: (a) => {
+      const query = new URLSearchParams();
+      for (const key of ["before", "limit"]) {
+        if (a[key] !== undefined) {
+          if (!Number.isSafeInteger(a[key]) || (a[key] as number) < 1) {
+            throw new Error(`${key} must be a whole number above 0.`);
+          }
+          query.set(key, String(a[key]));
+        }
+      }
+      return `/api/campaigns/${seg(a.campaignId)}/messages${query.size ? `?${query}` : ""}`;
+    },
+    shape: historyForAgent,
+  },
+  {
+    name: "odm_get_sheet",
+    scope: "read",
+    description: "Read your active character's sheet at this table as it stands now (HP, conditions, slots, gear). This is the table's copy; odm_get_character reads the library copy, which play does not change until the campaign syncs it.",
+    properties: campaignIdProp,
+    required: ["campaignId"],
+    method: "GET",
+    path: (a) => `/api/campaigns/${seg(a.campaignId)}/sheet`,
+  },
+  {
+    name: "odm_get_whispers",
+    scope: "read",
+    description: "Read your private line with the Dungeon Master, oldest first: whispers the DM sent you alone (to_player) and your own private messages to the DM (to_dm, answered once a DM turn has read them). The transcript never carries these, so odm_get_campaign does not show them. In the DM seat of a game a person runs, inbox holds the players' private messages.",
+    properties: campaignIdProp,
+    required: ["campaignId"],
+    method: "GET",
+    path: (a) => `/api/campaigns/${seg(a.campaignId)}/whispers`,
   },
   {
     name: "odm_quests",
@@ -102,7 +151,7 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
   {
     name: "odm_timeline",
     scope: "read",
-    description: "Read a campaign's timeline of chapters and events.",
+    description: "Read a campaign's timeline of closed chapters, facts and events. A chapter appears only once it closes, and no messages appear at all, so the play in progress is not here: read odm_get_campaign or odm_get_messages for the latest.",
     properties: campaignIdProp,
     required: ["campaignId"],
     method: "GET",
@@ -111,7 +160,7 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
   {
     name: "odm_lore",
     scope: "read",
-    description: "Read a campaign's lore binder entries you can see.",
+    description: "Read a campaign's lore binder entries you can see: authored background, not what is happening at the table now.",
     properties: campaignIdProp,
     required: ["campaignId"],
     method: "GET",
@@ -150,6 +199,7 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     description: "Act at the table as your character, exactly as typing in the chat box: 'do' is an action, 'say' is speech, 'ooc' is out of character. The Dungeon Master answers in the campaign.",
     properties: {
       ...campaignIdProp,
+      ...WEBHOOK_GUARD_PROPS,
       content: { type: "string", maxLength: 2000 },
       kind: { type: "string", enum: ["do", "say", "ooc"] },
     },
@@ -161,12 +211,16 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
   {
     name: "odm_ask",
     scope: "play",
-    description: "Ask the campaign's records a question (what happened, who someone is). Private to you unless visibility says otherwise.",
+    description: "Ask the campaign's records a question (what happened, who someone is). A model writes the answer, waiting behind any narration in progress, so it can be incomplete or wrong, and it is not a view of the table: story questions read facts, chapter summaries and only the last few messages, clipped; rules and sheet questions read no messages. For what is happening now, read odm_get_campaign. Private to you unless visibility says otherwise.",
     properties: {
       ...campaignIdProp,
-      question: { type: "string" },
-      scope: { type: "string" },
-      visibility: { type: "string" },
+      question: { type: "string", maxLength: QUESTION_MAX_CHARS },
+      scope: {
+        type: "string",
+        enum: ["auto", ...ASK_SCOPES],
+        description: "story: the record; rules: this table's house rules; sheet: your character, hit points and recent dice. auto (the default) picks from the question's words.",
+      },
+      visibility: { type: "string", enum: [...ASK_VISIBILITIES], description: "private (the default), or table to show the question and answer to everyone." },
     },
     required: ["campaignId", "question"],
     method: "POST",
@@ -174,11 +228,22 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     body: (a) => pick(a, ["question", "scope", "visibility"]),
   },
   {
+    name: "odm_whisper_dm",
+    scope: "play",
+    description: "Send the Dungeon Master a private message as your character (slipping away, a secret plan, a reply to a whisper). The rest of the table does not see it; the DM answers in a whisper you read with odm_get_whispers. At most two may wait unanswered.",
+    properties: { ...campaignIdProp, message: { type: "string", maxLength: 500 } },
+    required: ["campaignId", "message"],
+    method: "POST",
+    path: (a) => `/api/campaigns/${seg(a.campaignId)}/whispers`,
+    body: (a) => pick(a, ["message"]),
+  },
+  {
     name: "odm_answer_roll",
     scope: "play",
     description: "Enter the dice you rolled at the table for a roll the Dungeon Master is waiting on (the faces, one number per die), or ask the server to roll it with fallback: 'digital'.",
     properties: {
       ...campaignIdProp,
+      ...WEBHOOK_GUARD_PROPS,
       pendingRollId: { type: "string" },
       dice: { type: "array", items: { type: "integer", minimum: 1, maximum: 100 } },
       fallback: { type: "string", enum: ["digital"] },
@@ -192,7 +257,7 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     name: "odm_end_turn",
     scope: "play",
     description: "End your character's turn in combat.",
-    properties: campaignIdProp,
+    properties: { ...campaignIdProp, ...WEBHOOK_GUARD_PROPS },
     required: ["campaignId"],
     method: "POST",
     path: (a) => `/api/campaigns/${seg(a.campaignId)}/encounter/end-turn`,
@@ -346,14 +411,17 @@ const WHOAMI: McpToolDefinition = {
 };
 
 export function workbenchTools(grant: ConnectionGrant): McpToolDefinition[] {
+  // The webhook guard fields only mean something where webhooks can exist.
+  const guards = playerWebhooksEnabled();
   return [
     WHOAMI,
+    ...webhookTools(grant),
     ...WORKBENCH_TOOLS.filter((tool) => grant.scopes.includes(tool.scope)).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: {
         type: "object" as const,
-        properties: tool.properties,
+        properties: guards ? tool.properties : without(tool.properties, Object.keys(WEBHOOK_GUARD_PROPS)),
         ...(tool.required ? { required: tool.required } : {}),
         ...(tool.open ? {} : { additionalProperties: false }),
       },
@@ -373,6 +441,9 @@ function seatedAt(userId: string, campaignId: string, characterId: string): bool
 export type WorkbenchOutcome ={ text: string; isError: boolean; campaignId?: string };
 
 export async function workbenchCall(grant: ConnectionGrant, name: string, args: Args): Promise<WorkbenchOutcome> {
+  if (isWebhookTool(name)) {
+    return webhookToolCall(grant, name, args);
+  }
   if (name === "odm_whoami") {
     const user = grantUser(grant);
     return {
@@ -425,6 +496,17 @@ export async function workbenchCall(grant: ConnectionGrant, name: string, args: 
     return { text: error instanceof Error ? error.message : "Bad arguments.", isError: true, campaignId };
   }
   const body = tool.body?.(args);
+  let guarded = false;
+  if (["odm_take_action", "odm_answer_roll", "odm_end_turn"].includes(name) && (args.subscriptionId !== undefined || args.opportunityId !== undefined)) {
+    try {
+      if (typeof args.subscriptionId !== "string" || typeof args.opportunityId !== "string" || !campaignId) throw new Error("Supply both subscriptionId and opportunityId.");
+      const cached = reserveWebhookWrite(grant, { subscriptionId: args.subscriptionId, opportunityId: args.opportunityId,
+        campaignId, tool: name, pendingRollId: typeof args.pendingRollId === "string" ? args.pendingRollId : undefined,
+        fingerprint: createHash("sha256").update(JSON.stringify([path, body])).digest("hex") });
+      if (cached) return cached;
+      guarded = true;
+    } catch (error) { return { text: error instanceof Error ? error.message : "Submission refused.", isError: true, campaignId }; }
+  }
   let response: Response;
   try {
     response = await fetch(`${serverOrigin()}${path}`, {
@@ -468,11 +550,23 @@ export async function workbenchCall(grant: ConnectionGrant, name: string, args: 
       // Leave it as the route answered.
     }
   }
-  if (text.length > MAX_RESULT_CHARS) {
-    text = `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated: ${text.length - MAX_RESULT_CHARS} more characters]`;
+  // Held under the agent's result cap as JSON, so a long answer still parses
+  // and keeps the fields that matter (src/lib/agents/agent-results.ts).
+  text = response.ok && tool.shape ? tool.shape(text) : boundResultText(text);
+  const result = !response.ok
+    ? { text: `HTTP ${response.status}: ${text || response.statusText}`, isError: true, campaignId }
+    : { text: text || "{}", isError: false, campaignId };
+  if (guarded) {
+    const subscriptionId = args.subscriptionId as string;
+    const opportunityId = args.opportunityId as string;
+    // A refusal (4xx) is answered before the route changes anything, so the
+    // opportunity is freed for a corrected submission ("not your turn yet",
+    // dice out of range). Anything else is the saved answer for a retry.
+    if (response.status >= 400 && response.status < 500) {
+      releaseWebhookWrite(subscriptionId, opportunityId, name);
+    } else {
+      finishWebhookWrite(subscriptionId, opportunityId, name, result);
+    }
   }
-  if (!response.ok) {
-    return { text: `HTTP ${response.status}: ${text || response.statusText}`, isError: true, campaignId };
-  }
-  return { text: text || "{}", isError: false, campaignId };
+  return result;
 }

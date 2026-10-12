@@ -15,12 +15,11 @@ import { normalizeMapSkin } from "@/lib/battlemap/skins";
 import { normalizeOverworldParams } from "@/lib/overworld/logic";
 import { normalizeLabels as normalizeOverworldLabels, normalizePaths, normalizeSize } from "@/lib/overworld/features";
 import type { WorkshopBundle } from "@/lib/workshop/bundle";
-import { createHomebrewMonster, listHomebrewMonsters } from "@/lib/bestiary/homebrew-monsters";
-import { createHomebrew, listHomebrew } from "@/lib/db/homebrew";
 import { createCharacter } from "@/lib/db/characters";
 import { savePackDraft } from "@/lib/db/world-pack-drafts";
-import { normalizeHomebrewData } from "@/lib/homebrew/gear";
-import { draftFromData } from "@/lib/bestiary/monster-draft";
+import { landedSheet, writeShelfArrivals, type ShelfArrival } from "@/lib/db/workshop-bundle-shelf";
+import { insertShop } from "@/lib/db/shops";
+import { getClock } from "@/lib/db/clock";
 
 // The parts of writing a bundle back in that need more than one line each:
 // a prepared map's scene layer, the region map, and finding the shared
@@ -80,6 +79,50 @@ export function insertBundleMap(
       now,
       now,
     );
+}
+
+// A Market shop (#171), its place and keeper resolved from the indexes the
+// bundle wrote and kept only when they landed in this workshop: a chapter's
+// shared row that linked to another workshop is not this shop's to point
+// at. A place that did not come keeps its name, so the shop still opens
+// wherever a place of that name stands. Every field goes through the shop
+// module's own normalisers. Returns how many of its links were dropped.
+export function insertBundleShop(
+  workshopId: string,
+  shop: WorkshopBundle["shops"][number],
+  locationIds: string[],
+  npcIds: string[],
+): number {
+  const db = getDatabase();
+  let dropped = 0;
+  const own = (table: "locations" | "npcs", ids: string[], index: number | null): string => {
+    if (index === null) {
+      return "";
+    }
+    const id = ids[index];
+    if (id && db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND campaign_id = ?`).get(id, workshopId)) {
+      return id;
+    }
+    dropped += 1;
+    return "";
+  };
+  const locationId = own("locations", locationIds, shop.location);
+  const place = locationId ? (db.prepare(`SELECT name FROM locations WHERE id = ?`).get(locationId) as { name: string }) : null;
+  insertShop(workshopId, {
+    name: shop.name,
+    kind: shop.kind,
+    size: shop.size,
+    locationId,
+    locationName: place?.name ?? shop.locationName,
+    keeperNpcId: own("npcs", npcIds, shop.keeper),
+    stock: shop.stock,
+    preparedStock: shop.preparedStock,
+    markup: shop.markup,
+    buys: shop.buys,
+    restockDays: shop.restockDays,
+    restockedAt: getClock(workshopId).instant,
+  });
+  return dropped;
 }
 
 const OVERWORLD_TILES = /^[wpfhms]*$/;
@@ -217,52 +260,14 @@ export function sharedHomesFor(userId: string, bundle: WorkshopBundle): SharedHo
 
 // What lands outside the bundle's transaction: the importer's own shelves
 // (hand-built monsters, homebrew) and the new workshop's plugin draft and
-// pregens, each through the module that owns its rules. Returns how many
-// arrived.
-export function writeBundleShelf(userId: string, workshopId: string, bundle: WorkshopBundle): number {
-  let copied = 0;
-  // Hand-built monsters are USER-scoped, not campaign-scoped, so they are
-  // written outside the bundle's transaction through the module that owns their
-  // uniqueness rule rather than by raw insert. A name already in the
-  // importer's bestiary is skipped: their own monster wins, because it is
-  // the one their existing prepared encounters resolve by name.
-  const existing = new Set(
-    listHomebrewMonsters(userId).map((entry) => entry.draft.name.toLowerCase()),
-  );
-  for (const monster of bundle.monsters) {
-    if (existing.has(monster.name.toLowerCase())) {
-      continue;
-    }
-    const draft = draftFromData(monster.name, {
-      desc: monster.desc,
-      stats: monster.stats,
-      extraDamagePerRound: monster.extraDamagePerRound,
-    });
-    createHomebrewMonster(userId, draft, monster.desc);
-    existing.add(monster.name.toLowerCase());
-    copied += 1;
-  }
-
-  // Items, spells and options, by the same rule: the importer's own entry
-  // of that kind and name wins, and each arrival is normalized by the
-  // module that decides what a legal entry is, so a bundle cannot smuggle a
-  // weapon the dice engine would throw on.
-  const owned = new Set(
-    listHomebrew(userId).map((entry) => `${entry.kind}:${entry.name.toLowerCase()}`),
-  );
-  for (const entry of bundle.homebrew) {
-    const key = `${entry.kind}:${entry.name.toLowerCase()}`;
-    if (owned.has(key)) {
-      continue;
-    }
-    const normalized = normalizeHomebrewData(entry.kind, entry.data, entry.name);
-    if ("error" in normalized) {
-      continue;
-    }
-    createHomebrew(userId, { kind: entry.kind, name: entry.name, data: normalized.data });
-    owned.add(key);
-    copied += 1;
-  }
+// pregens, each through the module that owns its rules. An arrival whose
+// name the importer's shelf already has is the same entry when its rules
+// are, and is kept beside it under the bundle's name otherwise, with the new
+// workshop pointed at it (src/lib/db/workshop-bundle-shelf.ts), so neither
+// the importer's old adventures nor this one change under them.
+export function writeBundleShelf(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfArrival {
+  const arrival = writeShelfArrivals(userId, workshopId, bundle);
+  let copied = arrival.copied;
 
   if (bundle.plugin) {
     savePackDraft(workshopId, bundle.plugin);
@@ -275,11 +280,11 @@ export function writeBundleShelf(userId: string, workshopId: string, bundle: Wor
     createCharacter(
       userId,
       pregen.level,
-      { ...pregen.sheet, name: pregen.name },
+      { ...landedSheet(pregen.sheet, arrival), name: pregen.name },
       pregen.role,
       workshopId,
     );
     copied += 1;
   }
-  return copied;
+  return { copied, reused: arrival.reused, renamed: arrival.renamed };
 }

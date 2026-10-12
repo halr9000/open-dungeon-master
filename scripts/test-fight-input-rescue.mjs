@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { register } from "node:module";
 import { removeTempDir } from "./lib/remove-temp-dir.mjs";
+import { answerReader, isReaderRequest } from "./lib/claims-reader.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-fight-input-"));
 process.env.SQLITE_DB_PATH = path.join(dir, "test.sqlite");
@@ -67,7 +68,12 @@ const server = http.createServer((req, res) => {
       res.writeHead(404).end();
       return;
     }
-    requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (isReaderRequest(body)) {
+      answerReader(res);
+      return;
+    }
+    requests.push(body);
     const reply = script[calls] ?? "narrate";
     if (reply === "ask") {
       sse(res, [ask()]);
@@ -80,7 +86,8 @@ const server = http.createServer((req, res) => {
     } else if (reply === "narrate-and-split") {
       sse(res, [
         { content: NARRATION },
-        toolCall("split_damage", { amount: 5, type: "fire", targets: [{ characterId: sheetId, share: "full" }] }),
+        // The model's damage is dice the server rolls (src/lib/dm/ai-gate.ts).
+        toolCall("split_damage", { dice: "1d4", type: "fire", targets: [{ characterId: sheetId, share: "full" }] }),
       ]);
     } else {
       sse(res, [{ content: NARRATION }]);
@@ -241,7 +248,8 @@ console.log("ok: narration + cast_buff -> the buff resolves and is narrated");
 const split = await run("Split damage with narration", ["narrate-and-split", "narrate"], { fight: true });
 assert.equal(split.calls, 2, "split_damage needs the follow-up call its result is narrated from");
 assert.ok(toolResults(split.requests[1]).has("call_split_damage_0"), "split_damage never ran");
-assert.equal(getSheetById(sheetId).currentHp, 7, "the 5 fire damage did not land");
+const burned = getSheetById(sheetId).currentHp;
+assert.ok(burned >= 8 && burned <= 11, `the 1d4 fire damage did not land (HP ${burned})`);
 console.log("ok: narration + split_damage -> the damage lands");
 
 server.close();

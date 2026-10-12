@@ -51,6 +51,7 @@
    "uses": 3,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action granting advantage on weapon attacks this turn plus temporary hit points: 5 at 3rd level, 10 at 10th, 15 at 15th.",
    "fx": {
     "kind": "buff",
@@ -69,6 +70,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action for 1 minute: become Large, advantage on Strength checks and saves, and one extra damage die per turn.",
    "fx": {
     "kind": "buff",
@@ -86,6 +88,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction forcing an attacker to reroll a hit against an ally within 60 feet."
   },
   {
@@ -123,6 +126,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction making the echo the target of an attack aimed at another creature."
   },
   {
@@ -134,6 +138,7 @@
    "uses": 1,
    "ability": "con",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction adding 1d8 to an ally's AC against one attack, halving the damage if it still hits."
   },
   {
@@ -145,6 +150,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction on taking damage that grants a full extra turn before the damage lands."
   },
   {
@@ -168,6 +174,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction imposing disadvantage on one attack roll, against the cleric and, from 6th level, an ally within 30 feet."
   },
   {
@@ -179,6 +186,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction dealing 2d8 lightning or thunder damage to a creature that hit the cleric in melee, halved on a Dexterity save.",
    "fx": {
     "kind": "enemy_save",
@@ -206,6 +214,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "action",
    "guidance": "An action sensing undead within 60 feet, through walls but not a foot of stone or thin metal."
   },
   {
@@ -217,6 +226,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction turning a critical hit against a creature within 30 feet into an ordinary hit."
   },
   {
@@ -228,6 +238,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "action",
    "guidance": "Share the cleric's 300-foot darkvision with willing creatures within 10 feet for an hour."
   },
   {
@@ -240,6 +251,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action in dim light or darkness granting a flying speed equal to the walking speed for 1 minute.",
    "fx": {
     "kind": "buff",
@@ -263,6 +275,7 @@
    ],
    "byLevel": true,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A pool of d6s equal to the druid's level. Spend any number as a bonus action to heal a creature within 120 feet that many d6, plus 1 temporary hit point per die.",
    "fx": {
     "kind": "heal_dice_pool",
@@ -278,7 +291,8 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
-   "guidance": "A bonus action teleporting the druid 60 feet, or a willing creature they touch 30 feet.",
+   "action": "bonus",
+   "guidance": "A bonus action teleporting the druid 60 feet (variant 'self'), or an action teleporting a willing creature they touch 30 feet (variant 'touch').",
    "fx": {
     "kind": "teleport",
     "feet": 60
@@ -293,6 +307,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action raising a 30-foot Bear, Hawk or Unicorn spirit aura for 1 minute.",
    "fx": {
     "kind": "buff",
@@ -325,6 +340,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction reanimating a beast or humanoid that just died within 10 feet as a zombie under the druid's command for an hour."
   },
   {
@@ -349,6 +365,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction adding a d6 (Weal) or subtracting one (Woe) on an attack, check or save by a creature within 30 feet. The omen is chosen after each long rest and does not change until the next one.",
    "fx": {
     "kind": "inspire",
@@ -402,6 +419,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action granting a minute of free command castings, with listeners unable to attack the bard while charmed."
   },
   {
@@ -413,6 +431,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action for 1 minute: an attacker must pass a Charisma save or lose the attack and be unable to target the bard that turn."
   },
   {
@@ -440,6 +459,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction capturing the shadow of a humanoid that died within 30 feet, wearable as their identity for an hour."
   },
   {
@@ -451,6 +471,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "A whispered secret charms a creature within 30 feet for 8 hours on a failed Wisdom save, and it obeys reasonable requests.",
    "fx": {
     "kind": "enemy_save",
@@ -467,6 +488,7 @@
    "uses": 1,
    "ability": "cha",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction copying a successful Bardic Inspiration die onto another creature within 60 feet, without spending an inspiration use."
   },
   {
@@ -478,6 +500,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action creating a nonmagical item worth up to 20 times the bard's level. A spell slot buys extra uses."
   },
   {
@@ -489,6 +512,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action animating a Large or smaller object as a dancing item that acts on the bard's turn. A spell slot buys extra uses."
   },
   {
@@ -511,6 +535,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action granting up to ten allies within 60 feet advantage on attacks and saves until the barbarian's next turn."
   },
   {
@@ -534,6 +559,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action sensing spells and magic items within 60 feet, through most barriers."
   },
   {
@@ -546,6 +572,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "action",
    "guidance": "Touch an ally to grant a bonus d3 on attacks and ability checks for 10 minutes, or restore one expended spell slot of 3rd level or lower."
   },
   {
@@ -573,7 +600,8 @@
    "uses": 1,
    "ability": "con",
    "recharge": "long",
-   "guidance": "A bonus action when raging: up to five allies each add a weapon damage die to one hit per turn, and the barbarian gains 5 temporary hit points per ally who accepts."
+   "action": "none",
+   "guidance": "Part of entering a rage, with no action of its own: up to five allies each add a d6 to the damage of one hit per turn, and the barbarian gains 5 temporary hit points per ally who accepts."
   },
   {
    "id": "sub_hexblades_curse",
@@ -584,6 +612,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action cursing a creature for 1 minute: bonus damage equal to the warlock's proficiency bonus, critical hits on a 19 or 20 against it, and hit points back when it dies."
   },
   {
@@ -595,6 +624,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "action",
    "guidance": "An action charming or frightening every creature in a 10-foot cube that fails a Wisdom save, until the end of the warlock's next turn.",
    "fx": {
     "kind": "enemy_save",
@@ -611,6 +641,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction on taking damage that turns the warlock invisible and teleports them 60 feet.",
    "fx": {
     "kind": "buff",
@@ -627,6 +658,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction imposing disadvantage on an attack; if it then misses, the warlock has advantage on their next attack against that creature."
   },
   {
@@ -640,6 +672,7 @@
    "byLevel": true,
    "levelPlus": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A pool of d6s equal to 1 + the warlock's level. Spend up to their Charisma modifier of them as a bonus action to heal a creature within 60 feet.",
    "fx": {
     "kind": "heal_dice_pool",
@@ -678,6 +711,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action summoning a spectral tentacle for 1 minute: a 10-foot reach attack for 1d8 cold damage that also halves the target's speed.",
    "fx": {
     "kind": "buff",
@@ -694,6 +728,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "action",
    "guidance": "Teleport the warlock and up to five willing creatures to a body of water within a mile."
   },
   {
@@ -706,6 +741,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action for 1 minute: 1d10 + warlock level temporary hit points, immunity to being frightened, and one creature hit each turn is frightened on a failed Wisdom save.",
    "fx": {
     "kind": "buff",
@@ -723,6 +759,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "Instead of dropping to 0 hit points, stay at 1 and deal necrotic damage equal to the warlock's level to each creature within 30 feet."
   },
   {
@@ -734,6 +771,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An hour of spirit form: resistance to most damage, movement through solid matter, and necrotic and psychic spell damage that heals the warlock."
   },
   {
@@ -760,6 +798,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action healing 1d8 + warlock level and reattaching severed body parts.",
    "fx": {
     "kind": "heal_self",
@@ -776,6 +815,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Retreat inside the vessel for up to 10 minutes; from 10th level up to five companions come too and gain temporary hit points on a short rest inside."
   },
   {
@@ -787,6 +827,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Replicate any spell of 6th level or lower without components. In the fiction this needs several days to recharge, so grant it sparingly."
   },
   {
@@ -820,6 +861,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action at half hit points or less, restoring hit points equal to half the sorcerer's maximum."
   },
   {
@@ -843,6 +885,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction cancelling advantage or disadvantage on a roll by a creature within 60 feet."
   },
   {
@@ -854,6 +897,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A minute during which attacks against the sorcerer cannot have advantage and any d20 of 9 or lower counts as a 10 on their attacks, checks and saves.",
    "fx": {
     "kind": "buff",
@@ -870,6 +914,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "A 30-foot cube healing 100 hit points among creatures in it, ending spells of 6th level or lower and repairing objects."
   },
   {
@@ -881,6 +926,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Teleport 120 feet, pulling creatures toward the vacated space for 3d10 force damage on a failed Strength save.",
    "fx": {
     "kind": "aoe",
@@ -897,6 +943,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A 30-foot burst matching the current moon phase: healing, blinding radiance or a burst of speed."
   },
   {
@@ -930,6 +977,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction interposing an illusory duplicate so an attack that would hit misses instead."
   },
   {
@@ -941,6 +989,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction redirecting an attack aimed at the wizard onto another creature within the attacker's reach, on a failed Wisdom save."
   },
   {
@@ -952,6 +1001,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "action",
    "guidance": "An action charming and incapacitating a creature within 5 feet until the end of the wizard's next turn, extendable each turn as an action."
   },
   {
@@ -963,6 +1013,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Teleport 30 feet or swap places with a willing creature. Also recharges whenever the wizard casts a conjuration spell of 1st level or higher.",
    "fx": {
     "kind": "teleport",
@@ -990,6 +1041,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action for 1 minute: add the Intelligence modifier to AC, 10 feet of speed, advantage on Acrobatics, and a bonus on concentration saves. It ends if the wizard wears medium or heavy armor or a shield, or is incapacitated.",
    "fx": {
     "kind": "buff",
@@ -1006,6 +1058,7 @@
    "uses": 2,
    "ability": null,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction forcing a creature within 30 feet to reroll an attack, check or save, before or after the result is known."
   },
   {
@@ -1018,6 +1071,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "action",
    "guidance": "A Large or smaller creature within 60 feet is incapacitated and frozen in time until the end of the wizard's next turn on a failed Constitution save.",
    "fx": {
     "kind": "enemy_save",
@@ -1046,6 +1100,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction adding 1d10 to a weapon damage roll or 2d10 per 10 feet to falling damage within 60 feet."
   },
   {
@@ -1057,6 +1112,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "A minute of crushing gravity in a 30-foot radius: 2d10 force damage and no movement on a failed Strength save. A 4th-level slot buys extra uses.",
    "fx": {
     "kind": "aoe",
@@ -1073,6 +1129,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action projecting the spellbook's spirit up to 300 feet, letting the wizard cast from its position. A spell slot buys extra uses."
   },
   {
@@ -1095,6 +1152,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "Avoid death by destroying the book's magic, which then takes days of study to rebuild."
   },
   {
@@ -1106,6 +1164,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "action",
    "guidance": "An action revealing a creature's damage immunities, resistances and vulnerabilities, or that it has none."
   },
   {
@@ -1117,6 +1176,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction forcing a caster or teleporter within 60 feet to make a Wisdom save or lose the spell and the action."
   },
   {
@@ -1128,6 +1188,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus-action etherealness lasting a single turn."
   },
   {
@@ -1139,6 +1200,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "action",
    "guidance": "Sense the distance and direction to the closest planar portal within a mile."
   },
   {
@@ -1151,6 +1213,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action granting a 10-foot flying speed for 1 minute, carried by the swarm.",
    "fx": {
     "kind": "buff",
@@ -1168,6 +1231,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction granting resistance to the damage just taken and teleporting the ranger 30 feet.",
    "fx": {
     "kind": "teleport",
@@ -1209,6 +1273,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Summon the bonded drake for an hour. It acts on the ranger's turn, adds their proficiency bonus to its rolls, and can be resummoned with a spell slot."
   },
   {
@@ -1220,6 +1285,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "The drake exhales a 30-foot cone for 8d6 of its damage type, halved on a Dexterity save. A 3rd-level slot buys extra uses.",
    "fx": {
     "kind": "aoe",
@@ -1248,6 +1314,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action granting 10 minutes of spectral form: a 10-foot fly speed and movement through creatures and objects. A soul trinket buys extra uses."
   },
   {
@@ -1259,6 +1326,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An hour of invisibility, ending early if the rogue deals damage or forces a saving throw. A Psionic Energy die buys extra uses.",
    "fx": {
     "kind": "buff",
@@ -1291,6 +1359,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction stealing a spell cast at the rogue on a failed save by the caster, denying it to them for 8 hours and letting the rogue cast it once."
   },
   {
@@ -1302,6 +1371,7 @@
    "uses": 1,
    "ability": "wis",
    "recharge": "long",
+   "action": "action",
    "guidance": "An action sensing illusions, shapechangers and other magical deception within 30 feet, without learning what is hidden."
   },
   {
@@ -1324,6 +1394,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Spend 5 ki to return a creature dead no more than 24 hours to life with 4d10 + Wisdom hit points, free of every condition it died with.",
    "fx": {
     "kind": "heal_target",
@@ -1367,6 +1438,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action raising a 10-foot aura for 1 minute that either frightens enemies or grants allies resistance to the monk's damage type. Three ki buys extra uses.",
    "fx": {
     "kind": "buff",
@@ -1387,6 +1459,7 @@
    "uses": 1,
    "ability": "cha",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction adding the paladin's Charisma modifier to the AC of themselves or an ally within 10 feet; if the attack then misses, they may attack the attacker."
   },
   {
@@ -1409,6 +1482,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "reaction",
    "guidance": "A reaction reducing incoming damage by 1d12 + the goliath's Constitution modifier."
   },
   {
@@ -1420,6 +1494,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "Touch a creature to restore hit points equal to the aasimar's level.",
    "fx": {
     "kind": "heal_target",
@@ -1435,6 +1510,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A minute of transformation from 3rd level: spectral wings granting flight, and extra radiant damage once per turn."
   },
   {
@@ -1446,6 +1522,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action turning the firbolg invisible until the start of their next turn, or until they attack, cast or force a save.",
    "fx": {
     "kind": "buff",
@@ -1513,6 +1590,7 @@
    "uses": 1,
    "ability": "int",
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction adding the artificer's Intelligence modifier to an ability check or saving throw by them or an ally within 30 feet."
   },
   {
@@ -1570,7 +1648,8 @@
     ]
    ],
    "recharge": "long",
-   "guidance": "A bonus action builds a flamethrower, force ballista or protector cannon that acts on the artificer's command. A spell slot buys extra uses."
+   "action": "action",
+   "guidance": "An action builds a flamethrower, force ballista or protector cannon, and a bonus action activates it. A spell slot buys extra uses."
   },
   {
    "id": "art_spell_storing_item",
@@ -1615,6 +1694,7 @@
    "uses": 2,
    "ability": null,
    "recharge": "short",
+   "action": "bonus",
    "guidance": "A bonus action spends one Wild Shape use to take a starry form for 10 minutes: Archer (a bonus-action luminous arrow, resolved by the server), Chalice (healing spells also heal a second creature 1d8 + WIS), or Dragon (concentration saves treat a low d20 as a 10). Pass variant to choose; the constellation's mechanics apply automatically. This counter mirrors Wild Shape uses.",
    "fx": {
     "kind": "buff",
@@ -1648,6 +1728,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction when a creature dies near the druid or the Wildfire Spirit: the flame heals an ally (variant 'heal', targetCharacterId) or burns an enemy (variant 'burn', targetEnemyId) for 2d10 + WIS. The server rolls and applies it."
   },
   {
@@ -1670,6 +1751,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action: the psi warrior and up to INT-modifier allies within 30 feet gain half cover (+2 AC, +2 DEX saves) for a minute. Once per long rest, or by spending a Psionic Energy die. The server applies it."
   },
   {
@@ -1692,6 +1774,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action: for a minute, 10 hit points at the start of each turn and enemies within 10 feet save at disadvantage against the paladin's spells. The server applies both."
   },
   {
@@ -1703,6 +1786,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action: for an hour, a 60-foot flying speed; enemies within 30 feet save (WIS) or are frightened, and attacks against the frightened have advantage. The server rolls the saves."
   },
   {
@@ -1714,6 +1798,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action: resistance to all damage for a minute (the server applies it); the extra attack and the 19-20 critical are narrated."
   },
   {
@@ -1725,6 +1810,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action: advantage on Charisma checks for a minute (the server applies it); the reroll of a miss and the turned save are narrated."
   },
   {
@@ -1736,6 +1822,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action: truesight 120 feet and advantage on attacks against aberrations, celestials, elementals, fey and fiends for a minute. The server applies the advantage."
   },
   {
@@ -1747,6 +1834,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action: for an hour, resistance to nonmagical weapon damage and advantage on Wisdom saves. The server applies both to the paladin."
   },
   {
@@ -1758,6 +1846,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action: for a minute, attacks against the oathbreaker are at disadvantage, enemies starting a turn within 30 feet take 4d10 psychic, and a bonus-action spectral strike deals 4d10 psychic (pc_attack weapon \"Dread Lord's Shadows\"). The server applies all of it."
   },
   {
@@ -1769,6 +1858,7 @@
    "uses": 1,
    "ability": null,
    "recharge": "long",
+   "action": "action",
    "guidance": "An action: the sorcerer and up to 3 + CHA-modifier creatures within 30 feet gain a flying speed for an hour. The server marks them flying."
   },
   {
@@ -1781,6 +1871,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action: a 30-foot flying speed for 10 minutes (use_resource 'Elemental Flight'). The resistance is chosen once with use_resource 'Elemental Gift' and the patron's type as the variant."
   },
   {
@@ -1793,6 +1884,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "bonus",
    "guidance": "A bonus action in Guardian armor: temporary hit points equal to the artificer level (use_resource 'Defensive Field')."
   },
   {
@@ -1805,6 +1897,7 @@
    "ability": null,
    "proficiency": 1,
    "recharge": "long",
+   "action": "reaction",
    "guidance": "A reaction in Guardian armor: a Large or smaller creature within 30 feet makes a Strength save or is pulled in and knocked prone. The server rolls it (use_reaction 'Perfected Armor')."
   },
   {

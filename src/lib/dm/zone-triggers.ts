@@ -16,6 +16,7 @@
 // roll row and its damage lands through spell-aura.ts hurtEnemy. Returns
 // the lines for the table.
 
+import { bindsWorthResisting } from "@/lib/dm/legendary-logic";
 import type { Campaign } from "@/lib/db/campaigns";
 import { createDmTurn, saveDmTurn, type DmTurn } from "@/lib/db/dm-turns";
 import { getBattleMapForEncounter, listHiddenRefIds, listTokens, moveToken, type BattleMap } from "@/lib/db/battle-maps";
@@ -35,6 +36,7 @@ import { isQuake, quakeFissures, quakeShake } from "@/lib/dm/zone-quake";
 import { rollCharacterSave, rollEnemySave } from "@/lib/dm/forced-save";
 import { hurtEnemy } from "@/lib/dm/spell-aura";
 import { applyPcDamage } from "@/lib/dm/pc-damage";
+import { saveDamageTaken } from "@/lib/srd/trait-rules";
 import { handleSetCondition } from "@/lib/dm/set-condition";
 import { breakConcentration, clearSpellConditionsByName } from "@/lib/dm/concentration";
 import { laySpellConditionsOnEnemy } from "@/lib/dm/spell-effects";
@@ -121,7 +123,7 @@ function strike(
   moment: ZoneMoment,
   times = 1,
 ): string[] {
-  const row = zoneRowFor(zone.spell);
+  const row = zoneRowFor(zone);
   const trigger = row?.trigger;
   if (!row || !trigger) {
     return [];
@@ -146,7 +148,7 @@ function strike(
     }
     const immune = trigger.immuneSucceeds && new RegExp(`\\b${trigger.immuneSucceeds}\\b`, "i").test(enemy.stats.immune ?? "");
     const save = trigger.save && !immune
-      ? rollEnemySave(campaign.id, enemy, trigger.save, dc, { magical: true, record: { detail: `${enemy.displayName}: ${trigger.save.toUpperCase()} save against ${zone.spell}` } })
+      ? rollEnemySave(campaign.id, enemy, trigger.save, dc, { magical: true, resist: Boolean(trigger.condition) && bindsWorthResisting([trigger.condition ?? ""]), record: { detail: `${enemy.displayName}: ${trigger.save.toUpperCase()} save against ${zone.spell}` } })
       : null;
     const failed = trigger.save ? !immune && !save?.success : true;
     if (trigger.save) {
@@ -186,7 +188,14 @@ function strike(
     }
     if (dice && (failed || (trigger.half && !trigger.damageOnFail))) {
       const rolled = rollCard(campaign, turn, sheet.id, "damage", rollAgainst(zone.spell, sheet.name), dice, by).total;
-      const amount = failed ? rolled : Math.floor(rolled / 2);
+      // The one save-for-half rule, Evasion included (src/lib/srd/trait-rules.ts).
+      const taken = trigger.save
+        ? saveDamageTaken({ total: rolled, saved: !failed, halfOnSave: Boolean(trigger.half && !trigger.damageOnFail), ability: trigger.save, sheet })
+        : { damage: rolled, evasion: null };
+      const amount = taken.damage;
+      if (taken.evasion) {
+        lines.push(`Evasion: ${sheet.name} takes ${taken.evasion}.`);
+      }
       if (amount > 0) {
         const hurt = applyPcDamage(campaign, turn.id, getSheetById(sheet.id) ?? sheet, {
           amount,
@@ -284,7 +293,7 @@ function afterFailOnCharacter(campaign: Campaign, turn: DmTurn, map: BattleMap, 
 // The zone's creature filter: hostile-only areas spare the caster's side,
 // and nobody suffers their own aura.
 function touches(zone: SpellZone, trigger: ZoneTrigger, victim: Victim): boolean {
-  if (victim.id === zone.casterId && zoneRowFor(zone.spell)?.shape === "aura") {
+  if (victim.id === zone.casterId && zoneRowFor(zone)?.shape === "aura") {
     return false;
   }
   return trigger.who !== "hostile" || hostileTo(zone, victim.kind);
@@ -294,7 +303,7 @@ function touches(zone: SpellZone, trigger: ZoneTrigger, victim: Victim): boolean
 // a Guardian of Faith that has spent itself gone.
 function settle(campaign: Campaign, map: BattleMap, zones: SpellZone[]) {
   const kept = zones.filter((zone) => {
-    const budget = zoneRowFor(zone.spell)?.budget;
+    const budget = zoneRowFor(zone)?.budget;
     return !budget || (zone.dealt ?? 0) < budget;
   });
   saveZones(map.id, kept);
@@ -318,7 +327,7 @@ export function zonesAfterMove(
     return [];
   }
   const zones = liveZones(map, encounter);
-  const armed = zones.filter((zone) => zoneRowFor(zone.spell)?.trigger?.on.some((moment) => moment === "enter" || moment === "each5"));
+  const armed = zones.filter((zone) => zoneRowFor(zone)?.trigger?.on.some((moment) => moment === "enter" || moment === "each5"));
   if (!armed.length) {
     return [];
   }
@@ -326,7 +335,7 @@ export function zonesAfterMove(
   const key = turnKey(encounter);
   let stopAt: XY | null = null;
   for (const zone of armed) {
-    const trigger = zoneRowFor(zone.spell)?.trigger as ZoneTrigger;
+    const trigger = zoneRowFor(zone)?.trigger as ZoneTrigger;
     if (!touches(zone, trigger, victim)) {
       continue;
     }
@@ -383,7 +392,7 @@ export function zoneTurnStart(campaign: Campaign, encounter: Encounter, combatan
   const tokens = listTokens(map.id);
   const lines: string[] = [];
   for (const zone of zones) {
-    const row = zoneRowFor(zone.spell);
+    const row = zoneRowFor(zone);
     const caster = tokens.find((token) => token.refId === zone.casterId);
     if (!row?.drifts || !caster || !combatantIds.includes(zone.casterId)) {
       continue;
@@ -406,7 +415,7 @@ export function zoneTurnStart(campaign: Campaign, encounter: Encounter, combatan
   // each turn it began.
   const key = turnKey(encounter);
   for (const zone of zones) {
-    if (zoneRowFor(zone.spell)?.trigger?.on.includes("end") || isQuake(zone)) {
+    if (zoneRowFor(zone)?.trigger?.on.includes("end") || isQuake(zone)) {
       zone.struck = { ...(zone.struck ?? {}), ...Object.fromEntries(combatantIds.map((id) => [`${id}:begun`, key])) };
     }
   }
@@ -468,7 +477,7 @@ function momentFor(
     }
     const cell = tileIndex(map.width, token.x, token.y);
     for (const zone of zones) {
-      const trigger = zoneRowFor(zone.spell)?.trigger;
+      const trigger = zoneRowFor(zone)?.trigger;
       if (!trigger?.on.includes(moment) || !touches(zone, trigger, victim)) {
         continue;
       }

@@ -40,6 +40,7 @@ function maskedConfig(config: GlobalConfig) {
       defaultBackend: config.images.defaultBackend,
       comfyUrl: config.images.comfyUrl,
       comfyCheckpoint: config.images.comfyCheckpoint,
+      comfyWorkflowPreset: config.images.comfyWorkflowPreset,
       fluxWorkerUrl: config.images.fluxWorkerUrl,
       openaiBaseUrl: config.images.openaiBaseUrl,
       openaiModel: config.images.openaiModel,
@@ -161,6 +162,7 @@ const patchSchema = z.object({
       defaultBackend: z.enum(["", "comfyui", "openai", "fal", "mflux-hs", "sdnq-hs", "harness"]).optional(),
       comfyUrl: z.string().trim().max(500).optional(),
       comfyCheckpoint: z.string().trim().max(300).optional(),
+      comfyWorkflowPreset: z.enum(["checkpoint", "z_turbo"]).optional(),
       fluxWorkerUrl: z.string().trim().max(500).optional(),
       openaiBaseUrl: z.string().trim().max(500).optional(),
       openaiModel: z.string().trim().max(200).optional(),
@@ -241,8 +243,17 @@ export async function PATCH(request: Request) {
     harnessPatch &&
     ((harnessPatch.id !== undefined && harnessPatch.id !== before.id) ||
       (harnessPatch.binaryPath !== undefined && harnessPatch.binaryPath !== before.binaryPath));
+  // A save that names a checkpoint and no workflow means that checkpoint:
+  // the desktop app's local AI installer sends only the file it installed,
+  // and a Z-Image Turbo choice left standing would paint every picture
+  // without it.
+  const images =
+    parsed.data.images?.comfyCheckpoint !== undefined && parsed.data.images.comfyWorkflowPreset === undefined
+      ? { ...parsed.data.images, comfyWorkflowPreset: "checkpoint" as const }
+      : parsed.data.images;
   const saved = saveGlobalConfig({
     ...parsed.data,
+    ...(images ? { images } : {}),
     ...(harnessPatch ? { harness: { ...harnessPatch, ...(moved ? { imagesVerifiedAt: "", images: "off" as const } : {}) } } : {}),
   });
   if (moved) {

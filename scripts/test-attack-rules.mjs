@@ -150,8 +150,74 @@ test("Dual Wielder lifts the word light", () => {
     offHand("Longsword", {
       feats: ["Dual Wielder"],
       equipment: [{ name: "Longsword", qty: 2 }],
-      budget: turn({ actionUsed: true, attacksMade: 1 }),
+      budget: turn({ actionUsed: true, attacksMade: 1, oneHandMeleeAttack: true }),
     }),
+    null,
+  );
+  // A turn saved before the one-handed flag existed reads the light one.
+  assert.equal(
+    offHand("Longsword", {
+      feats: ["Dual Wielder"],
+      equipment: [{ name: "Longsword", qty: 1 }, { name: "Dagger", qty: 1 }],
+      budget: turn({ actionUsed: true, attacksMade: 1, lightMeleeAttack: true }),
+    }),
+    null,
+  );
+});
+
+// Issue 210's rule, read whole: the Hand's off-hand card asks this function,
+// so these are also the Hand's answers.
+test("the off-hand swing is earned by the Attack action's weapon, not by any attack", () => {
+  // A rapier is a finesse weapon, not a light one: two daggers carried or not.
+  assert.match(
+    offHand("Dagger", {
+      equipment: [{ name: "Rapier", qty: 1 }, { name: "Dagger", qty: 2 }],
+      budget: turn({ actionUsed: true, attacksMade: 1, oneHandMeleeAttack: true }),
+    }),
+    /earned by attacking with a light melee weapon[\s\S]*something else/,
+  );
+  assert.equal(
+    offHand("Dagger", {
+      equipment: [{ name: "Rapier", qty: 1 }, { name: "Dagger", qty: 2 }],
+      budget: turn({ actionUsed: true, attacksMade: 1, lightMeleeAttack: true, oneHandMeleeAttack: true }),
+    }),
+    null,
+  );
+  // Spent: the bonus action is gone (the spend says so; the rule stays open).
+  assert.equal(
+    offHand("Dagger", {
+      equipment: [{ name: "Dagger", qty: 2 }],
+      budget: turn({ actionUsed: true, bonusUsed: true, attacksMade: 1, lightMeleeAttack: true }),
+    }),
+    null,
+  );
+});
+
+test("Dual Wielder keeps one-handed and a weapon in each hand", () => {
+  const dual = { feats: ["Dual Wielder"] };
+  // Not a two-handed weapon in the off hand, and not a ranged one.
+  assert.match(
+    offHand("Greatsword", { ...dual, equipment: [{ name: "Greatsword", qty: 2 }], budget: turn({ actionUsed: true, attacksMade: 1, oneHandMeleeAttack: true }) }),
+    /held in one hand/,
+  );
+  assert.match(
+    offHand("Hand Crossbow", { ...dual, equipment: [{ name: "Hand Crossbow", qty: 2 }] }),
+    /held in one hand/,
+  );
+  // One weapon carried is not two-weapon fighting.
+  assert.match(
+    offHand("Longsword", { ...dual, equipment: [{ name: "Longsword", qty: 1 }], budget: turn({ actionUsed: true, attacksMade: 1, oneHandMeleeAttack: true }) }),
+    /one-handed melee weapon in each hand[\s\S]*only one/,
+  );
+  // The Attack action has to have been made with a one-handed melee weapon
+  // (a longbow or a greatsword swing earns nothing).
+  assert.match(
+    offHand("Longsword", { ...dual, equipment: [{ name: "Longsword", qty: 2 }], budget: turn({ actionUsed: true, attacksMade: 1 }) }),
+    /held in one hand[\s\S]*something else/,
+  );
+  // A rapier swing does earn it with the feat.
+  assert.equal(
+    offHand("Rapier", { ...dual, equipment: [{ name: "Rapier", qty: 2 }], budget: turn({ actionUsed: true, attacksMade: 1, oneHandMeleeAttack: true }) }),
     null,
   );
 });
@@ -275,11 +341,36 @@ test("flanking is an ally on the mirrored square", () => {
   assert.equal(isFlanking({ x: 5, y: 3 }, target, [{ x: 5, y: 7 }]), false);
 });
 
+test("flanking a Large creature is opposite edges or opposite corners of its space (issue #186)", () => {
+  // The ogre fills (5,5) to (6,6).
+  const ogre = { x: 5, y: 5, footprint: 2 };
+  // Left edge against right edge, on different rows: still opposite sides.
+  assert.equal(isFlanking({ x: 4, y: 5 }, ogre, [{ x: 7, y: 6 }]), true);
+  assert.equal(isFlanking({ x: 6, y: 4 }, ogre, [{ x: 5, y: 7 }]), true);
+  // Opposite corners.
+  assert.equal(isFlanking({ x: 4, y: 4 }, ogre, [{ x: 7, y: 7 }]), true);
+  assert.equal(isFlanking({ x: 7, y: 4 }, ogre, [{ x: 4, y: 7 }]), true);
+  // A corner against an edge, or the same side, is not.
+  assert.equal(isFlanking({ x: 4, y: 4 }, ogre, [{ x: 7, y: 6 }]), false);
+  assert.equal(isFlanking({ x: 4, y: 5 }, ogre, [{ x: 4, y: 6 }]), false);
+  // Neither may stand two squares off, measured from the ogre's edge.
+  assert.equal(isFlanking({ x: 3, y: 5 }, ogre, [{ x: 7, y: 6 }]), false);
+  assert.equal(isFlanking({ x: 4, y: 5 }, ogre, [{ x: 8, y: 6 }]), false);
+  // A Large ally flanks from its whole space.
+  assert.equal(isFlanking({ x: 4, y: 5 }, ogre, [{ x: 7, y: 4, footprint: 2 }]), true);
+});
+
 test("a hostile within 5 feet is one on any of the eight squares around", () => {
   const me = { x: 5, y: 5 };
   assert.equal(hostileWithinFiveFeet(me, [{ x: 6, y: 6 }]), true);
   assert.equal(hostileWithinFiveFeet(me, [{ x: 7, y: 5 }]), false);
   assert.equal(hostileWithinFiveFeet(me, []), false);
+  // An ogre anchored two squares off, whose near square is beside the archer.
+  assert.equal(hostileWithinFiveFeet(me, [{ x: 6, y: 6, footprint: 2 }]), true);
+  assert.equal(hostileWithinFiveFeet(me, [{ x: 7, y: 5, footprint: 2 }]), false);
+  assert.equal(hostileWithinFiveFeet(me, [{ x: 3, y: 3, footprint: 2 }]), true);
+  assert.equal(hostileWithinFiveFeet(me, [{ x: 2, y: 3, footprint: 2 }]), false);
 });
+
 
 console.log(`test-attack-rules: ${passed} passed`);

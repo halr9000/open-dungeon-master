@@ -1,14 +1,17 @@
 import { z } from "zod";
+import { tableAuthors } from "@/lib/db/homebrew";
 import {
   isErrorResponse,
   requireMember,
   steersStory,
   type MemberContext,
 } from "@/lib/campaign-api";
+import { seatAddedSheet } from "@/lib/character-seat";
 import { JOIN_NOTE_PREFIX } from "@/lib/campaign-types";
 import { admitSheet, refusal } from "@/lib/characters/admit";
-import { allocateSeq, setMemberReady } from "@/lib/db/campaigns";
+import { allocateSeq, listMembers, setMemberReady } from "@/lib/db/campaigns";
 import {
+  companionRoleRefusal,
   createCharacter,
   getCharacterForUser,
   instantiateIntoCampaign,
@@ -18,9 +21,11 @@ import {
 import { insertCampaignMessage } from "@/lib/db/messages";
 import {
   createSheet,
+  deleteSheetById,
   deleteSheetForUser,
   getSheetById,
   getSheetForUser,
+  listSheetsForUser,
   patchSheet,
 } from "@/lib/db/sheets";
 import { queueLibraryPortrait } from "@/lib/portrait";
@@ -53,6 +58,7 @@ function announceMidGameJoin(context: MemberContext, sheet: CharacterSheet) {
     campaignId,
     seq,
     authorType: "system",
+    glyph: "system-party",
     content: `${JOIN_NOTE_PREFIX}${context.user.username} has joined the party as ${sheet.name}, a ${sheet.race.replaceAll("_", " ")} ${sheet.class}.${backstoryHint} Introduce them into the scene at the next natural moment.`,
   });
   publishWithSeq(campaignId, seq, "message_added", { message });
@@ -87,6 +93,15 @@ function publishReplacement(
   newSheet: CharacterSheet,
 ) {
   const campaignId = context.campaign.id;
+  // The seat follows the sheet it was on (PR 216): a player who held this
+  // character holds its replacement, since the replaced row's id is gone and
+  // a seat left pointing at it fell back to whichever sheet is listed first.
+  // A player seated on another of their sheets stays there.
+  const seat = listMembers(campaignId).find((member) => member.userId === context.user.id)?.activeCharacterId ?? "";
+  const stillHeld = Boolean(seat) && seat !== oldSheet.id && listSheetsForUser(campaignId, context.user.id).some((sheet) => sheet.id === seat);
+  if (!stillHeld) {
+    seatAddedSheet(context.campaign, context.user.id, newSheet.id);
+  }
   setMemberReady(campaignId, context.user.id, false);
   publishPersisted(campaignId, "member_ready", { userId: context.user.id, ready: false });
   publishPersisted(campaignId, "sheet_deleted", { sheetId: oldSheet.id, userId: context.user.id });
@@ -128,21 +143,25 @@ export async function POST(
 
   const raw = await request.json().catch(() => ({}));
 
-  // A table that allows several characters per player lets a second one
-  // in (docs/vtt-parity-implementation-plan.md 11.3); the first stays the
-  // one in play until they switch. Nothing is awaited between this check
-  // and the insert, so two requests at once cannot both pass it: the route
-  // holds the rule now that the table has no constraint to hold it.
-  if (getSheetForUser(campaignId, context.user.id) && context.campaign.gameSettings.multiCharacter === "off") {
-    return Response.json(
-      { error: "You already have a character in this campaign." },
-      { status: 409 },
-    );
+  const targetUserId = typeof raw?.playerUserId === "string" ? raw.playerUserId : context.user.id;
+  if (targetUserId !== context.user.id) {
+    if (context.campaign.ownerUserId !== context.user.id) return Response.json({ error: "Only the campaign owner can seat a character for another player." }, { status: 403 });
+    if (!listMembers(campaignId).some((member) => member.userId === targetUserId)) return Response.json({ error: "That player is not a member of this campaign." }, { status: 404 });
+    if (typeof raw.libraryCharacterId === "string") return Response.json({ error: "Players choose characters from their own libraries." }, { status: 403 });
   }
+
+  // A character added here takes the player's seat, except at a table that
+  // fields one at a time while a fight is on: then it waits on the bench
+  // (src/lib/character-seat.ts seatAddedSheet), and the player switches to it
+  // once the fight ends.
 
   // Path 1: pick an existing library character (adapted to campaign level).
   const fromLibrary = fromLibrarySchema.safeParse(raw);
   if (fromLibrary.success) {
+    const reused = listSheetsForUser(campaignId, context.user.id).some((entry) => entry.libraryCharacterId === fromLibrary.data.libraryCharacterId && !entry.isCompanion);
+    if (!reused && getSheetForUser(campaignId, context.user.id) && context.campaign.gameSettings.multiCharacter === "off") {
+      return Response.json({ error: "You already have a character in this campaign." }, { status: 409 });
+    }
     const result = instantiateIntoCampaign(
       fromLibrary.data.libraryCharacterId,
       campaignId,
@@ -152,12 +171,16 @@ export async function POST(
     if ("error" in result) {
       return Response.json(result, { status: 400 });
     }
+    seatAddedSheet(context.campaign, context.user.id, result.id);
     publishPersisted(campaignId, "sheet_updated", { sheet: result });
-    announceMidGameJoin(context, result);
+    if (!reused) announceMidGameJoin(context, result);
     return Response.json({ sheet: result }, { status: 201 });
   }
 
   // Path 2: create new; also saved to the user's library, then copied in.
+  if (getSheetForUser(campaignId, targetUserId) && context.campaign.gameSettings.multiCharacter === "off") {
+    return Response.json({ error: "You already have a character in this campaign." }, { status: 409 });
+  }
   const parsed = createSheetSchema.safeParse(raw);
   if (!parsed.success) {
     return Response.json(
@@ -173,20 +196,20 @@ export async function POST(
     door: "table",
     level: context.campaign.startingLevel,
     sheet: parsed.data,
-    userId: context.user.id,
+    userId: targetUserId,
     campaign: context.campaign,
   });
   if (!admitted.ok) {
     return refusal(admitted.problems);
   }
   const libraryCharacter = createCharacter(
-    context.user.id,
+    targetUserId,
     context.campaign.startingLevel,
     admitted.sheet,
   );
   const sheet = createSheet(
     campaignId,
-    context.user.id,
+    targetUserId,
     context.campaign.startingLevel,
     admitted.sheet,
     libraryCharacter.id,
@@ -195,6 +218,7 @@ export async function POST(
   // The finished render lands on this campaign clone too (portrait.ts
   // mirrors to sheets whose portrait is still empty).
   queueLibraryPortrait(libraryCharacter);
+  seatAddedSheet(context.campaign, targetUserId, sheet.id);
   publishPersisted(campaignId, "sheet_updated", { sheet });
   announceMidGameJoin(context, sheet);
 
@@ -240,6 +264,11 @@ export async function PUT(
     if (!character) {
       return Response.json({ error: "Character not found in your library." }, { status: 404 });
     }
+    // Held before the old sheet goes: a refused companion must not cost the
+    // player the character they have (issue 192).
+    if (character.role === "companion") {
+      return Response.json({ error: companionRoleRefusal(character) }, { status: 400 });
+    }
     deleteSheetForUser(campaignId, context.user.id);
     const result = instantiateIntoCampaign(
       character.id,
@@ -275,6 +304,11 @@ export async function PUT(
     if (!character) {
       return Response.json({ error: "Character not found in your library." }, { status: 404 });
     }
+    // Held before the old sheet goes: a refused companion must not cost the
+    // player the character they have (issue 192).
+    if (character.role === "companion") {
+      return Response.json({ error: companionRoleRefusal(character) }, { status: 400 });
+    }
     const edited = admitSheet({
       door: "library",
       level: context.campaign.startingLevel,
@@ -288,8 +322,17 @@ export async function PUT(
     }
     edit.data.sheet = edited.sheet;
     edited.settle();
+    // The copy this edit replaces is the one made from the character it
+    // edited. At a table where the player fields several, the seat may be on
+    // another of their sheets, and replacing THAT one lost it and left two
+    // copies of the edited one. A copy with no library link (an older host's
+    // sheet) falls back to the seated one, as before.
+    const replaced =
+      listSheetsForUser(campaignId, context.user.id).find(
+        (sheet) => sheet.libraryCharacterId === character.id && !sheet.isCompanion,
+      ) ?? existing;
     if (character.level !== context.campaign.startingLevel) {
-      deleteSheetForUser(campaignId, context.user.id);
+      deleteSheetById(campaignId, context.user.id, replaced.id);
       const sheet = createSheet(
         campaignId,
         context.user.id,
@@ -301,7 +344,7 @@ export async function PUT(
       if (!edit.data.sheet.portrait) {
         queueLibraryPortrait({ ...character, sheet: edit.data.sheet });
       }
-      publishReplacement(context, existing, sheet);
+      publishReplacement(context, replaced, sheet);
       return Response.json({ sheet });
     }
     const updated = updateCharacter(
@@ -313,7 +356,7 @@ export async function PUT(
     if (!updated) {
       return Response.json({ error: "Could not update the character." }, { status: 400 });
     }
-    deleteSheetForUser(campaignId, context.user.id);
+    deleteSheetById(campaignId, context.user.id, replaced.id);
     const result = instantiateIntoCampaign(
       character.id,
       campaignId,
@@ -322,13 +365,13 @@ export async function PUT(
     );
     if ("error" in result) {
       publishPersisted(campaignId, "sheet_deleted", {
-        sheetId: existing.id,
+        sheetId: replaced.id,
         userId: context.user.id,
       });
       return Response.json({ error: result.error }, { status: 400 });
     }
     queueLibraryPortrait(updated);
-    publishReplacement(context, existing, result);
+    publishReplacement(context, replaced, result);
     return Response.json({ sheet: result });
   }
 
@@ -435,7 +478,10 @@ export async function PATCH(
     sheet = target;
     companionPortrait = true;
   } else {
-    sheet = getSheetForUser(campaignId, context.user.id);
+    sheet = typeof body.characterId === "string" ? getSheetById(body.characterId) : getSheetForUser(campaignId, context.user.id);
+    if (sheet && (sheet.campaignId !== campaignId || sheet.userId !== context.user.id || sheet.isCompanion)) {
+      return Response.json({ error: "That is not one of your characters." }, { status: 404 });
+    }
   }
   if (!sheet) {
     return Response.json({ error: "You have no character in this campaign." }, { status: 404 });
@@ -480,7 +526,8 @@ export async function PATCH(
         { status: 403 },
       );
     }
-    const owner = context.campaign.ownerUserId;
+    // The table's homebrew, whoever of its DM seats wrote it.
+    const owner = tableAuthors(context.campaign.id);
     const built = buildLevelUp(sheet, parsed.data, {
       hpMethod: context.campaign.gameSettings.hpMethod ?? "average",
       multiclassAllowed: context.campaign.gameSettings.multiclassingEnabled !== false,

@@ -1,0 +1,29 @@
+{
+  "note": "First-load JavaScript and CSS per route, gzip KiB, from the production build's own manifests (scripts/check-bundle-budget.mjs). Each budget sits about 5% above the size measured when it was set (2026-10-11); raise one only in the change that needs it, with the reason.",
+  "routes": {
+    "page": {
+      "jsGzipKiB": 526,
+      "cssGzipKiB": 85
+    },
+    "campaigns/[campaignId]/page": {
+      "jsGzipKiB": 408,
+      "cssGzipKiB": 85
+    },
+    "campaigns/[campaignId]/table/page": {
+      "jsGzipKiB": 838,
+      "cssGzipKiB": 85
+    },
+    "workshop/page": {
+      "jsGzipKiB": 518,
+      "cssGzipKiB": 85
+    },
+    "workshop/[workshopId]/page": {
+      "jsGzipKiB": 493,
+      "cssGzipKiB": 85
+    },
+    "rulebook/page": {
+      "jsGzipKiB": 457,
+      "cssGzipKiB": 92
+    }
+  }
+}

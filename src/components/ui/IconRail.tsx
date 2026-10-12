@@ -62,10 +62,10 @@ export function IconRail<T extends string>({
     const cell = nav?.querySelector<HTMLElement>('[aria-current="page"]');
     if (!nav || !mark) return;
     if (!cell) {
-      mark.style.opacity = "0";
+      delete mark.dataset.on;
       return;
     }
-    mark.style.opacity = "1";
+    mark.dataset.on = "";
     mark.style.setProperty("--ix", `${cell.offsetLeft}px`);
     mark.style.setProperty("--iy", `${cell.offsetTop}px`);
     mark.style.setProperty("--iw", `${cell.offsetWidth}px`);

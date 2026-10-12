@@ -14,6 +14,7 @@ import {
   ChipList,
   ItemFlags,
   SlotSteppers,
+  editedSpellSlots,
   equipmentFrom,
   highestStoredSlot,
   itemRowsOf,
@@ -153,14 +154,7 @@ export function LeadEditDialog({
       const nextSpellcasting: NonNullable<CharacterSheet["spellcasting"]> = {
         ...sheet.spellcasting,
         ability: sheet.spellcasting.ability,
-        slots: Object.fromEntries(
-          Object.entries(sheet.spellcasting.slots).map(([level, slot]) => {
-            const edited = slots[level];
-            const max = Math.max(0, Math.round(Number(edited?.max)) || slot.max);
-            const used = Math.min(max, Math.max(0, Math.round(Number(edited?.used ?? "0")) || 0));
-            return [level, { max, used }];
-          }),
-        ),
+        slots: editedSpellSlots(sheet.spellcasting.slots, slots),
         prepared,
         known,
         cantrips,

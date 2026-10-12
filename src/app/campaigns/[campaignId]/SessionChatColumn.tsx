@@ -242,6 +242,13 @@ export function SessionChatColumn({
       />
       )}
 
+      {/* Everything under the transcript, in one box: beside a staged board
+          it is the column under the board, next to the full-height scroll
+          (world.css, issue 213); otherwise the box steps aside
+          (display: contents) and the strips sit in the column as they
+          always did. Always drawn, so switching the stage never remounts
+          the Ask draft or the Hand. */}
+      <div className="cine-fight-controls">
       <RulingBar
         campaignId={campaignId}
         disputes={state.disputes}
@@ -282,6 +289,7 @@ export function SessionChatColumn({
       <DmCoverNotice cover={campaign?.dmCover ?? null} />
 
       {children}
+      </div>
     </div>
   );
 }

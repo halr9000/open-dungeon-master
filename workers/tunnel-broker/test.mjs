@@ -379,6 +379,189 @@ await test("a session whose record cannot be written is torn down, not leaked", 
   assert.equal((await kv.list({ prefix: "session:" })).keys.length, 0);
 });
 
+await test("provisioning failures unwind only the tunnel and DNS resources already created", async () => {
+  for (const failingPath of ["/token", "/configurations", "/dns_records"]) {
+    const brokerEnv = { ...env, SESSIONS: new TestStore() };
+    const realFetch = globalThis.fetch;
+    const methods = [];
+    globalThis.fetch = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      const method = init.method || "GET";
+      methods.push(`${method} ${path}`);
+      if (method !== "DELETE" && path.endsWith(failingPath)) {
+        return new Response(JSON.stringify({ success: false, errors: [{ message: "test failure" }] }), {
+          status: 503,
+        });
+      }
+      return realFetch(url, init);
+    };
+    try {
+      const response = await worker.fetch(request("POST", "/session", { body: { port: 3210 } }), brokerEnv);
+      assert.equal(response.status, 502, failingPath);
+      assert.ok(methods.includes("DELETE /client/v4/accounts/acct/cfd_tunnel/fake-id"), failingPath);
+      assert.equal(methods.some((method) => method.includes("/undefined")), false, failingPath);
+      assert.equal(
+        methods.some((method) => method.startsWith("DELETE /client/v4/zones/zone/dns_records/")),
+        false,
+        `DNS was not created before ${failingPath} failed`,
+      );
+      assert.equal((await brokerEnv.SESSIONS.list({ prefix: "session:" })).keys.length, 0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+});
+
+await test("failed teardown remains queued and the hourly cron retries it", async () => {
+  const brokerEnv = { ...env, SESSIONS: new TestStore() };
+  const createdResponse = await worker.fetch(request("POST", "/session", { body: { port: 3210 } }), brokerEnv);
+  assert.equal(createdResponse.status, 200);
+  const session = await createdResponse.json();
+  const realFetch = globalThis.fetch;
+  let tunnelDeletes = 0;
+  let dnsDeletes = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (init.method === "DELETE" && path.includes("/dns_records/")) dnsDeletes += 1;
+    if (init.method === "DELETE" && path.endsWith("/cfd_tunnel/fake-id")) {
+      tunnelDeletes += 1;
+      if (tunnelDeletes === 1) {
+        return new Response(JSON.stringify({ success: false, errors: [{ message: "test failure" }] }), {
+          status: 503,
+        });
+      }
+    }
+    return realFetch(url, init);
+  };
+  try {
+    const response = await worker.fetch(
+      request("DELETE", `/session/${session.code}`, {
+        headers: { "x-session-secret": session.secret },
+      }),
+      brokerEnv,
+    );
+    assert.equal(response.status, 502);
+    const pending = JSON.parse(await brokerEnv.SESSIONS.get(`session:${session.code}`));
+    assert.equal(pending.cleanupPending, true);
+    assert.equal(pending.tunnelId, "fake-id");
+    assert.equal(pending.dnsRecordId, undefined);
+    assert.equal(brokerEnv.SESSIONS.raw(`session:${session.code}`).expires_at, null);
+    await worker.scheduled({}, brokerEnv);
+    assert.equal(await brokerEnv.SESSIONS.get(`session:${session.code}`), null);
+    assert.equal(tunnelDeletes, 2);
+    assert.equal(dnsDeletes, 1, "the cron must not delete a DNS record already removed");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test("failed DNS teardown retries only DNS and accepts an already-gone record", async () => {
+  const brokerEnv = { ...env, SESSIONS: new TestStore() };
+  const createdResponse = await worker.fetch(request("POST", "/session", { body: { port: 3210 } }), brokerEnv);
+  assert.equal(createdResponse.status, 200);
+  const session = await createdResponse.json();
+  const realFetch = globalThis.fetch;
+  let dnsDeletes = 0;
+  let tunnelDeletes = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (init.method === "DELETE" && path.includes("/dns_records/")) {
+      dnsDeletes += 1;
+      return new Response(JSON.stringify({ success: false, errors: [{ message: "test failure" }] }), {
+        status: dnsDeletes === 1 ? 503 : 404,
+      });
+    }
+    if (init.method === "DELETE" && path.endsWith("/cfd_tunnel/fake-id")) tunnelDeletes += 1;
+    return realFetch(url, init);
+  };
+  try {
+    const response = await worker.fetch(
+      request("DELETE", `/session/${session.code}`, {
+        headers: { "x-session-secret": session.secret },
+      }),
+      brokerEnv,
+    );
+    assert.equal(response.status, 502);
+    const pending = JSON.parse(await brokerEnv.SESSIONS.get(`session:${session.code}`));
+    assert.equal(pending.dnsRecordId, "fake-dns-id");
+    assert.equal(pending.tunnelId, undefined);
+    await worker.scheduled({}, brokerEnv);
+    assert.equal(await brokerEnv.SESSIONS.get(`session:${session.code}`), null);
+    assert.equal(dnsDeletes, 2);
+    assert.equal(tunnelDeletes, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test("a failed provisioning cleanup is retained for the cron", async () => {
+  const brokerEnv = { ...env, SESSIONS: new TestStore() };
+  const realFetch = globalThis.fetch;
+  let tunnelDeletes = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/token")) {
+      return new Response(JSON.stringify({ success: false, errors: [{ message: "test failure" }] }), {
+        status: 503,
+      });
+    }
+    if (init.method === "DELETE" && path.endsWith("/cfd_tunnel/fake-id")) {
+      tunnelDeletes += 1;
+      if (tunnelDeletes === 1) {
+        return new Response(JSON.stringify({ success: false, errors: [{ message: "test failure" }] }), {
+          status: 503,
+        });
+      }
+    }
+    return realFetch(url, init);
+  };
+  try {
+    const response = await worker.fetch(request("POST", "/session", { body: { port: 3210 } }), brokerEnv);
+    assert.equal(response.status, 502);
+    const pendingKeys = (await brokerEnv.SESSIONS.list({ prefix: "session:" })).keys;
+    assert.equal(pendingKeys.length, 1);
+    const pending = JSON.parse(await brokerEnv.SESSIONS.get(pendingKeys[0].name));
+    assert.equal(pending.cleanupPending, true);
+    assert.equal(pending.tunnelId, "fake-id");
+    assert.equal(pending.dnsRecordId, undefined);
+    await worker.scheduled({}, brokerEnv);
+    assert.equal(await brokerEnv.SESSIONS.get(pendingKeys[0].name), null);
+    assert.equal(tunnelDeletes, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test("the hourly cron continues past one failed tunnel deletion", async () => {
+  const brokerEnv = { ...env, SESSIONS: new TestStore() };
+  const old = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  await brokerEnv.SESSIONS.put(
+    "session:AAAA2222",
+    JSON.stringify({ tunnelId: "stuck", secretHash: "hash", createdAt: old }),
+  );
+  await brokerEnv.SESSIONS.put(
+    "session:ZZZZ9999",
+    JSON.stringify({ tunnelId: "free", secretHash: "hash", createdAt: old }),
+  );
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (init.method === "DELETE" && path.endsWith("/cfd_tunnel/stuck")) {
+      return new Response(JSON.stringify({ success: false, errors: [{ message: "test failure" }] }), {
+        status: 503,
+      });
+    }
+    return realFetch(url, init);
+  };
+  try {
+    await worker.scheduled({}, brokerEnv);
+    assert.ok(await brokerEnv.SESSIONS.get("session:AAAA2222"));
+    assert.equal(await brokerEnv.SESSIONS.get("session:ZZZZ9999"), null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 await test("nobody else can point a claimed table somewhere", async () => {
   const stolen = await worker.fetch(
     request("PUT", "/table/EFGH6789", {
@@ -670,6 +853,29 @@ await test("an assistant link is forwarded to the world with its token as a bear
   await relay(relayCall(), {});
   assert.equal(lookups, 1, "the address is cached between calls");
   assert.equal(world.seen.filter((call) => call.url.endsWith("/api/auth/providers")).length, 1, "and so is the proof");
+});
+
+// The 2026-07-28 revision's standard headers: the world's MCP library answers
+// 400 to a modern request without Mcp-Method, and to a tool call without
+// Mcp-Name (or a declared Mcp-Param-<Name>).
+await test("every Mcp- header reaches the world, so a 2026-07-28 client can call tools", async () => {
+  const world = fakeWorld();
+  const relay = createRelay({ lookup: async () => ONLINE, fetch: world.fetchImpl });
+  const mcpHeaders = {
+    "mcp-protocol-version": "2026-07-28",
+    "mcp-method": "tools/call",
+    "mcp-name": "list_campaigns",
+    "mcp-param-region": "north",
+  };
+  const call = relayCall(undefined, {
+    headers: { "content-type": "application/json", ...mcpHeaders, "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9" },
+    body: '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_campaigns","arguments":{}}}',
+  });
+  assert.equal((await relay(call, {})).status, 200);
+  const mcp = world.seen.find((seen) => seen.url === `${PLAY}/api/mcp`);
+  for (const [name, value] of Object.entries(mcpHeaders)) assert.equal(mcp.headers.get(name), value, name);
+  assert.equal(mcp.headers.get("cf-connecting-ip"), null, "Cloudflare's own headers stay behind");
+  assert.equal(mcp.headers.get("x-forwarded-for"), null);
 });
 
 await test("a token is never sent to an address that is not that world", async () => {

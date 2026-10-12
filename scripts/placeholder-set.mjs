@@ -360,6 +360,12 @@ const WORKSHOP_TILES = [
   { id: "storyboard", subject: "A wall of pinned index cards joined by lengths of thread" },
   { id: "tables", subject: "A scatter of polygonal dice beside a printed column of numbered entries" },
   { id: "rulesets", subject: "A stack of thick leather-bound rule tomes with ribbon markers" },
+  { id: "region", subject: "A vast landscape of mountain passes, forests, rivers and a distant citadel" },
+  { id: "party", subject: "A band of adventurers gathered around a map before their next journey" },
+  { id: "factions", subject: "Rival heraldic banners surrounding a council table" },
+  { id: "homebrew", subject: "A clockwork golem under construction with spare parts and detailed schematics" },
+  { id: "plugin", subject: "Interlocking enchanted mechanisms forming a new wing of a fantasy workshop" },
+  { id: "share", subject: "An open travel chest filled with maps, books and miniature adventures ready to share" },
 ];
 
 // The remaining thumbnail slots that are not a person, a place or a room of
@@ -382,9 +388,10 @@ const MISC_TILES = [
 // that falls back to a wizard silhouette looks broken. Keyed by the class id
 // the app already uses, so a lookup needs no translation table.
 //
-// Two variants each rather than the SRD twelve's three. Race portraits carry
-// the gender variety, and a Netrunner reads by its gear, not its build.
-export const CLASS_GENDER_IDS = ["masculine", "feminine"];
+// Three variants each, like the SRD twelve: the painted portraits gave every
+// genre class a neutral plate of its own, so a nonbinary or unstated Netrunner
+// no longer falls through to the genre lead.
+export const CLASS_GENDER_IDS = ["masculine", "feminine", "neutral"];
 
 // Content-pack classes from other 5e books, keyed by the pack's class slug.
 const PACK_CLASSES = [

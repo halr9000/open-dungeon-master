@@ -4,6 +4,7 @@ import { Loader2, Pencil } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { encodeImageForUpload } from "@/lib/image-encode";
+import { pollUntilSettled } from "@/lib/poll-until-settled";
 import { ui } from "@/lib/ui";
 import { Dialog } from "@/components/ui/Dialog";
 import { GameIcon } from "@/components/ui/GameIcon";
@@ -96,7 +97,6 @@ export function EditCampaignDialog({
   const [coverStatus, setCoverStatus] = useState<CoverStatus>(null);
   const [coverBusy, setCoverBusy] = useState(false);
   const [coverError, setCoverError] = useState("");
-  const pollCount = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const capabilities = useCapabilities();
   const coverPending = coverStatus === "queued" || coverStatus === "generating";
@@ -120,23 +120,22 @@ export function EditCampaignDialog({
   }, [campaign.id]);
 
   useEffect(() => {
-    if (!coverPending || pollCount.current >= COVER_POLL_LIMIT) {
-      return;
-    }
-    const id = setTimeout(() => {
-      pollCount.current += 1;
-      fetch(`/api/campaigns/${campaign.id}/cover`)
-        .then((response) => (response.ok ? response.json() : null))
-        .then((data) => {
-          if (data) {
-            setCover(data.cover ?? null);
-            setCoverStatus(data.status ?? null);
-          }
-        })
-        .catch(() => {});
-    }, COVER_POLL_MS);
-    return () => clearTimeout(id);
-  }, [campaign.id, coverPending, coverStatus, cover]);
+    if (!coverPending) return;
+    return pollUntilSettled(
+      async () => {
+        const response = await fetch(`/api/campaigns/${campaign.id}/cover`);
+        if (!response.ok) throw new Error("Could not check cover generation status.");
+        return response.json() as Promise<{ cover?: CampaignCoverRef | null; status?: CoverStatus }>;
+      },
+      (data) => data.status === "queued" || data.status === "generating",
+      (data) => {
+        setCover(data.cover ?? null);
+        setCoverStatus(data.status ?? null);
+      },
+      COVER_POLL_MS,
+      COVER_POLL_LIMIT,
+    );
+  }, [campaign.id, coverPending]);
 
   async function coverRequest(method: "PATCH" | "POST" | "DELETE", body?: unknown) {
     setCoverBusy(true);
@@ -152,7 +151,6 @@ export function EditCampaignDialog({
         setCoverError(data.error || "Could not change the cover.");
         return;
       }
-      pollCount.current = 0;
       setCover(data.cover ?? null);
       setCoverStatus(data.status ?? null);
     } catch {

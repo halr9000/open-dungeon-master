@@ -14,6 +14,7 @@ import { d20Expression } from "@/lib/dice";
 import { publishPersisted } from "@/lib/events";
 import { spellSaveDcFor } from "@/lib/srd";
 import { spellMechanicsFor } from "@/lib/content";
+import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import { canEnemyAct } from "@/lib/dm/can-act";
 import { spendEnemyAction } from "@/lib/dm/enemy-approach";
 import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
@@ -25,10 +26,12 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 type Hold = { name: string; spell: string; abilities: Array<"str" | "dex" | "int">; dc: number; save?: "wis" };
 
 // The spell hold a creature may break with a check, or null.
-function holdOn(conditions: string[], meta: ConditionMetaMap | undefined): Hold | null {
+// `authors` are the table's (spell-authors.ts), so a homebrew spell's hold
+// is read from the spell the table plays.
+function holdOn(conditions: string[], meta: ConditionMetaMap | undefined, authors: string[]): Hold | null {
   for (const name of conditions) {
     const entry = meta?.[name];
-    const rule = entry?.spell ? spellMechanicsFor({ spell: entry.spell })?.mech.condition : null;
+    const rule = entry?.spell ? spellMechanicsFor({ spell: entry.spell, userIds: authors })?.mech.condition : null;
     const caster = entry?.source ? getSheetById(entry.source) : null;
     if ((rule?.escape?.length || rule?.escapeSave) && rule.name === name && entry?.spell) {
       // Maze's way out is a fixed DC 20 Intelligence check; Irresistible
@@ -40,18 +43,18 @@ function holdOn(conditions: string[], meta: ConditionMetaMap | undefined): Hold 
 }
 
 // Whether an enemy is held by a spell it can break, for the escape action.
-export function enemySpellHold(enemy: EncounterEnemy): boolean {
-  return holdOn(enemy.conditions, enemy.conditionMeta as ConditionMetaMap) !== null;
+export function enemySpellHold(campaign: Campaign, enemy: EncounterEnemy): boolean {
+  return holdOn(enemy.conditions, enemy.conditionMeta as ConditionMetaMap, spellAuthorsFor(campaign)) !== null;
 }
 
-export function characterSpellHold(sheet: CharacterSheet): boolean {
-  return holdOn(sheet.conditions, sheet.conditionMeta as ConditionMetaMap) !== null;
+export function characterSpellHold(campaign: Campaign, sheet: CharacterSheet): boolean {
+  return holdOn(sheet.conditions, sheet.conditionMeta as ConditionMetaMap, spellAuthorsFor(campaign)) !== null;
 }
 
 // An enemy's action to break a spell's hold: the better of its allowed
 // ability checks against the caster's DC.
 export function enemySpellEscape(campaign: Campaign, turn: DmTurn, enemy: EncounterEnemy): Record<string, unknown> {
-  const hold = holdOn(enemy.conditions, enemy.conditionMeta as ConditionMetaMap);
+  const hold = holdOn(enemy.conditions, enemy.conditionMeta as ConditionMetaMap, spellAuthorsFor(campaign));
   const encounter = getActiveEncounter(campaign.id);
   if (!hold || !encounter) {
     return { error: `${enemy.displayName} is held by nothing it can break free of.` };
@@ -64,7 +67,7 @@ export function enemySpellEscape(campaign: Campaign, turn: DmTurn, enemy: Encoun
   saveEncounter(encounter);
   const mod = Math.max(...hold.abilities.map((ability) => Math.floor(((enemy.stats.abilities?.[ability] ?? 10) - 10) / 2)));
   const saved = hold.save
-    ? rollEnemySave(campaign.id, enemy, hold.save, hold.dc, { magical: true, record: { turn, detail: `${enemy.displayName}: ${hold.save.toUpperCase()} save against ${hold.spell}` } })
+    ? rollEnemySave(campaign.id, enemy, hold.save, hold.dc, { magical: true, resist: true, record: { turn, detail: `${enemy.displayName}: ${hold.save.toUpperCase()} save against ${hold.spell}` } })
     : null;
   const total = saved ? (saved.total ?? 0) : dmRoll(campaign.id, turn, "ability_check", `${enemy.displayName}: breaking free of ${hold.spell}`, d20Expression(mod)).total;
   const escaped = saved ? saved.success : total >= hold.dc;
@@ -92,7 +95,7 @@ export function characterSpellEscape(
   sheet: CharacterSheet,
   spend: () => void,
 ): Record<string, unknown> {
-  const hold = holdOn(sheet.conditions, sheet.conditionMeta as ConditionMetaMap);
+  const hold = holdOn(sheet.conditions, sheet.conditionMeta as ConditionMetaMap, spellAuthorsFor(campaign));
   if (!hold) {
     return { error: `${sheet.name} is held by nothing they can break free of.` };
   }

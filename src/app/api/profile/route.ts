@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { cancelAccountDeletion, requestAccountDeletion } from "@/lib/account-deletion";
-import { currentUser, endSession, unauthorized, verifyPassword } from "@/lib/auth";
+import { PasswordBusyError, currentUser, endSession, passwordBusyResponse, unauthorized, verifyPassword } from "@/lib/auth";
 import { isValidDiceLook, type DiceLook } from "@/lib/dice/dice-look";
 import {
   NO_PASSWORD_SENTINEL,
@@ -27,6 +27,8 @@ const settingsSchema = z.object({
   narrationMuted: z.boolean().optional(),
   ambienceVolume: volumeSchema.optional(),
   ambienceMuted: z.boolean().optional(),
+  ambienceBedLevel: volumeSchema.optional(),
+  ambienceMusicLevel: volumeSchema.optional(),
   chimeMuted: z.boolean().optional(),
   diceLook: diceLookSchema.optional(),
 });
@@ -117,7 +119,16 @@ export async function DELETE(request: Request) {
     if (!parsed.data.password) {
       return Response.json({ error: "Password is required." }, { status: 400 });
     }
-    if (!verifyPassword(parsed.data.password, account.passwordHash)) {
+    let valid: boolean;
+    try {
+      valid = await verifyPassword(parsed.data.password, account.passwordHash);
+    } catch (error) {
+      if (error instanceof PasswordBusyError) {
+        return passwordBusyResponse();
+      }
+      throw error;
+    }
+    if (!valid) {
       return Response.json({ error: "Password is wrong." }, { status: 403 });
     }
   }

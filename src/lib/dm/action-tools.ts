@@ -8,7 +8,7 @@ import { publishPersisted } from "@/lib/events";
 import { conditionExtraActions } from "@/lib/srd/condition-effects";
 import { spendAction, spendAttack, type SpendResult, type TurnBudget } from "@/lib/dm/action-budget";
 import { addSheetCondition } from "@/lib/dm/action-common";
-import { bonusRouteFor, kiSpend, noBonusRoute, type MoveAction } from "@/lib/dm/bonus-actions";
+import { bonusRouteFor, counterSpend, kiSpend, noBonusRoute, type BonusRoute, type MoveAction } from "@/lib/dm/bonus-actions";
 import { authoredBonusRoute } from "@/lib/srd/authored-economy";
 import { featBonusRoute } from "@/lib/srd/feat-combat";
 import { EXPEDITIOUS_RETREAT, hasFastHands } from "@/lib/dm/bonus-routes";
@@ -230,7 +230,14 @@ const MOVES = new Set<string>(["dodge", "dash", "disengage", "hide"]);
 
 // How an action is paid for: the priced budget, and what the tool result
 // says of the cost. Null budget = no turn to charge (out of a fight).
-type Price = { budget: TurnBudget | null; note?: string; ki?: number; feature?: string };
+// `counter`: the counted route's use, and the feature it is a use of.
+type Price = {
+  budget: TurnBudget | null;
+  note?: string;
+  ki?: number;
+  feature?: string;
+  counter?: { id: string; feature: string };
+};
 
 function priceAction(
   sheet: CharacterSheet,
@@ -255,7 +262,7 @@ function priceAction(
     // The feats' bonus-action routes: Tavern Brawler's grapple after its
     // hit, Shield Master's shove after the Attack action with a shield,
     // Charger's shove after a Dash (src/lib/srd/feat-combat.ts).
-    const route =
+    const route: BonusRoute | null =
       (move ? bonusRouteFor(sheet, move) : authoredBonusRoute(sheet, action)) ??
       featBonusRoute(sheet, action, budget, Boolean(acBreakdownFor(sheet).shieldName));
     if (!route) {
@@ -271,8 +278,15 @@ function priceAction(
         return covered;
       }
     }
+    if (route.counter) {
+      const covered = counterSpend(sheet, route.counter, route.feature);
+      if ("error" in covered) {
+        return covered;
+      }
+    }
+    const counter = route.counter ? { counter: { id: route.counter, feature: route.feature } } : {};
     if (!budget) {
-      return { budget: null, ki: route.ki, feature: route.feature };
+      return { budget: null, ki: route.ki, feature: route.feature, ...counter };
     }
     // Expeditious Retreat's casting (itself the bonus action) takes the Dash
     // with it, once, on the turn it is cast.
@@ -285,7 +299,7 @@ function priceAction(
     }
     const spent = spendAction(budget, "bonus", `${route.feature} (${action})`, sheet.name);
     return spent.ok
-      ? { budget: spent.budget, note: `${route.feature}: their bonus action`, ki: route.ki, feature: route.feature }
+      ? { budget: spent.budget, note: `${route.feature}: their bonus action`, ki: route.ki, feature: route.feature, ...counter }
       : { error: spent.error };
   }
   if (!budget) {
@@ -298,9 +312,10 @@ function priceAction(
       : spendAction(budget, "action", ACTION_WORDS[action], sheet.name);
   if (!spent.ok && move) {
     // With the action gone, a free bonus-action route (Cunning Action) is
-    // what the player meant; a ki route costs ki and waits to be asked for.
+    // what the player meant; a ki route costs ki and a counted one a use, and
+    // both wait to be asked for.
     const route = bonusRouteFor(sheet, move);
-    if (route && route.ki === 0) {
+    if (route && route.ki === 0 && !route.counter) {
       const asBonus = spendAction(budget, "bonus", `${route.feature} (${action})`, sheet.name);
       if (asBonus.ok) {
         spent = { ...asBonus, note: `${route.feature}: their bonus action` };
@@ -379,6 +394,16 @@ export function handleTakeAction(
           publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
         }
         costs.ki = `${price.ki} ki (${price.feature})`;
+      }
+    }
+    if (price.counter) {
+      const covered = counterSpend(getSheetById(sheet.id) ?? sheet, price.counter.id, price.counter.feature);
+      if (!("error" in covered)) {
+        const updated = patchSheet(sheet.id, { resources: covered.resources });
+        if (updated) {
+          publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
+        }
+        costs.uses = `1 use (${price.counter.feature})`;
       }
     }
     if (price.note) {

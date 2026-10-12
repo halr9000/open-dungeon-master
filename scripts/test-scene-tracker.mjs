@@ -50,6 +50,11 @@ const attempt = (success) => ({
   total: success ? 18 : 8,
   success,
 });
+const otherAttempt = (success) => ({
+  ...attempt(success),
+  characterId: "pc2",
+  characterName: "Mira",
+});
 
 test("every kind has a label and a hint", () => {
   for (const kind of TRACKER_KINDS) {
@@ -88,7 +93,7 @@ test("a success fills the success clock and nothing else", () => {
 test("enough successes wins it", () => {
   let current = tracker();
   current = recordCheck(current, attempt(true)).tracker;
-  const last = recordCheck(current, attempt(true));
+  const last = recordCheck(current, otherAttempt(true));
   assert.equal(last.resolved, true);
   assert.equal(last.outcome, "won");
   assert.equal(last.tracker.status, "won");
@@ -97,7 +102,7 @@ test("enough successes wins it", () => {
 test("enough failures loses it", () => {
   let current = tracker();
   current = recordCheck(current, attempt(false)).tracker;
-  const last = recordCheck(current, attempt(false));
+  const last = recordCheck(current, otherAttempt(false));
   assert.equal(last.outcome, "lost");
 });
 
@@ -105,15 +110,36 @@ test("a check that fills both clocks at once is a loss", () => {
   // The failure that ended it happened, so it ended.
   let current = tracker({ successesNeeded: 2, failuresAllowed: 1 });
   current = recordCheck(current, attempt(true)).tracker;
-  const last = recordCheck(current, attempt(false));
+  const last = recordCheck(current, otherAttempt(false));
   assert.equal(last.outcome, "lost");
 });
 
 test("a finished scene takes no more checks", () => {
   let current = tracker();
   current = recordCheck(current, attempt(true)).tracker;
-  current = recordCheck(current, attempt(true)).tracker;
+  current = recordCheck(current, otherAttempt(true)).tracker;
   assert.ok("error" in recordCheck(current, attempt(true)));
+});
+
+test("only listed participants can move a scene clock", () => {
+  const current = tracker({ characterIds: ["pc1"] });
+  const rejected = recordCheck(current, otherAttempt(true));
+  assert.match(rejected.error, /participant/i);
+  assert.equal(current.successes, 0);
+  assert.deepEqual(current.log, []);
+  assert.equal(recordCheck(current, attempt(true)).tracker.successes, 1);
+  assert.equal(recordCheck(tracker(), otherAttempt(true)).tracker.successes, 1, "empty list means the whole party");
+});
+
+test("a character gets one attempt per round, including when earlier checks fill the log", () => {
+  let current = tracker({ successesNeeded: 12, failuresAllowed: 12 });
+  for (let index = 1; index <= 5; index += 1) {
+    current = recordCheck(current, { ...attempt(true), characterId: `pc${index}` }).tracker;
+  }
+  const snapshot = structuredClone(current);
+  assert.match(recordCheck(current, attempt(true)).error, /round/i);
+  assert.deepEqual(current, snapshot, "a refusal does not change the tracker");
+  assert.equal(recordCheck(advanceRound(current), attempt(true)).tracker.log.at(-1).round, 2);
 });
 
 test("recording does not move the round; the caller does", () => {
@@ -121,7 +147,7 @@ test("recording does not move the round; the caller does", () => {
   assert.equal(current.round, 1);
   assert.equal(advanceRound(current).round, 2);
   // Two players acting in the same round both land on that round.
-  assert.equal(recordCheck(current, attempt(false)).tracker.log[1].round, 1);
+  assert.equal(recordCheck(current, otherAttempt(false)).tracker.log[1].round, 1);
 });
 
 test("a finished scene's round does not move", () => {
@@ -139,7 +165,7 @@ test("calling it off is its own outcome", () => {
 test("progress is reported in both directions", () => {
   let current = tracker({ successesNeeded: 4, failuresAllowed: 2 });
   current = recordCheck(current, attempt(true)).tracker;
-  current = recordCheck(current, attempt(false)).tracker;
+  current = recordCheck(current, otherAttempt(false)).tracker;
   const progress = trackerProgress(current);
   assert.equal(progress.success, 0.25);
   assert.equal(progress.failure, 0.5);

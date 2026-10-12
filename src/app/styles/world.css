@@ -1339,6 +1339,7 @@ html[data-theme="light"] .ts-below .ts-ghost:hover { background: rgba(255, 252, 
   box-shadow: 0 1px 0 rgba(233, 230, 244, 0.08) inset;
 }
 .cine-stage .cine-desk .session-well:focus-within { border-color: rgba(212, 171, 58, 0.65); box-shadow: 0 1px 0 rgba(233, 230, 244, 0.08) inset, 0 0 0 3px rgba(212, 171, 58, 0.12); }
+.cine-stage .cine-desk .session-well[data-over] { border-color: rgba(239, 68, 68, 0.6); box-shadow: 0 1px 0 rgba(233, 230, 244, 0.08) inset, 0 0 0 3px rgba(239, 68, 68, 0.14); }
 .cine-stage .cine-send { border-radius: 8px; background: linear-gradient(180deg, #f9ecc8, #b8922a); }
 .cine-stage .cine-desk .session-mode:not([data-on]) { background: rgba(20, 15, 38, 0.6); border-color: rgba(107, 99, 148, 0.5); }
 /* The chosen mode lands with a pop; the gold fill is session.css's own. */
@@ -2336,11 +2337,13 @@ html[data-effects="low"] .ts-title.ts-reveal { animation-name: ts-rise; }
   text-transform: uppercase;
   color: #e3c15c;
 }
+/* The log and the jump back to its end share one frame, so the button
+   floats over the bottom of the text rather than taking a row of it. */
+.cine-chronicle-scroll { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .cine-chronicle-log {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 12px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -2348,6 +2351,82 @@ html[data-effects="low"] .ts-title.ts-reveal { animation-name: ts-rise; }
   scrollbar-color: rgba(107, 99, 148, 0.4) transparent;
   -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 12px);
   mask-image: linear-gradient(180deg, transparent 0, #000 12px);
+}
+.cine-chronicle-flow { display: flex; flex-direction: column; gap: 12px; }
+/* What the window leaves out, and the way to it: the story view. */
+.cine-chronicle-earlier {
+  align-self: center;
+  margin: 0;
+  padding: 3px 10px;
+  border: 1px solid rgba(212, 171, 58, 0.28);
+  border-radius: 999px;
+  background: rgba(16, 13, 32, 0.6);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #b9a46a;
+}
+button.cine-chronicle-earlier { cursor: pointer; transition: color var(--dur-quick) var(--ease-snap), border-color var(--dur-quick) var(--ease-snap); }
+button.cine-chronicle-earlier:hover { color: #f4e0a6; border-color: rgba(244, 224, 166, 0.7); }
+button.cine-chronicle-earlier:focus-visible { outline: 2px solid #f4e0a6; outline-offset: 2px; }
+/* Back to the latest, for a reader who scrolled up (issue 212): it rises in
+   when they leave the end and sinks away when they return; with something
+   new below it calls twice. The motion layer gives it the hover lift and
+   the press. */
+.cine-chronicle-latest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  margin: 0 auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(212, 171, 58, 0.6);
+  background: linear-gradient(180deg, rgba(48, 40, 83, 0.96), rgba(16, 13, 32, 0.98));
+  box-shadow: 0 4px 14px rgba(4, 2, 12, 0.6);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #f4e0a6;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-quick) var(--ease-snap),
+    transform var(--dur-move) var(--ease-spring),
+    color var(--dur-quick) var(--ease-snap),
+    border-color var(--dur-quick) var(--ease-snap),
+    visibility 0s linear var(--dur-move);
+}
+.cine-chronicle-latest[data-shown] {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--dur-quick) var(--ease-snap),
+    transform var(--dur-move) var(--ease-spring),
+    color var(--dur-quick) var(--ease-snap),
+    border-color var(--dur-quick) var(--ease-snap),
+    visibility 0s;
+}
+.cine-chronicle-latest:hover { color: #fff6da; border-color: #e3c15c; }
+.cine-chronicle-latest:focus-visible { outline: 2px solid #f4e0a6; outline-offset: 2px; }
+.cine-chronicle-latest[data-shown][data-unseen] { animation: cine-latest-call 1.4s var(--ease-settle) 2; }
+@keyframes cine-latest-call {
+  from { box-shadow: 0 4px 14px rgba(4, 2, 12, 0.6), 0 0 0 0 rgba(227, 193, 92, 0.55); }
+  to { box-shadow: 0 4px 14px rgba(4, 2, 12, 0.6), 0 0 0 12px rgba(227, 193, 92, 0); }
 }
 .cine-chronicle-passage { display: flex; flex-direction: column; gap: 8px; animation: ts-rise var(--dur-move) var(--ease-settle) backwards; }
 .cine-chronicle-text { margin: 0; font-family: var(--font-serif); font-size: 14px; line-height: 1.55; color: #dedbec; text-wrap: pretty; }
@@ -2404,6 +2483,7 @@ html[data-effects="low"] .ts-title.ts-reveal { animation-name: ts-rise; }
 .cine-chronicle-mode:focus-visible { outline: 2px solid #f4e0a6; outline-offset: 2px; }
 .cine-chronicle-well { display: flex; align-items: flex-end; gap: 10px; padding-bottom: 6px; border-bottom: 1px dashed rgba(212, 171, 58, 0.35); transition: border-color var(--dur-quick) var(--ease-snap); }
 .cine-chronicle-well:focus-within { border-bottom-color: rgba(244, 224, 166, 0.9); border-bottom-style: solid; }
+.cine-chronicle-well[data-over] { border-bottom-color: rgba(239, 68, 68, 0.75); border-bottom-style: solid; }
 .cine-chronicle-input {
   flex: 1;
   min-width: 0;
@@ -2446,12 +2526,52 @@ html[data-effects="low"] .ts-title.ts-reveal { animation-name: ts-rise; }
   .cine-chronicle { flex: none; order: 3; height: 24rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cine-chronicle, .cine-chronicle-passage, .cine-chronicle-line, .cine-chronicle-roll { animation: none; }
-  .cine-chronicle-send, .cine-chronicle-mode, .cine-chronicle-well { transition: none; }
+  .cine-chronicle, .cine-chronicle-passage, .cine-chronicle-line, .cine-chronicle-roll, .cine-chronicle-latest[data-shown][data-unseen] { animation: none; }
+  .cine-chronicle-send, .cine-chronicle-mode, .cine-chronicle-well, .cine-chronicle-latest, .cine-chronicle-latest[data-shown], button.cine-chronicle-earlier { transition: none; }
 }
 
 /* ---- the fight stage: the board on the table, the scroll beside it ---- */
 
+/* Docked (the only time the stage is drawn, SidePanel.tsx useDocked): the
+   scroll is a column of its own, the full height of the stage, and the
+   board, the Ask strip, the Hand and the desk share the column beside it
+   (issue 213). The scroll used to be only as tall as the board's row, with
+   the strips and the desk spread under both. SessionChatColumn puts the
+   strips and the desk in .cine-fight-controls; .cine-fight steps aside so
+   the scroll and the board sit in the grid themselves. A fold read as two
+   leaves keeps the row below (the leaf is too narrow for two columns). */
+@media (min-width: 64rem) {
+  /* The controls row takes what it needs and never the board's floor:
+     minmax(0, auto) is sized before the board's 1fr, down to nothing when
+     the window is short, and then the desk scrolls (issue 87's rule). */
+  .cine-chat.cine-chat-staged {
+    display: grid;
+    grid-template-columns: clamp(15rem, 20vw, 30rem) minmax(0, 1fr);
+    grid-template-rows: minmax(calc(280px + 1rem), 1fr) minmax(0, auto);
+    column-gap: 12px;
+    padding-left: 12px;
+  }
+  .cine-chat-staged > .cine-fight { display: contents; }
+  .cine-chat-staged > .cine-fight > .cine-chronicle { grid-column: 1; grid-row: 1 / -1; min-height: 0; margin: 12px 0; }
+  .cine-chat-staged > .cine-fight > .cine-fight-board { grid-column: 2; grid-row: 1; margin: 12px 12px 4px 0; }
+  /* The strips (the Ask the DM toggle first) hold their place and the
+     desk scrolls inside its own 62dvh, as it did under the row; the box
+     scrolls as a whole only if an open Ask outgrows a short window. */
+  .cine-chat-staged > .cine-fight-controls {
+    display: flex;
+    flex-direction: column;
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(107, 99, 148, 0.4) transparent;
+  }
+  .cine-chat-staged > .cine-fight-controls > * { flex: none; }
+  .cine-chat-staged > .cine-fight-controls > .cine-desk { flex: 0 1 auto; min-height: 0; }
+}
+.cine-fight-controls { display: contents; }
 .cine-fight { display: flex; flex: 1; min-height: 0; gap: 12px; padding: 12px 12px 4px; }
 .cine-fight .cine-chronicle { flex: 0 0 17rem; }
 .cine-fight .cine-chronicle-page { padding-bottom: 14px; }

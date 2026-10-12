@@ -1,4 +1,5 @@
 import { healerKitUse } from "@/lib/dm/stabilize";
+import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { foldFieldValue } from "@/lib/dm/update-sheet-args";
 import { aiSheetFieldRefusal } from "@/lib/dm/update-sheet-ai";
 import { getDmTurn } from "@/lib/db/dm-turns";
@@ -83,6 +84,7 @@ import { publishFx, tokenPosition } from "@/lib/dm/fx";
 import { checklistClassSpell, isCantripName, spellsAgainstLimit } from "@/lib/srd/spell-lists";
 import { casterViewsOf, spellbookOf, withCasterViews } from "@/lib/srd/spell-prep";
 import { subclassSpellsFor } from "@/lib/srd/features";
+import { waypointProperty } from "@/lib/dm/waypoint-logic";
 
 // DM stat authority: the model changes sheets ONLY through these tools.
 // Every mutation is server-clamped, audit-logged, and published live.
@@ -134,17 +136,19 @@ function tool(name: string, description: string, extra: Record<string, unknown>,
 }
 
 export const mutationTools: ToolDef[] = [
-  tool("apply_damage", "Deal damage to a character. Temp HP absorbs first; HP floors at 0.", {
+  tool("apply_damage", "Deal damage to a character. Temp HP absorbs first; HP floors at 0. Send dice and the server rolls them; a bare amount must be a damage total the server rolled this turn (request_roll kind damage).", {
     amount: { type: "integer", minimum: 1, maximum: 200 },
+    dice: { type: "string", description: "Dice the server rolls for the damage, e.g. \"2d6\". Instead of amount." },
     type: { type: "string", description: "Damage type, e.g. slashing, fire." },
     magical: {
       type: "boolean",
       description:
         "True when the damage comes from a spell or a magic weapon, so resistance to nonmagical attacks does not apply.",
     },
-  }, ["amount"]),
+  }, []),
   tool("heal", "Restore a character's hit points, capped at their max. Healing a dying character any amount ends their death saves and wakes them. Pass temp:true to grant TEMPORARY hit points instead (they do not stack; the higher value wins). For a HEALING SPELL, pass spell, casterId and the slot level instead of amount: the server casts it (the caster must have the spell; the slot and the action are spent), rolls the spell's real dice, adds the caster's ability modifier, and shows the dice card. Do not call use_spell_slot for it as well.", {
-    amount: { type: "integer", minimum: 1, maximum: 200, description: "Flat hit points, for healing that is not a spell." },
+    amount: { type: "integer", minimum: 1, maximum: 200, description: "Hit points the server rolled this turn, for healing that is not a spell." },
+    dice: { type: "string", description: "Dice the server rolls for healing that is not a spell, e.g. \"2d4+2\". Instead of amount." },
     spell: {
       type: "string",
       description:
@@ -226,6 +230,7 @@ export const mutationTools: ToolDef[] = [
     coins: { type: "string", description: "Amount in denominations, e.g. '340 silver'. Overrides delta's size; delta's sign still says gain or spend." },
   }, ["delta"]),
   tool("grant_item", "Give a character an item (loot, purchase, gift). Only for items the fiction actually put in their hands. Set unidentified when the party cannot tell what it is yet: then `name` is the description they would use ('an ornate silver ring'), never the true name, and reveal_item names it later.", {
+    ...waypointProperty,
     unidentified: { type: "boolean", description: "True when the party does not yet know what this is." },
     name: { type: "string" },
     qty: { type: "integer", minimum: 1, maximum: 99 },
@@ -259,6 +264,12 @@ export const mutationTools: ToolDef[] = [
       maximum: 24,
       description: "In-world hours until the condition ends.",
     },
+    days: {
+      type: "integer",
+      minimum: 1,
+      maximum: 365,
+      description: "In-world days until the condition ends (Geas's thirty, Contagion's seven).",
+    },
     saveAbility: {
       type: "string",
       enum: ["str", "dex", "con", "int", "wis", "cha"],
@@ -288,6 +299,12 @@ export const mutationTools: ToolDef[] = [
     concentration: {
       type: "boolean",
       description: "Only for homebrew spells the server does not know: true if this spell requires concentration.",
+    },
+    units: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      description: "For a material priced per creature affected (Astral Projection), per corpse (Create Undead) or per Hit Die of the target (Imprisonment): how many.",
     },
     ...ZONE_ARGS,
   }, ["level", "spell"]),
@@ -390,6 +407,7 @@ const argsSchema = z.object({
   // use_spell_slot, internal: how many of the casting's shares this call
   // resolves (Magic Missile's darts at one target).
   uses: z.coerce.number().int().min(1).max(700).optional(),
+  units: z.coerce.number().int().min(1).max(100).optional(),
   ...zoneArgsSchema,
   // heal: temporary hit points instead of healing.
   temp: z.coerce.boolean().optional(),
@@ -428,6 +446,7 @@ const argsSchema = z.object({
   rounds: z.coerce.number().int().min(1).max(100).optional(),
   minutes: z.coerce.number().int().min(1).max(1440).optional(),
   hours: z.coerce.number().int().min(1).max(24).optional(),
+  days: z.coerce.number().int().min(1).max(365).optional(),
   saveAbility: z.preprocess(
     normalizeAbility,
     z.enum(["str", "dex", "con", "int", "wis", "cha"]).optional(),
@@ -1358,6 +1377,7 @@ export function applyDmMutation(
             ...(args.via ? { via: args.via } : {}),
             ...(args.dryRun ? { dryRun: true } : {}),
             ...(args.uses ? { uses: args.uses } : {}),
+            ...(args.units ? { units: args.units } : {}),
             ...zonePlacement(args),
           },
           {
@@ -1394,7 +1414,7 @@ export function applyDmMutation(
         // level it has slots for, and a cantrip only with room in the column
         // (src/lib/dm/learn-rules.ts).
         const facts = spellFactsFor(spell, spellAuthorsFor(campaign));
-        const unlearnable = learnProblem(sheet, spell, facts);
+        const unlearnable = learnProblem(sheet, spell, facts, subclassExtrasForTable(campaign.id, sheet.userId));
         if (unlearnable) {
           return { result: { error: unlearnable } };
         }
@@ -1527,7 +1547,7 @@ export function applyDmMutation(
             );
             const held = spellsAgainstLimit(
               caster.known.length ? caster.known : caster.prepared,
-              subclassSpellsFor(caster.classId, classEntry?.subclass ?? "", level),
+              subclassSpellsFor(caster.classId, classEntry?.subclass ?? "", level, subclassExtrasForTable(campaign.id, sheet.userId)),
             );
             if (!cap || held < cap.count) {
               targetCaster = caster;
@@ -1549,7 +1569,7 @@ export function applyDmMutation(
           );
           const current = spellsAgainstLimit(
             intoKnown ? known : prepared,
-            subclassSpellsFor(sheet.class, sheet.subclass, sheet.level),
+            subclassSpellsFor(sheet.class, sheet.subclass, sheet.level, subclassExtrasForTable(campaign.id, sheet.userId)),
           );
           if (ceiling && current >= ceiling.count) {
             return {

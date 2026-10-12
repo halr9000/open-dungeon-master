@@ -1,5 +1,5 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { enterUsageScope } from "@/lib/usage/scope";
+import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { fillUsageScope, openUsageScope, type UsageScope } from "@/lib/usage/scope";
 import { cookies, headers } from "next/headers";
 import {
   deleteSession,
@@ -14,20 +14,95 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const SCRYPT_KEYLEN = 64;
 
-export function hashPassword(password: string) {
+// Password hashing runs on libuv's thread pool, not the event loop: a
+// synchronous scrypt held every other request and every live stream for
+// about 20 ms per attempt, so a burst of guesses slowed the whole table.
+// The work factor is Node's default and is not lowered for speed.
+//
+// At most PASSWORD_WORKERS hashes run at once and PASSWORD_QUEUE wait; past
+// that an attempt is turned away (PasswordBusyError, a 503 with Retry-After)
+// before any hashing, so a flood costs a refusal rather than memory and CPU.
+const PASSWORD_WORKERS = 2;
+const PASSWORD_QUEUE = 32;
+let passwordRunning = 0;
+const passwordWaiting: Array<() => void> = [];
+
+export class PasswordBusyError extends Error {
+  constructor() {
+    super("Too many sign-ins at once. Try again in a moment.");
+  }
+}
+
+async function passwordSlot(): Promise<void> {
+  if (passwordRunning < PASSWORD_WORKERS) {
+    passwordRunning += 1;
+    return;
+  }
+  if (passwordWaiting.length >= PASSWORD_QUEUE) {
+    throw new PasswordBusyError();
+  }
+  // The slot is handed over by releasePasswordSlot, already counted.
+  await new Promise<void>((resolve) => passwordWaiting.push(resolve));
+}
+
+function releasePasswordSlot() {
+  const next = passwordWaiting.shift();
+  if (next) {
+    next();
+  } else {
+    passwordRunning -= 1;
+  }
+}
+
+function scryptAsync(password: string, salt: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, SCRYPT_KEYLEN, (error, key) => (error ? reject(error) : resolve(key)));
+  });
+}
+
+async function boundedScrypt(password: string, salt: string): Promise<Buffer> {
+  await passwordSlot();
+  try {
+    return await scryptAsync(password, salt);
+  } finally {
+    releasePasswordSlot();
+  }
+}
+
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, SCRYPT_KEYLEN).toString("hex");
+  const hash = (await boundedScrypt(password, salt)).toString("hex");
   return `${salt}$${hash}`;
 }
 
-export function verifyPassword(password: string, stored: string) {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [salt, hash] = stored.split("$");
   if (!salt || !hash) {
     return false;
   }
-  const candidate = scryptSync(password, salt, SCRYPT_KEYLEN);
+  const candidate = await boundedScrypt(password, salt);
   const expected = Buffer.from(hash, "hex");
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+}
+
+// Unknown usernames still pay one scrypt verification against this hash so
+// response timing does not reveal whether an account exists. Made once, on
+// first use.
+let dummyHash: Promise<string> | null = null;
+export function dummyPasswordHash(): Promise<string> {
+  dummyHash ??= hashPassword("odm-dummy-password").catch((error) => {
+    dummyHash = null;
+    throw error;
+  });
+  return dummyHash;
+}
+
+// What a password route answers when the hashing queue is full.
+export function passwordBusyResponse(): Response {
+  return Response.json(
+    { error: new PasswordBusyError().message },
+    { status: 503, headers: { "Retry-After": "2" } },
+  );
 }
 
 function hashToken(token: string) {
@@ -104,7 +179,11 @@ export async function currentSessionTokenHash(): Promise<string | null> {
 
 // Returns the logged-in user, or null. Route handlers that require auth
 // should 401 on null. Accepts the browser cookie or a bearer token.
-export async function currentUser(): Promise<User | null> {
+//
+// The usage scope is opened here, before the first await, and filled in
+// once the account is known (src/lib/usage/scope.ts openUsageScope);
+// requireMember passes the one it opened.
+export async function currentUser(scope: UsageScope = openUsageScope()): Promise<User | null> {
   const token = await requestToken();
   if (!token) {
     return null;
@@ -112,8 +191,9 @@ export async function currentUser(): Promise<User | null> {
   const user = getSessionUser(hashToken(token));
   if (user) {
     // Work this request does outside any campaign (a library portrait,
-    // dictation) is the account's in the usage ledger.
-    enterUsageScope({ userId: user.id });
+    // dictation, an upload) is the account's in the usage ledger and its
+    // record of who made which file.
+    fillUsageScope(scope, { userId: user.id });
   }
   return user;
 }

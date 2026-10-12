@@ -106,6 +106,10 @@ function stillNamed(candidates: string[]): Set<string> {
     .all() as Array<{ name: string }>;
   const named = new Set<string>();
   for (const { name: table } of tables) {
+    // Who made a file (src/lib/media-access.ts) is not a use of it.
+    if (table === "media_files") {
+      continue;
+    }
     const info = db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string; type: string }>;
     for (const { name: column, type } of info) {
       if (type && !/TEXT|CHAR|CLOB|JSON/i.test(type)) {
@@ -138,10 +142,10 @@ function stillNamed(candidates: string[]): Set<string> {
 // The original plus the WebP copies written beside a picture
 // (src/lib/image-variants.ts). The shape checks pinned the path to a flat
 // name under one of two folders, so nothing here can climb out of public/.
-function removeFile(url: string) {
+export function removeFile(url: string) {
   const root = url.startsWith("/generated/") ? "generated" : "uploads";
   const name = url.slice(`/${root}/`.length);
-  const dir = path.join(process.cwd(), "public", root);
+  const dir = path.join(/*turbopackIgnore: true*/ process.cwd(), "public", root);
   const names = isUploadedPdfPath(url) ? [name] : [name, ...VARIANT_WIDTHS.map((width) => variantFileName(name, width))];
   for (const file of names) {
     try {
@@ -150,6 +154,7 @@ function removeFile(url: string) {
       console.error(`[image-files] could not remove /${root}/${file}`, error);
     }
   }
+  getDatabase().prepare(`DELETE FROM media_files WHERE path = ?`).run(url);
 }
 
 // Removes each candidate no row names any more. Call it after the rows are

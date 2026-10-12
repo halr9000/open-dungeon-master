@@ -10,7 +10,7 @@
 
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { getDmTurn } from "@/lib/db/dm-turns";
-import { getActiveEncounter, saveEncounter } from "@/lib/db/encounters";
+import { getActiveEncounter } from "@/lib/db/encounters";
 import { insertSheetAudit } from "@/lib/db/sheet-audit";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
@@ -20,7 +20,7 @@ import type { SpendAction, SpendDoes } from "@/lib/srd/authored-effects-types";
 import { canAct } from "@/lib/dm/can-act";
 import { conditionExtraActions } from "@/lib/srd/condition-effects";
 import { spendAction } from "@/lib/dm/action-budget";
-import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
+import { attacksAllowedFor, budgetFor, prepareReaction, storeBudget } from "@/lib/dm/turn-budget";
 import { resolveSpendEffect, type SpendContext } from "@/lib/dm/authored-spend-effects";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
 
@@ -76,19 +76,7 @@ function prepareCost(
     return { error: `${label} is used once a turn, and ${sheet.name} has used it this turn.` };
   }
   if (cost === "reaction") {
-    if (encounter.reactionsUsed.includes(sheet.id)) {
-      return { error: `${sheet.name} has already used their reaction; it comes back at the start of their next turn. ${label} does not happen.` };
-    }
-    return {
-      commit: () => {
-        const live = getActiveEncounter(campaign.id);
-        if (live && !live.reactionsUsed.includes(sheet.id)) {
-          live.reactionsUsed = [...live.reactionsUsed, sheet.id];
-          saveEncounter(live);
-        }
-        return { cost: "their reaction" };
-      },
-    };
+    return prepareReaction(encounter, sheet, label);
   }
   if (!cost || cost === "none") {
     return {

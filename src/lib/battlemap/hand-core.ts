@@ -1,6 +1,8 @@
 // The Hand's shared vocabulary: what a card is, what a turn is, and the
 // gates that stop a card being played. Split from hand.ts only to keep each
 // file readable; hand.ts re-exports everything a caller needs.
+import type { SpellMech } from "@/lib/srd/spell-mech-types";
+import type { SpellFacts } from "@/lib/srd/spell-facts";
 import {
   spendAction,
   spendAttack,
@@ -169,6 +171,10 @@ export type HandTurn = {
   flurryStrikes?: number;
   // This turn's action went on an attack-roll spell, so Extra Attack is gone.
   castThisAction?: boolean;
+  // What the Attack action was made with, for the off-hand swing (issue
+  // 210). Absent from a server too old to send them.
+  lightMeleeAttack?: boolean;
+  oneHandMeleeAttack?: boolean;
   // The engine's reading of the fight, so the gates ask canAct itself.
   table?: HandTable | null;
 };
@@ -200,6 +206,13 @@ export type SpellFact = {
   desc: string;
   higherLevel: string;
   concentration: boolean;
+  // A table's workshop spell: its own block (which the cast tools read before
+  // any published row), the published spell it runs as (its area, its
+  // melee touch), and its casting facts (its material and price), so its
+  // card says what the server will do.
+  mech?: SpellMech;
+  runsAs?: string;
+  facts?: SpellFacts;
 };
 
 export type HandOptions = {
@@ -332,6 +345,8 @@ export function budgetOf(turn: HandTurn, sheet: Pick<CharacterSheet, "id">, allo
     ...(turn.grantedActions ? { grantedActions: turn.grantedActions } : {}),
     ...(turn.flurryStrikes ? { flurryStrikes: turn.flurryStrikes } : {}),
     ...(turn.castThisAction ? { castThisAction: true } : {}),
+    ...(turn.lightMeleeAttack ? { lightMeleeAttack: true } : {}),
+    ...(turn.oneHandMeleeAttack ? { oneHandMeleeAttack: true } : {}),
   };
 }
 

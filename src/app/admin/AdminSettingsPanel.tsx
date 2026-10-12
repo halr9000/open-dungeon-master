@@ -11,10 +11,13 @@ import { NumberStepper } from "@/components/ui/NumberStepper";
 import { AdminInvitesSection } from "@/app/admin/AdminInvitesSection";
 import { AdminNetworkSections } from "@/app/admin/AdminNetworkSections";
 import { AdminBackupSection } from "@/app/admin/AdminBackupSection";
+import { AdminStorageSection } from "@/app/admin/AdminStorageSection";
 import { BackendProbe } from "@/app/admin/BackendProbe";
 import { AdminImagesSection } from "@/app/admin/AdminImagesSection";
 import { AdminSpeechSection } from "@/app/admin/AdminSpeechSection";
+import { AmbienceLibraryCard } from "@/app/admin/AmbienceLibraryCard";
 import { AdminHarnessSection } from "@/app/admin/AdminHarnessSection";
+import { mergeAdminConfigDraft } from "@/app/admin/merge-config-draft";
 import {
   Field,
   SECRET_KEPT,
@@ -34,9 +37,11 @@ const STOPS: Array<{ id: string; label: string; glyph: string; server?: boolean 
   { id: "admin-utility", label: "Utility model", glyph: "tab-log" },
   { id: "admin-images", label: "Images", glyph: "sense-truesight" },
   { id: "admin-speech", label: "Speech", glyph: "tab-ambience" },
+  { id: "admin-ambience", label: "Sound library", glyph: "cue-tavern" },
   { id: "admin-voice", label: "Voice chat", glyph: "cue-horn", server: true },
   { id: "admin-discord", label: "Discord", glyph: "system-share", server: true },
   { id: "admin-backup", label: "Backup", glyph: "tab-handout", server: true },
+  { id: "admin-storage", label: "Storage", glyph: "tab-journal" },
 ];
 
 function jumpTo(id: string) {
@@ -134,6 +139,7 @@ export function AdminSettingsPanel() {
             defaultBackend: config.images.defaultBackend,
             comfyUrl: config.images.comfyUrl,
             comfyCheckpoint: config.images.comfyCheckpoint,
+            comfyWorkflowPreset: config.images.comfyWorkflowPreset,
             fluxWorkerUrl: config.images.fluxWorkerUrl,
             openaiBaseUrl: config.images.openaiBaseUrl,
             openaiModel: config.images.openaiModel,
@@ -395,7 +401,13 @@ export function AdminSettingsPanel() {
       </PageSection>
 
       {phoneWorld ? null : (
-        <AdminHarnessSection textProvider={config.text.provider} imagesBackend={config.images.defaultBackend} onConfig={setConfig} />
+        <AdminHarnessSection
+          textProvider={config.text.provider}
+          imagesBackend={config.images.defaultBackend}
+          onConfig={(patch) =>
+            setConfig((current) => (current ? mergeAdminConfigDraft(current, patch) : current))
+          }
+        />
       )}
 
       <PageSection id="admin-utility" heading="Utility model (optional)" glyph="tab-log">
@@ -485,6 +497,8 @@ export function AdminSettingsPanel() {
         onFalKey={setFalTtsKey}
       />
 
+      <AmbienceLibraryCard />
+
       {deviceWorld ? null : (
         <AdminNetworkSections
           config={config}
@@ -501,6 +515,10 @@ export function AdminSettingsPanel() {
           <AdminBackupSection />
         </PageSection>
       )}
+
+      <PageSection id="admin-storage" heading="Storage" glyph="tab-journal">
+        <AdminStorageSection />
+      </PageSection>
 
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" onClick={save} disabled={saving} aria-busy={saving} className={ui.btnPrimary}>

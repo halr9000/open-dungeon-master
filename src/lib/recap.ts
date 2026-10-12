@@ -1,11 +1,11 @@
-// The first paragraph of a passage, trimmed at a sentence when it runs
-// long, with the Markdown emphasis the DM sometimes writes in stripped
-// away. Pure, so both the title screen's glance (server) and the table's
-// chronicle scroll (browser) can share it.
+// A passage as plain prose, with the Markdown emphasis the DM sometimes
+// writes in stripped away: every paragraph for the table's chronicle scroll
+// (browser), which shows each entry whole, and the first one trimmed at a
+// sentence for the title screen's glance (server). Pure, so both can share it.
 const RECAP_LIMIT = 360;
 
-export function clipRecap(content: string, limit = RECAP_LIMIT): string {
-  const paragraph = content
+export function recapParagraphs(content: string): string[] {
+  return content
     .replace(/\r/g, "")
     .split(/\n\s*\n/)
     .map((part) =>
@@ -17,7 +17,11 @@ export function clipRecap(content: string, limit = RECAP_LIMIT): string {
         .replace(/\s+/g, " ")
         .trim(),
     )
-    .find((part) => part.length > 0);
+    .filter((part) => part.length > 0);
+}
+
+export function clipRecap(content: string, limit = RECAP_LIMIT): string {
+  const paragraph = recapParagraphs(content)[0];
   if (!paragraph) {
     return "";
   }

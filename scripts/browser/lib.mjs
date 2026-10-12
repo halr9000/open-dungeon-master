@@ -1,0 +1,279 @@
+// What every browser scenario leans on: a built server on a throwaway
+// database, a Chromium the scenarios drive, a signed-in session, and the
+// same scenario run either against the server's own pages or against the
+// app's native screens (the client's mobile shell, which compiles those
+// pages with Preact). See run.mjs for how a run is put together.
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import http from "node:http";
+import net from "node:net";
+import path from "node:path";
+
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+async function waitFor(url, { timeoutMs, label }) {
+  const started = Date.now();
+  let last = "";
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+      last = `status ${response.status}`;
+    } catch (error) {
+      last = error.message;
+    }
+    await sleep(500);
+  }
+  throw new Error(`${label} did not answer within ${timeoutMs / 1000}s (${last})`);
+}
+
+// The production server (`next start`) on the built tree, against the seeded
+// database. The build must exist already: CI builds before it runs this.
+export async function startServer({ tree, dbPath, key, port, log }) {
+  const nextBin = path.join(tree, "node_modules", "next", "dist", "bin", "next");
+  const env = {
+    ...process.env,
+    NODE_ENV: "production",
+    SQLITE_DB_PATH: dbPath,
+    DB_ENCRYPTION_KEY: key,
+    APP_PUBLIC_URL: `http://127.0.0.1:${port}`,
+    VOICE_ENABLED: "false",
+    // No model, no pictures, no speech: the scenarios look at the pages, not
+    // at a storyteller. A table whose action would call one gets the same
+    // "not configured" the UI already handles.
+    DEFAULT_TEXT_PROVIDER: "",
+    OPENAI_API_KEY: "",
+  };
+  const out = fs.openSync(log, "a");
+  const child = spawn(process.execPath, [nextBin, "start", "-H", "127.0.0.1", "-p", String(port)], {
+    cwd: tree,
+    env,
+    stdio: ["ignore", out, out],
+  });
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitFor(`${base}/api/auth/providers`, { timeoutMs: 90_000, label: "the server" });
+  } catch (error) {
+    child.kill("SIGKILL");
+    throw error;
+  }
+  return {
+    base,
+    stop: () =>
+      new Promise((resolve) => {
+        child.once("exit", () => resolve());
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      }),
+  };
+}
+
+// The app's shell as plain web files (client mobile/www), served the way
+// the rigs in look-at-the-client-apps serve it. A path outside the folder
+// is refused; everything is served as-is with a guessed content type.
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp", ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".wasm": "application/wasm", ".ogg": "audio/ogg", ".mp3": "audio/mpeg" };
+export async function serveFolder(folder, port) {
+  const root = path.resolve(folder);
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, "http://localhost");
+    let file = path.resolve(root, `.${decodeURIComponent(url.pathname)}`);
+    if (!file.startsWith(root)) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, "index.html");
+    if (!fs.existsSync(file)) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" });
+    fs.createReadStream(file).pipe(response);
+  });
+  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+  return { base: `http://127.0.0.1:${port}`, stop: () => new Promise((resolve) => server.close(() => resolve())) };
+}
+
+export async function launchBrowser({ app }) {
+  const { chromium } = await import("playwright-core");
+  const executablePath = process.env.ODM_BROWSER || chromium.executablePath();
+  if (!fs.existsSync(executablePath)) {
+    throw new Error(
+      `No Chromium at ${executablePath}. Run \`npx playwright-core install chromium\` once (or point ODM_BROWSER at a Chrome).`,
+    );
+  }
+  return chromium.launch({
+    executablePath,
+    args: [
+      "--no-sandbox",
+      // The app's screens call the host from another origin, as the real
+      // apps do from their own origin; the shell's own CORS story is the
+      // apps' to prove, not this harness's.
+      ...(app ? ["--disable-web-security", "--disable-features=BlockInsecurePrivateNetworkRequests"] : []),
+    ],
+  });
+}
+
+export const VIEWPORTS = {
+  desktop: { width: 1920, height: 1080, touch: false },
+  laptop: { width: 1366, height: 768, touch: false },
+  phone: { width: 412, height: 892, touch: true },
+};
+
+export async function newContext(browser, viewport, { app }) {
+  const size = VIEWPORTS[viewport];
+  const context = await browser.newContext({
+    viewport: { width: size.width, height: size.height },
+    colorScheme: "dark",
+    hasTouch: size.touch,
+    isMobile: size.touch && app,
+    reducedMotion: "no-preference",
+  });
+  return context;
+}
+
+// Signs the server's own session in: a cookie the pages then carry.
+export async function signIn(context, base, username, password) {
+  const response = await context.request.post(`${base}/api/auth/login`, { data: { username, password } });
+  if (!response.ok()) {
+    throw new Error(`sign-in as ${username} answered ${response.status()}`);
+  }
+}
+
+// Closes whatever greets a page: the welcome tour, a "got it", a dialog.
+export async function settle(page) {
+  for (let index = 0; index < 3; index += 1) {
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(150);
+  }
+  const gotIt = page.getByRole("button", { name: /got it/i });
+  if (await gotIt.count()) await gotIt.first().click({ timeout: 2_000 }).catch(() => {});
+}
+
+// Everything a scenario sees of its page, in one object, so a scenario reads
+// the same whether it is on the server's page or the app's screen:
+// `root` prefixes every selector (the app confines the game to .game-root),
+// `open(path)` lands on a page, `fails` collects what went wrong behind the
+// scenes (a page error, a refused API call) for the health checks.
+export function pageHarness({ page, base, ids, app, viewport, outDir, tag, api }) {
+  const fails = [];
+  page.on("pageerror", (error) => fails.push(`pageerror: ${String(error).slice(0, 300)}`));
+  page.on("response", (response) => {
+    const url = response.url();
+    if (url.startsWith(base) && url.includes("/api/") && response.status() >= 500) {
+      fails.push(`status ${response.status()} ${url.slice(base.length)}`);
+    }
+  });
+  const root = app ? ".game-root " : "";
+  const touch = VIEWPORTS[viewport].touch;
+  return {
+    page,
+    base,
+    ids,
+    app,
+    viewport,
+    root,
+    fails,
+    touch,
+    // The lead's own API session (a cookie), apart from the page's: the
+    // app's screens carry a bearer token the page's request client lacks.
+    api,
+    tap: (locator) => (touch && app ? locator.tap() : locator.click()),
+    shot: (name) => page.screenshot({ path: path.join(outDir, `${tag}-${name}.png`), fullPage: false }).catch(() => {}),
+    // On the server, a URL; in the app, the shell's own navigation (the
+    // runner has already signed in and entered the host).
+    open: async (route) => {
+      if (!app) {
+        await page.goto(`${base}${route}`, { waitUntil: "networkidle", timeout: 120_000 });
+        await sleep(1_500);
+        await settle(page);
+        return;
+      }
+      await appNavigate(page, route, ids, touch);
+    },
+  };
+}
+
+// The app's native screens: add the host, sign in, press Enter, then walk
+// to a route by the shell's own links (the previous rigs did this by hand).
+export async function enterApp(page, shellBase, host, ids, touch) {
+  const tap = (locator) => (touch ? locator.tap() : locator.click());
+  await page.goto(`${shellBase}/index.html`, { waitUntil: "networkidle", timeout: 120_000 });
+  await sleep(2_000);
+  await page.keyboard.press("Escape");
+  const close = page.locator('[aria-label*="lose" i]').first();
+  if (await close.count()) await close.click({ timeout: 2_000 }).catch(() => {});
+  await tap(page.getByRole("button", { name: /add a server/i }).first());
+  await sleep(800);
+  await page.locator('input[type="text"]').first().fill(host);
+  await tap(page.getByRole("button", { name: /^continue$/i }));
+  await sleep(3_000);
+  await page.locator('input[type="text"]').last().fill(ids.lead);
+  await page.locator('input[type="password"]').first().fill(ids.password);
+  await tap(page.getByRole("button", { name: /^sign in$/i }).last());
+  await sleep(4_000);
+  await tap(page.getByRole("button", { name: /^enter$/i }).first());
+  await page.waitForSelector(".game-root", { timeout: 60_000 });
+  await sleep(2_000);
+  await settle(page);
+}
+
+async function appNavigate(page, route, ids, touch) {
+  const tap = (locator) => (touch ? locator.tap() : locator.click());
+  // A campaign opens from its tile on the app's home, the way a player opens
+  // it; anything else goes through a link the game's root intercepts and
+  // pushes on the shell's router (client src/renderer/game/index.tsx).
+  const campaign = route.match(/^\/campaigns\/([^/?]+)/)?.[1];
+  if (campaign) {
+    const title = campaign === ids.campaignId ? ids.title : ids.lobbyTitle;
+    const tile = page.locator(".game-root a, .game-root button").filter({ hasText: new RegExp(title, "i") }).first();
+    await tile.waitFor({ state: "visible", timeout: 30_000 });
+    await tap(tile);
+  } else {
+    await page.evaluate((target) => {
+      const root = document.querySelector(".game-root");
+      if (!root) throw new Error("the app's game root is not mounted");
+      const anchor = document.createElement("a");
+      anchor.href = target;
+      anchor.textContent = "go";
+      root.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    }, route);
+  }
+  await sleep(4_000);
+  await settle(page);
+}
+
+// A plain assertion that names what it looked at, for a readable report.
+export function check(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+export async function eventually(fn, { timeoutMs = 15_000, every = 250, label = "condition" } = {}) {
+  const started = Date.now();
+  let last;
+  while (Date.now() - started < timeoutMs) {
+    try {
+      last = await fn();
+      if (last) return last;
+    } catch (error) {
+      last = error;
+    }
+    await sleep(every);
+  }
+  throw new Error(`${label} did not hold within ${timeoutMs / 1000}s${last instanceof Error ? `: ${last.message}` : ""}`);
+}

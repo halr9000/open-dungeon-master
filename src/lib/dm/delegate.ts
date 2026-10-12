@@ -7,6 +7,9 @@ import {
 } from "@/lib/db/encounters";
 import { getBattleMapForEncounter } from "@/lib/db/battle-maps";
 import { getTokenByRef } from "@/lib/db/battle-maps";
+import type { BattleToken } from "@/lib/battlemap/types";
+import { tilesApart } from "@/lib/dm/board-reach";
+
 import { getCampaignMessage, insertCampaignMessage, setMessageVariants } from "@/lib/db/messages";
 import { listSheets } from "@/lib/db/sheets";
 import { effectiveAcFor } from "@/lib/srd";
@@ -26,6 +29,8 @@ import {
   type MonsterDecision,
 } from "@/lib/dm/delegation";
 import { enqueueNarrationAudio } from "@/lib/tts";
+import { mergeLines } from "@/lib/dm/speech";
+import { modelLines } from "@/lib/dm/speech-lines";
 import { extractStoryText, stripReasoningArtifacts } from "@/lib/story-prompt";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 
@@ -57,11 +62,13 @@ export type MonsterTurnOutcome = {
 const MONSTER_SYSTEM =
   'You play one monster\'s turn in a Dungeons & Dragons 5th Edition fight. You are given its stat block, its condition, and every player character it can see with their hit points and armour class. Choose exactly ONE thing for it to do and answer with STRICT JSON only, no code fences, shaped: {"action": "enemy_attack" | "set_enemy_condition" | "enemy_flees" | "hold", "targetCharacterId": string, "attack": string, "why": string}. Prefer enemy_attack and name the target by the id given to you; "attack" is the name of one attack from the stat block, or "" to let the server pick. Use enemy_flees only for a beast or a coward that is badly hurt and has a reason to run. Use hold only when there is genuinely nothing it can do. Play the monster as its stat block and nature suggest: a wolf pack flanks, an archer stays back, a brute hits whoever is closest. Never invent an attack, a spell or a target that is not listed. "why" is one short clause.';
 
-// Feet between two grid squares, the same Chebyshev measure the battle map
-// itself uses, so the model is told the distance the engine will check.
-function feetBetween(a: { x: number; y: number }, b: { x: number; y: number }): number {
-  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y)) * 5;
+// Feet between two tokens, the same nearest-square measure the engine checks
+// (src/lib/dm/board-reach.ts), so the model is told the distance its attack
+// will be judged by.
+function feetBetween(a: BattleToken, b: BattleToken): number {
+  return tilesApart(a, b) * 5;
 }
+
 
 function describeEnemy(enemy: EncounterEnemy): string {
   const attacks = enemy.stats.attacks?.map((attack) => attack.name).filter(Boolean) ?? [];
@@ -229,6 +236,7 @@ export async function playMonsterTurns(campaign: Campaign): Promise<MonsterTurnO
       campaignId: campaign.id,
       seq,
       authorType: "system",
+      glyph: "cue-battle",
       content: `The monsters act: ${notes.join(" ")}`,
     });
     publishWithSeq(campaign.id, seq, "message_added", { message });
@@ -341,6 +349,7 @@ export async function expandBeat(
   if (!narration) {
     return { error: "The model returned nothing; the beat stands as you wrote it." };
   }
+  const spoken = await modelLines(campaign, narration, `expand ${messageId}`);
 
   // Re-read after the call: the DM may have edited the beat while the model
   // was working.
@@ -352,7 +361,7 @@ export async function expandBeat(
   if (appended.capped) {
     return { error: `That is all ${MAX_VARIANTS} takes; pick one.` };
   }
-  const updated = setMessageVariants(messageId, appended.variants, appended.index);
+  const updated = setMessageVariants(messageId, appended.variants, appended.index, mergeLines(current.speech, spoken));
   if (!updated) {
     return { error: "Could not store the spoken take." };
   }
@@ -362,6 +371,7 @@ export async function expandBeat(
       campaign.id,
       updated.id,
       updated.content,
+      updated.speech,
       campaign.gameSettings,
       updated.speaker ?? null,
     );

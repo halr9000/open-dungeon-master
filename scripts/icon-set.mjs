@@ -176,6 +176,7 @@ const GLYPHS = {
     ["factions", "Factions", "a heraldic flag"], ["bestiary", "Bestiary", "a horned skull over a book"], ["homebrew", "Homebrew", "a bubbling alchemist's flask"],
     ["lore", "Lore", "an open tome with a glowing page"], ["tables", "Tables", "a die over a scroll"], ["rules", "Rules", "balanced scales on a book"],
     ["plugin", "Plugin", "a puzzle piece with a glow"], ["share", "Share", "a sealed bundle with a ribbon"], ["rulesets", "Rulesets", "a stack of rule books"],
+    ["world", "WorldForge", "a small glowing world sphere resting on a blacksmith's anvil, sparks rising from it"],
   ],
 };
 
@@ -376,8 +377,11 @@ export async function buildIconList() {
 
   // Ambience cues, for the DM's sound picker and the scene bar.
   const catalog = readFileSync(path.join(ROOT, "src/lib/ambience/catalog.ts"), "utf8");
-  for (const m of catalog.matchAll(/id: "([a-z-]+)",\s*layer: "([a-z]+)",\s*label: "([^"]+)"/g)) {
-    const [, id, layer, label] = m;
+  // Ids with an underscore (deep_forest, door_slam) are painted under the
+  // hyphenated name GameIcon asks for.
+  for (const m of catalog.matchAll(/id: "([a-z_-]+)",\s*layer: "([a-z]+)",\s*label: "([^"]+)"/g)) {
+    const [, rawId, layer, label] = m;
+    const id = rawId.replace(/_/g, "-");
     const what = layer === "sting" ? `the sound of ${label.toLowerCase()}, a single dramatic moment` : `${label.toLowerCase()}, a place or a mood`;
     list.push(entry("glyph", `cue-${id}`, label, `a symbolic icon evoking ${what}, painted in muted tones`, { layer }));
   }

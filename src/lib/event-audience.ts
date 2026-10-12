@@ -108,6 +108,9 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   quests_updated: TABLE,
   lore_updated: TABLE,
   factions_updated: TABLE,
+  // The table's WorldForge changed (src/lib/worldforge/model.ts). The ping
+  // carries nothing, but the document is the DM's, so only DM seats refetch.
+  world_updated: { kind: "dm", right: "secretStory" },
   pins_updated: TABLE,
   npc_updated: TABLE,
   location_updated: TABLE,
@@ -150,6 +153,9 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   // Presence and the heartbeat are not game events, but they pass the same door.
   presence: TABLE,
   ping: TABLE,
+  // The stream's own word to a page too far behind to replay: reload the
+  // snapshot (planReplay, src/lib/events.ts). Carries only a seq.
+  resync: TABLE,
 };
 
 // The audience of a type, or null for one the table never declared: such an

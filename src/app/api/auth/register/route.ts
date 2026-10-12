@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { hashPassword, startSession } from "@/lib/auth";
+import { PasswordBusyError, hashPassword, passwordBusyResponse, startSession } from "@/lib/auth";
 import { consumeAccountInvite } from "@/lib/db/account-invites";
 import { getGlobalConfig } from "@/lib/db/app-settings";
 import { campaignAdmits } from "@/lib/db/campaigns";
@@ -121,6 +121,21 @@ export async function POST(request: Request) {
       );
     }
   }
+  // Hashed here: after the rejections that cost nothing, and before the
+  // checks that must run back to back with the insert, so no await sits
+  // between seeing a username free and the row that claims it.
+  let passwordHash: string;
+  try {
+    passwordHash = await hashPassword(password);
+  } catch (error) {
+    if (error instanceof PasswordBusyError) {
+      return passwordBusyResponse();
+    }
+    throw error;
+  }
+  if (isFirstUser && countUsers() !== 0) {
+    return Response.json({ error: "This server has just been set up. Log in instead." }, { status: 409 });
+  }
   if (getUserByUsername(username)) {
     recordLoginFailure(throttle);
     return Response.json({ error: "That username is taken." }, { status: 409 });
@@ -137,7 +152,6 @@ export async function POST(request: Request) {
     }
   }
 
-  const passwordHash = hashPassword(password);
   const user = claimsServer
     ? claimFirstAdmin(username, passwordHash, setupCode)
     : createUser(username, passwordHash, { isAdmin: isFirstUser });

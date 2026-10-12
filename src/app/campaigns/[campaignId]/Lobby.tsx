@@ -3,14 +3,12 @@
 import Link from "next/link";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
 import { ArrowLeft } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { roomCodeRefused } from "@/lib/shell-host";
 import { useShellShare } from "@/lib/use-shell-share";
 import { ScheduleSection } from "@/components/ScheduleSection";
 import { ui } from "@/lib/ui";
-import { CompanionBuilderDialog } from "@/app/campaigns/[campaignId]/CompanionBuilderDialog";
-import { EditCampaignDialog } from "@/app/campaigns/[campaignId]/EditCampaignDialog";
 import { GameSettingsPanel } from "@/app/campaigns/[campaignId]/GameSettingsPanel";
 import { LobbyActions } from "@/app/campaigns/[campaignId]/LobbyActions";
 import { LobbyParty } from "@/app/campaigns/[campaignId]/LobbyParty";
@@ -30,6 +28,16 @@ import {
 import type { CampaignState } from "@/app/campaigns/[campaignId]/useCampaignStream";
 import { navigateTo } from "@/lib/navigation";
 import { SceneBackdrop } from "@/app/campaigns/[campaignId]/CinematicParts";
+
+// The companion builder carries the whole character builder (spells,
+// gear, the portrait cropper); it and the campaign editor load when they
+// are opened, not with the lobby.
+const CompanionBuilderDialog = lazy(() =>
+  import("@/app/campaigns/[campaignId]/CompanionBuilderDialog").then((module) => ({ default: module.CompanionBuilderDialog })),
+);
+const EditCampaignDialog = lazy(() =>
+  import("@/app/campaigns/[campaignId]/EditCampaignDialog").then((module) => ({ default: module.EditCampaignDialog })),
+);
 
 // The lobby: where the table gathers before the adventure opens. On a desktop
 // it is a table with two sides: the campaign, its party and this viewer's
@@ -91,7 +99,28 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
   }
 
   const myMember = members.find((member) => member.userId === me.id);
-  const mySheet = sheets.find((sheet) => sheet.userId === me.id);
+  const mySheet = sheets.find((sheet) => sheet.id === state.activeSheetId && sheet.userId === me.id)
+    ?? sheets.find((sheet) => sheet.userId === me.id && !sheet.isCompanion);
+  const mySheets = sheets.filter((sheet) => sheet.userId === me.id && !sheet.isCompanion);
+  async function selectCharacter(characterId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/campaigns/${campaign!.id}/sheet/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ characterId }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        setError(result.error || "Could not select the character.");
+      } else refresh();
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusy(false);
+    }
+  }
   // The DM runs no character, so every "create your character" prompt below
   // has to know that. The seat is on the campaign row; the mode alone is not
   // enough, because an assisted campaign can still be AI-narrated.
@@ -370,6 +399,18 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
           ) : null}
 
           <div className="lobby-enter order-4 mb-8" style={enter(3)}>
+            {campaign.gameSettings.multiCharacter !== "off" && mySheets.length > 1 ? (
+              <div className="mb-3 flex flex-wrap justify-center gap-2" aria-label="Your characters">
+                {mySheets.map((sheet) => (
+                  <button key={sheet.id} type="button" disabled={busy}
+                    aria-pressed={mySheet?.id === sheet.id}
+                    onClick={() => void selectCharacter(sheet.id)}
+                    className={cn(ui.btnSecondary, "px-3 py-1 text-xs", mySheet?.id === sheet.id && "border-amber-400 text-amber-200")}>
+                    {sheet.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <LobbyActions
               campaign={campaign}
               myMember={myMember}
@@ -493,6 +534,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
         </div>
       </div>
 
+      <Suspense fallback={null}>
       {editing ? (
         <EditCampaignDialog campaign={campaign} onClose={() => setEditing(false)} />
       ) : null}
@@ -506,6 +548,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
           onClose={() => setBuildingCompanion(false)}
         />
       ) : null}
+      </Suspense>
     </main>
   );
 }

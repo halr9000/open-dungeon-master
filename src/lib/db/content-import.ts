@@ -1,4 +1,8 @@
 import { getDatabase, parseJson } from "@/lib/db/core";
+import { byName } from "@/lib/language/text-logic";
+import { resolveMonster } from "@/lib/bestiary";
+import { tableAuthors } from "@/lib/db/homebrew";
+import { rosterMonsters } from "@/lib/db/workshop-bundle-shelf";
 import { getCampaignById, updateGameSettings, type Campaign } from "@/lib/db/campaigns";
 import { embedPendingLore } from "@/lib/db/lore";
 import { listBeats } from "@/lib/db/workshop-beats";
@@ -21,6 +25,9 @@ import {
   type RowKind,
 } from "@/lib/db/content-copy";
 import { getCommonWorkshop } from "@/lib/db/workshop-common";
+import { hasWorldDoc } from "@/lib/db/world-forge";
+import { copyWorldDoc } from "@/lib/db/world-forge-io";
+import { normalizeStock } from "@/lib/db/shops";
 import {
   IMPORT_KINDS,
   LINK_KINDS,
@@ -83,7 +90,7 @@ export function readImportSource(sourceId: string): ImportSource {
   // which are user-scoped and do not travel (src/lib/workshop/import.ts),
   // and the map the fight is drawn on, for the same reason as a place's.
   source.encounters = allRows(
-    `SELECT id, name, enemies_json, map_json FROM encounter_templates WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`,
+    `SELECT id, name, enemies_json, map_json FROM encounter_templates WHERE campaign_id = ?`,
     sourceId,
   ).map((row) => {
     const mapId = parseJson<{ mapId?: unknown }>(String(row.map_json ?? ""), {}).mapId;
@@ -95,19 +102,23 @@ export function readImportSource(sourceId: string): ImportSource {
       ),
       ...(typeof mapId === "string" && mapId ? { mapId } : {}),
     };
-  });
-  source.tables = allRows(
-    `SELECT id, name FROM roll_tables WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`,
+  }).sort(byName);
+  source.tables = (allRows(`SELECT id, name FROM roll_tables WHERE campaign_id = ?`, sourceId) as ImportSource["tables"]).sort(byName);
+  source.npcs = (allRows(`SELECT id, name FROM npcs WHERE campaign_id = ?`, sourceId) as ImportSource["npcs"]).sort(byName);
+  source.maps = (allRows(`SELECT id, name FROM prepared_maps WHERE campaign_id = ?`, sourceId) as ImportSource["maps"]).sort(byName);
+  // A shop's place and keeper ride along so the planner can say which
+  // shops would arrive unplaced or unkept, and its shelf's size for the
+  // preview (#171). The shelf counted is the one a copy starts with.
+  source.shops = allRows(
+    `SELECT id, name, location_id, keeper_npc_id, stock_json, prepared_stock_json FROM shops WHERE campaign_id = ?`,
     sourceId,
-  ) as ImportSource["tables"];
-  source.npcs = allRows(
-    `SELECT id, name FROM npcs WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`,
-    sourceId,
-  ) as ImportSource["npcs"];
-  source.maps = allRows(
-    `SELECT id, name FROM prepared_maps WHERE campaign_id = ? ORDER BY name COLLATE NOCASE`,
-    sourceId,
-  ) as ImportSource["maps"];
+  ).map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    ...(row.location_id ? { placeId: String(row.location_id) } : {}),
+    ...(row.keeper_npc_id ? { keeperId: String(row.keeper_npc_id) } : {}),
+    lines: normalizeStock(parseJson(String(row.prepared_stock_json || row.stock_json || "[]"), [])).length,
+  })).sort(byName);
 
   const beats = allRows(
     `SELECT COUNT(*) AS n FROM workshop_beats WHERE campaign_id = ?`,
@@ -128,6 +139,8 @@ export function readImportSource(sourceId: string): ImportSource {
   const houseRules = getHouseRulesText(sourceId);
   source.houseRules = houseRules.trim() ? [{ id: sourceId, name: "House rules" }] : [];
 
+  source.world = hasWorldDoc(sourceId) ? [{ id: sourceId, name: "WorldForge" }] : [];
+
   return source;
 }
 
@@ -142,6 +155,7 @@ export function readTargetExisting(campaignId: string): ImportExisting {
   existing.tables = names(`SELECT name FROM roll_tables WHERE campaign_id = ?`);
   existing.npcs = names(`SELECT name FROM npcs WHERE campaign_id = ?`);
   existing.maps = names(`SELECT name FROM prepared_maps WHERE campaign_id = ?`);
+  existing.shops = names(`SELECT name FROM shops WHERE campaign_id = ?`);
   // A board is compiled rather than copied, so there is no name to collide
   // on. What matters at the target is whether an arc already exists, which
   // planImport is told separately.
@@ -153,10 +167,11 @@ export function readTargetExisting(campaignId: string): ImportExisting {
     ? ["Region map"]
     : [];
   existing.houseRules = getHouseRulesText(campaignId).trim() ? ["House rules"] : [];
+  existing.world = hasWorldDoc(campaignId) ? ["WorldForge"] : [];
   return existing;
 }
 
-const ROW_KIND_SET = new Set<string>(["maps", "locations", "lore", "tables", "encounters", "npcs"]);
+const ROW_KIND_SET = new Set<string>(["maps", "locations", "lore", "tables", "encounters", "npcs", "shops"]);
 
 // Live copies at the target of the source's rows, per import kind, for the
 // planner's "already here" (src/lib/db/content-origins.ts).
@@ -307,6 +322,8 @@ export function runContentImport(input: {
   // rewritten through this map rather than carried across verbatim.
   const idMap: ImportIdMap = new Map();
   const counts = { copied: 0, kept: 0, unbound: 0 };
+  // Links changed here and in the copied world (world-link-merge.ts).
+  let worldConflicts: string[] = [];
   const finalNames = new Map<string, string>(
     plan.items.map((item) => [`${item.kind}:${item.sourceId}`, item.finalName]),
   );
@@ -315,7 +332,7 @@ export function runContentImport(input: {
   const taken = new Map<RowKind, Set<string>>();
   const takenFor = (kind: RowKind) => {
     const label = kind === "lore" ? "title" : "name";
-    const table = { maps: "prepared_maps", locations: "locations", lore: "lore_entries", tables: "roll_tables", encounters: "encounter_templates", npcs: "npcs" }[kind];
+    const table = { maps: "prepared_maps", locations: "locations", lore: "lore_entries", tables: "roll_tables", encounters: "encounter_templates", npcs: "npcs", shops: "shops" }[kind];
     let set = taken.get(kind);
     if (!set) {
       set = new Set(allRows(`SELECT ${label} AS name FROM ${table} WHERE campaign_id = ?`, campaignId).map((row) => String(row.name).trim().toLowerCase()));
@@ -393,6 +410,11 @@ export function runContentImport(input: {
       copyFactions(main);
       copyKind(main, "npcs");
     }
+    // After the places and the cast, so a shop finds its place and keeper
+    // when they travel with it (#171).
+    if (selected.has("shops")) {
+      copyKind(main, "shops");
+    }
     // The storyboard is the one kind that is COMPILED rather than copied:
     // one board becomes lore entries, quests, prepared encounters, DM-only
     // notes and a story arc (src/lib/workshop/board-compile.ts).
@@ -432,13 +454,54 @@ export function runContentImport(input: {
     updateGameSettings(campaignId, { variantRules: source.gameSettings.variantRules });
   }
 
+  if (selected.has("world") && hasWorldDoc(sourceId)) {
+    // After the records, so every ref can be rewritten to the copy that
+    // travelled (or an earlier import brought).
+    const kinds = { npc: "npcs", location: "locations", faction: "factions", lore: "lore" } as const;
+    const world = copyWorldDoc(sourceId, campaignId, (shelf, id) => main.resolve(kinds[shelf], id));
+    counts.copied += world.count;
+    worldConflicts = world.conflicts;
+  }
+
   if (selected.has("lore") || storyboard) {
     void embedPendingLore(campaignId).catch(() => {
       // A missing vector only means keyword fallback for that entry.
     });
   }
 
-  return { plan, copied: counts.copied, idMap, kept: counts.kept, unbound: counts.unbound, beatsAdded };
+  // A Cast member's stat block or a fight's monster that nothing at this
+  // table answers to: the source table's homebrew is its authors', not this
+  // table's (src/lib/content/scope.ts), so name what will not resolve here.
+  const unresolved = unresolvedMonsters(campaignId);
+  return {
+    plan,
+    copied: counts.copied,
+    idMap,
+    kept: counts.kept,
+    unbound: counts.unbound,
+    beatsAdded,
+    ...(worldConflicts.length ? { worldConflicts } : {}),
+    ...(unresolved.length ? { unresolved } : {}),
+  };
 }
 
 export { IMPORT_KINDS };
+
+// The monster names this table's Cast and prepared fights use that resolve
+// to nothing here: not a published creature, not a monster any of the
+// table's authors keeps.
+export function unresolvedMonsters(campaignId: string): string[] {
+  const campaign = getCampaignById(campaignId);
+  if (!campaign) {
+    return [];
+  }
+  const db = getDatabase();
+  const npcRefs = (db.prepare(`SELECT stat_block FROM npcs WHERE campaign_id = ? AND stat_block <> ''`).all(campaignId) as Array<{ stat_block: string }>).map((row) => row.stat_block);
+  const rosterRefs = (db.prepare(`SELECT enemies_json FROM encounter_templates WHERE campaign_id = ?`).all(campaignId) as Array<{ enemies_json: string }>).flatMap((row) =>
+    rosterMonsters(parseJson<unknown[]>(row.enemies_json, [])),
+  );
+  const authors = tableAuthors(campaignId);
+  return [...new Set([...npcRefs, ...rosterRefs].map((ref) => ref.trim()).filter(Boolean))].filter(
+    (ref) => !resolveMonster(ref, campaign.gameSettings, { userIds: authors }),
+  );
+}

@@ -23,8 +23,8 @@ declare global {
     odm?: {
       deviceClass?: "low" | "standard";
       haptic?: (kind: string) => void;
-      // The Android app opens a host document with the system viewer
-      // (docs/vtt-parity-implementation-plan.md 18.2, phase 21).
+      // The apps open a host document with the system viewer, fetched with
+      // the session (docs/vtt-parity-implementation-plan.md 18.2, phase 21).
       openDocument?: (path: string) => Promise<boolean>;
     };
   }

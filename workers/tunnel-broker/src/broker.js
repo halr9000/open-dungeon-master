@@ -64,9 +64,20 @@ async function cfApi(env, method, path, body) {
   const data = await response.json().catch(() => null);
   if (!response.ok || !data || data.success === false) {
     const detail = data?.errors?.[0]?.message || `${response.status}`;
-    throw new Error(`Cloudflare API ${method} ${path} failed: ${detail}`);
+    const error = new Error(`Cloudflare API ${method} ${path} failed: ${detail}`);
+    error.status = response.status;
+    throw error;
   }
   return data.result;
+}
+
+// A previous cleanup attempt may have succeeded before its reply was lost.
+async function cfDelete(env, path) {
+  try {
+    await cfApi(env, "DELETE", path);
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
 }
 
 // The zone id is looked up once from the zone's name (the scoped token can
@@ -288,69 +299,97 @@ async function createSession(env, request) {
   const secret = [...crypto.getRandomValues(new Uint8Array(24))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+  const secretHash = await sha256Hex(secret);
 
   const tunnel = await cfApi(env, "POST", `/accounts/${env.ACCOUNT_ID}/cfd_tunnel`, {
     name: `odm-${code}`,
     config_src: "cloudflare",
   });
-  const tunnelToken = await cfApi(
-    env,
-    "GET",
-    `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${tunnel.id}/token`,
-  );
-  await cfApi(env, "PUT", `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${tunnel.id}/configurations`, {
-    config: {
-      ingress: [
-        { hostname, service: `http://127.0.0.1:${port}` },
-        { service: "http_status:404" },
-      ],
-    },
-  });
-  const record = await cfApi(env, "POST", `/zones/${await zoneId(env)}/dns_records`, {
-    type: "CNAME",
-    name: hostname,
-    content: `${tunnel.id}.cfargotunnel.com`,
-    proxied: true,
-  });
-
   const session = {
     tunnelId: tunnel.id,
-    dnsRecordId: record.id,
-    secretHash: await sha256Hex(secret),
+    secretHash,
     createdAt: Date.now(),
   };
   try {
-    await env.SESSIONS.put(`session:${code}`, JSON.stringify(session), {
-      expirationTtl: (MAX_AGE_MS / 1000) * 2,
+    const tunnelToken = await cfApi(
+      env,
+      "GET",
+      `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${tunnel.id}/token`,
+    );
+    await cfApi(env, "PUT", `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${tunnel.id}/configurations`, {
+      config: {
+        ingress: [
+          { hostname, service: `http://127.0.0.1:${port}` },
+          { service: "http_status:404" },
+        ],
+      },
     });
+    const record = await cfApi(env, "POST", `/zones/${await zoneId(env)}/dns_records`, {
+      type: "CNAME",
+      name: hostname,
+      content: `${tunnel.id}.cfargotunnel.com`,
+      proxied: true,
+    });
+    session.dnsRecordId = record.id;
+    // The cron is responsible for expiry. A storage TTL would eventually
+    // erase the only cleanup intent if Cloudflare stayed unavailable.
+    await env.SESSIONS.put(`session:${code}`, JSON.stringify(session));
+    return json({ code, hostname, url: `https://${hostname}`, tunnelToken, secret });
   } catch (err) {
-    // A tunnel with no record would never be purged (a storage quota
-    // running out is exactly when this happens), so it goes down with the
-    // failed request rather than living on unowned.
-    await destroySession(env, code, session).catch(() => undefined);
+    // The tunnel already exists, even if token/config/DNS setup failed.
+    // Cleanup keeps any resource that Cloudflare could not delete queued.
+    await destroySession(env, code, session).catch((cleanupError) => {
+      console.error("Failed to clean up an incomplete tunnel session", cleanupError);
+    });
     throw err;
   }
-
-  return json({ code, hostname, url: `https://${hostname}`, tunnelToken, secret });
 }
 
 async function destroySession(env, code, session) {
-  // Order matters: DNS first so the name dies even if tunnel cleanup fails.
-  const zone = await zoneId(env).catch(() => null);
-  if (zone) {
-    await cfApi(env, "DELETE", `/zones/${zone}/dns_records/${session.dnsRecordId}`).catch(
-      () => undefined,
-    );
+  const key = `session:${code}`;
+  const pending = { ...session, cleanupPending: true };
+  // Make an early DELETE retryable even if this request ends mid-cleanup.
+  let storageError;
+  try {
+    await env.SESSIONS.put(key, JSON.stringify(pending));
+  } catch (error) {
+    storageError = error;
   }
-  await cfApi(
-    env,
-    "DELETE",
-    `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${session.tunnelId}/connections`,
-  ).catch(() => undefined);
-  await cfApi(env, "DELETE", `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${session.tunnelId}`).catch(
-    () => undefined,
-  );
-  await env.SESSIONS.delete(`session:${code}`).catch(() => undefined);
+
+  let cleanupError;
+  // Order matters: DNS first so the name dies even if tunnel cleanup fails.
+  if (pending.dnsRecordId) {
+    try {
+      const zone = await zoneId(env);
+      await cfDelete(env, `/zones/${zone}/dns_records/${pending.dnsRecordId}`);
+      delete pending.dnsRecordId;
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (pending.tunnelId) {
+    await cfApi(
+      env,
+      "DELETE",
+      `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${pending.tunnelId}/connections`,
+    ).catch(() => undefined);
+    try {
+      await cfDelete(env, `/accounts/${env.ACCOUNT_ID}/cfd_tunnel/${pending.tunnelId}`);
+      delete pending.tunnelId;
+    } catch (error) {
+      cleanupError ??= error;
+    }
+  }
+
+  if (pending.dnsRecordId || pending.tunnelId) {
+    try {
+      await env.SESSIONS.put(key, JSON.stringify(pending));
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    throw cleanupError || storageError || new Error("Tunnel cleanup is incomplete.");
+  }
+  await env.SESSIONS.delete(key);
 }
 
 async function deleteSession(env, request, rawCode) {
@@ -373,8 +412,14 @@ async function purgeExpired(env) {
     const stored = await env.SESSIONS.get(key.name);
     if (!stored) continue;
     const session = JSON.parse(stored);
-    if (Date.now() - session.createdAt > MAX_AGE_MS) {
-      await destroySession(env, key.name.slice("session:".length), session);
+    if (session.cleanupPending || Date.now() - session.createdAt > MAX_AGE_MS) {
+      try {
+        await destroySession(env, key.name.slice("session:".length), session);
+      } catch (error) {
+        // The row remains queued. One Cloudflare failure must not stop the
+        // cron from cleaning up other sessions.
+        console.error("Tunnel cleanup will retry on the next cron", error);
+      }
     }
   }
 }
