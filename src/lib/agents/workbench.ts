@@ -11,6 +11,7 @@
 // restore, and raw sheet edits. Those stay in the browser.
 
 import { listAssignmentsForCharacter } from "@/lib/db/characters";
+import { WORLD_LORE_CATEGORIES, type WorldLoreCategory } from "@/lib/dm/world-lore-logic";
 import { harnessMcpUrl } from "@/lib/harness/bridge";
 import { grantSessionToken, grantUser, type AgentScope, type ConnectionGrant } from "@/lib/agents/grants";
 import type { McpToolDefinition } from "@/lib/harness/types";
@@ -22,6 +23,8 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 type Args = Record<string, unknown>;
 
+type ToolMethod = "GET" | "POST" | "PATCH" | "DELETE" | ((args: Args) => "GET" | "POST" | "PATCH" | "DELETE");
+
 type WorkbenchTool = {
   name: string;
   scope: AgentScope;
@@ -30,7 +33,8 @@ type WorkbenchTool = {
   required?: string[];
   // Extra body fields are passed through to the route, which validates them.
   open?: boolean;
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  // A function here lets one tool cover related verbs (create/patch/delete).
+  method: ToolMethod;
   path: (args: Args) => string;
   body?: (args: Args) => unknown;
   // Guard evaluated before the call, e.g. an explicit confirm.
@@ -112,6 +116,15 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     required: ["campaignId"],
     method: "GET",
     path: (a) => `/api/campaigns/${seg(a.campaignId)}/lore`,
+  },
+  {
+    name: "odm_get_facts",
+    scope: "read",
+    description: "Read a campaign's tracked fact register - what the table has established as true. Party-visible facts unless secrets: true, which needs the DM seat or story authority.",
+    properties: { ...campaignIdProp, secrets: { type: "boolean", description: "Include DM-only facts (needs the DM seat or story authority)." } },
+    required: ["campaignId"],
+    method: "GET",
+    path: (a) => `/api/campaigns/${seg(a.campaignId)}/facts${a.secrets === true ? "?secrets=1" : ""}`,
   },
   {
     name: "odm_list_characters",
@@ -248,6 +261,44 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     body: (a) => without(a, ["campaignId"]),
   },
   {
+    name: "odm_write_lore",
+    scope: "campaigns",
+    description: "Create, patch or delete a campaign lore entry (party lead / story authority; the routes enforce it). Create omits id; delete needs confirm: true and cannot be undone. Text fields only - pictures and PDF attachments need the workshop.",
+    properties: {
+      ...campaignIdProp,
+      action: { type: "string", enum: ["create", "patch", "delete"] },
+      id: { type: "string", description: "The entry id (from odm_lore). Required for patch and delete." },
+      category: { type: "string", enum: ["geography", "factions", "history", "magic", "culture", "religion", "other"] },
+      title: { type: "string", maxLength: 120 },
+      body: { type: "string", maxLength: 4000 },
+      tags: { type: "array", items: { type: "string" } },
+      visibility: { type: "string", enum: ["party", "dm"] },
+      pinned: { type: "boolean", description: "Patch only. Pinned entries skip retrieval and ride every DM prompt." },
+      confirm: { type: "boolean" },
+    },
+    required: ["campaignId", "action"],
+    method: (a) => (a.action === "create" ? "POST" : a.action === "patch" ? "PATCH" : "DELETE"),
+    path: (a) =>
+      `/api/campaigns/${seg(a.campaignId)}/lore${a.action !== "create" && typeof a.id === "string" ? `/${seg(a.id)}` : ""}`,
+    body: (a) =>
+      a.action === "delete"
+        ? undefined
+        : pick(a, a.action === "patch" ? ["category", "title", "body", "tags", "visibility", "pinned"] : ["category", "title", "body", "tags", "visibility"]),
+    check: (a) => {
+      if (a.action === "patch") {
+        return typeof a.id === "string" ? null : "Patching needs the entry id (from odm_lore).";
+      }
+      if (a.action === "delete") {
+        if (typeof a.id !== "string") return "Deleting needs the entry id (from odm_lore).";
+        return needConfirm(a);
+      }
+      if (!WORLD_LORE_CATEGORIES.includes(a.category as WorldLoreCategory) || typeof a.title !== "string" || !a.title.trim() || typeof a.body !== "string" || !a.body.trim()) {
+        return "Creating needs category, title and body.";
+      }
+      return null;
+    },
+  },
+  {
     name: "odm_get_invite",
     scope: "campaigns",
     description: "Read a campaign's invite code and link (party lead only).",
@@ -377,7 +428,7 @@ export async function workbenchCall(grant: ConnectionGrant, name: string, args: 
   let response: Response;
   try {
     response = await fetch(`${serverOrigin()}${path}`, {
-      method: tool.method,
+      method: typeof tool.method === "function" ? tool.method(args) : tool.method,
       headers: {
         Authorization: `Bearer ${grantSessionToken(grant)}`,
         Accept: "application/json",
