@@ -1,6 +1,6 @@
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 
@@ -23,17 +23,3 @@ Use a named SRD creature, an original design, or a separately licensed subject
 with recorded permission. Do not let a generic prompt such as "aberration"
 introduce a beholder or mind flayer. Inspect the rendered anatomy as well as the
 prompt, and preserve the source and edit history with each art change.
-
-## Agent skills
-
-### Issue tracker
-
-Issues and specs live as GitHub issues in this repo. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-The five canonical triage roles, label string equal to the role name. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md`.
