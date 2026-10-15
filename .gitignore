@@ -1,0 +1,9 @@
+node_modules/
+.next/
+data/
+.env*
+.admin-creds
+*.sqlite
+*.sqlite-*
+models/
+uploads/
