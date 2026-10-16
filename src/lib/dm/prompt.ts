@@ -6,7 +6,8 @@ import type { StoredRoll } from "@/lib/db/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { LEAD_NOTE_PREFIX, type CampaignMember } from "@/lib/campaign-types";
 import { heldRollUserIds } from "@/lib/dice/held-rolls";
-import { computeSheetDerived, findSkill, formatModifier, sizeForRace, speedFor, SRD_SKILLS } from "@/lib/srd";
+import { computeSheetDerived, findSkill, formatModifier, sizeForRace, speedFor } from "@/lib/srd";
+import { activeSkills } from "@/lib/content/skills";
 import { encumbranceFor } from "@/lib/srd/encumbrance";
 import { classFeatureDescription, findCustomClass } from "@/lib/classes";
 import { resourceDef } from "@/lib/srd/class-resources";
@@ -1122,7 +1123,12 @@ export const requestRollTool = {
         },
         skill: {
           type: "string",
-          enum: SRD_SKILLS.map((skill) => skill.id),
+          // Read at serialization time, not module load: the pack loader may
+          // mount after this module loads, and the enum must be the active
+          // skill set (the pack's under the SW5e pack).
+          get enum() {
+            return activeSkills().map((skill) => skill.id);
+          },
           description: "skill_check only: which skill.",
         },
         ability: {

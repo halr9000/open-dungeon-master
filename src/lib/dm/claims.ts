@@ -7,7 +7,7 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { arcTextTimeoutMs } from "@/lib/model-client";
 import { requestUtilityMessage } from "@/lib/dm/model";
 import { stripReasoningArtifacts } from "@/lib/story-prompt";
-import { SRD_SKILLS } from "@/lib/srd";
+import { activeSkills } from "@/lib/content/skills";
 import spellManifest from "@/lib/srd/manifest/spells.json";
 import {
   guardOutcomes,
@@ -93,7 +93,10 @@ export function guardGate(
   };
 }
 
-const SKILL_IDS = SRD_SKILLS.map((skill) => skill.id);
+// Read at call time, not module load: the pack loader may mount after this
+// module loads, and the active set (the pack's under the SW5e pack, the
+// bundled SRD's otherwise) is what a claim's skill ref must name.
+const skillIds = () => activeSkills().map((skill) => skill.id);
 
 // Everyone who may speak a line at this table, by the ref the reader copies:
 // the cast every seat sees (src/lib/dm/cast.ts publicCast), the party, the
@@ -170,7 +173,7 @@ export async function readClaims(
   const { message, error } = await requestUtilityMessage(
     campaign.settings,
     [
-      { role: "system", content: readerSystem(SKILL_IDS, kinds.includes("speaker"), kinds.length > 1) },
+      { role: "system", content: readerSystem(skillIds(), kinds.includes("speaker"), kinds.length > 1) },
       {
         role: "user",
         content: renderReaderInput(
@@ -204,7 +207,7 @@ export async function readClaims(
     party,
     leveledSpells: leveledSpellNames(),
     normalizeSpell: normalizeSpellName,
-    skills: new Set(SKILL_IDS),
+    skills: new Set(skillIds()),
     spent: new Map(spent.map((spend) => [spend.ref, spend.characterId])),
     speakers: named,
   });

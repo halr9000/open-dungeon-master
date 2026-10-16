@@ -29,9 +29,9 @@ import {
   computeSheetDerived,
   findClass,
   formatModifier,
-  SRD_SKILLS,
   XP_THRESHOLDS,
 } from "@/lib/srd";
+import { activeSkills } from "@/lib/content/skills";
 import { classListFor, slotTableFor } from "@/lib/srd/multiclass";
 import { weaponAttackProfile, weaponOf } from "@/lib/dm/attack-logic";
 import { matchWeapon } from "@/lib/srd/weapons";
@@ -347,13 +347,15 @@ function drawSavesAndSkills(
   }
   y -= 106;
 
-  // Skills.
-  const skillsH = SRD_SKILLS.length * 12 + 16;
+  // Skills. The active set: the pack's when a pack declares a skills table
+  // (the SW5e pack), the bundled SRD 18 otherwise.
+  const activeSkillList = activeSkills();
+  const skillsH = activeSkillList.length * 12 + 16;
   box(ctx, x, y - skillsH, w, skillsH, true);
   heading(ctx, x + 4, y - 11, "Skills");
   ry = y - 24;
   const expertise = c.proficiencies.expertise ?? [];
-  for (const skill of SRD_SKILLS) {
+  for (const skill of activeSkillList) {
     const proficient = c.proficiencies.skills.includes(skill.id) || expertise.includes(skill.id);
     checkbox(ctx, x + 5, ry, 8, proficient);
     field(ctx, x + 16, ry - 2, 20, 12, formatModifier(derived.skills[skill.id] ?? 0), { size: 8, align: TextAlignment.Center });

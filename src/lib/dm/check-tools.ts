@@ -6,7 +6,8 @@ import { insertRoll } from "@/lib/db/rolls";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { rollExpression } from "@/lib/dice";
 import { publishWithSeq } from "@/lib/events";
-import { computeSheetDerived, SRD_SKILLS } from "@/lib/srd";
+import { computeSheetDerived } from "@/lib/srd";
+import { activeSkills } from "@/lib/content/skills";
 import { dcForDifficulty, difficultyOfDc, normalizeDifficulty } from "@/lib/srd/dc";
 import { strictnessShift } from "@/lib/dm/safety-logic";
 import { resolveRollExpression, resolveSheetRef } from "@/lib/dm/rolls";
@@ -66,7 +67,12 @@ export const checkTools: ToolDef[] = [
         properties: {
           skill: {
             type: "string",
-            enum: SRD_SKILLS.map((skill) => skill.id),
+            // Read at serialization time, not module load: the pack loader
+            // may mount after this module loads, and the enum must be the
+            // active skill set (the pack's under the SW5e pack).
+            get enum() {
+              return activeSkills().map((skill) => skill.id);
+            },
             description: "Which skill everyone rolls. Give this or ability.",
           },
           ability: {
