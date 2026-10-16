@@ -12,6 +12,7 @@ import {
   spellNameMatches,
 } from "@/lib/content";
 import { getContentDb } from "@/lib/content/db";
+import { packOptionNamesFor } from "@/lib/content/option-grants";
 import { packRaceOptions, srdRaceFor } from "@/lib/content/race-options";
 import {
   mergedBackgroundOptions,
@@ -307,6 +308,12 @@ export function legalityContextFor(input: ContextInput): LegalityContext {
     featOf: (name) => featFactsFor(name, owner),
     subclassOffered: (classId, name) => subclassIsOffered(classId, name, owner),
     subclassExtras: subclassExtrasFor(owner),
+    // The option names the content pack grants a class (its option_grant
+    // rows): the write-time allowlist's provenance. Pack-wins when a pack
+    // class shares a slug with a bundled one (the SW5e fighter): the
+    // bundled tables carry no option grants, so the pack's answer is the
+    // only one there is.
+    packDeclaredOptions: (classId) => (getContentDb() ? packOptionNamesFor(classId) : []),
     rollDie: defaultRng,
   };
 }

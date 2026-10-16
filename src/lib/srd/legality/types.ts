@@ -68,6 +68,12 @@ export type LegalityContext = {
   // The subclasses the bundled tables do not carry (a pack archetype, a
   // workshop subclass), for the training their features grant.
   subclassExtras?: SubclassExtras;
+  // The option names a content pack grants to a class (its class_progression
+  // option_grant rows resolved through the options table), when one is
+  // mounted. The write-time allowlist admits a feature by that provenance —
+  // a pack-declared mechanical name survives a write where an un-SRD one is
+  // refused — and nothing else may.
+  packDeclaredOptions?: (classId: string) => string[];
   // A die for the rolled HP method: the server's own.
   rollDie: (sides: number) => number;
 };

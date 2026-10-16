@@ -602,6 +602,14 @@ export function legalizeSheet(input: CreateSheetInput, context: LegalityContext)
 
   // ---- features ----
   const bundledTraits = racialTraitsFor(race.id).length > 0;
+  // The option names the pack grants to the classes the sheet holds: the
+  // write-time allowlist's provenance. A pack not mounted (no resolver)
+  // allows nothing.
+  const packDeclared = new Set(
+    context.packDeclaredOptions
+      ? classes.flatMap((entry) => context.packDeclaredOptions!(entry.id)).map(lower)
+      : [],
+  );
   const featured = policy.trustsHeld
     ? { problems: [], features: withFreeCasts(input.features ?? [], freeCasts) }
     : judgeFeatures({
@@ -610,6 +618,7 @@ export function legalizeSheet(input: CreateSheetInput, context: LegalityContext)
         raceTraits: bundledTraits ? [] : race.traitNames,
         backgroundFeature: backgroundFeatureOf(background),
         derived: [...(racialCantrip && !casts ? [`Racial cantrip: ${racialCantrip.name}`] : []), ...freeCasts],
+        packDeclared,
         allowPlainStory: policy.plainStory,
         sameBackground: (held?.background ?? "") === input.background,
       });

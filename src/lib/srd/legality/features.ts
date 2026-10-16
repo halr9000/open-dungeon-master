@@ -103,6 +103,13 @@ export type FeatureInput = {
   backgroundFeature: string | null;
   // Story features the server itself derives (a non-caster's racial cantrip).
   derived: string[];
+  // Option names a content pack grants to one of the sheet's classes
+  // (src/lib/srd/legality/types.ts packDeclaredOptions, lowercased). A
+  // feature by such a name is the pack's own provenance and survives a
+  // write: nothing in the engines grants it yet (the picking is the
+  // level-up work), so the entry a file or a table carries is the only
+  // copy there is.
+  packDeclared?: Set<string>;
   // A file may carry boons earned at another table; they are kept when
   // their names do nothing in the engines.
   allowPlainStory: boolean;
@@ -120,7 +127,10 @@ export function judgeFeatures(input: FeatureInput): FeatureVerdict {
   for (const feature of input.sent) {
     const key = lower(feature.name);
     if (feature.source === "choice") {
-      if (isChoiceFeature(feature.name)) {
+      // A pack option the sheet's class grants is a pick the pack itself
+      // declares, the same way an SRD option is (the slot budget it picks
+      // against is the level-up work).
+      if (isChoiceFeature(feature.name) || input.packDeclared?.has(key)) {
         features.push({ name: feature.name, source: "choice" });
       }
       continue;
@@ -140,6 +150,10 @@ export function judgeFeatures(input: FeatureInput): FeatureVerdict {
       continue;
     }
     if (derived.has(key)) {
+      continue;
+    }
+    if (input.packDeclared?.has(key)) {
+      features.push({ name: feature.name, source: feature.source });
       continue;
     }
     const earned = held.get(key);
