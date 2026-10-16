@@ -1,0 +1,806 @@
+{
+ "options": [
+  {
+   "slug": "area-style",
+   "name": "Area Style",
+   "family": "fighting_style",
+   "prerequisite": null,
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "banthas-instinct",
+   "name": "Bantha's Instinct",
+   "family": "invocation",
+   "prerequisite": "Berserker 7",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "fighters-instinct",
+   "name": "Fighter's Instinct",
+   "family": "invocation",
+   "prerequisite": "Berserker",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "formation-style",
+   "name": "Formation Style",
+   "family": "fighting_style",
+   "prerequisite": null,
+   "actionEconomy": "reaction",
+   "uses": null
+  },
+  {
+   "slug": "ideal-of-the-agile",
+   "name": "Ideal of the Agile",
+   "family": "invocation",
+   "prerequisite": "Sentinel",
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "ideal-of-the-fighter",
+   "name": "Ideal of the Fighter",
+   "family": "invocation",
+   "prerequisite": "Sentinel",
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "form-of-ight",
+   "name": "Form of Ight",
+   "family": "lightsaber_form",
+   "prerequisite": null,
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "ataru-form",
+   "name": "Ataru Form",
+   "family": "lightsaber_form",
+   "prerequisite": null,
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "absorption-shield",
+   "name": "Absorption Shield",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Physical Shield",
+   "actionEconomy": "bonus",
+   "uses": "per-rest:2"
+  },
+  {
+   "slug": "accelerated-movement",
+   "name": "Accelerated Movement",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "adaptable-armor",
+   "name": "Adaptable Armor",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "advanced-power-fist",
+   "name": "Advanced Power Fist",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 11, Prototype Power Fist",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "artificially-intelligent",
+   "name": "Artificially Intelligent",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 9, Armor",
+   "actionEconomy": null,
+   "uses": "per-rest:4"
+  },
+  {
+   "slug": "bonded-plates",
+   "name": "Bonded Plates",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 5",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "collapsible-suit",
+   "name": "Collapsible Suit",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 5, Armor",
+   "actionEconomy": "action",
+   "uses": null
+  },
+  {
+   "slug": "darkvision-visor",
+   "name": "Darkvision Visor",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "enhanced-endurance",
+   "name": "Enhanced Endurance",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": "per-rest:1"
+  },
+  {
+   "slug": "electroshock-shield",
+   "name": "Electroshock Shield",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Shield Generator",
+   "actionEconomy": "reaction",
+   "uses": null
+  },
+  {
+   "slug": "flight",
+   "name": "Flight",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 9, Armor",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "grappling-harpoon",
+   "name": "Grappling Harpoon",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": "bonus",
+   "uses": "charges:1"
+  },
+  {
+   "slug": "heavy-suit",
+   "name": "Heavy Suit",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 5, Armor",
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "infiltration-suit",
+   "name": "Infiltration Suit",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": "action",
+   "uses": "per-rest:2"
+  },
+  {
+   "slug": "magnetized-shield",
+   "name": "Magnetized Shield",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Physical Shield",
+   "actionEconomy": "action",
+   "uses": null
+  },
+  {
+   "slug": "overload-shield",
+   "name": "Overload Shield",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Shield Generator",
+   "actionEconomy": "action",
+   "uses": "per-rest:2"
+  },
+  {
+   "slug": "power-fist",
+   "name": "Power Fist",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "prototype-power-fist",
+   "name": "Prototype Power Fist",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 5, Power Fist",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "reinforced-underlay",
+   "name": "Reinforced Underlay",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 5",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "resistance",
+   "name": "Resistance",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "sealed-suit",
+   "name": "Sealed Suit",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 5, Armor",
+   "actionEconomy": "bonus",
+   "uses": null
+  },
+  {
+   "slug": "sentient-armor",
+   "name": "Sentient Armor",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering) 13, Artificially Intelligent",
+   "actionEconomy": null,
+   "uses": "per-rest:@classes.engineer.levels"
+  },
+  {
+   "slug": "shield-amplifier",
+   "name": "Shield Amplifier",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Shield Generator",
+   "actionEconomy": "bonus",
+   "uses": "per-rest:2"
+  },
+  {
+   "slug": "shield-anchor",
+   "name": "Shield Anchor",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Physical Shield",
+   "actionEconomy": "action",
+   "uses": null
+  },
+  {
+   "slug": "tech-blast",
+   "name": "Tech Blast",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": null
+  },
+  {
+   "slug": "weapon-integration-armoring",
+   "name": "Weapon Integration Armoring",
+   "family": "invocation",
+   "prerequisite": "Engineer (Armormech Engineering), Armor",
+   "actionEconomy": null,
+   "uses": null
+  }
+ ],
+ "grants": [
+  {
+   "classSlug": "sentinel",
+   "archetypeSlug": null,
+   "level": 2,
+   "kind": "option_grant",
+   "name": "Lightsaber Forms",
+   "refSlug": "form-of-ight",
+   "count": 2,
+   "choices": {
+    "2": 2,
+    "3": 1
+   }
+  },
+  {
+   "classSlug": "sentinel",
+   "archetypeSlug": null,
+   "level": 2,
+   "kind": "option_grant",
+   "name": "Lightsaber Forms",
+   "refSlug": "ataru-form",
+   "count": 2,
+   "choices": {
+    "2": 2,
+    "3": 1
+   }
+  },
+  {
+   "classSlug": "berserker",
+   "archetypeSlug": null,
+   "level": 2,
+   "kind": "option_grant",
+   "name": "Berserker Instincts",
+   "refSlug": "fighters-instinct",
+   "count": 2,
+   "choices": {
+    "2": 2,
+    "7": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "berserker",
+   "archetypeSlug": null,
+   "level": 2,
+   "kind": "option_grant",
+   "name": "Berserker Instincts",
+   "refSlug": "banthas-instinct",
+   "count": 2,
+   "choices": {
+    "2": 2,
+    "7": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "fighter",
+   "archetypeSlug": null,
+   "level": 1,
+   "kind": "option_grant",
+   "name": "Choose Fighting Style",
+   "refSlug": "formation-style",
+   "count": 1,
+   "choices": null
+  },
+  {
+   "classSlug": "fighter",
+   "archetypeSlug": null,
+   "level": 1,
+   "kind": "option_grant",
+   "name": "Choose Fighting Style",
+   "refSlug": "area-style",
+   "count": 1,
+   "choices": null
+  },
+  {
+   "classSlug": "fighter",
+   "archetypeSlug": null,
+   "level": 1,
+   "kind": "option_grant",
+   "name": "Choose Fighting Style",
+   "refSlug": "berserk-style",
+   "count": 1,
+   "choices": null
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "absorption-shield",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "accelerated-movement",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "adaptable-armor",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "advanced-power-fist",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "artificially-intelligent",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "bonded-plates",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "collapsible-suit",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "darkvision-visor",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "enhanced-endurance",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "electroshock-shield",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "flight",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "grappling-harpoon",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "heavy-suit",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "infiltration-suit",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "magnetized-shield",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "overload-shield",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "power-fist",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "prototype-power-fist",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "reinforced-underlay",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "resistance",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "sealed-suit",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "sentient-armor",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "shield-amplifier",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "shield-anchor",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "tech-blast",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  },
+  {
+   "classSlug": "engineer",
+   "archetypeSlug": "armormechengineering",
+   "level": 3,
+   "kind": "option_grant",
+   "name": "Armormech Modifications",
+   "refSlug": "weapon-integration-armoring",
+   "count": null,
+   "choices": {
+    "3": 4,
+    "5": 1,
+    "9": 1,
+    "11": 1,
+    "13": 1,
+    "17": 1
+   }
+  }
+ ]
+}
