@@ -179,18 +179,26 @@ export function srdClassOptions(): ClassOption[] {
 // The content pack's class rows beside the setting catalog. A pack row for a
 // class the bundled SRD carries takes its numbers from the pack's text and
 // its secret language and one-line pitch from the bundled entry, which Open5e
-// says nothing about. Its training is the bundled entry's too, as the server
-// reads it (catalog.ts classGrantsFor): the pack's druid armor is a sentence
-// ("shields (druids will not wear armor or use shields made of metal)") that
-// the sheet refuses and the no-metal rule cannot read.
+// says nothing about. Its training is the bundled entry's too — but only
+// while the pack row leaves its proficiencies as prose for the derivation to
+// guess at (the pack's druid armor is a sentence ("shields (druids will not
+// wear armor or use shields made of metal)") that the sheet refuses and the
+// no-metal rule cannot read). A row that states its proficiencies
+// structurally (the SW5e pack) keeps them: pack-wins, matching the server's
+// reading (catalog.ts classGrantsFor).
 export function packClassOptions(rows: ContentRow[]): ClassOption[] {
   const packOptions: ClassOption[] = rows.map((row) => {
     const bundled = SRD_CLASSES.find((klass) => klass.id === row.slug);
+    // A structured row writes its proficiencies as arrays of short codes;
+    // a v1 prose row leaves prof_armor undefined for the derivation to
+    // expand out of the prose.
+    const structured =
+      row.data?.prof_armor !== undefined || row.data?.prof_weapons !== undefined;
     return {
       id: row.slug,
       name: row.name,
       ...classMechanics(row.slug, row.data),
-      ...(bundled
+      ...(bundled && !structured
         ? { armor: bundled.armor, weapons: bundled.weapons, tools: bundled.tools ?? [] }
         : {}),
       desc: String(row.data?.desc ?? ""),

@@ -56,14 +56,26 @@ const AUTHORED_FEATS = (authoredFeatsJson as { feats: FeatFacts[] }).feats;
 
 export function classGrantsFor(classId: string): ClassGrants | null {
   const id = lower(classId);
-  // The bundled row first: it is the one the engines' own tables are keyed
-  // by, and the pack's copy of an SRD class says the same in prose.
+  // Pack-wins: when a pack is mounted and declares a class row for this id,
+  // that row answers. The bundled-first policy held while the only pack was
+  // Open5e, whose copy of an SRD class says the same in prose — but the
+  // SW5e pack's fighter and monk share the bundled slugs while describing a
+  // different game, and a mounted pack replaces the bundled set, never
+  // merges. A class the pack does not declare still reads bundled, and a
+  // bundled-only session is unchanged (document-in-id disambiguation, issue
+  // #115, included).
+  if (getContentDb()) {
+    const rows = listClasses({ limit: 200 }) as ContentRow[];
+    const packed = packClassOptions(rows).find((option) => lower(option.id) === id);
+    if (packed) {
+      return packed;
+    }
+  }
   const bundled = srdClassOptions().find((option) => option.id === id);
   if (bundled) {
     return bundled;
   }
-  const rows = listClasses({ limit: 200 }) as ContentRow[];
-  return packClassOptions(rows).find((option) => lower(option.id) === id) ?? null;
+  return null;
 }
 
 // Every row a race id may mean, the likeliest first. A sheet built from the
