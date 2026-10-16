@@ -1,0 +1,2245 @@
+{
+  "classes": [
+    {
+      "slug": "scout",
+      "name": "Scout",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Scout",
+        "slug": "scout",
+        "desc": "Rough and grizzled looking, a human stalks alone through the shadows of trees, hunting the quarry he knows is planning a raid on a nearby settlement. Clutching a techblade in each hand, he becomes a whirlwind of steel, cutting down one enemy after another.\n\nAfter tumbling away from the shrapnel of a missile's explosion, a bothan finds her feet and quick-fires two shots from her carbine at the oncoming tank. Shrugging off the wave of fear that threatens to permeate her entire being, she strafes around her foe, firing shot after shot to try to penetrate the tank's thick armor.\n\nGlancing at his wristpad, a sullustan looks through the eyes of his tracker droid. Transmitting instructions, he sends his droid to distract the houk he's been tracking while he readies his sniper rifle for the shot.\n\nScouts are the first on the trail and the last to lose it, tracking their quarry for miles unimpeded. They are adaptable, wielding both tech powers and their weaponry to overcome their foes.\n## Deadly Hunters\nWarriors in their own right, scouts specialize in tracking and hunting the monsters that threaten civilizationâ€\"humanoid raiders, rampaging beasts and monstrosities, terrible Force-wielders, and renegade droids. They learn to track their quarry as a predator does, moving stealthily through any terrain and hiding themselves in brush and rubble. Scouts focus their combat training on techniques that are particularly useful against their specific favored foes.\n\nScouts acquire the ability to cast tech powers through utilization of a wristpad. Their powers, like their combat abilities, emphasize speed, stealth, and the hunt. A scout's talents and abilities are honed with deadly focus on the grim task of protecting the civilization.\n## Independent Adventurers\nThough a scout might make a living as a bounty hunter, a guide, or a tracker, a scout's true calling is to defend civilization from the ravages of monsters and humanoid hordes that press in. In some places, scouts gather in secretive orders, though many scouts are independent almost to a fault, knowing that, when a rancor or a band of pirates attacks, a scout might be the firstâ€\"and possibly the lastâ€\"line of defense. This fierce independence makes scouts well suited to adventuring, since they are accustomed to life far from the comforts of a dry bed and a hot bath. Faced with city-bred adventurers who grouse and whine about the hardships of the wild, scouts respond with some mixture of amusement, frustration, and compassion. But they quickly learn that other adventurers who can carry their own weight in a fight against civilization's foes are worth any extra burden. Coddled city folk might not know how to feed themselves or find fresh water in the wild, but they make up for it in other ways.\n\nAs you create your scout character, consider the nature of the training that gave you your particular capabilities. Did you train with a single mentor, tracking together until you mastered the scout's ways? Did you leave your apprenticeship, or was your mentor slainâ€\"perhaps by some kind of bestial monstrosity on which you've sworn revenge? Or perhaps you learned your skills as part of a band of mercenaries.\n\nWhat's the source of your particular hatred of a certain kind of enemy? Did a monster kill someone you loved or destroy your home village? Or did you see too much of the destruction these monsters cause and commit yourself to reining in their depredations? Is your adventuring career a continuation of your work, or a significant change?\n\nWhat made you join up with a band of adventurers? Do you find it challenging to teach new allies the ways of the wild, or do you welcome the relief from solitude that they offer?\n## Quick Build\nYou can make a scout quickly by following these suggestions. First, make Strength or Dexterity your highest ability modifier, depending on whether you want to focus on melee combat or on ranged weapons (or finesse weapons). Your next-highest score should be Intelligence. Second, choose the bounty hunter background.",
+        "hit_die": 10,
+        "prof_saving_throws": [
+          "str",
+          "dex"
+        ],
+        "prof_skills": [],
+        "prof_armor": [
+          "lgt",
+          "med"
+        ],
+        "prof_weapons": [
+          "sbl",
+          "mbl",
+          "svb",
+          "mvb"
+        ],
+        "spellcasting_ability": "int",
+        "spellcaster_type": "half",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    },
+    {
+      "slug": "monk",
+      "name": "Monk",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Monk",
+        "slug": "monk",
+        "desc": "Her vibrostaff a blur as they deflect an incoming hail of blaster bolts, a human springs over a barricade and throws herself into the massed ranks of pirates on the other side. She whirls among them, knocking their blows aside and sending them reeling, until at last she stands alone.\n\nTaking a deep breath, a zabrak covered in tattoos settles into a battle stance. As the first charging mercenaries reach him, he exhales and a blast of negative energy courses from his hands, engulfing his foes.\n\nMoving with the silence of the night, a black-clad mirialan steps into a shadow beneath an arch and nimbly climbs to the balcony a stone's throw above her. She slides her blade free of its cloth-wrapped scabbard and peers through the open window at the warlord, so vulnerable in the grip of sleep.\n\nWhatever their discipline, monks are united in their ability to harness the energy that flows in their bodies. Whether channeled as a striking display of combat prowess or a subtler focus of defensive ability and speed, this energy infuses all that a monk does.\n## The Power of Focus\nMonks make careful study of a mystical energy that most monastic orders call focus. This energy is an element of the power that suffuses the galaxyâ€\"specifically, the element that flows through living bodies. Monks harness this energy within themselves to create powerful effects and exceed their bodies' physical capabilities, and some of their special attacks can hinder the flow of focus in their opponents. Using this energy, monks channel uncanny speed and strength into their unarmed strikes. As they gain experience, their martial training and their mastery of focus gives them more power over their bodies and the bodies of their foes.\n## Training and Asceticism\nMost monks live entirely apart from the surrounding population, secluded from anything that might impede their spiritual progress. Others are sworn to isolation, emerging only to serve as spies or assassins at the command of their leader, a noble patron, or some other power.\n\nThe majority of monks don't shun their neighbors, making frequent visits to nearby towns or villages and exchanging their service for food and other goods. As versatile warriors, monks often end up protecting their neighbors from monsters or brigands.\n\nFor a monk, becoming an adventurer means leaving a structured, communal lifestyle to become a wanderer. This can be a harsh transition, and monks don't undertake it lightly. Those who leave their cloisters take their work seriously, approaching their adventures as personal tests of their physical and spiritual growth.\n\nAs you make your monk character, think about your connection to the monastery where you learned your skills and spent your formative years. Were you an orphan or a child left on the monastery's threshold? Did your parents promise you to the monastery in gratitude for a service performed by the monks? Did you enter this secluded life to hide from a crime you committed? Or did you choose the monastic life for yourself?\n\nConsider why you left. Did the head of your monastery choose you for a particularly important mission beyond the cloister? Perhaps you were cast out because of some violation of the community's rules. Did you dread leaving, or were you happy to go? Is there something you hope to accomplish outside the monastery? Are you eager to return to your home?\n\nAs a result of the structured life of a monastic community and the discipline required to harness focus, monks are typically lawful in alignment.\n## Quick Build\nYou can make a monk quickly by following these suggestions. First, make Dexterity your highest ability score, followed by Wisdom. Second, choose the agent background.",
+        "hit_die": 8,
+        "prof_saving_throws": [
+          "str",
+          "dex"
+        ],
+        "prof_skills": [],
+        "prof_armor": [],
+        "prof_weapons": [
+          "mvb:bolas",
+          "mvb:cesta",
+          "mvb:chaineddagger",
+          "mvb:chakram",
+          "mvb:disguisedblade",
+          "mvb:disruptorshiv",
+          "mvb:doubleblade",
+          "mvb:doublesword",
+          "mvb:echostaff",
+          "mvb:electrobaton",
+          "mvb:electrostaff",
+          "mvb:hiddenblade",
+          "mvb:hookedvibroblade",
+          "mvb:riotbaton",
+          "mvb:riotshocker",
+          "mvb:shockwhip",
+          "mvb:techblade",
+          "mvb:vibrobaton",
+          "mvb:vibroblade",
+          "mvb:vibroknife",
+          "mvb:vibrorapier",
+          "mvb:vibroshield",
+          "mvb:vibrostiletto",
+          "mvb:vibrowhip",
+          "mvb:warhat",
+          "mvb:wristblade",
+          "sbl",
+          "svb"
+        ],
+        "spellcasting_ability": "",
+        "spellcaster_type": "none",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    },
+    {
+      "slug": "sentinel",
+      "name": "Sentinel",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Sentinel",
+        "slug": "sentinel",
+        "desc": "Clad in black robes, the rattataki pulls his hood forward and steps into the shadowy alcove, only to reappear further down the hall. As his quarry walks past, he presses the hilt of his lightsaber to the back of their head, quickly toggling it on-and-off. He is gone before the corpse hits the ground.\n\nThe togruta dashes across the battlefield, doublesaber deflecting blaster shots to the ground. She pulls her wounded padawan to her feet, and guides her away from the warzone.\n\nGreen-bladed lightsaber a blur, the cathar ferociously presses the attack. With each strike, she guides her opponent closer to the ravine's edge. A flurry of blows followed by a quick *force push* and her foe tumbles over the edge.\n\nSentinels are the masters of blending force powers with weapon attacks. They weave the two together so expertly that their foes have trouble predicting them.\n## The Middle of the Road\nThe sentinel uses stealth and subterfuge to accomplish the will of the Force. Where the consular focuses on mastery of the Force and the guardian focuses on the mastery of the lightsaber, the sentinel focuses on merging the two.\n## Solitary Action\nSentinels are notoriously independent, most comfortable acting alone and without backup; where some use a team to make up for their weaknesses, the sentinel uses the Force to overcome theirs. While some take this independent streak to the extreme, they are usually accepting of authority, as long as they are allowed to carry out directions using their preferred methods.\n\nWhile creating your sentinel, consider your personal philosophy in regards to the Force and its most famous practitioners â€\" the Jedi and the Sith. Are you a member of one of the two orders, or do you walk a different path? Are you an operative tapping into a latent Force-sensitivity? Were you trained in the force from a young age, or did you discover it as an adult? How do you treat those weaker than you? What was your family like? Do you see the Force as light and dark, or an impartial river of gray?\n## Quick Build\nYou can make a sentinel quickly by following these suggestions. First, make Dexterity your highest ability score, followed by Wisdom or Charisma. Second, choose the Jedi or Sith background.",
+        "hit_die": 8,
+        "prof_saving_throws": [
+          "dex",
+          "cha"
+        ],
+        "prof_skills": [],
+        "prof_armor": [
+          "lgt"
+        ],
+        "prof_weapons": [
+          "slw",
+          "svb",
+          "mlw",
+          "mvb"
+        ],
+        "spellcasting_ability": "wis",
+        "spellcaster_type": "3/4",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    },
+    {
+      "slug": "berserker",
+      "name": "Berserker",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Berserker",
+        "slug": "berserker",
+        "desc": "A massive wookiee hunter prowls through the forest, hefting his vibroaxe. With a roar he charges at the pair of trandoshans who dared poach his kin.\n\nA gamorrean snarls at the latest challenger to his authority over their savage tribe, ready to break his neck with his bare hands as he did to the last six rivals.\n\nFrothing at the mouth, a nikto slams his helmet into the face of his foe, then turns to drive his armored elbow into the gut of another.\n\nThese berserkers, different as they might be, are defined by their rage: unbridled, unquenchable, and unthinking fury. More than a mere emotion, their anger is the ferocity of a cornered predator, the unrelenting assault of a storm, the churning turmoil of the sea. For every berserker, rage is a power that fuels not just a battle frenzy but also uncanny reflexes, resilience, and feats of strength.\n## Primal Instinct\nPeople of towns and cities take pride in how their civilized ways set them apart from animals, as if denying one's own nature was a mark of superiority. To a berserker, though, civilization is no virtue, but a sign of weakness. The strong embrace their animal nature keen instincts, primal physicality, and ferocious rage. Berserkers are uncomfortable when hedged in by walls and crowds. They thrive where the civilized don't.\n\nBerserkers come alive in the chaos of combat. They can enter a berserk state where rage takes over, giving them superhuman strength and resilience. A berserker can draw on this reservoir of fury only a few times without resting, but those few rages are usually sufficient to defeat whatever threats arise.\n## A Life of Danger\nNot every person deemed \"berserkers\" by scions of civilized society has the berserker class. A true berserker among these people is as uncommon as a skilled fighter in a town, and he or she plays a similar role as a protector of the people and a leader in times of war. Life in the wild places of the world is fraught with peril: rival tribes, deadly weather, and terrifying monsters. Berserkers charge headlong into that danger so that their people don't have to.\n\nTheir courage in the face of danger makes berserkers perfectly suited for adventuring. Wandering is often a way of life for their native tribes, and the rootless life of the adventurer is little hardship for a berserker. Some berserkers miss the close-knit family structures of the tribe, but eventually find them replaced by the bonds formed among the members of their adventuring parties.\n\nWhen creating a berserker character, think about where your character comes from and his or her place in the world. Talk with your GM about an appropriate origin for your berserker. Did you come from a remote planet, making you a stranger in the area of the campaign? Or is the campaign set in a rough-and-tumble frontier where berserkers are common?\n\nWhat led you to take up the adventuring life? Were you lured to settled planets by the promise of riches? Did you join forces with soldiers of those lands to face a shared threat? Did monsters or an invading horde drive you out of your homeland, making you a rootless refugee? Perhaps you were a prisoner of war, brought in chains to \"civilized\" lands and only now able to win your freedom. Or you might have been cast out from your people because of a crime you committed, a taboo you violated, or a coup that removed you from a position of authority.\n## Quick Build\nYou can make a berserker quickly by following these suggestions. First, put your highest ability score in Strength, followed by Constitution. Second, choose the mercenary background.",
+        "hit_die": 12,
+        "prof_saving_throws": [
+          "str",
+          "con"
+        ],
+        "prof_skills": [],
+        "prof_armor": [
+          "lgt",
+          "med"
+        ],
+        "prof_weapons": [
+          "svb",
+          "mvb",
+          "sbl"
+        ],
+        "spellcasting_ability": "",
+        "spellcaster_type": "none",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    },
+    {
+      "slug": "consular",
+      "name": "Consular",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Consular",
+        "slug": "consular",
+        "desc": "A twi'lek in black robes steps on a terrified rodian, who scampers away on the ground. Lightning sparks from his fingers, illuminating his red and black tattoos. The rodian's pleas for mercy fall on deaf ears as the Sith channels his lightning into his failed apprentice, leaving nothing but a charred husk behind.\n\nSitting cross-legged on a dense patch of grass, a miraluka mystic meditates on the Force. With every breath, the trees sway with a rhythmic breeze. Though she lacks simple vision, she can see the Force as it moves everything around her.\n\nA drably-robed human focuses inward, channeling the Force into the ground around him. Slowly, all the debris within arms reach rises into the air around him; with a flick of his wrist, he clears the air, sending his projectiles to pound on the approaching tank.\n\nConsulars are the supreme wielders of the Force, defined and united by the powers they cast. Drawing on the omnipresent Force that permeates the universe, consulars cast powers of rejuvenating healing and destructive lightning, draining life-force and manipulating minds; the most powerful with the Force can even experience brief glimpses of the future.\n## Strong with the Force\nRefraining from drawing their lightsabers except as a measure of last resort, consulars spend a great deal of time studying the mysteries of the Force. Their knowledge allows them to channel the Force to greater heights, unlocking unrivaled power, and twisting those powers to greater effect.\n## Sage or Sorcerer\nConsulars who follow the light side of the Force, using their powers to better their communities and people, are often called sages, while consulars who fall to the dark side and subjugate or cast aside all in their path are commonly called sorcerers. Alternatively, they may tend toward the middle, refraining from politics and war, spending their time in isolation and study.\n\nWhile creating your consular, consider your personal philosophy in regards to the Force and its most famous practitioners â€\" the Jedi and the Sith. Are you a member of one of the two orders, or do you walk a different path? Perhaps you were ostracized from your primitive village out of superstition or jealousy. You may have been brutally trained from a young age in the dark side, fueling your innate thirst for power, or perhaps you were trained as a padawan in one of the Jedi temples. How do you treat strangers, and how do they treat you once they know your abilities? What was your family like, or what did you have instead of a family? Do you see the Force as light and dark, or an impartial river of gray?\n## Quick Build\nYou can make a consular quickly by following these suggestions. First, make Wisdom or Charisma your highest ability score, followed by Dexterity. Second, choose the Jedi or Sith background.",
+        "hit_die": 6,
+        "prof_saving_throws": [
+          "wis",
+          "cha"
+        ],
+        "prof_skills": [],
+        "prof_armor": [],
+        "prof_weapons": [
+          "slw",
+          "svb"
+        ],
+        "spellcasting_ability": "wis",
+        "spellcaster_type": "full",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    },
+    {
+      "slug": "fighter",
+      "name": "Fighter",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Fighter",
+        "slug": "fighter",
+        "desc": "A Trandoshan runs frantically across rooftops, constantly looking over his shoulder. As he prepares to leap a gap, a blaster bolt hits him in the back and renders him unconscious. His blurry vision barely makes out the figure of a masked woman who casually approaches, ready to collect her bounty.\n\nWith his muscular arms held wide, a grizzled-looking Wookiee grins to his bloodthirsty crowd. He turns back to his arena opponent just in time to see the Besalisk take a swing. He ducks, punching the four-armed fighter in the gut. Two wild haymakers later, and he stands alone as the gladiatorial champion.\n\nTaking a deep breath, a Republic soldier looks out onto the war zone waging across the frozen surface of Ilum. He grips his blaster rifle tightly then, with a nod to the dozen squad-mates beside him, he charges onto the battlefield.\n\nFighters combine discipline with martial skills to become the best pure warriors in the galaxy. Fighters can be stalwart defenders of those in need, cruel marauders, or brave advent-urers. They fight for glory, honor, to right wrongs, to gain power, to acquire wealth, or simple for the thrill of battle.\n## All in a Day's Work\nMany fighters see adventures, raids on enemy strongholds, and dangerous missions as their jobs. Some want to defend those who can't defend themselves while others seek to use their muscle to carve their own place of importance in the galaxy. Fighters can take the form of guards, champions, bounty hunters, enforcers, mercenaries, freedom fighters, or simply armed explorers.\n## Code Red\nMost fighters come to the profession after receiving at least some amount of formal training from a military organization. Some attend formal academies; others are self-taught and well tested. A fighter may have taken up his weapon to escape a mundane life while another may be following a proud family tradition. Whatever their origins, most fighters share an unshakeable loyalty. Fighters follow orders with little hesitation, as failure can often mean death.\n\nWhile creating your fighter character, consider where your loyalties lie. You could be part of a formal military, one of countless troopers fighting for your enterprise. Perhaps you are a gun-for-hire, traveling the galaxy in search of your next gig. What weapons do you prefer and specialize in? Who or what do you fight for? Do you have aspirations of a life beyond the battlefield, or have you been at war so long you know of nothing else?\n## Quick Build\nYou can make a fighter quickly by following these suggestions. First, make Strength or Dexterity your highest ability modifier, depending on whether you want to focus on melee combat or on ranged weapons (or finesse weapons). Your next-highest score should be Constitution. Second, choose the soldier background.",
+        "hit_die": 10,
+        "prof_saving_throws": [
+          "str",
+          "con"
+        ],
+        "prof_skills": [],
+        "prof_armor": [
+          "lgt",
+          "med",
+          "hvy"
+        ],
+        "prof_weapons": [
+          "sbl",
+          "mbl",
+          "svb",
+          "mvb"
+        ],
+        "spellcasting_ability": "",
+        "spellcaster_type": "none",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    },
+    {
+      "slug": "guardian",
+      "name": "Guardian",
+      "documentSlug": "sw5e-phb",
+      "data": {
+        "name": "Guardian",
+        "slug": "guardian",
+        "desc": "A dark-skinned human quickly runs down a corridor, the metal armor under his grey cloak clanking with each step. He rounds the corner into the prison while the lights and power are still out, urging the weakened prisoners to escape. Just then a handful of slavers arrive and ready their blasters. The man draws and ignites a white-bladed lightsaber, ready to die for the strangers behind him.\n\nA sith pureblood, clad head to toe in black and red armor, charges towards a line of soldiers. Shot after shot deflects off his armor until he reaches his prey, where he unleashes his fury in a series of devastating lightsaber sweeps.\n\nA zabrak general dramatically leaps to his soon-to-be overrun squad, landing with a flurry of lightsaber attacks. At the arrival of this powerful Jedi, the attackers fall back.\n\nGuardians are the master of the art of lightsaber combat. They focus on utilizing the everpresent power of the Force to enable devastating attacks, often single-handedly turning the tide of battle.\n## Protector or Destroyer\nAn unstoppable agent of the Force, the guardian channels the power flowing through him into his weapons. Their skills with a lightsaber are unrivalled. Subduing their enemies and bolstering their allies, the guardian uses the Force to control what happens around them.\n## Natural Leaders\nThe guardian's command of the Force lends them a powerful presence. Whether through fear and intimidation or respect and admiration, the guardian is one of the greatest generals on the battlefield. They are a symbol of power to their followers.\n\nWhile creating your guardian, consider your attraction to the Force and its most famous practitioners â€\" the Jedi and the Sith. Are you a member of one of the two orders, or do you walk a different path? Are you a soldier tapping into a latent Force-sensitivity? Were you trained in the force from a young age, or did you discover it as an adult? How do you treat those weaker than you? What was your family like? Do you see the Force as light and dark, or an impartial river of gray?\n## Quick Build\nYou can make a guardian quickly by following these suggestions. First, make Strength your highest ability score, followed by Constitution. Second, choose the Jedi or Sith background.",
+        "hit_die": 10,
+        "prof_saving_throws": [
+          "con",
+          "cha"
+        ],
+        "prof_skills": [],
+        "prof_armor": [
+          "lgt",
+          "med"
+        ],
+        "prof_weapons": [
+          "slw",
+          "mlw",
+          "svb",
+          "mvb"
+        ],
+        "spellcasting_ability": "wis",
+        "spellcaster_type": "half",
+        "document__slug": "sw5e-phb",
+        "document__title": "SW5e Player's Handbook",
+        "document__license_url": "https://sw5e.com/attributing",
+        "document__url": "https://sw5e.com/"
+      }
+    }
+  ],
+  "classProgression": {
+    "scout": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Ranger's Quarry",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Routines Known",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Routine Radius",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Ranger's Quarry",
+        "refSlug": "rangers-quarry"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Pathfinder",
+        "refSlug": "pathfinder"
+      },
+      {
+        "level": 1,
+        "kind": "spellcasting",
+        "name": "Techcasting",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Quarry Duration",
+        "refSlug": null
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Techcasting",
+        "refSlug": "techcasting"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Fighting Style",
+        "refSlug": "fighting-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "area-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "assisting-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "berserk-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "blindfighting-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "brawler-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "counterstrike-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "covert-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "defense-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "disruption-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "dual-wield-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "duelist-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "equilibrium-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "explosives-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "formation-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "formfighting-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "great-weapon-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "guerrilla-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "gunning-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "mounted-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "onslaught-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "poisoner-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "secured-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "sentinel-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "sharpshooter-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "shield-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "snapshot-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "split-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "spotting-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "superiority-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "throwing-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "twin-blade-style"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "versatile-style"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Scout Routine",
+        "refSlug": "scout-routine"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Scout Technique",
+        "refSlug": "scout-technique"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Scout Techniques",
+        "refSlug": null
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "adaptability-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "mavens-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "mesmers-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "nomads-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "responders-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "sharpshooters-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "striders-routine"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Scout Routines",
+        "refSlug": "wardens-routine"
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Extra Attack",
+        "refSlug": "extra-attack"
+      },
+      {
+        "level": 6,
+        "kind": "feature",
+        "name": "Expertise",
+        "refSlug": "expertise"
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 10,
+        "kind": "feature",
+        "name": "Commando",
+        "refSlug": "commando"
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 14,
+        "kind": "feature",
+        "name": "Combat Tech",
+        "refSlug": "combat-tech"
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 18,
+        "kind": "feature",
+        "name": "Supreme Awareness",
+        "refSlug": "supreme-awareness"
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 20,
+        "kind": "feature",
+        "name": "Foe Slayer",
+        "refSlug": "foe-slayer"
+      }
+    ],
+    "monk": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Martial Arts",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Focus Points",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Monastic Vows",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Unarmored Movement",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Martial Arts",
+        "refSlug": "martial-arts"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Unarmored Defense",
+        "refSlug": "unarmored-defense"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Focus",
+        "refSlug": "focus"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Monastic Vows",
+        "refSlug": "monastic-vows"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-deflection"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-devoted"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-fate"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-fighter"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-focused"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-fortitude"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-freedom"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-intuition"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-limber"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-nemesis"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-open-mind"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-precision"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-requital"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-restoration"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-sentry"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-serenity"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-spirit"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Monastic Vows",
+        "refSlug": "vow-of-the-versatile"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Unarmored Movement",
+        "refSlug": "unarmored-movement"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Deflect Missiles",
+        "refSlug": "deflect-missiles"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Monastic Order",
+        "refSlug": "monastic-order"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Monastic Orders",
+        "refSlug": null
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 4,
+        "kind": "feature",
+        "name": "Slow Fall",
+        "refSlug": "slow-fall"
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Extra Attack",
+        "refSlug": "extra-attack"
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Stunning Strike",
+        "refSlug": "stunning-strike"
+      },
+      {
+        "level": 6,
+        "kind": "feature",
+        "name": "Enhanced Strikes",
+        "refSlug": "enhanced-strikes"
+      },
+      {
+        "level": 7,
+        "kind": "feature",
+        "name": "Evasion",
+        "refSlug": "evasion"
+      },
+      {
+        "level": 7,
+        "kind": "feature",
+        "name": "Stillness of Mind",
+        "refSlug": "stillness-of-mind"
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 10,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 13,
+        "kind": "feature",
+        "name": "Purity of Body",
+        "refSlug": "purity-of-body"
+      },
+      {
+        "level": 14,
+        "kind": "feature",
+        "name": "Diamond Soul",
+        "refSlug": "diamond-soul"
+      },
+      {
+        "level": 15,
+        "kind": "feature",
+        "name": "Timeless Vessel",
+        "refSlug": "timeless-vessel"
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 18,
+        "kind": "feature",
+        "name": "Empty Body",
+        "refSlug": "empty-body"
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 20,
+        "kind": "feature",
+        "name": "Perfect Self",
+        "refSlug": "perfect-self"
+      }
+    ],
+    "sentinel": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Kinetic Combat",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Ideals Known",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Ideal Manifests",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Forcecasting",
+        "refSlug": "forcecasting"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Led by the Force",
+        "refSlug": "led-by-the-force"
+      },
+      {
+        "level": 1,
+        "kind": "spellcasting",
+        "name": "Forcecasting",
+        "refSlug": null
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Force-Empowered Self",
+        "refSlug": "force-empowered-self"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Sentinel Ideals",
+        "refSlug": "sentinel-ideals"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-agile"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-artisan"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-contender"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-fighter"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-hunter"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-steadfast"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-titan"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-tranquil"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Sentinel Ideals",
+        "refSlug": "ideal-of-the-vigorous"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Sentinel Calling",
+        "refSlug": "sentinel-calling"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Sentinel Callings",
+        "refSlug": null
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Extra Attack",
+        "refSlug": "extra-attack"
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 10,
+        "kind": "feature",
+        "name": "Battle Readiness",
+        "refSlug": "battle-readiness"
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 15,
+        "kind": "feature",
+        "name": "Enlightened Evasion",
+        "refSlug": "enlightened-evasion"
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 20,
+        "kind": "feature",
+        "name": "Center of the Force",
+        "refSlug": "center-of-the-force"
+      }
+    ],
+    "berserker": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Rages",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Rage Damage",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Berserker Instincts",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Rage",
+        "refSlug": "rage"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Unarmored Defense",
+        "refSlug": "unarmored-defense"
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Brutal Critical",
+        "refSlug": null
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Reckless Attack",
+        "refSlug": "reckless-attack"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Berserker Instincts",
+        "refSlug": "berserker-instincts"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "acklays-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "banthas-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "blurrgs-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "boggdos-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "chirodactyls-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "dewbacks-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "fighters-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "fyrnocks-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "hawks-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "katarns-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "loth-cats-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "predators-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "rancors-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "tacticians-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "trackers-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "terentateks-instinct"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Berserker Instincts",
+        "refSlug": "varactyls-instinct"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Danger Sense",
+        "refSlug": "danger-sense"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Berserker Approach",
+        "refSlug": "berserker-approach"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Berserker Approaches",
+        "refSlug": null
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Extra Attack",
+        "refSlug": "extra-attack"
+      },
+      {
+        "level": 7,
+        "kind": "feature",
+        "name": "Feral Impulse",
+        "refSlug": "feral-impulse"
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 9,
+        "kind": "feature",
+        "name": "Brutal Critical",
+        "refSlug": "brutal-critical"
+      },
+      {
+        "level": 11,
+        "kind": "feature",
+        "name": "Relentless Rage",
+        "refSlug": "relentless-rage"
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 15,
+        "kind": "feature",
+        "name": "Persistent Rage",
+        "refSlug": "persistent-rage"
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 18,
+        "kind": "feature",
+        "name": "Indomitable Might",
+        "refSlug": "indomitable-might"
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 20,
+        "kind": "feature",
+        "name": "Primal Champion",
+        "refSlug": "primal-champion"
+      }
+    ],
+    "consular": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Force-Empowered Casting Options",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Forcecasting",
+        "refSlug": "forcecasting"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Force Recovery",
+        "refSlug": "force-recovery"
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Force Shield",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "spellcasting",
+        "name": "Forcecasting",
+        "refSlug": null
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Force-Empowered Casting",
+        "refSlug": "force-empowered-casting"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Force Shield",
+        "refSlug": "force-shield"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "careful-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "distant-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "extended-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "heightened-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "improved-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "lingering-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "pinpoint-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "quickened-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "refocused-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "seeking-power"
+      },
+      {
+        "level": 2,
+        "kind": "option_grant",
+        "name": "Force-Empowered Castings",
+        "refSlug": "twinned-power"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Force Affinity",
+        "refSlug": "force-affinity"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Consular Tradition",
+        "refSlug": "consular-tradition"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Consular Traditions",
+        "refSlug": null
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 20,
+        "kind": "feature",
+        "name": "One with the Force",
+        "refSlug": "one-with-the-force"
+      }
+    ],
+    "fighter": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Superiority Dice Quantity",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Superiority Dice Size",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Strategies Known",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Fighting Style",
+        "refSlug": "fighting-style"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Second Wind",
+        "refSlug": "second-wind"
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Action Surge",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Indomitable",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "area-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "assisting-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "berserk-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "blindfighting-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "brawler-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "counterstrike-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "covert-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "defense-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "disruption-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "dual-wield-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "duelist-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "equilibrium-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "explosives-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "formation-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "formfighting-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "great-weapon-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "guerrilla-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "gunning-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "mounted-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "onslaught-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "poisoner-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "secured-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "sentinel-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "sharpshooter-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "shield-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "snapshot-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "split-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "spotting-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "superiority-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "throwing-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "twin-blade-style"
+      },
+      {
+        "level": 1,
+        "kind": "option_grant",
+        "name": "Choose Fighting Style",
+        "refSlug": "versatile-style"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Action Surge",
+        "refSlug": "action-surge"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Combat Superiority",
+        "refSlug": "combat-superiority"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Fighter Strategies",
+        "refSlug": "fighter-strategies"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Fighter Specialty",
+        "refSlug": "fighter-specialty"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Fighter Specialties",
+        "refSlug": null
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "cover-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "cunning-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "enduring-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "mastery-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "lightweapon-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "maneuver-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "skilled-strategist"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Fighter Strategies",
+        "refSlug": "style-strategist"
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Extra Attack",
+        "refSlug": "extra-attack"
+      },
+      {
+        "level": 6,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 9,
+        "kind": "feature",
+        "name": "Indomitable",
+        "refSlug": "indomitable"
+      },
+      {
+        "level": 11,
+        "kind": "feature",
+        "name": "Greater Extra Attack",
+        "refSlug": "greater-extra-attack"
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 14,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 20,
+        "kind": "feature",
+        "name": "Master of Combat",
+        "refSlug": "master-of-combat"
+      }
+    ],
+    "guardian": [
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Focused Strikes",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Auras Known",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Aura Radius",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Multiclass Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Forcecasting",
+        "refSlug": "forcecasting"
+      },
+      {
+        "level": 1,
+        "kind": "feature",
+        "name": "Channel the Force",
+        "refSlug": "channel-the-force"
+      },
+      {
+        "level": 1,
+        "kind": "resource",
+        "name": "Channel the Force",
+        "refSlug": null
+      },
+      {
+        "level": 1,
+        "kind": "spellcasting",
+        "name": "Forcecasting",
+        "refSlug": null
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Force-Empowered Strikes",
+        "refSlug": "force-empowered-strikes"
+      },
+      {
+        "level": 2,
+        "kind": "feature",
+        "name": "Fighting Style",
+        "refSlug": "fighting-style"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Guardian Aura",
+        "refSlug": "guardian-aura"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Guardian Focus",
+        "refSlug": "guardian-focus"
+      },
+      {
+        "level": 3,
+        "kind": "feature",
+        "name": "Guardian Foci",
+        "refSlug": null
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-conquest"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-conviction"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-hatred"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-presence"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-protection"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-vigor"
+      },
+      {
+        "level": 3,
+        "kind": "option_grant",
+        "name": "Guardian Auras",
+        "refSlug": "aura-of-warding"
+      },
+      {
+        "level": 4,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 5,
+        "kind": "feature",
+        "name": "Extra Attack",
+        "refSlug": "extra-attack"
+      },
+      {
+        "level": 6,
+        "kind": "feature",
+        "name": "Force Purity",
+        "refSlug": "force-purity"
+      },
+      {
+        "level": 6,
+        "kind": "feature",
+        "name": "Class Proficiencies",
+        "refSlug": null
+      },
+      {
+        "level": 8,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 11,
+        "kind": "feature",
+        "name": "Improved Force-Empowered Strikes",
+        "refSlug": "improved-force-empowered-strikes"
+      },
+      {
+        "level": 12,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 14,
+        "kind": "feature",
+        "name": "Cleansing Touch",
+        "refSlug": "cleansing-touch"
+      },
+      {
+        "level": 16,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      },
+      {
+        "level": 19,
+        "kind": "asi",
+        "name": "Ability Score Improvement",
+        "refSlug": null
+      }
+    ]
+  }
+}
