@@ -26,6 +26,7 @@ import type {
 import { itemCastNumbers } from "@/lib/srd/item-cast-credit";
 
 import type { SrdBackground, SrdClass, SrdRace, SrdSkill } from "@/lib/srd/srd-types";
+import { activeSkillMatching, activeSkills, findActiveSkill } from "@/lib/content/skills";
 
 export type { SrdBackground, SrdClass, SrdRace, SrdSkill } from "@/lib/srd/srd-types";
 
@@ -69,8 +70,11 @@ export function sizeForRace(raceId: string, rules?: SpeciesRules | null): "Small
   return /^(small|tiny)$/i.test(speciesRulesFor(raceId, rules)?.size ?? "") ? "Small" : "Medium";
 }
 
+// The active skill set's row for an id: the pack's when the pack declares a
+// skills table (replacement semantics — src/lib/content/skills.ts), the
+// bundled SRD's otherwise.
 export function findSkill(id: string) {
-  return SRD_SKILLS.find((entry) => entry.id === id) ?? null;
+  return findActiveSkill(id);
 }
 
 export function abilityMod(score: number) {
@@ -460,7 +464,7 @@ export function computeSheetDerived(
   const halfPb = halfScope === "physical" ? Math.ceil(pb / 2) : Math.floor(pb / 2);
   const expertise = sheet.proficiencies.expertise ?? [];
   const skillParts = Object.fromEntries(
-    SRD_SKILLS.map((skill) => {
+    activeSkills().map((skill) => {
       const trained = expertise.includes(skill.id)
         ? { label: "expertise", value: pb * 2 }
         : sheet.proficiencies.skills.includes(skill.id)
@@ -478,7 +482,7 @@ export function computeSheetDerived(
     }),
   ) as Record<string, DerivedPart[]>;
   const skills = Object.fromEntries(
-    SRD_SKILLS.map((skill) => [skill.id, sumParts(skillParts[skill.id])]),
+    activeSkills().map((skill) => [skill.id, sumParts(skillParts[skill.id])]),
   );
 
   const spellAbility = sheet.spellcasting?.ability ?? null;
@@ -489,15 +493,20 @@ export function computeSheetDerived(
     { label: "features", value: defense.initiativeBonus },
     { label: "half proficiency", value: halfScope ? halfPb : 0 },
   ]);
+  // Passive Perception and passive Investigation name a bundled skill; when
+  // the pack replaces the skill set its rows carry their own ids (the SW5e
+  // pack writes Perception as "prc"), so resolve through the active set.
+  const perceptionId = activeSkillMatching("perception")?.id ?? "perception";
+  const investigationId = activeSkillMatching("investigation")?.id ?? "investigation";
   const passiveParts = keepMeaningful([
     { label: "base", value: 10 },
-    { label: "Perception", value: skills.perception },
+    { label: "Perception", value: skills[perceptionId] ?? 0 },
     { label: "features", value: defense.passiveBonus },
   ]);
   // Observant's +5 covers passive Investigation too.
   const passiveInvestigationParts = keepMeaningful([
     { label: "base", value: 10 },
-    { label: "Investigation", value: skills.investigation },
+    { label: "Investigation", value: skills[investigationId] ?? 0 },
     { label: "features", value: defense.passiveBonus },
   ]);
   const spellSaveParts = spellAbility

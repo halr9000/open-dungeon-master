@@ -1,4 +1,5 @@
 import { ABILITIES, type Ability } from "@/lib/schemas/sheet";
+import { activeSkills } from "@/lib/content/skills";
 
 // Parses Open5e's prose-ish mechanics fields (race asi arrays, class
 // proficiency strings) into the same shapes the bundled SRD data uses, so
@@ -594,7 +595,10 @@ export function classMechanics(slug: string, row: Record<string, unknown>): Clas
   return {
     hitDie,
     saves: saves.length ? saves : ["str", "con"],
-    skillChoices: { count, from: from.length ? from : [...ALL_SKILLS] },
+    // The fallback pool is the active skill set: the pack's 18 when a pack
+    // declares a skills table (the SW5e pack rows leave prof_skills empty),
+    // the bundled SRD 18 otherwise (ALL_SKILLS).
+    skillChoices: { count, from: from.length ? from : activeSkills().map((skill) => skill.id) },
     armor: proficiencyEntries(data.prof_armor, ARMOR_CODES),
     weapons: proficiencyEntries(data.prof_weapons, WEAPON_CODES),
     tools: proficiencyList(data.prof_tools),
