@@ -8,6 +8,7 @@ import {
   registerPackOptions,
   type PackOptionGrant,
 } from "@/lib/content/option-grants";
+import { registerPackSkills } from "@/lib/content/skills";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -21,22 +22,27 @@ declare global {
   var __odmContentDb: SqliteDatabase | null | undefined;
 }
 
-const contentDbPath =
-  process.env.CONTENT_DB_PATH || path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "content", "open5e.sqlite");
+// Read at open time, not module load: pack-backed tests re-point
+// CONTENT_DB_PATH between phases, and a constant captured here at module
+// load would pin the first path forever.
+const contentDbPath = () =>
+  process.env.CONTENT_DB_PATH ||
+  path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "content", "open5e.sqlite");
 
 export function getContentDb(): SqliteDatabase | null {
   if (globalThis.__odmContentDb !== undefined) {
     return globalThis.__odmContentDb;
   }
-  if (!existsSync(/*turbopackIgnore: true*/ contentDbPath)) {
+  if (!existsSync(/*turbopackIgnore: true*/ contentDbPath())) {
     globalThis.__odmContentDb = null;
     return null;
   }
-  const db = openDatabase(contentDbPath, { readonly: true, fileMustExist: true });
+  const db = openDatabase(contentDbPath(), { readonly: true, fileMustExist: true });
   globalThis.__odmContentDb = db;
   registerPackFeats(db);
   registerPackClassProgression(db);
   registerPackOptionTables(db);
+  loadPackSkills(db);
   return db;
 }
 
@@ -185,6 +191,23 @@ function registerPackOptionTables(db: SqliteDatabase): void {
     }
   } catch {
     // An older pack without a class_progression table serves none either.
+  }
+}
+
+// The pack's skill set (the SW5e pack is the first writer): the active
+// skill list whenever the pack declares one, replacing the bundled SRD 18
+// with replacement semantics (src/lib/content/skills.ts). An older pack
+// without the table registers nothing, and the bundled list stands.
+function loadPackSkills(db: SqliteDatabase): void {
+  try {
+    const rows = db.prepare(`SELECT id, name, ability FROM skills`).all() as Array<{
+      id: string;
+      name: string;
+      ability: string;
+    }>;
+    registerPackSkills(rows);
+  } catch {
+    // An older pack without a skills table replaces nothing.
   }
 }
 
