@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { register } from "node:module";
+import { removeTempDir } from "./lib/remove-temp-dir.mjs";
 
 register("./lib/register-alias.mjs", import.meta.url);
 
@@ -279,7 +280,9 @@ if (fs.existsSync(sw5ePackPath)) {
   // classes have opened, over a throwaway world database.
   const os = await import("node:os");
   const { randomBytes } = await import("node:crypto");
-  process.env.SQLITE_DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "odm-pack-options-")), "world.sqlite");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-pack-options-"));
+  process.on("exit", () => removeTempDir(dir));
+  process.env.SQLITE_DB_PATH = path.join(dir, "world.sqlite");
   process.env.DB_ENCRYPTION_KEY = randomBytes(32).toString("hex");
   const { getDatabase } = await import("../src/lib/db/core.ts");
   const { createUser } = await import("../src/lib/db/users.ts");
