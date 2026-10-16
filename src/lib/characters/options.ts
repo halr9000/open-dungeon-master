@@ -189,11 +189,12 @@ export function srdClassOptions(): ClassOption[] {
 export function packClassOptions(rows: ContentRow[]): ClassOption[] {
   const packOptions: ClassOption[] = rows.map((row) => {
     const bundled = SRD_CLASSES.find((klass) => klass.id === row.slug);
-    // A structured row writes its proficiencies as arrays of short codes;
-    // a v1 prose row leaves prof_armor undefined for the derivation to
-    // expand out of the prose.
+    // A v2 row states its proficiencies as arrays of short codes; a v1
+    // prose row's prof_armor is a sentence ("Light armor, medium armor,
+    // shields") the derivation cannot fully read, so the bundled entry's
+    // carry it.
     const structured =
-      row.data?.prof_armor !== undefined || row.data?.prof_weapons !== undefined;
+      Array.isArray(row.data?.prof_armor) || Array.isArray(row.data?.prof_weapons);
     return {
       id: row.slug,
       name: row.name,
