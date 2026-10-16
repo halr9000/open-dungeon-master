@@ -2,6 +2,7 @@ import { openDatabase, type SqliteDatabase } from "@/lib/db/driver";
 import { EDITION_2024_DOCUMENTS } from "@/lib/content/edition";
 import { packFeatText } from "@/lib/srd/feat-text";
 import { registerFeatRules } from "@/lib/srd/feature-effects";
+import { registerPackClassFeatures, type PackClassFeature } from "@/lib/content/class-progression";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -29,6 +30,7 @@ export function getContentDb(): SqliteDatabase | null {
   const db = openDatabase(contentDbPath, { readonly: true, fileMustExist: true });
   globalThis.__odmContentDb = db;
   registerPackFeats(db);
+  registerPackClassProgression(db);
   return db;
 }
 
@@ -52,6 +54,47 @@ function registerPackFeats(db: SqliteDatabase): void {
     }
   } catch {
     // An older pack without a feats table serves no feats either.
+  }
+}
+
+// A pack's classes' base features, read once into the registry the pure
+// grant helpers read (src/lib/content/class-progression.ts): kind 'feature'
+// rows at level by level, one per name+level, the proficiency bookkeeping
+// rows off (their grants are what classMechanics derives saves and
+// proficiencies from, not sheet features). The SW5e pack is the first
+// writer; an older pack without the table serves no class features either.
+const PROFICIENCY_ROWS = /^(Class|Multiclass) Proficiencies$/;
+
+function registerPackClassProgression(db: SqliteDatabase): void {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT class_slug, level, name FROM class_progression
+         WHERE archetype_slug IS NULL AND kind = 'feature' AND name NOT LIKE 'Class Proficiencies'
+         ORDER BY class_slug, level, rowid`,
+      )
+      .all() as Array<{ class_slug: string; level: number; name: string }>;
+    const byClass = new Map<string, PackClassFeature[]>();
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (PROFICIENCY_ROWS.test(row.name)) {
+        continue;
+      }
+      const slug = row.class_slug.trim().toLowerCase();
+      const key = `${slug}:${row.level}:${row.name.trim().toLowerCase()}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const features = byClass.get(slug) ?? [];
+      features.push({ level: row.level, name: row.name.trim() });
+      byClass.set(slug, features);
+    }
+    for (const [slug, features] of byClass) {
+      registerPackClassFeatures(slug, features);
+    }
+  } catch {
+    // An older pack without a class_progression table serves none either.
   }
 }
 

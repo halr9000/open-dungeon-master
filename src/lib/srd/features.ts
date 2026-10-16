@@ -8,6 +8,7 @@ import { chosenFightingStyles, fightingStyleSlots } from "@/lib/srd/feature-effe
 import { findOptionByFeatureName, optionSlotsFor } from "@/lib/srd/options";
 import { featOptionSlots } from "@/lib/srd/feat-combat";
 import { srdRaceId } from "@/lib/srd/race-id";
+import { packClassFeaturesFor } from "@/lib/content/class-progression";
 import { subclassNamedBare, subclassNamedExactly } from "@/lib/srd/subclass-name";
 import type { SubclassExtras } from "@/lib/srd/subclass-tables";
 
@@ -293,7 +294,15 @@ export function classFeaturesFor(
 ): SheetFeature[] {
   const table = CLASS_FEATURES[classId];
   if (!table) {
-    return [];
+    // A class only the content pack describes (the SW5e pack's scout) grants
+    // from its class_progression rows (src/lib/content/class-progression.ts,
+    // registered by the pack loader): base features to its level, and the
+    // pack's archetypes ride the subclass tables, not this list.
+    const clamped = clampLevel(level);
+    return packClassFeaturesFor(classId)
+      .filter((feature) => feature.level <= clamped)
+      .sort((a, b) => a.level - b.level)
+      .map((feature) => ({ name: feature.name, source: "class" as const, level: feature.level }));
   }
   const clamped = clampLevel(level);
   const granted = leveledNames(table.levels, clamped);
