@@ -3,6 +3,7 @@ import { currentUser, unauthorized } from "@/lib/auth";
 import { publicCampaign } from "@/lib/db/campaigns";
 import { campaignCreationRefusal, canCreateCampaigns } from "@/lib/shared-host";
 import { createStarterCampaign, STARTER_ONE_SHOT } from "@/lib/starter/one-shot";
+import { narrationAvailable } from "@/lib/capabilities";
 import { pregenSummaries } from "@/lib/starter/pregens";
 
 export const runtime = "nodejs";
@@ -45,6 +46,7 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return Response.json({ error: "Invalid request." }, { status: 400 });
   }
-  const campaign = createStarterCampaign(user.id, { solo: parsed.data.solo });
+  // Narration starts on only where the server can read aloud (issue 275).
+  const campaign = createStarterCampaign(user.id, { solo: parsed.data.solo, narration: await narrationAvailable() });
   return Response.json({ campaign: publicCampaign(campaign) }, { status: 201 });
 }

@@ -1,8 +1,9 @@
 import type { CampaignDraft, WizardGates } from "@/app/create-campaign/draft";
 
-// The table sheet's pure half: which switches the Feel step shows, in which
+// The table sheet's pure half: which table switches the creator shows, in which
 // group, which of them the "features on" total counts, and what a press
-// does to the draft. FeelStep draws this; scripts/test-world-portals.mjs
+// does to the draft. SheetRows draws the rows wherever the essentials and
+// experience steps group them; scripts/test-world-portals.mjs
 // holds the count to thirteen.
 
 // Which of the table features are switched on, counting only the ones the
@@ -51,7 +52,7 @@ export type SheetRowKey =
   | "boardDrawing"
   | "enemyIntent";
 
-// Which explainer a row carries; FeelStep maps these to the lobby's texts.
+// Which explainer a row carries; SheetRows maps these to the lobby's texts.
 export type SheetInfo = "livingWorld" | "bonds" | "romance" | "narrationGuard";
 
 export type SheetRow = {

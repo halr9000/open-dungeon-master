@@ -36,11 +36,13 @@ export function agentSetupLine(program: AgentProgram, url: string, token: string
       where: "Add it to ~/.codex/config.toml (create the file if it is not there), then start Codex again.",
     };
   }
+  // opencode 2's shape, with the servers under `mcp.servers`; 2.x still
+  // converts 1.x's, which put them straight under `mcp`.
   if (program === "opencode") {
     return {
-      text: `"mcp": { "odm": { "type": "remote", "url": "${url}", "headers": { "Authorization": "Bearer ${token}" }, "oauth": false } }`,
+      text: `"mcp": { "servers": { "odm": { "type": "remote", "url": "${url}", "headers": { "Authorization": "Bearer ${token}" }, "oauth": false } } }`,
       block: false,
-      where: "Add it inside opencode.json (in the project, or ~/.config/opencode/opencode.json), then start opencode again.",
+      where: "For opencode 2. Add it inside opencode.json (in the project, or ~/.config/opencode/opencode.json), then start opencode again.",
     };
   }
   return {

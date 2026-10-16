@@ -192,3 +192,30 @@ export function curateModels(input: {
       seconds(a) - seconds(b),
   );
 }
+
+// What a ComfyUI's status check reports of each catalog model, as far as
+// choosing among them needs.
+type ModelReport = { id: string; missing: readonly unknown[]; verified: { verdict: string } | null; fits: boolean | null };
+
+// Whether a catalog model can paint on the machine this ComfyUI runs on:
+// not one its hardware failed to run, and not one that peaked past what
+// this GPU holds. Unmeasured models pass: unknown is not unfit.
+export function paintsHere(report: Pick<ModelReport, "verified" | "fits">): boolean {
+  return report.verified?.verdict !== "fails" && report.fits !== false;
+}
+
+// What a blank ComfyUI choice is filled with when the choice is obvious:
+// the catalog model measured as recommended on this hardware, or the one
+// model or checkpoint this ComfyUI can paint with. null when the admin has
+// to choose; nothing is ever taken because it is first in a list.
+export function obviousComfyChoice(found: { checkpoints: readonly string[]; models: readonly ModelReport[] }): { checkpoint: string; preset: string } | null {
+  // A catalog model loaded from a checkpoint is offered as that checkpoint.
+  const installed = found.models.filter((report) => {
+    const model = COMFY_MODELS.find((entry) => entry.id === report.id);
+    return !report.missing.length && !(model && "checkpoint" in model.graph.load) && paintsHere(report);
+  });
+  const recommended = installed.find((report) => report.verified?.verdict === "recommended");
+  if (recommended) return { checkpoint: "", preset: recommended.id };
+  if (installed.length + found.checkpoints.length !== 1) return null;
+  return installed.length ? { checkpoint: "", preset: installed[0].id } : { checkpoint: found.checkpoints[0], preset: "checkpoint" };
+}

@@ -1,4 +1,5 @@
 import { generateStoryImage, imageProducerReady } from "@/lib/image-generate";
+import { imagesAvailable } from "@/lib/capabilities";
 import {
   getCampaignMessage,
   getLatestDmMessage,
@@ -80,10 +81,54 @@ export function fulfillMessageImage(
       }
       publishPersisted(campaignId, "image_ready", { messageId, image });
     } catch (error) {
-      publishMediaStatus(campaignId, "image", messageId, "failed", pictureFailureReason(error));
+      const reason = pictureFailureReason(error);
+      publishMediaStatus(campaignId, "image", messageId, "failed", reason);
+      recordImageFailure(campaignId, messageId, reason);
       throw error;
     }
   });
+}
+
+// The failure above is an ephemeral event, and the placeholder reads the
+// request: left needed, a reload or a player who joins later would watch it
+// spin forever. So the request is closed with the reason, which the passage
+// shows in the placeholder's place. Asking again writes a fresh request.
+function recordImageFailure(campaignId: string, messageId: string, reason: string) {
+  const message = getCampaignMessage(messageId);
+  if (!message?.imageRequest || message.generatedImage) {
+    return;
+  }
+  if (!setMessageImageRequest(messageId, { ...message.imageRequest, needed: false, failed: reason })) {
+    return;
+  }
+  const updated = getCampaignMessage(messageId);
+  if (updated) {
+    publishPersisted(campaignId, "message_updated", { message: updated });
+  }
+}
+
+// The picture the AI DM attaches to its own narration. Nobody at the table
+// asked for it, so on a server with no image backend running (setup's "no
+// pictures", which still falls back to ComfyUI) it is dropped rather than
+// failed: the request is marked not needed, which is what the placeholder
+// reads, so it goes away now and stays away on a reload. A ComfyUI started
+// later is picked up once the capability probe sees it.
+export async function fulfillAutoImage(
+  campaignId: string,
+  messageId: string,
+  request: ImageRequest,
+  settings: StorySettings,
+) {
+  if (await imagesAvailable(settings)) {
+    return fulfillMessageImage(campaignId, messageId, request, settings);
+  }
+  if (!setMessageImageRequest(messageId, { ...request, needed: false })) {
+    return;
+  }
+  const updated = getCampaignMessage(messageId);
+  if (updated) {
+    publishPersisted(campaignId, "message_updated", { message: updated });
+  }
 }
 
 // generate_image, as an adjudication a person can invoke.

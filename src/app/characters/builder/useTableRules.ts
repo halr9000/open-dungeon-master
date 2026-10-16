@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { HpMethod } from "@/lib/srd/hit-points";
 import type { StartingWealthMethod } from "@/lib/srd/starting-wealth";
-import { restOffsets, type PoolEntry } from "./abilityDice";
+import { REROLL_BELOW, restOffsets, type PoolEntry } from "./abilityDice";
 import type { TableRules } from "./useBuilderDerived";
 
 // The dice of character creation are the server's (/api/characters/rolls):
@@ -27,7 +27,8 @@ export type AbilityPoolAnswer = {
   // when it was thrown.
   kept: boolean;
   createdAt: string | null;
-  // The server's reroll rule: a fresh six only under this total.
+  // The reroll rule where the six were thrown (the table's, or the
+  // server's): a fresh six only under this total.
   rerollBelow: number;
 };
 
@@ -48,18 +49,21 @@ function shapePool(data: { throws?: ServerThrow[]; kept?: boolean; createdAt?: s
     })),
     kept: data?.kept === true,
     createdAt: typeof data?.createdAt === "string" ? data.createdAt : null,
-    rerollBelow: typeof data?.rerollBelow === "number" ? data.rerollBelow : 70,
+    rerollBelow: typeof data?.rerollBelow === "number" ? data.rerollBelow : REROLL_BELOW,
   };
 }
 
 // Six throws of 4d6 from the server, shaped for the dice tray. Where each
 // die comes to rest is decoration, so that part is made up here.
-export async function requestAbilityPool(): Promise<AbilityPoolAnswer | { error: string }> {
+// At a table (campaignId), the roll is thrown under that table's rule: in a
+// pool of the table's own when it set a rule, in the library's when it
+// follows the server (src/lib/db/creation-rolls.ts abilityRollPlace).
+export async function requestAbilityPool(campaignId?: string | null): Promise<AbilityPoolAnswer | { error: string }> {
   try {
     const response = await fetch("/api/characters/rolls", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "abilities" }),
+      body: JSON.stringify({ kind: "abilities", ...(campaignId ? { campaignId } : {}) }),
     });
     const data = await response.json().catch(() => ({}));
     const answer = response.ok ? shapePool(data?.abilities) : null;
@@ -71,21 +75,43 @@ export async function requestAbilityPool(): Promise<AbilityPoolAnswer | { error:
 
 // The six already on record for this player, if any, without throwing: what
 // a new builder shows as kept instead of as dice in the air (issue #128).
-// The server's reroll rule comes with it either way.
-export async function fetchOpenAbilityPool(): Promise<{ open: AbilityPoolAnswer | null; rerollBelow: number } | null> {
+// The reroll rule where the character is made comes with it either way.
+export async function fetchOpenAbilityPool(campaignId?: string | null): Promise<{ open: AbilityPoolAnswer | null; rerollBelow: number } | null> {
   try {
-    const response = await fetch("/api/characters/rolls");
+    const response = await fetch(campaignId ? `/api/characters/rolls?campaignId=${encodeURIComponent(campaignId)}` : "/api/characters/rolls");
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       return null;
     }
     return {
       open: shapePool(data?.abilities),
-      rerollBelow: typeof data?.rerollBelow === "number" ? data.rerollBelow : 70,
+      rerollBelow: typeof data?.rerollBelow === "number" ? data.rerollBelow : REROLL_BELOW,
     };
   } catch {
     return null;
   }
+}
+
+// The server's own reroll rule (Admin > Server), for a screen that lets a
+// table follow it and should say what that means. Null until the server
+// answers, and from a server too old to say.
+export function useServerRerollBelow(): number | null {
+  const [below, setBelow] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/characters/rolls")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled && typeof data?.rerollBelow === "number") {
+          setBelow(data.rerollBelow);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return below;
 }
 
 export type TableRulesState = {

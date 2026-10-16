@@ -138,8 +138,9 @@ changed. Three sources feed the pickers (src/lib/model-registry):
   (each model's window and whether it calls tools, which outrank the
   catalog); an OpenAI-compatible server or hosted provider is asked
   `/v1/models`, with the key saved for that host and no other; the agent
-  programs use their own discovery (Codex's `model/list`, opencode's and
-  Grok's `models` commands, Claude Code's `initialize` answer). An
+  programs use their own discovery (Codex's `model/list`, opencode's
+  `/api/model` on a private server, Grok's `models` command, Claude Code's
+  `initialize` answer). An
   OpenAI-compatible images API is asked `/v1/models` and kept to its picture
   models. No model is named in the code: nothing is preselected that the
   backend does not list, and a backend that lists exactly one chat model
@@ -215,10 +216,10 @@ field (or set `OPENAI_COMPAT_API_KEY`). Nothing else needs changing.
 
 Two things follow from that one field:
 
-- **Pictures are covered too.** Choose **OpenAI** as the Images backend and,
-  with no image key configured anywhere, renders go out on this same key: it
-  is the same account, just a different API. See
-  [image-generation.md](image-generation.md). Local image generation is
+- **Pictures are covered too.** Choose **OpenAI** as the Images backend and
+  pick its picture model there; with no image key configured anywhere,
+  renders go out on this same key: it is the same account, just a different
+  API. See [image-generation.md](image-generation.md). Local image generation is
   untouched: ComfyUI and the FLUX workers work exactly as before.
 - **The window is 128K.** No vendor API reports its context size, so an
   unknown endpoint packs against a 16K default. OpenAI is known by name
@@ -235,6 +236,15 @@ Two things follow from that one field:
   only what is the campaign's own: pictures on or off, their shape and speed,
   and passage length.
 
+**Processing speed.** On `api.openai.com` each model role (the storyteller,
+the utility model) can ask for OpenAI's paid Fast tier, about twice the
+price per token, under **Admin > Text model defaults**. It is offered for
+any named model: which models have the tier is not read from their names.
+The reply's `service_tier` says what ran ("priority" or "fast", or
+"default" when OpenAI ran the call at standard speed and billed it so), and
+a model that refuses the field has it dropped and runs at standard speed;
+the line under the setting says which happened on the last call.
+
 Reasoning models (the gpt-5.x and o-series lines) reject `temperature`
 outright. That is handled rather than fatal: the 400 names the field, ODM
 drops it and retries, and the turn lands with its tool calls intact. The
@@ -243,25 +253,33 @@ the one wasted round trip is paid once rather than on every turn; a sampling
 profile of **ODM default** with no per-role temperature avoids it entirely.
 
 **The GPT-6 line** reasons by default, and on Chat Completions that cannot
-be combined with function tools. ODM routes by model name
+be combined with function tools. No route is chosen from a model's name,
+which would go stale with the next model OpenAI ships: every model's first
+tool call goes to Chat Completions, and the 400 OpenAI answers when a model
+cannot carry tools there names the way it can ("To use function tools, use
+/v1/responses or set reasoning_effort to 'none'."). ODM reads that answer
 (`scripts/lib/openai-tool-route.mjs`, shared with the admin panel's **Test
-backend**):
+backend**), switches to the route it names, and retries the same call:
 
-| model | how its tools run |
-|---|---|
-| `gpt-6-sol`, `gpt-6-luna` | Chat Completions with `reasoning_effort: "none"` |
-| `gpt-6.1-sol`, `gpt-6-astra` | the Responses API (`/v1/responses`); they do not accept `"none"` |
-| everything else | Chat Completions, as before |
+- **the Responses API** (`/v1/responses`) when the refusal offers it, with
+  the model's reasoning left on. It carries tools for every model that
+  needs it, including the ones that refuse `"none"`. A model whose refusal
+  offers both, as `gpt-6-sol` and `gpt-6-luna` do, therefore runs here.
+- **Chat Completions with `reasoning_effort: "none"`** when that is all the
+  refusal offers.
+
+The route is remembered for the model on that server for the life of the
+process, so the refused call (about a second, nothing billed) is paid once
+per model after each restart, not on every turn. A call is never switched
+back to a route it was already refused on, so two refusals that contradict
+each other end the turn with the second one's message. The same learning
+applies to any OpenAI-compatible proxy that relays those errors.
 
 The Responses route (`src/lib/openai-responses.ts`) translates the table's
 transcript and tool definitions on the way out and the reply on the way
 back, so the DM loop never learns which transport answered. Nothing is
 stored on OpenAI's side (`store: false`); the model reasons afresh over each
-tool result, which OpenAI allows. A model this table has never heard of
-starts on Chat Completions, and when OpenAI's 400 names a route ("set
-reasoning_effort to 'none'", or "use /v1/responses") ODM switches to it,
-remembers it for the model, and retries the same call. The same learning
-applies to any OpenAI-compatible proxy that relays those errors.
+tool result, which OpenAI allows.
 
 What never happens is the quiet alternative: a 400 that mentions reasoning
 or the Responses API is not read as "this server has no function calling",

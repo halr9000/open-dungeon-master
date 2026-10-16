@@ -12,6 +12,7 @@ import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import { DeleteAccountDialog } from "@/app/settings/DeleteAccountDialog";
 import { AvatarCropDialog } from "@/app/settings/AvatarCropDialog";
 import { AppearanceSection } from "@/app/settings/AppearanceSection";
+import { DictationShortcutSection } from "@/app/settings/DictationShortcutSection";
 import { BlockedPlayersSection } from "@/app/settings/BlockedPlayersSection";
 import { ConnectedAgentsSection } from "@/app/settings/ConnectedAgentsSection";
 import { ChangePasswordForm } from "@/app/ChangePasswordForm";
@@ -312,6 +313,7 @@ export default function SettingsPage() {
       ) : null}
 
       <AppearanceSection />
+      <DictationShortcutSection />
       <BlockedPlayersSection />
       <ConnectedAgentsSection />
 

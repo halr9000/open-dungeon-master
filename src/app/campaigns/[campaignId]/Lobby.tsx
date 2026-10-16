@@ -5,6 +5,7 @@ import { appConfirm } from "@/components/ui/ConfirmDialog";
 import { ArrowLeft } from "lucide-react";
 import { Suspense, lazy, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import { transcribesVoice, useCapabilities } from "@/lib/use-capabilities";
 import { roomCodeRefused } from "@/lib/shell-host";
 import { useShellShare } from "@/lib/use-shell-share";
 import { ScheduleSection } from "@/components/ScheduleSection";
@@ -58,6 +59,8 @@ const EMPTY_MESSAGES: never[] = [];
 export function Lobby({ state, refresh }: { state: CampaignState; refresh: () => void }) {
   const { campaign, me, members, sheets } = state;
   const voiceSpeaking = useVoiceSpeaking();
+  // The call records and announces a transcript only where it can be written.
+  const transcribes = transcribesVoice(useCapabilities());
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [buildingCompanion, setBuildingCompanion] = useState(false);
@@ -601,9 +604,9 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
                 meshSignal={state.voiceMeshSignal}
                 adjudicates={adjudicates}
                 steersStory={steersStory}
-                transcribe={campaign.gameSettings.voice.transcribe}
+                transcribe={campaign.gameSettings.voice.transcribe && transcribes}
               />
-              {campaign.gameSettings.voice.transcribe ? (
+              {campaign.gameSettings.voice.transcribe && transcribes ? (
                 <p className="reveal mt-2 text-xs text-amber-300/80">
                   This table is transcribed: while voice is on, what each person says is written down with their name for the story log. Turn it off in campaign settings.
                 </p>
@@ -631,6 +634,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
         <CompanionBuilderDialog
           campaignId={campaign.id}
           genre={campaign.gameSettings.genre}
+          worldPackId={campaign.gameSettings.worldPack}
           level={campaign.startingLevel}
           humanDm={humanDmTable}
           onClose={() => setBuildingCompanion(false)}

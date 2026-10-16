@@ -24,10 +24,35 @@ const { buildChildEnv, leaksServerSecret } = await import("../src/lib/harness/ch
 const { claudeAdapter, claudeArgs, CLAUDE_ENV, CLAUDE_MCP_PREFIX, parseClaudeModels, withCacheBoundary } = await import(
   "../src/lib/harness/adapters/claude.ts"
 );
-const { codexAdapter, codexArgs, ignoredCodexSettings, userCodexMcpServers } = await import("../src/lib/harness/adapters/codex.ts");
-const { opencodeAdapter, opencodeConfig, OPENCODE_SESSION_RULES, parseOpencodeModels } = await import(
-  "../src/lib/harness/adapters/opencode.ts"
-);
+const { effortChoices, withOfferedEffort } = await import("../src/lib/harness/effort-choices.ts");
+const {
+  codexAdapter,
+  codexArgs,
+  codexEffort,
+  codexHomeTrouble,
+  codexModel,
+  codexTokenTotal,
+  codexTurnUsage,
+  directCatalog,
+  ignoredCodexSettings,
+  parseCodexCatalog,
+  prepareCodexHome,
+  userCodexMcpServers,
+} = await import("../src/lib/harness/adapters/codex.ts");
+const {
+  opencodeAdapter,
+  opencodeConfig,
+  opencodeEffect,
+  opencodeLockdownHolds,
+  opencodeModels,
+  opencodeVariant,
+  opencodeVersion,
+  opencodeDefaultModel,
+  adminOpencodeConfig,
+  staleOdmSessions,
+  readOpencodeEvent,
+  OPENCODE_BUILT_IN_ACTIONS,
+} = await import("../src/lib/harness/adapters/opencode.ts");
 const { grokAdapter, grokArgs, grokAgentProfile, GROK_ENV } = await import("../src/lib/harness/adapters/grok.ts");
 const { sniffImage, imageSize, acceptImage, MAX_HARNESS_IMAGE_BYTES } = await import("../src/lib/harness/images.ts");
 const { maskAccount } = await import("../src/lib/harness/status.ts");
@@ -138,6 +163,12 @@ test("the child environment is an allowlist: no server secret ever reaches a pro
   assert.equal(codex.OPENAI_API_KEY, "sk-openai-admin");
   assert.equal(codex.ANTHROPIC_API_KEY, undefined);
   assert.equal(leaksServerSecret({ ...claude, SNEAKY: `prefix-${parent.DB_ENCRYPTION_KEY}` }, parent), "SNEAKY");
+  // opencode 2 keeps its sign-ins in its store, which OPENCODE_DB can move.
+  const opencodeHome = { ...parent, OPENCODE_CONFIG_DIR: "/home/dm/oc", OPENCODE_DB: "/home/dm/oc.db" };
+  const opencode = buildChildEnv(opencodeHome, "opencode", "/usr/bin");
+  assert.equal(opencode.OPENCODE_DB, "/home/dm/oc.db");
+  assert.equal(opencode.OPENCODE_CONFIG_DIR, "/home/dm/oc");
+  assert.equal(buildChildEnv(opencodeHome, "claude", "/usr/bin").OPENCODE_DB, undefined);
 });
 
 test("Claude Code is started with no built-in tools and only ODM's MCP server", () => {
@@ -172,7 +203,7 @@ test("Claude Code is started with no built-in tools and only ODM's MCP server", 
 test("Claude Code's models are the ones its initialize answer lists", () => {
   // Claude Code 2.1.296's answer on a Pro sign-in, trimmed to its models.
   const recorded = JSON.parse(fs.readFileSync(new URL("./fixtures/claude-initialize.json", import.meta.url), "utf8"));
-  const models = parseClaudeModels(recorded.response.response.models);
+  const { models, defaultEfforts } = parseClaudeModels(recorded.response.response.models);
   assert.deepEqual(
     models.map((model) => model.id),
     ["opus", "claude-fable-5-1[1m]", "sonnet", "haiku"],
@@ -190,12 +221,21 @@ test("Claude Code's models are the ones its initialize answer lists", () => {
     "each carries the model it stands for, which the catalog judges (light by price, never by name)",
   );
   assert.ok(models.every((model) => model.cheap === undefined), "light is left to the catalog");
-  const [variant] = parseClaudeModels([
+  const everyEffort = ["low", "medium", "high", "xhigh", "max"];
+  assert.ok(models.every((model) => JSON.stringify(model.efforts) === JSON.stringify(everyEffort)), "each with the effort levels it lists");
+  assert.deepEqual(defaultEfforts, everyEffort, "its own default's levels: what a blank model offers");
+  const efforts = (entry) => parseClaudeModels([{ value: "sonnet", ...entry }]).models[0].efforts;
+  assert.deepEqual(efforts({ supportsEffort: false }), [], "a model that takes no effort has none");
+  assert.deepEqual(efforts({ supportsEffort: true, supportedEffortLevels: ["low", "high", "ultra"] }), ["low", "high"], "levels ODM has no setting for are not offered");
+  assert.equal(efforts({}), undefined, "an older Claude Code that does not say lists none");
+  const {
+    models: [variant],
+  } = parseClaudeModels([
     { value: "opus[1m]", resolvedModel: "claude-opus-5-5", displayName: "Opus (1M context)", description: "Opus 5.5 · For long sessions" },
   ]);
   assert.equal(variant.label, "Opus (1M context)", "a variant keeps its own name, so it reads apart from the alias");
   assert.throws(() => parseClaudeModels(undefined), /no model list/, "an answer without a model list is an error, not an empty list");
-  assert.deepEqual(parseClaudeModels([{ displayName: "Nameless" }]), [], "an entry --model could not take is skipped");
+  assert.deepEqual(parseClaudeModels([{ displayName: "Nameless" }]), { models: [] }, "an entry --model could not take is skipped");
 });
 
 const CACHE_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
@@ -448,7 +488,7 @@ test("Claude Code reads the older transcript in whole chunks of twenty in its sy
   assert.notEqual(blockTwo(state(), lines(61)), block, "a chunk closed: block 2 is written again");
 });
 
-test("every other program gets the whole transcript in its opening message, as before: opencode takes its system prompt through an environment variable, which Linux caps at 128 KiB", () => {
+test("every other program gets the whole transcript in its opening message, as before: none of them caches its system prompt in blocks", () => {
   const lines = (count) =>
     Array.from({ length: count }, (_, at) => ({
       id: `m${at + 1}`,
@@ -496,7 +536,7 @@ test("a real DM turn reaches Claude Code with the boundary on its own line, dire
 });
 
 test("Codex is started with its shell, web, apps and sub-agents off, read-only, never approving", () => {
-  const args = codexArgs({ mcpUrl: "http://127.0.0.1:3005/api/mcp", images: false, disableServers: ["github"] });
+  const args = codexArgs({ mcpUrl: "http://127.0.0.1:3005/api/mcp", images: false, disableServers: ["github"], catalogPath: "/run/codex-home/catalog.json" });
   const overrides = args.filter((_, index) => args[index - 1] === "-c");
   for (const expected of [
     "features.shell_tool=false",
@@ -511,6 +551,16 @@ test("Codex is started with its shell, web, apps and sub-agents off, read-only, 
     "features.view_image=false",
     "agents.enabled=false",
     'web_search="disabled"',
+    // Checked on 0.162.1 on 2026-10-14 against the request Codex sends: each
+    // removes a tool or a block of Codex's own from what the model is sent.
+    "features.goals=false",
+    "features.plugins=false",
+    "skills.include_instructions=false",
+    "include_permissions_instructions=false",
+    "include_collaboration_mode_instructions=false",
+    "include_environment_context=false",
+    // ODM's tools straight in the request rather than behind a search.
+    'model_catalog_json="/run/codex-home/catalog.json"',
     'sandbox_mode="read-only"',
     'approval_policy="never"',
     "mcp_servers.github.enabled=false",
@@ -523,7 +573,9 @@ test("Codex is started with its shell, web, apps and sub-agents off, read-only, 
   }
   assert.equal(args[0], "app-server");
   assert.ok(!overrides.includes("tools.view_image=false"), "the key Codex ignores must not come back");
-  assert.ok(codexArgs({ mcpUrl: null, images: true, disableServers: [] }).includes("features.image_generation=true"));
+  const probeArgs = codexArgs({ mcpUrl: null, images: true, disableServers: [], catalogPath: null });
+  assert.ok(probeArgs.includes("features.image_generation=true"));
+  assert.ok(!probeArgs.some((arg) => arg.startsWith("model_catalog_json=")), "the probe lists Codex's own catalog");
   // Codex's own report of a setting it does not recognise, as the probe sees it.
   assert.deepEqual(
     ignoredCodexSettings(
@@ -538,27 +590,435 @@ test("Codex is started with its shell, web, apps and sub-agents off, read-only, 
   );
 });
 
-test("opencode's agent denies everything but ODM's tools, in config and on the session", () => {
-  const config = opencodeConfig({ system: "SYS", mcp: { url: "http://127.0.0.1:1/api/mcp", token: "tok" } });
-  assert.deepEqual(config.permission, { "*": "deny", "odm_*": "allow" });
-  const agent = config.agent["odm-dm"];
-  assert.equal(agent.prompt, "SYS");
-  assert.deepEqual(agent.permission, { "*": "deny", "odm_*": "allow" });
-  for (const tool of ["bash", "edit", "write", "read", "webfetch", "websearch", "task", "apply_patch"]) {
-    assert.equal(agent.tools[tool], false, `${tool} must be off`);
+// Two entries of `codex debug models` on 0.162.1, cut to the fields read here
+// and one that must pass through untouched.
+const CODEX_CATALOG = JSON.stringify({
+  models: [
+    {
+      slug: "gpt-6.1-sol",
+      supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"].map((effort) => ({ effort, description: effort })),
+      truncation_policy: { mode: "tokens", limit: 10000 },
+      experimental_supported_tools: ["send_user_message_async", "clock"],
+      supports_search_tool: true,
+      tool_mode: "code_mode_only",
+    },
+    {
+      slug: "gpt-5.5",
+      supported_reasoning_levels: ["low", "medium", "high", "xhigh"].map((effort) => ({ effort, description: effort })),
+      truncation_policy: { mode: "tokens", limit: 10000 },
+    },
+  ],
+});
+
+test("Codex's own catalog is handed back with every model in direct tool mode, nothing else changed", () => {
+  const models = parseCodexCatalog(CODEX_CATALOG);
+  const direct = JSON.parse(directCatalog(models));
+  assert.equal(direct.models.length, 2);
+  for (const [at, model] of direct.models.entries()) {
+    const original = JSON.parse(CODEX_CATALOG).models[at];
+    assert.deepEqual(model, { ...original, tool_mode: "direct", supports_search_tool: false, experimental_supported_tools: [] });
   }
-  assert.equal(agent.tools["odm_*"], true);
-  assert.equal(config.mcp.odm.oauth, false);
-  assert.equal(config.mcp.odm.headers.Authorization, "Bearer tok");
-  const completion = opencodeConfig({ system: "S", mcp: null });
-  assert.equal(completion.mcp, undefined);
-  assert.deepEqual(completion.permission, { "*": "deny", "odm_*": "deny" });
-  assert.deepEqual(OPENCODE_SESSION_RULES(true)[0], { permission: "*", pattern: "*", action: "deny" });
+  assert.throws(() => parseCodexCatalog(JSON.stringify({ models: [] })), /no models/);
+  assert.throws(() => parseCodexCatalog(JSON.stringify({ models: [{ display_name: "x" }] })), /no models/);
+});
+
+test("Codex runs at the admin's Effort when the model offers it, never clamped, and at its own default otherwise", () => {
+  const models = parseCodexCatalog(CODEX_CATALOG);
+  assert.equal(codexEffort(models, "gpt-6.1-sol", "xhigh"), "xhigh");
+  assert.equal(codexEffort(models, "gpt-6.1-sol", "max"), "max");
+  assert.equal(codexEffort(models, "gpt-5.5", "high"), "high");
+  assert.equal(codexEffort(models, "gpt-5.5", "max"), null, "gpt-5.5 has no max");
+  assert.equal(codexEffort(models, "gpt-6.1-sol", ""), null, "the program's default sends none");
+  // The adapter checks against the model the thread runs on, the program's
+  // default included; one missing from the catalog has no efforts to check.
+  assert.equal(codexEffort(models, "gpt-unknown", "high"), null);
+  // A recorded `model/list` entry: the card learns the same efforts, without
+  // the levels ODM has no setting for.
   assert.deepEqual(
-    parseOpencodeModels("opencode/big-pickle\nllama/qwen3.6-35b\nclaude-code/haiku\n  noise line\n").map((m) => m.id),
-    ["llama/qwen3.6-35b", "claude-code/haiku"],
+    codexModel({
+      id: "gpt-6.1-sol",
+      model: "gpt-6.1-sol",
+      displayName: "GPT-6.1-Sol",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })),
+      defaultReasoningEffort: "low",
+      serviceTiers: [{ id: "priority", name: "Fast", description: "2x speed, increased usage" }],
+    }),
+    { id: "gpt-6.1-sol", label: "GPT-6.1-Sol", fast: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
+  );
+  assert.deepEqual(codexModel({ model: "gpt-5.5", supportedReasoningEfforts: [] }), { id: "gpt-5.5", label: "gpt-5.5", fast: false, efforts: [] });
+});
+
+test("the Effort picker offers what the chosen models list, as the model pickers list what the program reports", () => {
+  const all = ["", "low", "medium", "high", "xhigh", "max"];
+  const codex = {
+    models: [
+      { id: "gpt-6.1-sol", label: "GPT-6.1-Sol", efforts: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "gpt-5.5", label: "GPT-5.5", efforts: ["low", "medium", "high", "xhigh"] },
+    ],
+    defaultEfforts: ["low", "medium", "high", "xhigh", "max"],
+  };
+  const pick = (model, utilityModel = "") => effortChoices(codex, { model, utilityModel });
+  assert.deepEqual(pick("gpt-6.1-sol"), all);
+  assert.deepEqual(pick("gpt-5.5"), all.slice(0, 5));
+  // One Effort serves both models: what both list.
+  assert.deepEqual(pick("gpt-6.1-sol", "gpt-5.5"), all.slice(0, 5));
+  // A blank story model is the program's own default; a blank bookkeeping
+  // model is the story model.
+  assert.deepEqual(pick(""), all);
+  assert.deepEqual(pick("", "gpt-5.5"), all.slice(0, 5));
+  assert.deepEqual(effortChoices({ ...codex, defaultEfforts: ["low"] }, { model: "", utilityModel: "" }), ["", "low"]);
+  // A model whose efforts are not known narrows nothing; the run checks it.
+  assert.deepEqual(pick("gpt-gone"), all);
+  assert.deepEqual(effortChoices({ models: [{ id: "haiku", label: "Haiku" }] }, { model: "", utilityModel: "haiku" }), all);
+  // An opencode model with no variants offers only its own default.
+  assert.deepEqual(effortChoices({ models: [{ id: "llama/qwen", label: "llama/qwen", efforts: [] }] }, { model: "llama/qwen", utilityModel: "" }), [""]);
+  // A model change keeps the effort only where the new models offer it.
+  const config = { model: "gpt-5.5", utilityModel: "", effort: "max" };
+  assert.deepEqual(withOfferedEffort(codex, config), { ...config, effort: "" });
+  assert.equal(withOfferedEffort(codex, { ...config, effort: "xhigh" }).effort, "xhigh");
+  assert.equal(withOfferedEffort(codex, { ...config, model: "" }).effort, "max", "the default model lists it");
+});
+
+test("A Codex turn reports the tokens it spent, cached prompt and reasoning included as Codex counts them", () => {
+  // `thread/tokenUsage/updated` as Codex sent it over two model calls in one
+  // turn (the second one partly cached) and one call in the next.
+  const update = (inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens) => ({
+    threadId: "t1",
+    turnId: "u1",
+    tokenUsage: {
+      total: { totalTokens: inputTokens + outputTokens, inputTokens, cachedInputTokens, cacheWriteInputTokens: 0, outputTokens, reasoningOutputTokens },
+      last: { totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+      modelContextWindow: 272000,
+    },
+  });
+  const start = { inputTokens: 0, outputTokens: 0 };
+  const first = codexTokenTotal(update(1000, 0, 5, 3));
+  const afterTurn1 = codexTokenTotal(update(3000, 400, 10, 6));
+  assert.deepEqual(first, { inputTokens: 1000, outputTokens: 5 });
+  assert.deepEqual(codexTurnUsage(start, afterTurn1), { inputTokens: 3000, outputTokens: 10 });
+  const afterTurn2 = codexTokenTotal(update(7000, 2800, 18, 9));
+  assert.deepEqual(codexTurnUsage(afterTurn1, afterTurn2), { inputTokens: 4000, outputTokens: 8 });
+  assert.equal(codexTokenTotal({ tokenUsage: {} }), null);
+});
+
+test("A Codex run's home links the admin's sign-in and config, and none of their instructions or skills", () => {
+  const admin = path.join(dir, "codex-admin");
+  const run = path.join(dir, "codex-run", "codex-home");
+  fs.mkdirSync(path.join(admin, "skills", "mine"), { recursive: true });
+  fs.writeFileSync(path.join(admin, "AGENTS.md"), "Speak like a pirate.");
+  fs.writeFileSync(path.join(admin, "AGENTS.override.md"), "Speak like a parrot.");
+  fs.writeFileSync(path.join(admin, "skills", "mine", "SKILL.md"), "---\nname: mine\n---");
+  fs.writeFileSync(path.join(admin, "auth.json"), '{"tokens":{"refresh_token":"old"}}');
+  fs.writeFileSync(path.join(admin, "config.toml"), 'model = "gpt-5.5"');
+  prepareCodexHome(admin, run);
+  assert.deepEqual(fs.readdirSync(run).sort(), ["auth.json", "config.toml"]);
+  // Codex refreshes the sign-in by rewriting the file in place: the admin's
+  // own copy must get the new tokens.
+  fs.writeFileSync(path.join(run, "auth.json"), '{"tokens":{"refresh_token":"new"}}');
+  assert.equal(fs.readFileSync(path.join(admin, "auth.json"), "utf8"), '{"tokens":{"refresh_token":"new"}}');
+  // Removing the run folder leaves the admin's files where they were.
+  fs.rmSync(path.join(dir, "codex-run"), { recursive: true, force: true });
+  assert.ok(fs.existsSync(path.join(admin, "auth.json")));
+  assert.ok(fs.existsSync(path.join(admin, "config.toml")));
+  // An admin with no Codex home of their own (an API key in the environment).
+  const bare = path.join(dir, "codex-run-bare", "codex-home");
+  prepareCodexHome(path.join(dir, "no-such-home"), bare);
+  assert.deepEqual(fs.readdirSync(bare), []);
+  // When the link cannot be made, the card says why and what to do.
+  const crossDrive = Object.assign(new Error("EXDEV: cross-device link not permitted, link 'D:\\codex\\auth.json'"), { code: "EXDEV" });
+  assert.match(codexHomeTrouble(crossDrive), /another drive than the temp folder .*EXDEV.*Move CODEX_HOME/);
+  assert.match(codexHomeTrouble(Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" })), /failed here \(EPERM/);
+});
+
+test("opencode 2's agent denies everything but ODM's tools, with ODM's MCP server outside Code Mode", () => {
+  const none = { provider: {}, providers: {} };
+  const config = opencodeConfig({ system: "SYS", mcp: { url: "http://127.0.0.1:1/api/mcp", token: "tok" }, admin: none });
+  const rules = [
+    { action: "*", resource: "*", effect: "deny" },
+    { action: "odm_*", resource: "*", effect: "allow" },
+  ];
+  assert.deepEqual(config.permissions, rules);
+  const agent = config.agents["odm-dm"];
+  assert.equal(agent.system, "SYS");
+  assert.equal(agent.mode, "primary");
+  assert.deepEqual(agent.permissions, rules);
+  assert.equal(config.mcp.servers.odm.codemode, false, "Code Mode would hide ODM's tools behind execute");
+  assert.equal(config.mcp.servers.odm.oauth, false);
+  assert.equal(config.mcp.servers.odm.headers.Authorization, "Bearer tok");
+  assert.equal(config.providers, undefined);
+  assert.equal(config.provider, undefined);
+  assert.equal(config.model, undefined);
+  // Read as opencode reads it: the last matching rule wins.
+  assert.ok(opencodeLockdownHolds(agent.permissions, true));
+  assert.ok(OPENCODE_BUILT_IN_ACTIONS.includes("execute") && OPENCODE_BUILT_IN_ACTIONS.includes("browser"));
+  for (const action of OPENCODE_BUILT_IN_ACTIONS) {
+    assert.equal(opencodeEffect(agent.permissions, action), "deny", action);
+  }
+  assert.equal(opencodeEffect(agent.permissions, "odm_request_roll"), "allow");
+  const completion = opencodeConfig({ system: "S", mcp: null, admin: none });
+  assert.equal(completion.mcp, undefined);
+  assert.equal(opencodeEffect(completion.agents["odm-dm"].permissions, "odm_request_roll"), "deny");
+  assert.ok(opencodeLockdownHolds(completion.agents["odm-dm"].permissions, false));
+  // The rules opencode resolved for the agent on 2.0.27: its defaults first,
+  // then ODM's, then the browser deny it appends.
+  const resolved = [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "read", resource: "*.env", effect: "ask" },
+    { action: "read", resource: "*.env.example", effect: "allow" },
+    ...rules,
+    { action: "browser", resource: "*", effect: "deny" },
+  ];
+  assert.ok(opencodeLockdownHolds(resolved, true));
+  assert.ok(!opencodeLockdownHolds([...rules, { action: "*", resource: "*", effect: "allow" }], true), "an allow-all last opens everything");
+  assert.ok(!opencodeLockdownHolds([...rules, { action: "read", resource: "*.md", effect: "allow" }], true), "a later allow on some files opens read");
+  assert.ok(!opencodeLockdownHolds([...rules, { action: "shell", resource: "*", effect: "ask" }], true), "ask is not deny");
+  assert.ok(!opencodeLockdownHolds([{ action: "*", resource: "*", effect: "deny" }], true), "ODM's tools must be allowed on a turn");
+  assert.ok(!opencodeLockdownHolds(rules, false), "a completion gets no ODM tool either");
+  assert.ok(!opencodeLockdownHolds([], false), "no rule at all allows everything");
+  // opencode's own matcher: `?` is any one character, a trailing " *" may
+  // match nothing, a backslash is a slash.
+  assert.ok(!opencodeLockdownHolds([...rules, { action: "?*", resource: "*", effect: "allow" }], true), "a ?* allow opens every tool");
+  assert.equal(opencodeEffect([{ action: "rea?", resource: "*", effect: "allow" }, { action: "*", resource: "*", effect: "deny" }], "read"), "deny");
+  assert.equal(opencodeEffect([{ action: "*", resource: "*", effect: "deny" }, { action: "rea?", resource: "*", effect: "allow" }], "read"), "allow");
+  assert.equal(opencodeEffect([{ action: "*", resource: "*", effect: "deny" }, { action: "web *", resource: "*", effect: "allow" }], "web"), "allow");
+  assert.equal(opencodeEffect([{ action: "*", resource: "*", effect: "deny" }, { action: "a.b", resource: "*", effect: "allow" }], "axb"), "deny", "a dot is a dot");
+  assert.equal(opencodeEffect([{ action: "*", resource: "*", effect: "deny" }, { action: "x\\y", resource: "*", effect: "allow" }], "x/y"), "allow");
+});
+
+test("opencode carries over only the providers and default models from the admin's global config, JSON or JSONC", () => {
+  const llama = { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: "http://127.0.0.1:8080/v1" } };
+  assert.deepEqual(
+    adminOpencodeConfig(JSON.stringify({ providers: { llama }, plugins: ["x"], mcp: { servers: { gh: {} } }, permissions: [], agents: { title: {} } })),
+    { provider: {}, providers: { llama } },
+  );
+  const jsonc = `{
+    // the admin's own notes
+    "plugins": ["opencode-wakatime"],
+    /* a block comment with "quotes" */
+    "model": "llama/qwen",
+    "small_model": "llama/tiny",
+    "provider": { "old": { "options": { "baseURL": "http://a//b" } }, },
+    "providers": { "llama": ${JSON.stringify(llama)}, },
+  }`;
+  // opencode 2 converts a 1.x entry (npm, options) only under `provider`;
+  // under `providers` it is taken as 2.x's shape and every request fails.
+  const admin = adminOpencodeConfig(jsonc);
+  assert.deepEqual(admin, {
+    provider: { old: { options: { baseURL: "http://a//b" } } },
+    providers: { llama },
+    model: "llama/qwen",
+    small_model: "llama/tiny",
+  });
+  assert.deepEqual(adminOpencodeConfig("{}"), { provider: {}, providers: {} });
+  assert.throws(() => adminOpencodeConfig("{ nope"));
+  const config = opencodeConfig({ system: "S", mcp: null, admin });
+  assert.deepEqual(config.provider, { old: { options: { baseURL: "http://a//b" } } });
+  assert.deepEqual(config.providers, { llama });
+  assert.equal(config.providers.old, undefined, "a 1.x entry is not put under providers");
+  assert.equal(config.model, "llama/qwen");
+  assert.equal(config.small_model, "llama/tiny");
+  assert.equal(config.plugins, undefined);
+  const legacyOnly = opencodeConfig({ system: "S", mcp: null, admin: adminOpencodeConfig(JSON.stringify({ provider: { old: {} } })) });
+  assert.equal(legacyOnly.providers, undefined, "each key only when it holds something");
+  assert.deepEqual(legacyOnly.provider, { old: {} });
+});
+
+test("the admin's opencode config is read as opencode reads it: a byte order mark, comments and trailing commas, strings untouched", () => {
+  const llama = { name: "Llama, }", settings: { baseURL: "http://a//b/*c*/" } };
+  assert.deepEqual(adminOpencodeConfig(`\uFEFF${JSON.stringify({ providers: { llama } })}`).providers, { llama }, "Windows PowerShell writes a BOM");
+  assert.deepEqual(adminOpencodeConfig(JSON.stringify({ providers: { a: { name: "x, }", list: "[1, ]" } } })).providers, { a: { name: "x, }", list: "[1, ]" } });
+  const jsonc = `{
+    "providers": {
+      "llama": ${JSON.stringify(llama)}, // the local one
+      /* none yet */
+    },
+    "model": "llama/qwen", /* the default */
+  }`;
+  assert.deepEqual(adminOpencodeConfig(jsonc), { provider: {}, providers: { llama }, model: "llama/qwen" });
+  assert.throws(() => adminOpencodeConfig("[1, 2]"), /does not hold a JSON object/);
+});
+
+test("a broken opencode config is reported by line and column, never with any of its text: it holds API keys", () => {
+  const lines = [
+    "{",
+    "  // keys below, and a comment that takes up room: /* \"quoted\" */",
+    '  "providers": { "a": { "apiKey": "sk-live-SECRET1234567890", "x": undefined } },',
+    "}",
+  ];
+  const broken = lines.join("\n");
+  let message = "";
+  try {
+    adminOpencodeConfig(broken);
+  } catch (error) {
+    message = error.message;
+  }
+  assert.equal(message, `it is not valid JSON at line 3, column ${lines[2].indexOf("undefined") + 1}`);
+  // JSON.parse's own message for this text quotes the key's last characters.
+  assert.throws(() => JSON.parse(broken.replace(/\/\/.*/, "")), /90/);
+  const atStart = "\uFEFF{\n  \"model\": \"a/b\"\n  \"providers\": {}\n}";
+  assert.throws(() => adminOpencodeConfig(atStart), { message: "it is not valid JSON at line 3, column 3" });
+  assert.throws(() => adminOpencodeConfig('{ "a": "unterminated'), { message: "it is not valid JSON at line 1, column 8" });
+  assert.throws(() => adminOpencodeConfig(""), { message: "it is not valid JSON at line 1, column 1" });
+});
+
+// GET /api/model on 2.0.27, trimmed.
+const OPENCODE_MODELS = [
+  { id: "claude-sonnet-5-5", providerID: "anthropic", variants: [{ id: "low" }, { id: "medium" }, { id: "high" }, { id: "xhigh" }, { id: "max" }], limit: { context: 1000000, output: 128000 } },
+  { id: "claude-haiku-5-5", providerID: "anthropic", variants: [{ id: "none" }, { id: "low" }, { id: "medium" }, { id: "high" }, { id: "xhigh" }, { id: "max" }], limit: { context: 1000000, output: 128000 } },
+  { id: "qwen/qwen3.8-flash", providerID: "openrouter", variants: [{ id: "none" }, { id: "high" }, { id: "max" }], limit: { context: 1000000, output: 131072 } },
+  { id: "exo-free", providerID: "opencode", variants: [], limit: { context: 1048576, output: 131072 } },
+];
+
+test("opencode's models come with the efforts they offer, and Effort is sent as the model's variant", () => {
+  const models = opencodeModels(OPENCODE_MODELS);
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5", "openrouter/qwen/qwen3.8-flash"],
     "opencode's own free models refuse outside use and are not offered",
   );
+  assert.deepEqual(models[0].efforts, ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(models[2].efforts, ["high", "max"], "none and minimal are not efforts ODM offers");
+  // An empty list says "no effort setting", so the admin card's hint shows.
+  assert.deepEqual(opencodeModels([{ id: "m1", providerID: "llama", variants: [], limit: { context: 0 } }]), [{ id: "llama/m1", label: "llama/m1", efforts: [] }]);
+  assert.deepEqual(opencodeModels([{ id: "m1", providerID: "llama", variants: [{ id: "none" }], limit: { context: 0 } }])[0].efforts, []);
+  assert.equal(models[0].contextTokens, 1000000);
+  assert.equal(opencodeVariant(OPENCODE_MODELS, "anthropic/claude-sonnet-5-5", "low"), "low");
+  assert.equal(opencodeVariant(OPENCODE_MODELS, "openrouter/qwen/qwen3.8-flash", "max"), "max");
+  assert.equal(opencodeVariant(OPENCODE_MODELS, "openrouter/qwen/qwen3.8-flash", "medium"), undefined, "an effort the model lacks is not sent");
+  assert.equal(opencodeVariant(OPENCODE_MODELS, "anthropic/claude-sonnet-5-5", ""), undefined, "the program's default sends none");
+  assert.equal(opencodeVariant(OPENCODE_MODELS, "llama/unlisted", "high"), undefined);
+});
+
+test("with no model chosen, opencode runs its default only when a run can use it, else the first usable model", () => {
+  const sonnet = OPENCODE_MODELS[0];
+  const exo = OPENCODE_MODELS[3];
+  assert.equal(opencodeDefaultModel(OPENCODE_MODELS, OPENCODE_MODELS[2]), "openrouter/qwen/qwen3.8-flash", "the admin's own model");
+  assert.equal(opencodeDefaultModel(OPENCODE_MODELS, exo), "anthropic/claude-sonnet-5-5", "never opencode's own free model");
+  assert.equal(opencodeDefaultModel(OPENCODE_MODELS, null), "anthropic/claude-sonnet-5-5");
+  assert.equal(opencodeDefaultModel(OPENCODE_MODELS, { ...sonnet, providerID: "gone" }), "anthropic/claude-sonnet-5-5", "a default it does not list");
+  assert.equal(opencodeDefaultModel([exo], exo), null);
+});
+
+test("opencode 2's events become ODM's: narration only, usage summed over the turn's steps with cached prompt and reasoning counted, errors by kind", () => {
+  const session = { sessionID: "ses_1", assistantMessageID: "msg_1" };
+  const recorded = [
+    { type: "session.step.started", data: { ...session, agent: "odm-dm" } },
+    { type: "session.text.delta", data: { ...session, ordinal: 0, delta: "Roll! " } },
+    { type: "session.tool.called", data: { ...session, id: "call_1", input: { die: "d20" } } },
+    { type: "session.text.ended", data: { ...session, ordinal: 0, text: "Roll! " } },
+    { type: "session.step.ended", data: { ...session, finish: "tool-calls", tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    { type: "session.usage.updated", data: { sessionID: "ses_1", tokens: { input: 100, output: 10 } } },
+    { type: "session.reasoning.started", data: { ...session, ordinal: 0 } },
+    { type: "session.reasoning.delta", data: { ...session, ordinal: 0, delta: "secret thoughts " } },
+    { type: "session.reasoning.ended", data: { ...session, ordinal: 0, text: "secret thoughts " } },
+    { type: "session.text.delta", data: { ...session, ordinal: 0, delta: "The goblin falls." } },
+    { type: "session.step.ended", data: { ...session, finish: "stop", tokens: { input: 20, output: 5, reasoning: 7, cache: { read: 60, write: 40 } } } },
+    { type: "session.usage.updated", data: { sessionID: "ses_1", tokens: { input: 220, output: 15 } } },
+    { type: "session.execution.succeeded", data: { sessionID: "ses_1" } },
+  ];
+  const turn = { text: "", inputTokens: 0, outputTokens: 0 };
+  const heard = recorded.flatMap((event) => readOpencodeEvent(turn, event));
+  assert.deepEqual(heard, [
+    { type: "delta", text: "Roll! " },
+    { type: "delta", text: "The goblin falls." },
+    { type: "turn_end", text: "Roll! The goblin falls.", usage: { inputTokens: 220, outputTokens: 22 } },
+  ]);
+  assert.ok(!JSON.stringify(heard).includes("secret"), "reasoning reaches no one");
+  assert.deepEqual(turn, { text: "", inputTokens: 0, outputTokens: 0 }, "the next turn starts from nothing");
+  const auth = { type: "provider.auth", message: "Incorrect API key provided", status: 401 };
+  assert.deepEqual(readOpencodeEvent(turn, { type: "session.execution.failed", data: { sessionID: "ses_1", error: auth } }), [
+    { type: "error", kind: "signed-out", message: "Incorrect API key provided" },
+  ]);
+  const limit = { type: "provider.rate-limit", message: "Rate limit reached for requests", status: 429 };
+  assert.deepEqual(readOpencodeEvent(turn, { type: "session.retry.scheduled", data: { ...session, attempt: 2, error: limit } }), [
+    { type: "error", kind: "limit", message: "Rate limit reached for requests" },
+  ]);
+  assert.deepEqual(readOpencodeEvent(turn, { type: "session.retry.scheduled", data: { ...session, attempt: 2, error: { type: "provider.overloaded", message: "busy" } } }), [], "other retries are opencode's to make");
+  // A provider that cannot be reached (the local model server is not
+  // running): opencode would retry until the turn times out with no reason
+  // given, so the turn ends with opencode's after a few tries.
+  const transport = { type: "provider.transport", message: "ConnectionRefused: Unable to connect. Is the computer able to access the url?" };
+  for (const attempt of [2, 3]) {
+    assert.deepEqual(readOpencodeEvent(turn, { type: "session.retry.scheduled", data: { ...session, attempt, error: transport } }), [], `retry ${attempt}`);
+  }
+  assert.deepEqual(readOpencodeEvent(turn, { type: "session.retry.scheduled", data: { ...session, attempt: 4, error: transport } }), [
+    { type: "error", kind: "crash", message: `opencode could not reach the model's provider: ${transport.message}` },
+  ]);
+  assert.equal(readOpencodeEvent(turn, { type: "session.execution.failed", data: { sessionID: "ses_1", error: { type: "unknown", message: "boom" } } })[0].kind, "crash");
+  // A figure a later opencode leaves out counts as none, and a delta that is
+  // not text is no narration.
+  const sparse = { text: "", inputTokens: 0, outputTokens: 0 };
+  assert.deepEqual(
+    [
+      { type: "session.text.delta", data: { ...session, delta: undefined } },
+      { type: "session.text.delta", data: { ...session, delta: "Done." } },
+      { type: "session.step.ended", data: { ...session, tokens: { input: 9, output: 4 } } },
+      { type: "session.step.ended", data: { ...session } },
+      { type: "session.execution.succeeded", data: { sessionID: "ses_1" } },
+    ].flatMap((event) => readOpencodeEvent(sparse, event)),
+    [
+      { type: "delta", text: "Done." },
+      { type: "turn_end", text: "Done.", usage: { inputTokens: 9, outputTokens: 4 } },
+    ],
+  );
+});
+
+test("opencode below 2 is installed but unsupported", () => {
+  assert.deepEqual(opencodeVersion("opencode v2.0.27\n"), { version: "2.0.27", supported: true });
+  assert.deepEqual(opencodeVersion("1.18.30\n"), { version: "1.18.30", supported: false });
+  assert.equal(opencodeVersion("nonsense"), null);
+});
+
+test("the sweep deletes only sessions a killed ODM run left behind", () => {
+  // Folders as this platform spells them: on Windows "/tmp" resolves to a
+  // drive ("D:\\tmp"), and the sweep compares resolved folders.
+  const at = (...parts) => path.resolve(...parts);
+  const tmpdir = at("/tmp");
+  const tag = { openDungeonMaster: "run" };
+  const live = new Set([at(tmpdir, "odm-harness-live")]);
+  const now = Date.now();
+  const sessions = [
+    { id: "gone", metadata: tag, location: { directory: at(tmpdir, "odm-harness-gone") }, time: { updated: now } },
+    { id: "live-run", metadata: tag, location: { directory: at(tmpdir, "odm-harness-live") }, time: { updated: now - 60_000 } },
+    { id: "admin-own", location: { directory: at("/home/dm/projects/site") } },
+    { id: "same-title-no-tag", location: { directory: at(tmpdir, "odm-harness-old") } },
+    { id: "tag-outside-tmp", metadata: tag, location: { directory: at("/home/dm/odm-harness-x") } },
+    { id: "tag-nested", metadata: tag, location: { directory: at(tmpdir, "sub", "odm-harness-y") } },
+    { id: "tag-other-folder", metadata: tag, location: { directory: at(tmpdir, "project") } },
+    { id: "tag-no-folder", metadata: tag },
+    { id: "other-tag", metadata: { openDungeonMaster: "something else" }, location: { directory: at(tmpdir, "odm-harness-z") } },
+  ];
+  const options = { tmpdir, now, exists: (dir) => live.has(dir), canonical: (dir) => dir };
+  assert.deepEqual(staleOdmSessions(sessions, options), ["gone"]);
+  // ODM itself was killed (the desktop app quit mid-turn): the run folder
+  // stays, but no run lives 20 minutes, so a session half an hour old is
+  // left behind; one a few minutes old may be a live table's.
+  const kept = { id: "folder-kept", metadata: tag, location: { directory: at(tmpdir, "odm-harness-live") } };
+  assert.deepEqual(staleOdmSessions([{ ...kept, time: { updated: now - 31 * 60_000 } }], options), ["folder-kept"]);
+  assert.deepEqual(staleOdmSessions([{ ...kept, time: { updated: now - 19 * 60_000 } }], options), []);
+  assert.deepEqual(staleOdmSessions([{ ...sessions[2], time: { updated: 0 } }, { ...sessions[4], time: { updated: 0 } }], options), [], "age alone never makes an admin session ODM's");
+});
+
+test("the sweep finds the temp dir however opencode spells it: through a symlink, or not resolvable at all", () => {
+  const realTmp = fs.mkdtempSync(path.join(dir, "real-tmp-"));
+  const linkTmp = path.join(dir, "link-tmp");
+  fs.symlinkSync(realTmp, linkTmp, process.platform === "win32" ? "junction" : "dir");
+  const canonical = (folder) => {
+    try {
+      return fs.realpathSync.native(folder);
+    } catch {
+      return null;
+    }
+  };
+  const tag = { openDungeonMaster: "run" };
+  const tmpdir = fs.realpathSync.native(realTmp);
+  const sessions = [
+    { id: "via-link", metadata: tag, location: { directory: path.join(linkTmp, "odm-harness-a") } },
+    { id: "real", metadata: tag, location: { directory: `${realTmp}${path.sep}odm-harness-b` } },
+    { id: "slashes-and-dot", metadata: tag, location: { directory: `${realTmp.replaceAll(path.sep, "/")}/./odm-harness-c` } },
+    { id: "parent-gone", metadata: tag, location: { directory: path.join(dir, "no-such-tmp", "odm-harness-d") } },
+  ];
+  assert.deepEqual(staleOdmSessions(sessions, { tmpdir, now: Date.now(), exists: () => false, canonical }), ["via-link", "real", "slashes-and-dot"]);
 });
 
 test("Grok Build runs in dontAsk with an agent profile naming only ODM's tools", () => {

@@ -55,6 +55,9 @@ export function LorePanel({
   const [readingId, setReadingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<LoreDraft>(blankLoreDraft());
   const [busy, setBusy] = useState(false);
+  // What the server refused and why (an entry over its cap, issue #302); a
+  // refusal used to close nothing and say nothing.
+  const [saveError, setSaveError] = useState("");
   // Names beyond the lore itself that a [[link]] can point at.
   const [linkTargets, setLinkTargets] = useState<{ cast: string[]; monsters: string[] } | null>(
     null,
@@ -127,6 +130,7 @@ export function LorePanel({
       return;
     }
     setBusy(true);
+    setSaveError("");
     try {
       const payload = {
         category: draft.category,
@@ -164,6 +168,9 @@ export function LorePanel({
         }
         setAdding(false);
         setEditingId(null);
+      } else {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        setSaveError(payload.error ?? "That entry could not be saved.");
       }
     } finally {
       setBusy(false);
@@ -292,6 +299,7 @@ export function LorePanel({
         targets={targets}
         rows={rows}
       />
+      {saveError ? <p className="motion-shake text-[11px] text-red-400">{saveError}</p> : null}
       <div className="flex gap-1.5" data-tour="lore-save">
         <KitButton tone="primary" onClick={submitDraft} disabled={busy || !draft.title.trim() || !draft.body.trim()} busy={busy}>
           {editingId ? "Save" : "Add"}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { overlayRoot } from "@/lib/overlay-root";
 import { cn } from "@/lib/cn";
@@ -192,6 +193,17 @@ export function VoiceDock({
                   className="mx-auto mb-3 h-1 w-10 rounded-full bg-stone-600/70 lg:hidden"
                   aria-hidden="true"
                 />
+                {/* The grip reads as "drag me down" but nothing drags, and
+                    the button that opened the sheet sits under the scrim, so
+                    a phone gets the same X every other sheet has. */}
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  aria-label="Close"
+                  className="absolute right-2 top-1 z-10 rounded-md p-1.5 text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200 lg:hidden"
+                >
+                  <X className="size-4" />
+                </button>
                 <VoicePanel
                   campaignId={campaignId}
                   meUserId={meUserId}

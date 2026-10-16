@@ -1,5 +1,5 @@
 import { isErrorResponse, requireAdmin } from "@/lib/admin-api";
-import { currentSttBackend } from "@/lib/stt-backend";
+import { sttStatus } from "@/lib/stt-backend";
 import { builtinSpeechStatus, installBuiltinSpeech } from "@/lib/stt-builtin";
 
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ export async function GET() {
   if (isErrorResponse(admin)) {
     return admin;
   }
-  return Response.json({ builtin: builtinSpeechStatus(), active: await currentSttBackend() });
+  return Response.json({ builtin: builtinSpeechStatus(), ...(await sttStatus()) });
 }
 
 export async function POST() {
@@ -22,5 +22,5 @@ export async function POST() {
   if (isErrorResponse(admin)) {
     return admin;
   }
-  return Response.json({ builtin: installBuiltinSpeech(), active: await currentSttBackend() });
+  return Response.json({ builtin: installBuiltinSpeech(), ...(await sttStatus()) });
 }

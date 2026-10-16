@@ -5,8 +5,10 @@ import { GameIcon } from "@/components/ui/GameIcon";
 import { ContextMenu } from "@/components/ui/ContextMenu";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { PortraitMedallion } from "@/components/sheet/SheetParts";
+import { useFaceChain } from "@/app/campaigns/[campaignId]/useFaceChain";
+import { useFaceSize } from "@/app/campaigns/[campaignId]/useFaceSize";
 import { cn } from "@/lib/cn";
-import { avatarPlaceholder, characterPlaceholder } from "@/lib/placeholders";
+import { playerFaces } from "@/lib/speaker-faces";
 import { JOIN_NOTE_PREFIX, LEAD_NOTE_PREFIX, systemNoteWords, type CampaignMember } from "@/lib/campaign-types";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
@@ -115,24 +117,20 @@ export function PlayerMessage({
   const sheet =
     (message.characterId ? sheetsById.get(message.characterId) : undefined) ??
     (message.userId ? sheets.find((candidate) => candidate.userId === message.userId) : undefined);
-  // Character portrait first, then the player's own avatar, then a stand-in:
-  // the plate for the character's class or race, or the sigil the player's
-  // id hashes to when there is no sheet to draw from.
-  const portraitUrl =
-    sheet?.portrait?.url ??
-    (message.userId ? membersById.get(message.userId)?.avatar?.url : undefined) ??
-    (sheet
-      ? characterPlaceholder({ race: sheet.race, class: sheet.class, gender: sheet.gender })
-      : message.userId
-        ? avatarPlaceholder(message.userId)
-        : undefined);
+  // Character portrait first, then the player's own avatar, then a stand-in
+  // (playerFaces); one that fails to load gives way to the next.
+  const [portraitUrl, onFaceError] = useFaceChain(
+    playerFaces({ sheet, avatarUrl: message.userId ? membersById.get(message.userId)?.avatar?.url : undefined, userId: message.userId }),
+  );
   const actions: MessageAction[] = [copyAction(message)];
   if (onReport && !mine && message.userId) {
     actions.push(reportAction(message, onReport, false));
   }
   // eslint-disable-next-line @next/next/no-img-element
-  const face = portraitUrl ? <img src={portraitUrl} alt="" /> : null;
+  const face = portraitUrl ? <img src={portraitUrl} alt="" onError={onFaceError} /> : null;
   const ooc = message.content.startsWith("(ooc)");
+  // The portrait as tall as the name and bubble beside it (useFaceSize).
+  const [faceStyle, textColumn] = useFaceSize<HTMLDivElement>();
   return (
     <ContextMenu
       items={toContextItems(actions)}
@@ -141,16 +139,16 @@ export function PlayerMessage({
     >
       {face ? (
         sheet ? (
-          <PortraitMedallion classId={sheet.class} className="session-medallion">
+          <PortraitMedallion classId={sheet.class} className="session-medallion" style={faceStyle}>
             {face}
           </PortraitMedallion>
         ) : (
-          <div className="sheet-medallion session-medallion">
+          <div className="sheet-medallion session-medallion" style={faceStyle}>
             <div className="sheet-medallion-face">{face}</div>
           </div>
         )
       ) : null}
-      <div className="min-w-0">
+      <div ref={textColumn} className="min-w-0">
         <p className="mb-1 flex items-center justify-end gap-1.5 text-right">
           <MessageActions actions={actions} menuLabel={`${sheet?.name ?? "Player"}: message actions`} quiet />
           <span className="session-speaker truncate">{sheet?.name ?? "Player"}</span>

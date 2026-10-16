@@ -12,7 +12,6 @@ import {
   endpointKind,
   filterForProvider,
   isDefaultOnly,
-  openAiToolRoute,
   profileById,
   resolveSampling,
   toolRouteFromError,
@@ -287,27 +286,15 @@ check("junk bodies yield nothing to drop", () => {
 // --- GPT-6 tool routes (issue #129) -----------------------------------------
 
 // The error OpenAI answers gpt-6.1-sol with when tools ride on Chat
-// Completions, as quoted in the issue.
+// Completions, as recorded on 2026-10-13 (the issue quoted the same text).
 const GPT6_REFUSAL = JSON.stringify({
   error: {
     message:
       "Function tools with reasoning_effort are not supported for gpt-6.1-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
     type: "invalid_request_error",
-    param: null,
+    param: "reasoning_effort",
     code: null,
   },
-});
-
-check("the GPT-6 line routes by name, everything else stays on Chat Completions", () => {
-  assert.equal(openAiToolRoute("gpt-6.1-sol"), "responses");
-  assert.equal(openAiToolRoute("gpt-6-astra"), "responses");
-  assert.equal(openAiToolRoute("GPT-6.1-Sol-2026-09-01"), "responses", "dated snapshots and case");
-  assert.equal(openAiToolRoute("gpt-6-sol"), "chat-no-reasoning");
-  assert.equal(openAiToolRoute("gpt-6-luna"), "chat-no-reasoning");
-  assert.equal(openAiToolRoute("ft:gpt-6-sol:acme::abc"), "chat-no-reasoning", "fine-tunes");
-  for (const model of ["gpt-4.1", "gpt-4o-mini", "gpt-5.5", "o4-mini", "", "qwen3.6-35b"]) {
-    assert.equal(openAiToolRoute(model), "chat", model);
-  }
 });
 
 check("the 400 names the route to take, Responses first", () => {

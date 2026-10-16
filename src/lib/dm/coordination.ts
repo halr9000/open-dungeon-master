@@ -13,12 +13,17 @@ import {
   frozenEntries,
   humansSettled,
   lapsed,
+  orderPlan,
+  resolvedNote,
   setAsideNote,
   stagePlan,
   stageRequest,
+  unconfirmedOrder,
+  withSequence,
   type CoordinationEntry,
   type CoordinationPhase,
 } from "@/lib/dm/coordination-logic";
+import { normalizeSequence, type PlanSequence } from "@/lib/dm/plan-order";
 
 // Coordinate actions (issue 254), the server half: opening a plan, staging,
 // resolving it into one DM turn, and setting it aside. The rules are in
@@ -81,7 +86,7 @@ export function coordinationRefusal(campaign: Campaign): string | null {
 export function openCoordination(
   campaign: Campaign,
   openedBy: string,
-  input: { characterIds: string[]; prompt: string },
+  input: { characterIds: string[]; prompt: string; sequence?: PlanSequence | null },
 ): { phase: CoordinationPhase } | { error: string; status: number } {
   const refusal = coordinationRefusal(campaign);
   if (refusal) {
@@ -90,10 +95,16 @@ export function openCoordination(
   if (currentCoordination(campaign.id)) {
     return { error: "The party is already coordinating; resolve or set aside that plan first.", status: 409 };
   }
+  // The characters in the order the lead picked them; the whole party, in
+  // sheet order, when none were picked.
   const wanted = new Set(input.characterIds);
-  const sheets = listSheets(campaign.id).filter((sheet) => !wanted.size || wanted.has(sheet.id));
+  const picked = input.characterIds.filter((id, index) => input.characterIds.indexOf(id) === index);
+  const party = listSheets(campaign.id);
+  const sheets = wanted.size
+    ? picked.flatMap((id) => party.filter((sheet) => sheet.id === id))
+    : party;
   const now = nowIso();
-  const entries: CoordinationEntry[] = sheets.map((sheet) => ({
+  const unordered: CoordinationEntry[] = sheets.map((sheet) => ({
     characterId: sheet.id,
     name: sheet.name,
     userId: sheet.isCompanion ? null : sheet.userId,
@@ -103,9 +114,15 @@ export function openCoordination(
     requestedBy: null,
     updatedAt: now,
   }));
-  if (!entries.some((entry) => !entry.companion)) {
+  if (!unordered.some((entry) => !entry.companion)) {
     return { error: "Pick at least one player's character to coordinate.", status: 400 };
   }
+  // The order the lead set, if any (issue 292): every character once.
+  const sequence = input.sequence ? normalizeSequence(input.sequence, unordered.map((entry) => entry.characterId)) : null;
+  if (input.sequence && !sequence) {
+    return { error: "The order must name each character in the plan once.", status: 400 };
+  }
+  const entries = withSequence(unordered, sequence);
   const phase = insertCoordination({ campaignId: campaign.id, openedBy, prompt: input.prompt.trim().slice(0, 300), entries });
   publish(campaign.id, phase);
   return { phase };
@@ -117,7 +134,7 @@ export function stageCoordination(
   campaignId: string,
   userId: string,
   input:
-    | { kind: "plan"; characterId: string; text?: string; state: "drafting" | "ready" | "pass" }
+    | { kind: "plan"; characterId: string; text?: string; state: "drafting" | "ready" | "pass"; orderSeen?: string }
     | { kind: "request"; characterId: string; text: string; requestedBy: string },
 ): { phase: CoordinationPhase } | { error: string; status: number } {
   const phase = currentCoordination(campaignId);
@@ -130,7 +147,7 @@ export function stageCoordination(
   const now = nowIso();
   const staged =
     input.kind === "plan"
-      ? stagePlan(phase, { characterId: input.characterId, userId, text: input.text, state: input.state }, now)
+      ? stagePlan(phase, { characterId: input.characterId, userId, text: input.text, state: input.state, orderSeen: input.orderSeen }, now)
       : stageRequest(phase, { characterId: input.characterId, text: input.text, requestedBy: input.requestedBy }, now);
   if ("error" in staged) {
     return { error: staged.error, status: 400 };
@@ -143,9 +160,39 @@ export function stageCoordination(
   return { phase: saved };
 }
 
+// The lead sets, changes or clears the plan's order (issue 292). A player
+// whose character was Ready and now stands elsewhere in it is asked to look
+// again before the plan can resolve (coordination-logic.ts orderPlan).
+export function orderCoordination(
+  campaignId: string,
+  sequence: PlanSequence | null,
+): { phase: CoordinationPhase } | { error: string; status: number } {
+  const phase = currentCoordination(campaignId);
+  if (!phase) {
+    return { error: "The party is not coordinating right now.", status: 409 };
+  }
+  const ordered = orderPlan(phase, sequence, nowIso());
+  if ("error" in ordered) {
+    return { error: ordered.error, status: 400 };
+  }
+  const saved = saveCoordination(ordered.phase);
+  publish(campaignId, saved);
+  return { phase: saved };
+}
+
+// Why the lead cannot resolve the plan early, or null: a player has not yet
+// seen the order the lead changed after they were Ready.
+export function earlyResolveRefusal(phase: CoordinationPhase): string | null {
+  const waiting = unconfirmedOrder(phase);
+  return waiting.length
+    ? `The order changed after ${waiting.join(" and ")} ${waiting.length === 1 ? "was" : "were"} ready; wait for ${waiting.length === 1 ? "that player" : "those players"} to mark it Ready again, or change the order back.`
+    : null;
+}
+
 // Freezes the plan and hands it to the DM: each player's line is posted as
 // their character's own action, a companion's request stays in the plan the
-// DM reads, and ONE turn is requested. Synchronous up to that request, so two
+// DM reads, and ONE turn is requested. The lines go up in the plan's order
+// (step by step when the lead set one). Synchronous up to that request, so two
 // readies landing together resolve it once; a phase no longer drafting is
 // returned as it is (a retry replays nothing).
 export function resolveCoordination(phase: CoordinationPhase): CoordinationPhase {
@@ -172,8 +219,6 @@ export function resolveCoordination(phase: CoordinationPhase): CoordinationPhase
     });
     publishWithSeq(phase.campaignId, seq, "message_added", { message });
   }
-  const passed = entries.filter((entry) => !entry.companion && entry.state === "pass").map((entry) => entry.name);
-  const asked = entries.filter((entry) => entry.companion && entry.text);
   const noteSeq = allocateSeq(phase.campaignId);
   firstSeq ??= noteSeq;
   const note = insertCampaignMessage({
@@ -181,11 +226,7 @@ export function resolveCoordination(phase: CoordinationPhase): CoordinationPhase
     seq: noteSeq,
     authorType: "system",
     glyph: "cue-bell",
-    content: [
-      "The party acts together; the DM resolves the plan as one moment.",
-      ...asked.map((entry) => `${entry.requestedBy ?? "The party"} asked ${entry.name} to ${entry.text}.`),
-      ...(passed.length ? [`Passed: ${passed.join(", ")}.`] : []),
-    ].join(" "),
+    content: resolvedNote({ entries }),
   });
   publishWithSeq(phase.campaignId, noteSeq, "message_added", { message: note });
   const resolved = saveCoordination({ ...phase, entries, status: "resolved", resolvedSeq: firstSeq, updatedAt: nowIso() });

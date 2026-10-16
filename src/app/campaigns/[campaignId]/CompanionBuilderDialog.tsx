@@ -9,6 +9,7 @@ import CharacterBuilder, {
   type BuilderResult,
 } from "@/app/characters/builder/CharacterBuilder";
 import type { Genre } from "@/lib/schemas/game-settings";
+import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { refusalText } from "@/app/characters/builder/refusal";
 
 // Whoever steers the story (the party lead in an AI campaign, the DM in a
@@ -18,6 +19,7 @@ import { refusalText } from "@/app/characters/builder/refusal";
 export function CompanionBuilderDialog({
   campaignId,
   genre,
+  worldPackId,
   level,
   humanDm = false,
   onClose,
@@ -25,6 +27,9 @@ export function CompanionBuilderDialog({
 }: {
   campaignId: string;
   genre?: Genre;
+  // The table's world pack, so the ally is built from the same peoples and
+  // callings, under the same names, the players see on the join page.
+  worldPackId?: string;
   level: number;
   // A person is running this table, so the ally is theirs to play through the
   // DM console rather than an AI's to voice. Only the sentence below changes;
@@ -39,6 +44,29 @@ export function CompanionBuilderDialog({
   // is worth using twice, and the level adaptation that makes that safe is
   // the same one player characters go through (src/lib/characters/adapt.ts).
   const [library, setLibrary] = useState<Array<{ id: string; name: string; level: number; class: string }>>([]);
+  // A library companion opened in the builder to change before it joins.
+  // What is built from it is a new sheet for this table; the library copy
+  // stays as it was.
+  const [tweaking, setTweaking] = useState<{ id: string; sheet: CreateSheetInput; level: number } | null>(null);
+  const [opening, setOpening] = useState("");
+
+  async function tweak(id: string) {
+    setOpening(id);
+    setError("");
+    try {
+      const response = await fetch(`/api/characters/${encodeURIComponent(id)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.character?.sheet) {
+        setError(refusalText(data, "Could not open that companion."));
+        return;
+      }
+      setTweaking({ id, sheet: data.character.sheet, level: data.character.level });
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setOpening("");
+    }
+  }
 
   // The state lands in a .then callback rather than after an await, so the
   // fetch reads as "subscribe to an external system" to React and to the
@@ -114,38 +142,62 @@ export function CompanionBuilderDialog({
               : "This ally joins the party as an AI companion the DM plays. They start at the party's level."}
           </p>
 
-          {library.length ? (
+          {library.length && !tweaking ? (
             <div className="reveal mb-4 space-y-1.5 rounded-lg border border-stone-800 bg-stone-950/40 px-2.5 py-2">
               <p className="text-[11px] uppercase tracking-wide text-stone-500">
                 From your library
               </p>
               <div className="stagger-pop flex flex-wrap gap-1">
                 {library.map((companion) => (
-                  <button
-                    key={companion.id}
-                    type="button"
-                    disabled={busy} aria-busy={busy}
-                    onClick={() => void post({ libraryCharacterId: companion.id })}
-                    className="rounded-md border border-stone-700 px-2 py-1 text-xs text-stone-300 hover:bg-stone-900 disabled:opacity-50"
-                  >
-                    {companion.name}
-                    <span className="ml-1 text-stone-600">level {companion.level}</span>
-                  </button>
+                  <span key={companion.id} className="inline-flex overflow-hidden rounded-md border border-stone-700">
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(opening)} aria-busy={busy}
+                      onClick={() => void post({ libraryCharacterId: companion.id })}
+                      className="px-2 py-1 text-xs text-stone-300 hover:bg-stone-900 disabled:opacity-50"
+                    >
+                      {companion.name}
+                      <span className="ml-1 text-stone-600">level {companion.level}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(opening)}
+                      aria-busy={opening === companion.id}
+                      aria-label={`Change ${companion.name} before adding`}
+                      onClick={() => void tweak(companion.id)}
+                      className="border-l border-stone-700 px-2 py-1 text-xs text-stone-400 hover:bg-stone-900 hover:text-stone-200 disabled:opacity-50"
+                    >
+                      Change first
+                    </button>
+                  </span>
                 ))}
               </div>
               <p className="text-[10px] text-stone-600">
-                They arrive at level {level}, adapted the same way a player character is.
+                They arrive at level {level}, adapted the same way a player character is. Change first
+                opens one in the builder; your library copy stays as it is.
               </p>
             </div>
           ) : null}
+          {tweaking ? (
+            <button type="button" onClick={() => setTweaking(null)} className={cn(ui.btnSmall, "mb-3")}>
+              Build a new one instead
+            </button>
+          ) : null}
           <CharacterBuilder
+            // A fresh builder for each start, so one companion's picks never
+            // carry into a new build or another companion's.
+            key={tweaking?.id ?? "new"}
             campaignId={campaignId}
             fixedLevel={level}
             genre={genre}
+            worldPackId={worldPackId}
+            initial={tweaking?.sheet}
+            initialLevel={tweaking?.level}
             submitLabel="Add companion"
             onSubmit={submit}
             busy={busy}
             error={error}
+            onCancel={onClose}
           />
         </Dialog.Content>
       </Dialog.Portal>

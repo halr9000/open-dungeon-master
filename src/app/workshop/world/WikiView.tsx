@@ -171,6 +171,10 @@ export function WikiView({
           {shown.length === 0 ? <p className="px-1 py-2 text-xs text-stone-500">{entities.length ? "Nothing matches." : "No entries yet. Make one, or open a WorldForge file."}</p> : null}
           {shown.map((entity) => {
             const type = typeOf(doc, entity);
+            // shrink-0: motion-press hides overflow, and a flex item that
+            // hides overflow has no minimum height, so the capped column
+            // squeezed forty entries into slivers over one another instead
+            // of scrolling (issue 282).
             return (
               <button
                 key={entity.ref}
@@ -178,7 +182,7 @@ export function WikiView({
                 role="option"
                 aria-selected={entity.ref === focus}
                 onClick={() => onFocus(entity.ref)}
-                className={cn("flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-left motion-press", entity.ref === focus ? "bg-amber-400/10 shadow-[0_0_16px_rgba(212,171,58,0.12)]" : "hover:bg-stone-900/70")}
+                className={cn("flex shrink-0 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left motion-press", entity.ref === focus ? "bg-amber-400/10 shadow-[0_0_16px_rgba(212,171,58,0.12)]" : "hover:bg-stone-900/70")}
               >
                 <EntityAvatar entity={entity} type={type} size="size-8" />
                 <span className="min-w-0 flex-1">

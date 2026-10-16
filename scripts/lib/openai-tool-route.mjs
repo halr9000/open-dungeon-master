@@ -1,39 +1,17 @@
-// How OpenAI runs function tools for a model, read from its name, and from
-// the 400 it answers when the name did not say. Shared by the server
+// How OpenAI runs function tools for a model, read from the 400 it answers
+// when Chat Completions cannot carry them. Shared by the server
 // (src/lib/dm/sampling-logic.ts) and the backend probe
 // (scripts/lib/provider-capability-probe.mjs), so the admin panel's Test
 // backend and a campaign turn can never disagree. Dependency-free.
 //
 // OpenAI's GPT-6 line reasons by default, and on /v1/chat/completions that
-// cannot be combined with function tools (issue #129). The line splits:
-// - gpt-6-sol and gpt-6-luna accept reasoning_effort "none", which makes
-//   tools work on Chat Completions;
-// - gpt-6.1-sol and gpt-6-astra do not accept "none" (their floor is "low"),
-//   so their tools only work on /v1/responses.
-// Everything else (gpt-4.1, gpt-5.x, the o-series) calls tools on Chat
-// Completions as it always has.
+// cannot be combined with function tools (issue #129). Its refusal says
+// what to do instead, so every model starts on Chat Completions and takes
+// the route the refusal names; nothing is decided from a model's name,
+// which would go stale with the next model OpenAI ships.
 // Source: https://developers.openai.com/api/docs/guides/latest-model
 
 /** @typedef {"chat" | "chat-no-reasoning" | "responses"} OpenAiToolRoute */
-
-const RESPONSES_ONLY = [/^gpt-6\.1-sol/, /^gpt-6-astra/];
-const NEEDS_NO_REASONING = [/^gpt-6-sol/, /^gpt-6-luna/];
-
-/**
- * The route a model's name calls for. Only meaningful for OpenAI's own host:
- * a proxy or a local server naming its model after one of these serves
- * whatever it serves, and learns its route from the first refusal instead.
- * @param {string} model
- * @returns {OpenAiToolRoute}
- */
-export function openAiToolRoute(model) {
-  const name = String(model ?? "").trim().toLowerCase();
-  // A fine-tune is named ft:<base model>:<org>:<suffix>:<id>.
-  const base = name.startsWith("ft:") ? (name.split(":")[1] ?? "") : name;
-  if (RESPONSES_ONLY.some((pattern) => pattern.test(base))) return "responses";
-  if (NEEDS_NO_REASONING.some((pattern) => pattern.test(base))) return "chat-no-reasoning";
-  return "chat";
-}
 
 /**
  * The route a 400 body asks for, or null when it asks for nothing of the

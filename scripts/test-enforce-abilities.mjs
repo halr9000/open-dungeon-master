@@ -19,8 +19,9 @@
 // builder's own gate (src/app/characters/builder/submit.ts).
 //
 // ODM's own rules, pinned: rolled scores are a pool of six placed freely, and
-// the pool may be rerolled only while it totals under 70
-// (builder/abilityDice.ts); SRD 5.1 has no reroll rule at all.
+// by default the pool may be rerolled only while it totals under 70
+// (builder/abilityDice.ts; Admin > Server or a table may set another rule,
+// test-table-rerolls.mjs); SRD 5.1 has no reroll rule at all.
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import { suite, abilityMod, proficiencyBonus } from "./lib/enforce-harness.mjs";

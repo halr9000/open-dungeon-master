@@ -2,11 +2,12 @@ import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { getCampaignById, isCampaignMember } from "@/lib/db/campaigns";
 import {
-  abilityRerollBelow,
+  abilityRollPlace,
   openAbilityPool,
   openWealthRoll,
   rollAbilityPool,
   rollStartingWealth,
+  type AbilityRollPlace,
 } from "@/lib/db/creation-rolls";
 import { describeWealthDice, startingWealthDice } from "@/lib/srd/starting-wealth";
 
@@ -20,7 +21,10 @@ export const dynamic = "force-dynamic";
 // rolled coin is held to what is on record here when it is saved.
 
 const rollSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("abilities") }),
+  // A table's id when the character is being made at it (its reroll rule,
+  // and its own kept six when it set a rule of its own); none in the
+  // library.
+  z.object({ kind: z.literal("abilities"), campaignId: z.string().trim().max(80).optional() }),
   z.object({
     kind: z.literal("wealth"),
     campaignId: z.string().trim().min(1),
@@ -68,9 +72,27 @@ export async function GET(request: Request) {
     const open = openWealthRoll(user.id, campaignId, classId);
     wealth = open ? wealthAnswer(classId, open) : null;
   }
-  // The server's reroll rule rides along even with no pool open, so the
-  // builder's words match the setting before the first throw.
-  return Response.json({ abilities: openAbilityPool(user.id), wealth, rerollBelow: abilityRerollBelow() });
+  const place = abilityPlace(user.id, campaignId);
+  if ("error" in place) {
+    return place.error;
+  }
+  // The reroll rule where the character is being made rides along even with
+  // no pool open, so the builder's words match it before the first throw.
+  return Response.json({ abilities: openAbilityPool(user.id, place), wealth, rerollBelow: place.rerollBelow });
+}
+
+// The library, or a table the player belongs to: where their ability roll is
+// kept and the reroll rule it answers to (abilityRollPlace). A table that
+// follows the server answers with the library's six, but only to a member.
+function abilityPlace(userId: string, campaignId: string): AbilityRollPlace | { error: Response } {
+  if (!campaignId) {
+    return abilityRollPlace();
+  }
+  const campaign = getCampaignById(campaignId);
+  if (!campaign || !isCampaignMember(campaignId, userId)) {
+    return { error: Response.json({ error: "That campaign is not one of yours." }, { status: 404 }) };
+  }
+  return abilityRollPlace(campaign);
 }
 
 export async function POST(request: Request) {
@@ -86,9 +108,13 @@ export async function POST(request: Request) {
     );
   }
   if (parsed.data.kind === "abilities") {
-    // Six at or over the server's threshold stand: asking again answers
-    // with the same six, marked kept.
-    return Response.json({ abilities: rollAbilityPool(user.id) });
+    // Six at or over the place's threshold stand: asking again answers with
+    // the same six, marked kept.
+    const place = abilityPlace(user.id, parsed.data.campaignId ?? "");
+    if ("error" in place) {
+      return place.error;
+    }
+    return Response.json({ abilities: rollAbilityPool(user.id, place) });
   }
   const refused = wealthRefusal(user.id, parsed.data.campaignId);
   if (refused) {

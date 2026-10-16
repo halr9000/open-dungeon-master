@@ -62,6 +62,10 @@ export function StoryAiPanel({
   // This campaign's own backend, which for a table on its own OpenAI key is
   // ready even when the server has no image backend of its own.
   const [imagesReady, setImagesReady] = useState(true);
+  // Its backend is there but has no model picked, so it paints nothing
+  // (src/lib/db/settings.ts); the server's own ComfyUI said the same.
+  const [imagesNeedModel, setImagesNeedModel] = useState(false);
+  const [serverImagesNeedModel, setServerImagesNeedModel] = useState(false);
   // A world an app hosts: the backend is chosen once for the device and every
   // campaign follows it, so this panel shows it instead of editing it. null
   // until the answer lands, so the editable rows never flash on a device.
@@ -96,6 +100,7 @@ export function StoryAiPanel({
           setHasCustomKey(data.settings.hasCustomApiKey);
           setHasUtilityKey(data.settings.hasUtilityApiKey);
           setImagesReady(data.settings.imagesReady);
+          setImagesNeedModel(data.settings.imagesNeedModel === true);
           setServerManaged(data.settings.serverManaged === true);
         }
         if (!cancelled && data?.harness) {
@@ -113,9 +118,10 @@ export function StoryAiPanel({
       });
     void fetch("/api/capabilities")
       .then((response) => (response.ok ? response.json() : null))
-      .then((data: { images?: { configured?: boolean } } | null) => {
+      .then((data: { images?: { configured?: boolean; needsModel?: boolean } } | null) => {
         if (!cancelled && data?.images) {
           setImagesConfigured(data.images.configured !== false);
+          setServerImagesNeedModel(data.images.needsModel === true);
         }
       })
       .catch(() => undefined);
@@ -146,6 +152,7 @@ export function StoryAiPanel({
         setHasCustomKey(data.settings.hasCustomApiKey);
         setHasUtilityKey(data.settings.hasUtilityApiKey);
         setImagesReady(data.settings.imagesReady);
+        setImagesNeedModel(data.settings.imagesNeedModel === true);
       }
       if (data.harness) {
         setHarness(data.harness);
@@ -497,7 +504,17 @@ export function StoryAiPanel({
             </>
           ) : null}
         </div>
-        {settings.imageGenerationEnabled && settings.imageBackend === "openai" && !imagesReady ? (
+        {settings.imageGenerationEnabled &&
+        imagesNeedModel &&
+        (settings.imageBackend === "openai" || (settings.imageBackend === "comfyui" && serverImagesNeedModel)) ? (
+          <p className="reveal text-amber-400/90">
+            {deviceManaged && settings.imageBackend === "openai"
+              ? "No picture model is saved on this device, so nothing is painted. Save your key again from Story AI on the app's home screen, which picks one from the key's list, or pick one in Admin > Image generation."
+              : serverManaged
+                ? "No picture model is picked on this server, so nothing is painted. An admin picks one in Admin > Image generation."
+                : "No picture model is picked, so nothing is painted until one is. Pick it in Admin > Image generation."}
+          </p>
+        ) : settings.imageGenerationEnabled && settings.imageBackend === "openai" && !imagesReady ? (
           <p className="reveal text-amber-400/90">
             {deviceManaged
               ? "No OpenAI API key is saved on this device. Add one from Story AI on the app's home screen and it covers narration and pictures in every campaign."

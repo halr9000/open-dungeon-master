@@ -56,7 +56,9 @@ function rows(input: {
         ? { key: "pictures", title: "Pictures", tone: "wait", text: "Asking…", step: steps.pictures }
         : caps.images.configured && caps.images.reachable
           ? { key: "pictures", title: "Pictures", tone: "ok", text: draft.pictures === "comfyui" ? "ComfyUI paints them" : draft.pictures === "openai" ? "OpenAI paints them, on the key" : "The agent paints them", step: steps.pictures }
-          : { key: "pictures", title: "Pictures", tone: "warn", text: "Saved, but not answering yet. Tables use placeholders until it does.", step: steps.pictures };
+          : caps.images.needsModel
+            ? { key: "pictures", title: "Pictures", tone: "warn", text: "Saved, but no model is picked, so nothing is painted until one is.", step: steps.pictures }
+            : { key: "pictures", title: "Pictures", tone: "warn", text: "Saved, but not answering yet. Tables use placeholders until it does.", step: steps.pictures };
   const narration: Row =
     draft.narration === "off"
       ? { key: "narration", title: "Narration", tone: "off", text: "Text only", step: steps.voice }
@@ -64,7 +66,9 @@ function rows(input: {
         ? { key: "narration", title: "Narration", tone: "wait", text: "Asking…", step: steps.voice }
         : caps.tts.configured && caps.tts.reachable
           ? { key: "narration", title: "Narration", tone: "ok", text: draft.narration === "kokoro" ? "Kokoro reads it aloud" : "OpenAI reads it aloud, on the key", step: steps.voice }
-          : { key: "narration", title: "Narration", tone: "warn", text: "Saved, but not answering yet.", step: steps.voice };
+          : caps.tts.needsModel
+            ? { key: "narration", title: "Narration", tone: "warn", text: "Saved, but no model is picked, so nothing is read aloud until one is.", step: steps.voice }
+            : { key: "narration", title: "Narration", tone: "warn", text: "Saved, but not answering yet.", step: steps.voice };
   const dictation: Row = wait
     ? { key: "dictation", title: "Dictation", tone: "wait", text: "Asking…", step: steps.voice }
     : caps.stt.configured

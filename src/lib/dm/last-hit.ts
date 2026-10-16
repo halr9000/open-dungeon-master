@@ -18,9 +18,8 @@
 //
 // One record per character per campaign, replaced by the next attack. It
 // answers a reaction only while it is fresh: in a fight, the same round and
-// the same turn; out of one, the last ten minutes. The table is this
-// module's own and is created on first use, so the schema file does not
-// have to know about it; old databases simply start without records.
+// the same turn; out of one, the last ten minutes. The table is made with
+// the schema (src/lib/db/core.ts), so deleting a campaign can clear its rows.
 
 import { sheetSpellAuthors } from "@/lib/dm/spell-authors";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
@@ -99,24 +98,7 @@ export function rerollAttacker(record: LastHit): RollAttacker | null {
     : null;
 }
 
-const ensured = new WeakSet<object>();
-
-function db() {
-  const database = getDatabase();
-  if (!ensured.has(database)) {
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS last_hits (
-        campaign_id TEXT NOT NULL,
-        character_id TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (campaign_id, character_id)
-      );
-    `);
-    ensured.add(database);
-  }
-  return database;
-}
+const db = getDatabase;
 
 export function writeLastHit(campaignId: string, record: LastHit) {
   db()

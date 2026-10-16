@@ -159,6 +159,9 @@ export async function childPath(binary: string): Promise<string> {
   return [...new Set(parts)].join(path.delimiter);
 }
 
+// `names` in order of preference: a name found in any folder beats the next
+// name found in an earlier one (opencode's `opencode2` is 2.x even where a
+// 1.x `opencode` comes first on PATH).
 export async function findBinary(names: readonly string[], explicit = ""): Promise<string | null> {
   const home = os.homedir();
   if (explicit.trim()) {
@@ -171,8 +174,8 @@ export async function findBinary(names: readonly string[], explicit = ""): Promi
     ...knownInstallDirs(home),
     ...nodeManagerDirs(home),
   ].filter(Boolean);
-  for (const dir of [...new Set(dirs)]) {
-    for (const name of names) {
+  for (const name of names) {
+    for (const dir of [...new Set(dirs)]) {
       for (const candidate of candidatesIn(dir, name)) {
         if (executable(candidate)) {
           return candidate;

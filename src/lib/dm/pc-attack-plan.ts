@@ -154,7 +154,7 @@ export function planPcAttack(input: {
   }
   const { enemy, giantKiller } = gate;
 
-  const built = buildAttackProfile(campaign.id, sheet, args);
+  const built = buildAttackProfile(campaign.id, sheet, args, { apart: tilesBetween(encounter.id, sheet.id, enemy.id) });
   if ("error" in built) {
     return { refused: built };
   }

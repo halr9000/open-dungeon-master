@@ -6,38 +6,114 @@
 // every test stage and narrated turns. The admin page still marks the
 // lockdown unproven on each install until its own test turn passes.
 //
-// Lockdown, "contained": Codex has no switch that removes its apply_patch
-// tool (openai/codex#8161 was closed as not planned). What it gets instead:
-// the shell, web search, image viewing, apps and sub-agents all switched
-// off; a read-only sandbox; approvals set to never, with ODM declining every
-// command or file-change approval that is still requested; an empty scratch
-// folder as its working directory; and the admin's own MCP servers disabled
-// by name so only ODM's is connected.
+// What the model is sent, checked on 0.162.1 on 2026-10-14 by recording the
+// request Codex makes: ODM's system prompt as the one developer block, ODM's
+// tools, and five tools of Codex's own that no setting removes: apply_patch
+// (openai/codex#8161 was closed as not planned), request_user_input
+// (answered empty) and the three MCP resource readers, which see only ODM's
+// server. Nothing of the admin's own: Codex reads their AGENTS.md from its
+// home whatever the settings say, so each run gets a home of its own
+// (prepareCodexHome) and refuses to start if Codex names any instructions it
+// loaded; their skills, plugins and MCP servers are switched off. Codex's
+// shell, web search, image viewer, apps, sub-agents, goals, clock and
+// code-mode runner are gone, as are its permissions, collaboration mode and
+// environment blocks.
 //
-// The switches were checked on 2026-10-09 by asking Codex itself to name its
-// tools under these flags (0.159.2 and 0.162.1 agree): `features.view_image`
-// and `agents.enabled` are the keys that remove the image viewer and the
-// collaboration tools; `tools.view_image` never existed and
-// `features.multi_agent` does not cover the current models. What stays is
-// Codex's own code-mode runner (`exec`/`wait`, JavaScript over its own
-// tools, no shell), goals, the clock, request_user_input (answered empty)
-// and apply_patch, all inside the read-only sandbox. Codex reports any
-// setting it does not recognise as a `configWarning` notification; the probe
-// listens for it and the admin card shows the key, so the next rename is
-// seen rather than silently ignored.
+// Lockdown, "contained" while apply_patch remains: a read-only sandbox,
+// approvals set to never with ODM declining every command or file-change
+// approval that is still requested, and a scratch folder as its working
+// directory, holding only the run's own Codex home. Codex reports any setting
+// it does not recognise as a `configWarning` notification; the probe listens
+// for it and the admin card shows the key, so the next rename is seen rather
+// than silently ignored.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { noteSpeed } from "@/lib/speed-status";
 import os from "node:os";
 import path from "node:path";
+import { onWindows } from "../../host-platform.ts";
 import { startJsonRpc } from "../jsonrpc-stdio.ts";
 import { runProgram } from "../process.ts";
-import type { HarnessAdapter, HarnessModel, HarnessStartOptions } from "../types.ts";
+import { isHarnessEffort } from "../types.ts";
+import type { HarnessAdapter, HarnessConfig, HarnessModel, HarnessStartOptions, HarnessStatus, HarnessUsage } from "../types.ts";
 
 const TOKEN_ENV = "ODM_MCP_TOKEN";
 
 export function codexHome(env: Record<string, string | undefined>): string {
   return env.CODEX_HOME || path.join(env.HOME || os.homedir(), ".codex");
+}
+
+// What a run's own Codex home holds of the admin's: the sign-in, their
+// config (a provider or an API-key setup lives there) and the installation id.
+// Their AGENTS.md, skills and plugins stay behind, and the stores Codex keeps
+// go with the run folder.
+const LINKED_FROM_ADMIN_HOME = ["auth.json", "config.toml", "installation_id"] as const;
+
+// Codex rewrites auth.json in place when it refreshes the sign-in, so through
+// a link the refreshed tokens land in the admin's own file. Windows needs a
+// privilege for a file symlink but none for a hard link, and its temp folder
+// usually sits on the profile's drive (codexHomeTrouble when it does not).
+export function prepareCodexHome(adminHome: string, runHome: string): void {
+  mkdirSync(runHome, { recursive: true });
+  for (const name of LINKED_FROM_ADMIN_HOME) {
+    const target = path.join(adminHome, name);
+    if (existsSync(target)) {
+      (onWindows() ? linkSync : symlinkSync)(target, path.join(runHome, name));
+    }
+  }
+}
+
+export type CodexCatalogModel = {
+  slug: string;
+  supported_reasoning_levels: Array<{ effort: string }>;
+  [key: string]: unknown;
+};
+
+// `codex debug models`: the catalog this Codex runs with for this sign-in.
+export function parseCodexCatalog(raw: string): CodexCatalogModel[] {
+  const catalog = JSON.parse(raw) as { models?: unknown };
+  const models = Array.isArray(catalog.models) ? (catalog.models as CodexCatalogModel[]) : [];
+  if (models.length === 0 || !models.every((model) => typeof model.slug === "string" && Array.isArray(model.supported_reasoning_levels))) {
+    throw new Error("Codex listed no models it can run.");
+  }
+  return models;
+}
+
+// Current models are listed as "code_mode_only": every tool, ODM's included,
+// is reached through Codex's own JavaScript runner after a search, and a
+// clock and a message tool ride along. The same catalog marked "direct" puts
+// ODM's tools in the request, callable on the first step.
+export function directCatalog(models: readonly CodexCatalogModel[]): string {
+  return JSON.stringify({
+    models: models.map((model) => ({ ...model, tool_mode: "direct", supports_search_tool: false, experimental_supported_tools: [] })),
+  });
+}
+
+// The admin's effort, as long as the chosen model offers it; otherwise the
+// model runs at its own default (the admin card says so).
+export function codexEffort(
+  models: readonly CodexCatalogModel[],
+  model: string,
+  effort: HarnessConfig["effort"],
+): string | null {
+  const levels = models.find((entry) => entry.slug === model)?.supported_reasoning_levels ?? [];
+  return effort && levels.some((level) => level.effort === effort) ? effort : null;
+}
+
+export type CodexTokens = { inputTokens: number; outputTokens: number };
+
+// `thread/tokenUsage/updated` reports the thread's running total. Codex's
+// input already counts the cached prompt, and its output the reasoning: what
+// the ledger counts for an OpenAI-compatible backend.
+export function codexTokenTotal(params: Record<string, unknown>): CodexTokens | null {
+  const total = (params.tokenUsage as { total?: { inputTokens?: unknown; outputTokens?: unknown } } | undefined)?.total;
+  return typeof total?.inputTokens === "number" && typeof total.outputTokens === "number"
+    ? { inputTokens: total.inputTokens, outputTokens: total.outputTokens }
+    : null;
+}
+
+export function codexTurnUsage(atTurnStart: CodexTokens, now: CodexTokens): HarnessUsage {
+  return { inputTokens: now.inputTokens - atTurnStart.inputTokens, outputTokens: now.outputTokens - atTurnStart.outputTokens };
 }
 
 // Names of MCP servers in the admin's own Codex config, to switch off.
@@ -58,6 +134,7 @@ export function codexArgs(options: {
   mcpUrl: string | null;
   images: boolean;
   disableServers: readonly string[];
+  catalogPath: string | null;
 }): string[] {
   const overrides: Array<[string, string | boolean | number]> = [
     ["features.shell_tool", false],
@@ -73,11 +150,25 @@ export function codexArgs(options: {
     // them, and it is honoured from 0.159.2 on.
     ["agents.enabled", false],
     ["web_search", "disabled"],
+    // What the direct catalog (directCatalog) still lets Codex add, each
+    // checked against the request it sends: goals, plugins (which bring
+    // skills and MCP servers of their own), the list of Codex's own skills,
+    // and its blocks beside ODM's prompt: sandbox rules, collaboration mode,
+    // and the folder, shell, date and timezone it runs in.
+    ["features.goals", false],
+    ["features.plugins", false],
+    ["skills.include_instructions", false],
+    ["include_permissions_instructions", false],
+    ["include_collaboration_mode_instructions", false],
+    ["include_environment_context", false],
     ["sandbox_mode", "read-only"],
     ["approval_policy", "never"],
     ["check_for_update_on_startup", false],
     ["history.persistence", "none"],
   ];
+  if (options.catalogPath) {
+    overrides.push(["model_catalog_json", options.catalogPath]);
+  }
   for (const name of options.disableServers) {
     overrides.push([`mcp_servers.${name}.enabled`, false]);
   }
@@ -106,9 +197,25 @@ function asText(value: unknown): string {
 }
 
 async function start(options: HarnessStartOptions) {
+  const adminHome = codexHome(options.env);
+  const runHome = path.join(options.cwd, "codex-home");
+  try {
+    prepareCodexHome(adminHome, runHome);
+  } catch (error) {
+    throw new Error(codexHomeTrouble(error));
+  }
+  const env = { ...options.env, CODEX_HOME: runHome };
+  // The whole catalog: Codex takes this file in place of its own list.
+  const dumped = await runProgram(options.binary, ["debug", "models"], env, 30_000, options.cwd, Number.POSITIVE_INFINITY);
+  if (dumped.code !== 0) {
+    throw new Error(`Codex could not list its models: ${dumped.stderr.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 400)}`);
+  }
+  const catalog = parseCodexCatalog(dumped.stdout);
+  const catalogPath = path.join(runHome, "catalog.json");
+  writeFileSync(catalogPath, directCatalog(catalog));
   let configToml = "";
   try {
-    const file = path.join(codexHome(options.env), "config.toml");
+    const file = path.join(adminHome, "config.toml");
     if (existsSync(file)) {
       configToml = readFileSync(file, "utf8");
     }
@@ -119,8 +226,11 @@ async function start(options: HarnessStartOptions) {
     mcpUrl: options.mcp?.url ?? null,
     images: Boolean(options.images),
     disableServers: userCodexMcpServers(configToml),
+    catalogPath,
   });
   let closed = false;
+  let tokens: CodexTokens = { inputTokens: 0, outputTokens: 0 };
+  let tokensAtTurnStart = tokens;
   let threadId = "";
   let lastMessage = "";
   const agentMessages = new Map<string, string>();
@@ -128,7 +238,7 @@ async function start(options: HarnessStartOptions) {
   const peer = startJsonRpc(
     options.binary,
     args,
-    { cwd: options.cwd, env: { ...options.env, ...(options.mcp ? { [TOKEN_ENV]: options.mcp.token } : {}) } },
+    { cwd: options.cwd, env: { ...env, ...(options.mcp ? { [TOKEN_ENV]: options.mcp.token } : {}) } },
     {
       onNotification(method, params) {
         if (method === "item/agentMessage/delta") {
@@ -179,6 +289,8 @@ async function start(options: HarnessStartOptions) {
         }
         if (method === "turn/completed") {
           const turn = (params.turn ?? {}) as { status?: string; error?: { message?: string } };
+          // A failed turn ends without a turn_end, so the tokens it spent
+          // are counted with the next one that finishes.
           if (turn.status === "failed" || turn.error) {
             const message = turn.error?.message ?? "Codex could not finish the turn.";
             options.onEvent({
@@ -188,9 +300,14 @@ async function start(options: HarnessStartOptions) {
             });
             return;
           }
-          options.onEvent({ type: "turn_end", text: lastMessage.trim() });
+          options.onEvent({ type: "turn_end", text: lastMessage.trim(), usage: codexTurnUsage(tokensAtTurnStart, tokens) });
+          tokensAtTurnStart = tokens;
           lastMessage = "";
           agentMessages.clear();
+          return;
+        }
+        if (method === "thread/tokenUsage/updated") {
+          tokens = codexTokenTotal(params) ?? tokens;
           return;
         }
         if (method === "account/rateLimits/updated") {
@@ -250,7 +367,13 @@ async function start(options: HarnessStartOptions) {
     capabilities: { experimentalApi: true },
   });
   peer.notify("initialized", {});
-  const started = await peer.request<{ thread?: { id?: string }; threadId?: string; serviceTier?: string | null }>("thread/start", {
+  const started = await peer.request<{
+    thread?: { id?: string };
+    threadId?: string;
+    serviceTier?: string | null;
+    model: string;
+    instructionSources?: string[];
+  }>("thread/start", {
     cwd: options.cwd,
     approvalPolicy: "never",
     sandbox: "read-only",
@@ -272,6 +395,18 @@ async function start(options: HarnessStartOptions) {
     peer.kill();
     throw new Error("Codex did not start a thread.");
   }
+  // Codex names every AGENTS.md it loaded; the run's own home holds none, so
+  // one here came from somewhere ODM did not expect, and nothing is sent.
+  const loaded = started.instructionSources ?? [];
+  if (loaded.length > 0) {
+    const message = `Codex loaded instructions of its own (${loaded.join(", ")}), so no turn was started.`;
+    peer.kill();
+    options.onEvent({ type: "error", kind: "lockdown", message });
+    throw new Error(message);
+  }
+  // Checked against the model the thread runs on, the program's default
+  // included, as opencode's adapter does.
+  const effort = codexEffort(catalog, started.model, options.effort);
   options.onEvent({ type: "ready", tools: [] });
 
   return {
@@ -283,7 +418,7 @@ async function start(options: HarnessStartOptions) {
           approvalPolicy: "never",
           sandboxPolicy: { type: "readOnly" },
           ...(options.model ? { model: options.model } : {}),
-          ...(options.effort ? { effort: options.effort === "max" || options.effort === "xhigh" ? "high" : options.effort } : {}),
+          ...(effort ? { effort } : {}),
         })
         .catch((error) =>
           options.onEvent({ type: "error", kind: "crash", message: error instanceof Error ? error.message : String(error) }),
@@ -303,9 +438,47 @@ export function ignoredCodexSettings(summary: string): string[] {
   return [...new Set([...summary.matchAll(/`([^`]+)` is ignored/g)].map((match) => match[1]))];
 }
 
-async function probeAppServer(binary: string, env: Record<string, string>) {
-  const cwd = os.tmpdir();
+// `model/list`'s entry for one model, as far as the card reads it.
+type CodexListedModel = {
+  id?: string;
+  model?: string;
+  displayName?: string;
+  serviceTiers?: Array<{ id?: string }>;
+  supportedReasoningEfforts?: Array<{ reasoningEffort?: string }>;
+  // The model Codex runs when none is chosen.
+  isDefault?: boolean;
+};
+
+export function codexModel(entry: CodexListedModel): HarnessModel | null {
+  const id = entry.model ?? entry.id;
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    label: entry.displayName ?? id,
+    // The tiers this sign-in offers for the model (issue 255).
+    fast: (entry.serviceTiers ?? []).some((tier) => /^(fast|priority)$/i.test(tier.id ?? "")),
+    efforts: (entry.supportedReasoningEfforts ?? [])
+      .map((level) => level.reasoningEffort ?? "")
+      .filter(isHarnessEffort),
+  };
+}
+
+// Shown on the card when a run could not get its own Codex home: every run
+// would fail the same way. On Windows the sign-in is hard-linked, which only
+// works on the drive the temp folder is on.
+export function codexHomeTrouble(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  const detail = error instanceof Error ? error.message : String(error);
+  return code === "EXDEV"
+    ? `A table's Codex run links your Codex sign-in into a folder of its own, and your Codex folder is on another drive than the temp folder (${detail}). Move CODEX_HOME to the temp folder's drive.`
+    : `A table's Codex run links your Codex sign-in into a folder of its own, and that failed here (${detail}).`;
+}
+
+async function probeAppServer(binary: string, env: Record<string, string>, cwd: string) {
   const models: HarnessModel[] = [];
+  let defaultEfforts: HarnessModel["efforts"];
   const ignored: string[] = [];
   let auth: { state: "ready" | "signed-out" | "unknown"; kind?: "subscription" | "api-key"; plan?: string; account?: string } = {
     state: "unknown",
@@ -313,7 +486,7 @@ async function probeAppServer(binary: string, env: Record<string, string>) {
   // Started with the table's own lockdown flags, so that a key this version
   // of Codex no longer recognises is reported here, on the admin card,
   // rather than discovered when a turn has already run without it.
-  const peer = startJsonRpc(binary, codexArgs({ mcpUrl: null, images: false, disableServers: [] }), { cwd, env }, {
+  const peer = startJsonRpc(binary, codexArgs({ mcpUrl: null, images: false, disableServers: [], catalogPath: null }), { cwd, env }, {
     onNotification(method, params) {
       if (method === "configWarning") {
         ignored.push(...ignoredCodexSettings(asText(params.summary)));
@@ -345,24 +518,19 @@ async function probeAppServer(binary: string, env: Record<string, string>) {
     let cursor: string | undefined;
     for (let page = 0; page < 5; page += 1) {
       const listed = await peer
-        .request<{
-          data?: Array<{ id?: string; model?: string; displayName?: string; serviceTiers?: Array<{ id?: string }> }>;
-          nextCursor?: string;
-        }>(
+        .request<{ data?: CodexListedModel[]; nextCursor?: string }>(
           "model/list",
           cursor ? { cursor } : {},
           15_000,
         )
         .catch(() => null);
       for (const entry of listed?.data ?? []) {
-        const id = entry.model ?? entry.id;
-        if (id) {
-          models.push({
-            id,
-            label: entry.displayName ?? id,
-            // The tiers this sign-in offers for the model (issue 255).
-            fast: (entry.serviceTiers ?? []).some((tier) => /^(fast|priority)$/i.test(tier.id ?? "")),
-          });
+        const model = codexModel(entry);
+        if (model) {
+          models.push(model);
+          if (entry.isDefault) {
+            defaultEfforts = model.efforts;
+          }
         }
       }
       cursor = listed?.nextCursor;
@@ -373,7 +541,7 @@ async function probeAppServer(binary: string, env: Record<string, string>) {
   } finally {
     peer.kill();
   }
-  return { auth, models, ignored };
+  return { auth, models, defaultEfforts, ignored };
 }
 
 export const codexAdapter: HarnessAdapter = {
@@ -390,12 +558,30 @@ export const codexAdapter: HarnessAdapter = {
     if (!installed) {
       return { installed: false, auth: { state: "unknown" }, models: [] };
     }
-    const { auth, models, ignored } = await probeAppServer(binary, env).catch(() => ({
-      auth: { state: "unknown" as const },
-      models: [] as HarnessModel[],
-      ignored: [] as string[],
-    }));
+    // The same kind of home a run gets, so the card shows what a run will see.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "odm-codex-probe-"));
     const notes: string[] = [];
+    let probed: { auth: HarnessStatus["auth"]; models: HarnessModel[]; defaultEfforts?: HarnessModel["efforts"]; ignored: string[] } = {
+      auth: { state: "unknown" },
+      models: [],
+      ignored: [],
+    };
+    try {
+      const runHome = path.join(cwd, "codex-home");
+      prepareCodexHome(codexHome(env), runHome);
+      probed = await probeAppServer(binary, { ...env, CODEX_HOME: runHome }, cwd).catch(() => probed);
+    } catch (error) {
+      notes.push(codexHomeTrouble(error));
+    } finally {
+      // Best effort, as the bridge's own run folders: on Windows Codex may
+      // still hold it while going down.
+      try {
+        rmSync(cwd, { recursive: true, force: true });
+      } catch {
+        // A temp folder.
+      }
+    }
+    const { auth, models, defaultEfforts, ignored } = probed;
     if (auth.state === "signed-out") {
       notes.push("Codex is installed but not signed in on this machine.");
     }
@@ -409,6 +595,7 @@ export const codexAdapter: HarnessAdapter = {
       version: version.stdout.trim().split(/\s+/).pop(),
       auth,
       models,
+      defaultEfforts,
       lockdownProven: false,
       message: notes.length > 0 ? notes.join(" ") : undefined,
     };

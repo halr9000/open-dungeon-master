@@ -8,6 +8,7 @@ import { createStreamWatchdog } from "@/app/campaigns/[campaignId]/streamWatchdo
 import {
   appendDmDraft,
   clearDmDraft,
+  replaceDmDraft,
   setDmDraftSeq,
   resetLiveStores,
   setVoiceSpeaking,
@@ -139,6 +140,8 @@ export type CampaignLocation = {
   visited: boolean;
   isCurrent: boolean;
   mapImage: { url: string } | null;
+  // Why its last map render failed, while it has none (src/lib/db/locations.ts).
+  mapFailed?: string | null;
   // The place's ambience bed and music, which name its kind of scene.
   ambience: { bed: string; music: string } | null;
   updatedAt: string;
@@ -673,7 +676,7 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "location_map_ready":
           next.locations = state.locations.map((location) =>
             location.id === payload.locationId
-              ? { ...location, mapImage: payload.image as CampaignLocation["mapImage"] }
+              ? { ...location, mapImage: payload.image as CampaignLocation["mapImage"], mapFailed: null }
               : location,
           );
           next.mediaStatus = withoutKey(state.mediaStatus, String(payload.locationId ?? ""));
@@ -1049,6 +1052,8 @@ const EPHEMERAL_EVENTS = [
   "dm_status",
   "utility_calls",
   "dm_delta",
+  // The turn withheld text it had streamed: the draft shows what it kept.
+  "dm_draft_reset",
   // A player answered the streaming passage: where it will be written.
   "dm_draft_seq",
   "media_status",
@@ -1080,6 +1085,9 @@ const EPHEMERAL_EVENTS = [
   // Who has the campaign open right now. Worthless after the fact, like the
   // voice roster, so it is never replayed.
   "presence",
+  // Prep came in from a workshop mid-campaign. Contentless: the handler
+  // reloads the snapshot, and a reconnect resyncs anyway.
+  "prep_imported",
 ];
 const EPHEMERAL_EVENT_SET = new Set(EPHEMERAL_EVENTS);
 // Every type the stream listens for; an event outside it never reaches the
@@ -1467,6 +1475,8 @@ export function useCampaignStream(campaignId: string) {
           // the draft bubble and the voice dock alone (liveStore.ts).
           if (eventType === "dm_delta") {
             appendDmDraft(String(payload.text ?? ""));
+          } else if (eventType === "dm_draft_reset") {
+            replaceDmDraft(String(payload.text ?? ""));
           } else if (eventType === "dm_draft_seq") {
             setDmDraftSeq(typeof payload.seq === "number" ? payload.seq : null);
           } else if (eventType === "voice_speaking") {
@@ -1481,6 +1491,10 @@ export function useCampaignStream(campaignId: string) {
           // A rewind mass-deletes state that incremental events cannot
           // express; reload everything from the snapshot endpoint.
           if (eventType === "campaign_rewound") {
+            resync();
+          }
+          // Imported prep lands in a dozen tables at once; the same reload.
+          if (eventType === "prep_imported") {
             resync();
           }
           if (eventType === "side_activity") {

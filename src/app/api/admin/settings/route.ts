@@ -7,6 +7,7 @@ import { isComfyPreset } from "@/lib/image-models/catalog";
 import { resolveSignupMode, type GlobalConfig } from "@/lib/schemas/global-config";
 import { announcedAddressFor, isUnroutableAddress, voiceConfig } from "@/lib/voice/config";
 import { forgetHarnessStatus } from "@/lib/harness/status";
+import { HARNESS_EFFORTS } from "@/lib/harness/types";
 import { rescueStrandedCampaigns, type RescueMove } from "@/lib/image-backend-rescue";
 
 export const runtime = "nodejs";
@@ -58,6 +59,8 @@ function maskedConfig(config: GlobalConfig) {
       hasTtsApiKey: config.speech.ttsApiKey !== "",
       ttsVoice: config.speech.ttsVoice,
       sttUrl: config.speech.sttUrl,
+      sttModel: config.speech.sttModel,
+      sttOpenaiModel: config.speech.sttOpenaiModel,
     },
     voiceChat: config.voiceChat,
     discord: {
@@ -75,18 +78,23 @@ function envDefaults() {
   return {
     customBaseUrl: serverEnv("OPENAI_COMPAT_BASE_URL"),
     customModel: serverEnv("OPENAI_COMPAT_MODEL"),
+    localTextModel: serverEnv("LOCAL_TEXT_MODEL"),
     hasCustomApiKey: serverEnv("OPENAI_COMPAT_API_KEY") !== "" || serverEnv("OPENROUTER_API_KEY") !== "",
     comfyUrl: serverEnv("COMFYUI_URL", "http://127.0.0.1:8188"),
     fluxWorkerUrl: serverEnv("FLUX_WORKER_URL", "http://127.0.0.1:7869"),
     imageBackend: serverEnv("DEFAULT_IMAGE_BACKEND"),
     hasOpenaiImageApiKey:
       serverEnv("OPENAI_IMAGE_API_KEY") !== "" || serverEnv("OPENAI_API_KEY") !== "",
+    openaiImageModel: serverEnv("OPENAI_IMAGE_MODEL"),
+    openaiImageBaseUrl: serverEnv("OPENAI_IMAGE_BASE_URL"),
     kokoroUrl: serverEnv("KOKORO_URL", "http://127.0.0.1:8880"),
     ttsProvider: serverEnv("TTS_PROVIDER"),
     ttsBaseUrl: serverEnv("TTS_BASE_URL"),
     ttsModel: serverEnv("TTS_MODEL"),
     hasTtsApiKey: serverEnv("TTS_API_KEY") !== "",
     sttUrl: serverEnv("STT_URL", "http://127.0.0.1:8870"),
+    sttModel: serverEnv("STT_MODEL"),
+    sttOpenaiModel: serverEnv("STT_OPENAI_MODEL"),
     discordClientId: serverEnv("DISCORD_CLIENT_ID"),
     hasDiscordClientSecret: serverEnv("DISCORD_CLIENT_SECRET") !== "",
     publicUrl: serverEnv("APP_PUBLIC_URL"),
@@ -175,6 +183,8 @@ const patchSchema = z.object({
       ttsApiKey: z.string().trim().max(400).optional(),
       ttsVoice: z.string().trim().max(120).optional(),
       sttUrl: z.string().trim().max(500).optional(),
+      sttModel: z.string().trim().max(200).optional(),
+      sttOpenaiModel: z.string().trim().max(200).optional(),
     })
     .optional(),
   voiceChat: z
@@ -206,7 +216,7 @@ const patchSchema = z.object({
       binaryPath: z.string().trim().max(500).optional(),
       model: z.string().trim().max(200).optional(),
       utilityModel: z.string().trim().max(200).optional(),
-      effort: z.enum(["", "low", "medium", "high", "xhigh", "max"]).optional(),
+      effort: z.enum(["", ...HARNESS_EFFORTS]).optional(),
       speed: z.enum(["", "fast"]).optional(),
       utilitySpeed: z.enum(["", "fast"]).optional(),
       images: z.enum(["off", "native"]).optional(),

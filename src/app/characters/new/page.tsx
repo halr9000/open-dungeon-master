@@ -62,6 +62,7 @@ export default function NewCharacterPage() {
         busy={busy}
         error={error}
         role={{ value: role, onChange: setRole }}
+        onCancel={() => navigateTo("/characters")}
       />
     </main>
   );

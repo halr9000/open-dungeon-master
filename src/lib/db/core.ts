@@ -657,6 +657,34 @@ function ensureSchema(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_workshop_beats_campaign
       ON workshop_beats(campaign_id, created_at);
 
+    -- The prep cards a campaign keeps from every storyboard imported into it
+    -- (issue #301, #302; src/lib/db/prep-cards.ts): each card whole, under
+    -- the id it had on the board, with what it became. The arc's beats and
+    -- planned events carry only a line each and point back here by card_id,
+    -- so the storyteller can open the full text (read_card) and nothing an
+    -- author wrote is lost to a prompt cap. A second import of the same
+    -- board updates the card in place.
+    CREATE TABLE IF NOT EXISTS campaign_prep_cards (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      card_id TEXT NOT NULL,
+      source_id TEXT NOT NULL DEFAULT '',
+      source_title TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      -- Who and where the card picked, as the names they resolved to.
+      cues TEXT NOT NULL DEFAULT '',
+      -- The condition on the route into it, for a moment.
+      trigger TEXT NOT NULL DEFAULT '',
+      -- beat, moment, lore, quest, fight, secret, or unplaced (a scene the
+      -- arc had no room for; still searchable, still openable).
+      role TEXT NOT NULL DEFAULT 'unplaced',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (campaign_id, card_id)
+    );
+
     -- WorldForge's half of a world (src/lib/worldforge/model.ts): types and
     -- their fields, links, calendars, events, secrets, folders, the atlas,
     -- and what each Cast member, place, faction and lore entry carries that
@@ -2343,6 +2371,35 @@ function ensureSchema(db: SqliteDatabase) {
     );
     CREATE INDEX IF NOT EXISTS idx_content_origins_origin
       ON content_origins(campaign_id, origin_id, origin_row_id);
+
+    -- Dice a player is owed while building a character, thrown and kept by
+    -- the server (src/lib/db/creation-rolls.ts). scope is '' for the
+    -- library's ability six, a campaign id for a table with its own reroll
+    -- rule, and "<campaign id>:<class>" for a table's rolled starting
+    -- wealth. No foreign keys: deleteCampaign and purgeAccount clear the
+    -- rows by hand. That module used to make the table on first use, with
+    -- this same definition, so a database that has it already is unchanged.
+    CREATE TABLE IF NOT EXISTS creation_rolls (
+      user_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, kind, scope)
+    );
+
+    -- The last attack against each character, for the reactions that answer
+    -- it (src/lib/dm/last-hit.ts). No foreign keys: deleteCampaign clears a
+    -- table's rows by hand. That module used to make the table on first use,
+    -- with this same definition, so a database that has it already is
+    -- unchanged.
+    CREATE TABLE IF NOT EXISTS last_hits (
+      campaign_id TEXT NOT NULL,
+      character_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (campaign_id, character_id)
+    );
   `);
   // Databases that created player_webhooks before receivers could carry
   // their own Authorization value or extra headers (docs/player-webhooks.md).
@@ -2977,6 +3034,21 @@ export function resyncLibraryTraining(db: SqliteDatabase): number {
 
 let plaintextWarned = false;
 
+// The database's schema revision, kept in SQLite's user_version header field.
+// Bump it with a schema change older code would misread or damage: a table
+// rebuilt or dropped, rows moved elsewhere, a column whose meaning changed.
+// A table or column older code simply ignores needs no bump. A database
+// stamped past this number was written by a newer server, and this one
+// refuses to open it rather than run its schema sync over tables it does not
+// understand; going back across a bump takes the backup made before it.
+// Servers before revision 1 never read the field.
+export const SCHEMA_REVISION = 1;
+
+function schemaRevisionOf(db: SqliteDatabase): number {
+  const rows = db.pragma("user_version") as Array<{ user_version?: unknown }>;
+  return Number(rows?.[0]?.user_version) || 0;
+}
+
 function requireDbKey() {
   const key = serverEnv("DB_ENCRYPTION_KEY");
   if (!key) {
@@ -3054,6 +3126,15 @@ export function getDatabase() {
             "Set ODM_SQLITE_DRIVER=native on a host with the native module.",
     );
   }
+  // Checked before anything below writes to the file.
+  const revision = schemaRevisionOf(db);
+  if (revision > SCHEMA_REVISION) {
+    db.close();
+    throw new Error(
+      `${dbPath} was saved by a newer version of Open Dungeon Master (database revision ${revision}; ` +
+        `this version reads up to ${SCHEMA_REVISION}). Update the app or server to open it; nothing in it was changed.`,
+    );
+  }
   // A new database hands the pages its deletes free back to the disk a
   // little at a time (src/lib/ops/retention.ts). Only possible before the
   // first table; an older file switches when the admin compacts it.
@@ -3068,6 +3149,9 @@ export function getDatabase() {
   db.pragma("foreign_keys = ON");
   ensureSchema(db);
   schemaEnsured = true;
+  if (revision < SCHEMA_REVISION) {
+    db.pragma(`user_version = ${SCHEMA_REVISION}`);
+  }
 
   globalThis.__localRoleplayDb = db;
   return db;

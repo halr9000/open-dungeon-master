@@ -14,7 +14,7 @@ import { READER_PROMPT_START } from "./lib/claims-reader.mjs";
 const { test, finish } = suite("test-claims");
 const world = await openWorld({ gameSettings: { ttsEnabled: false } });
 
-const { checkClaims, claimKindsFor, namedSpeakers, parseReaderReply, readerSystem, renderReaderInput } = await import(
+const { checkClaims, claimKindsFor, namedSpeakers, parseReaderReply, readerSystem, renderReaderInput, withoutAsides } = await import(
   "../src/lib/dm/claims-logic.ts"
 );
 const { leveledSpellNames, readClaims } = await import("../src/lib/dm/claims.ts");
@@ -117,13 +117,32 @@ const context = (text, kinds) => ({
     ]),
   ),
 });
-const ALL = ["hit", "miss", "dies", "downed", "amount", "cast", "fight_start", "roll_ask", "speaker"];
+const ALL = ["hit", "miss", "dies", "downed", "amount", "cast", "fight_start", "roll_ask", "aside", "speaker"];
 
 await test("A claim quoting words the narration does not hold never acts; a quote with other quote marks or spacing does.", () => {
   const text = "La lama di Mira colpisce il goblin. «Morirai», sibila.";
   assert.deepEqual(checkClaims([{ kind: "hit", target: "goblin", quote: "Mira kills the goblin" }], context(text, ALL)), []);
   assert.equal(checkClaims([{ kind: "hit", target: "goblin", quote: "colpisce   il GOBLIN" }], context(text, ALL)).length, 1);
   assert.equal(checkClaims([{ kind: "fight_start", quote: '"Morirai", sibila' }], context(text, ALL)).length, 1);
+});
+
+await test("An aside is asked only when the gate says so; its sentences leave the prose and the rest stays, and a passage that was all aside leaves nothing.", () => {
+  assert.deepEqual(claimKindsFor({ ...GATE, guard: false, aside: true }), ["aside"]);
+  assert.match(readerSystem([], false), /"kind":"aside"/);
+  assert.match(readerSystem([], false), /an out-of-character answer to a player/);
+  const text = "La nebbia avvolge il molo. «Non stanotte», dice il traghettatore. Prima imposterò l'approdo e l'ora.";
+  const claims = checkClaims(
+    [
+      { kind: "aside", quote: "Prima imposterò l'approdo e l'ora." },
+      { kind: "aside", quote: "I'll check the encounter first." },
+    ],
+    context(text, ["aside"]),
+  );
+  assert.deepEqual(claims, [{ kind: "aside", quote: "Prima imposterò l'approdo e l'ora." }], "an aside quoting words the prose lacks never acts");
+  assert.equal(withoutAsides(text, claims), "La nebbia avvolge il molo. «Non stanotte», dice il traghettatore.");
+  assert.equal(withoutAsides(text, []), text);
+  const plan = "**The quay is not on the map yet. I will set the landing first.**";
+  assert.equal(withoutAsides(plan, [{ kind: "aside", quote: "The quay is not on the map yet. I will set the landing first." }]), "", "a quote over two sentences cuts both");
 });
 
 await test("A claim of a kind not asked, about a creature the engine does not know, or by someone outside the party never acts.", () => {

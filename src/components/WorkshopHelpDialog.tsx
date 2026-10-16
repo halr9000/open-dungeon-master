@@ -131,7 +131,8 @@ export function WorkshopHelpDialog({
         <p>
           Creating a campaign offers a <span className="text-stone-300">Bring in prep</span> step:
           pick a workshop (or another campaign you can see) and choose what to copy in. A campaign
-          lobby can import the same way after creation. Copies are copies: the workshop keeps its
+          lobby can import the same way after creation, and once play has begun the table&apos;s{" "}
+          <span className="text-stone-300">Setup</span> tab does too. Copies are copies: the workshop keeps its
           version, the campaign owns its own from then on, and name collisions get numbered
           instead of overwritten. The Share tool exports the whole workshop as a bundle file
           another server can import, and can compile a draft world pack from it.

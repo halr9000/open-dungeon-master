@@ -29,16 +29,14 @@ const ok = (name) => {
 };
 
 // ---- the rules ----
-assert.equal(tier.openAiFastModel("gpt-6.1-sol"), true);
-assert.equal(tier.openAiFastModel("gpt-6-luna"), true);
-assert.equal(tier.openAiFastModel("gpt-5.6-sol"), true);
-assert.equal(tier.openAiFastModel("gpt-4.1"), false);
-assert.equal(tier.openAiFastModel("ft:gpt-6-sol:org::abc"), false, "fine-tuned models have no Fast tier");
-assert.equal(tier.apiSpeedEligibility({ endpointKind: "openai", model: "gpt-6.1-sol" }).ok, true);
+assert.equal(typeof tier.openAiFastModel, "undefined", "no model is judged by its name");
+for (const model of ["gpt-6.1-sol", "gpt-4.1", "my-finetune", "ft:gpt-6-sol:org::abc"]) {
+  assert.equal(tier.apiSpeedEligibility({ endpointKind: "openai", model }).ok, true, model);
+}
+assert.equal(tier.apiSpeedEligibility({ endpointKind: "openai", model: "  " }).ok, false, "a model has to be named");
 assert.equal(tier.apiSpeedEligibility({ endpointKind: "openrouter", model: "gpt-6.1-sol" }).ok, false);
 assert.equal(tier.apiSpeedEligibility({ endpointKind: "local", model: "gpt-6.1-sol" }).ok, false);
-assert.equal(tier.apiSpeedEligibility({ endpointKind: "openai", model: "gpt-4.1" }).ok, false);
-ok("Fast is offered on OpenAI's API for the models that have it, and nowhere else");
+ok("Fast is offered on OpenAI's API for any named model, and nowhere else");
 
 const claudeModels = [{ id: "opus", fast: true }, { id: "sonnet" }];
 assert.equal(tier.agentSpeedEligibility({ harnessId: "claude", model: "opus", models: claudeModels }).ok, true);
@@ -101,14 +99,12 @@ await call(OPENAI, "gpt-6-luna", "utility");
 assert.equal(last().service_tier, "fast");
 ok("Fast reaches the story and the utility model each by its own setting");
 
-await call(OPENAI, "gpt-4.1", "story");
-assert.equal(last().service_tier, undefined, "a model without the tier is never asked");
 await call("https://openrouter.ai/api/v1", "openai/gpt-6-sol", "story");
 assert.equal(last().service_tier, undefined, "OpenRouter never sees the field");
 await call("http://127.0.0.1:8001/v1", "gpt-6-sol", "story");
 assert.equal(last().service_tier, undefined, "a local server never sees the field");
 await call("https://api.openai.com/v1/", "gpt-6-sol", "story");
-ok("no other server and no ineligible model is sent the tier");
+ok("no other server is sent the tier");
 
 answerTier = "default";
 await call(OPENAI, "gpt-6-sol", "story");
@@ -118,7 +114,10 @@ ok("a call the provider ran at standard speed is recorded as standard");
 refuseTier = true;
 answerTier = "priority";
 const before = seen.length;
-const refused = await call(OPENAI, "gpt-6.1-sol", "story");
+// A model without the tier: the provider's own 400 is what tells, never a
+// list of names (one kept here said gpt-4.1 had none; OpenAI runs it at
+// "priority").
+const refused = await call(OPENAI, "a-model-without-fast", "story");
 assert.equal(refused.message?.content, "Fast reply.", "the turn still answered");
 const [first, retry] = seen.slice(before);
 assert.equal(first.body.service_tier, "fast");

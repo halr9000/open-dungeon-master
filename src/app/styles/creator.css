@@ -895,6 +895,13 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
 .dice-row[data-armed] .pool-socket-hint { color: var(--color-amber-200); }
 
 /* ---- rest states ---- */
+/* The loops that would otherwise run on a device set to low effects: the
+   armed pool's breathing sockets and the tumbling die's wobble and faces.
+   The die still lands and shows its value. */
+[data-effects="low"] .dice-row[data-armed] .pool-socket:not([data-held]),
+[data-effects="low"] .die-inner { animation: none; }
+[data-effects="low"] .die-flicker { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .diamond-ping { display: none; }
   .diamond-button,

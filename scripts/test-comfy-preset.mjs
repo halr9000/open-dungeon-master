@@ -71,7 +71,8 @@ const measured = { verdict: "recommended", seconds: { square: 19, landscape: 14.
 const discovery = (models, checkpoints = ["installed.safetensors"]) => ({
   checkpoints, models, hardware: { id: "strix-halo", label: "AMD Strix Halo" }, device: null, error: null,
 });
-const DEFAULT = { value: "checkpoint:", label: "Default checkpoint", hint: "CyberRealisticXLPlay_V6.0.safetensors" };
+// Always offered, so a pick can be undone: no file is named for the admin.
+const CHOOSE = { value: "checkpoint:", label: "None (no pictures)" };
 
 const found = discovery([
   report("z_turbo", zFiles, { verified: measured }),
@@ -97,16 +98,23 @@ assert.ok(
 passed += 1;
 console.log("ok - the picker leaves off what cannot paint here, keeping the saved model");
 assert.deepEqual(options, [
-  DEFAULT,
+  CHOOSE,
   { value: "preset:z_turbo", label: "Z-Image Turbo", group: "Models", hint: "Recommended. 19 s a picture, peaks 23.6 GB on AMD Strix Halo." },
   { value: "checkpoint:saved-checkpoint.safetensors", label: "saved-checkpoint.safetensors", group: "Checkpoints", hint: "Saved selection; not reported by this ComfyUI." },
   { value: "checkpoint:installed.safetensors", label: "installed.safetensors", group: "Checkpoints" },
 ]);
 // Before any check: the saved model is still offered, with nothing claimed about it.
 assert.deepEqual(comfyModelOptions({ checkpoint: "", preset: "z_turbo" }, null), [
-  DEFAULT,
+  CHOOSE,
   { value: "preset:z_turbo", label: "Z-Image Turbo", group: "Models" },
 ]);
+// Checkpoint mode with nothing picked: the placeholder, then the real choices.
+const unpicked = comfyModelOptions({ checkpoint: "", preset: "checkpoint" }, found);
+assert.deepEqual(unpicked[0], CHOOSE);
+// The obvious choice (here the model measured as recommended) is marked, never picked.
+assert.equal(unpicked.find((option) => option.value === "preset:z_turbo")?.label, "Z-Image Turbo (recommended)");
+assert.equal(options.find((option) => option.value === "preset:z_turbo")?.label, "Z-Image Turbo", "once something is picked, nothing is marked");
+assert.ok(unpicked.slice(1).every((option) => option.value !== "checkpoint:"));
 // A saved model whose files are gone stays listed, and says so.
 assert.deepEqual(comfyModelOptions({ checkpoint: "", preset: "flux2_klein_4b" }, found).find((option) => option.value === "preset:flux2_klein_4b"), {
   value: "preset:flux2_klein_4b", label: "FLUX.2 [klein] 4B", group: "Models", hint: "Its files are not all on this ComfyUI.",
@@ -123,7 +131,8 @@ assert.deepEqual(comfyModelPatch("preset:z_turbo", options), { comfyWorkflowPres
 assert.deepEqual(comfyModelPatch("checkpoint:saved-checkpoint.safetensors", options), {
   comfyWorkflowPreset: "checkpoint", comfyCheckpoint: "saved-checkpoint.safetensors",
 });
-assert.deepEqual(comfyModelPatch("checkpoint:", options), { comfyWorkflowPreset: "checkpoint", comfyCheckpoint: "" });
+assert.deepEqual(comfyModelPatch("checkpoint:", unpicked), { comfyWorkflowPreset: "checkpoint", comfyCheckpoint: "" });
+assert.deepEqual(comfyModelPatch("checkpoint:", options), { comfyWorkflowPreset: "checkpoint", comfyCheckpoint: "" }, "a pick can always go back to None");
 assert.equal(comfyModelPatch("checkpoint:invented.safetensors", options), null);
 assert.equal(comfyModelPatch("preset:flux2_klein_4b", options), null);
 const collision = comfyModelOptions({ checkpoint: "", preset: "checkpoint" }, discovery([], ["preset:z_turbo"]));
@@ -134,7 +143,7 @@ const restored = { ...loaded.config, images: { ...loaded.config.images, ...comfy
 assert.match(render(restored), /saved-checkpoint\.safetensors/);
 assert.doesNotMatch(render(restored), /ComfyUI workflow preset|Checkpoint \(model file\)/);
 passed += 1;
-console.log("ok - installed models, saved, default and checkpoint choices map to one persisted selection");
+console.log("ok - installed models, saved, unpicked and checkpoint choices map to one persisted selection");
 
 assert.equal(comfyModelStatus(null, "z_turbo"), "Checking installed models…");
 assert.equal(comfyModelStatus({ ...found, error: "Could not reach ComfyUI." }, "z_turbo"), "Could not reach ComfyUI.");

@@ -76,6 +76,7 @@ const TOOL_SOURCES = [
   "src/lib/dm/prompt.ts",
   "src/lib/dm/note-tools.ts",
   "src/lib/dm/lore-search.ts",
+  "src/lib/dm/prep-card-tool.ts",
   "src/lib/dm/binder-tools.ts",
   "src/lib/dm/faction-tools.ts",
   "src/lib/dm/shop-tools.ts",

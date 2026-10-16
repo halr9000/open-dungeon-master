@@ -217,7 +217,7 @@ test("on a device world every campaign follows the device's Story AI", () => {
       utilityModel: "gpt-5-mini",
       utilityApiKey: "sk-device",
     },
-    images: { defaultBackend: "openai", openaiApiKey: "sk-device" },
+    images: { defaultBackend: "openai", openaiApiKey: "sk-device", openaiModel: "" },
   });
 
   // A server somebody administers keeps the campaign's own backend.
@@ -241,9 +241,16 @@ test("on a device world every campaign follows the device's Story AI", () => {
     // What the campaign tunes for itself stays its own.
     assert.equal(settings.proseSize, "small");
     assert.equal(settings.autoImages, true);
-    const masked = maskStorySettings(settings);
+    let masked = maskStorySettings(settings);
     assert.equal(masked.deviceManaged, true);
+    // The key alone paints nothing: no picture model is named in code, so
+    // the panel says one is missing until the device saves one.
+    assert.equal(masked.imagesReady, false, "a key with no picture model was called ready");
+    assert.equal(masked.imagesNeedModel, true);
+    saveGlobalConfig({ images: { openaiModel: "device-painter" } });
+    masked = maskStorySettings(getCampaignById(campaign.id).settings);
     assert.equal(masked.imagesReady, true, "the device key covers pictures");
+    assert.equal(masked.imagesNeedModel, false);
 
     // A stale client cannot move a campaign off the device's backend.
     const patched = updateStorySettings(campaign.id, { customModel: "sneaky", proseSize: "large" });

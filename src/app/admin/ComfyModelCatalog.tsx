@@ -1,13 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { DEFAULT_STORY_SETTINGS } from "@/lib/defaults";
 import { comfyModel } from "@/lib/image-models/catalog";
 import { HARDWARE_PROFILES, type VerifiedRow } from "@/lib/image-models/curate";
 import { seconds } from "@/lib/image-models/describe";
 import { VERIFIED_ROWS } from "@/lib/image-models/verified";
 import type { ComfyModelReport } from "@/lib/comfyui";
-import { paintsHere, type ComfyDiscovery } from "@/app/admin/AdminImagesSection";
+import type { ComfyDiscovery } from "@/app/admin/AdminImagesSection";
+import { paintsHere } from "@/lib/image-models/curate";
 import type { MaskedConfig } from "@/app/admin/AdminSettingsFields";
 
 // Every image model ODM can run on ComfyUI, curated for the machine this
@@ -132,12 +132,10 @@ export function ComfyModelCatalog({
     const load = comfyModel(report.id)?.graph.load;
     return load && "checkpoint" in load ? load.checkpoint : null;
   };
-  // A blank checkpoint is the shipped default (src/lib/runtime-defaults.ts).
-  const effectiveCheckpoint = checkpoint || DEFAULT_STORY_SETTINGS.comfyCheckpoint;
   const inUse = (report: ComfyModelReport) => {
     const slot = slotOf(report);
     return slot
-      ? preset === "checkpoint" && Boolean(report.files[slot]) && effectiveCheckpoint === report.files[slot]
+      ? preset === "checkpoint" && Boolean(report.files[slot]) && checkpoint === report.files[slot]
       : preset === report.id;
   };
   const pick = (report: ComfyModelReport) => {

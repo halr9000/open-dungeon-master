@@ -6,7 +6,10 @@ Back to the [README](../README.md). Backups and moving a world to another server
 
 All state lives in a local SQLite database at `data/local-roleplay.sqlite` (override
 with `SQLITE_DB_PATH`), encrypted at rest with the `DB_ENCRYPTION_KEY` from
-`.env.server`; losing the key means losing the data. The read-only Open5e content
+`.env.server`; losing the key means losing the data. The one exception is a world the
+Android app hosts: Node's built-in SQLite there (`ODM_SQLITE_DRIVER=node`) has no
+cipher, so that file is plain, kept in the app's private storage, and left out of
+the phone's backups. The server logs a line saying so at start. The read-only Open5e content
 pack (`data/content/open5e.sqlite`) stays unencrypted. The database driver is
 synchronous and the app assumes **one Next.js process owns the database file**. Do
 not run `npm run dev` and a production service against the same `data/` directory;

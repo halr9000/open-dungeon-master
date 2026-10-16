@@ -1,6 +1,11 @@
 // Narration reroll: prompt assembly, guidance clamping, roll-marker-preserving
-// content assembly, and the variant set's cap and index rules.
+// content assembly, and the variant set's cap and index rules; then whole
+// rerolls against a scripted fake model, for the narrator's asides a take
+// must not keep.
 import assert from "node:assert/strict";
+import { openWorld } from "./lib/enforce-world.mjs";
+import { suite } from "./lib/enforce-harness.mjs";
+import { fakeModel, reply } from "./lib/enforce-narrator.mjs";
 import {
   DEFAULT_STORY_TEMPERATURE,
   REROLL_TEMP_OFFSET,
@@ -174,4 +179,63 @@ console.log(`renarrate: ${passed} tests passed`);
   assert.equal(computeRerollTemperature(1.9, 0.6), 2);
   assert.equal(computeRerollTemperature(0, -5), 0);
   console.log("renarrate: reroll temperature is a clamped relative offset");
+}
+
+// A reroll's take is read for the narrator's asides like the turn loop's
+// final call (src/lib/dm/turn.ts): the reader is asked for asides alone, the
+// sentences it quotes are cut, and a take that was only the model's plan is
+// refused as an empty one, with no variant stored.
+{
+  const takes = suite("test-renarrate");
+  const world = await openWorld({ gameSettings: { ttsEnabled: false, narrationGuard: false } });
+  const kara = world.addHero({ name: "Kara", class: "fighter", level: 1 });
+  const model = await fakeModel();
+  model.pointAt(world);
+  const messages = await import("../src/lib/db/messages.ts");
+  const { runRenarrate } = await import("../src/lib/dm/renarrate.ts");
+  const aside = (quote) => ({ kind: "aside", quote });
+  const asked = (index) => model.readerRequests[index]?.messages.at(-1)?.content ?? "";
+
+  model.script([reply({ text: "The ferryman coils wet rope on the quay." })]);
+  model.claims([]);
+  const first = await model.turn(world, "I walk down to the water.", kara.id);
+  assert.ok(first, "the turn wrote its narration");
+
+  await takes.test("An aside in a reroll's take is cut and the rest of the take is stored.", async () => {
+    const story = "Fog rolls off the river and the ferryman will not meet your eye.";
+    const note = "I'll set the hour before anyone speaks.";
+    model.script([reply({ text: `${story} ${note}` })]);
+    model.claims([[aside(note)]]);
+    const rerolled = await runRenarrate({ campaignId: world.campaignId, messageId: first.id, guidance: "" });
+    assert.ok("message" in rerolled, rerolled.error);
+    assert.equal(rerolled.message.content, story);
+    assert.equal(rerolled.message.variants.at(-1), story);
+    assert.match(asked(0), /^Ask: aside$/m, "the reader was asked for asides alone");
+  });
+
+  await takes.test("A take that is only the model's plan is refused as an empty take, and no variant is stored.", async () => {
+    const before = messages.getCampaignMessage(first.id);
+    const plan = "I will set the landing and the hour first.";
+    model.script([reply({ text: plan })]);
+    model.claims([[aside(plan)]]);
+    const rerolled = await runRenarrate({ campaignId: world.campaignId, messageId: first.id, guidance: "" });
+    assert.deepEqual(rerolled, { error: "The DM returned nothing; try again.", status: 502 });
+    const after = messages.getCampaignMessage(first.id);
+    assert.deepEqual(after.variants, before.variants, "a plan was stored as a take");
+    assert.equal(after.content, before.content);
+  });
+
+  await takes.test("A take with no aside in it is read for asides and stored whole.", async () => {
+    const story = "A bell tolls once across the water. Then the quay is silent.";
+    model.script([reply({ text: story })]);
+    model.claims([[]]);
+    const rerolled = await runRenarrate({ campaignId: world.campaignId, messageId: first.id, guidance: "" });
+    assert.ok("message" in rerolled, rerolled.error);
+    assert.equal(rerolled.message.content, story);
+    assert.equal(model.readerRequests.length, 1, "the take was read for asides");
+  });
+
+  model.close();
+  world.close();
+  takes.finish();
 }

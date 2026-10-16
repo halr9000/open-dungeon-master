@@ -68,7 +68,7 @@ export function ImageLightbox({
           {caption ? (
             <p className="reveal max-w-2xl text-center text-sm text-stone-400">{caption}</p>
           ) : null}
-          <div className="absolute right-3 top-3 flex items-center gap-2 sm:right-6 sm:top-6">
+          <div className="absolute right-3 top-[max(0.75rem,env(safe-area-inset-top))] flex items-center gap-2 sm:right-6 sm:top-6">
             <a
               href={src}
               download={downloadName(src, label)}

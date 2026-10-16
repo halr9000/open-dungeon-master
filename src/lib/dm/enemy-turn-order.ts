@@ -16,11 +16,18 @@ import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
 
 export function enemyTurnRefusal(
   encounter: Encounter | null,
-  enemy: Pick<EncounterEnemy, "id" | "displayName">,
+  enemy: Pick<EncounterEnemy, "id" | "displayName" | "status">,
   turn: Pick<DmTurn, "id" | "actor">,
 ): string | null {
   if (turn.actor !== "ai" || !encounter || !encounter.orderReady || encounter.kind === "scene") {
     return null;
+  }
+  // The dead are told they are dead before they are told whose turn it is
+  // (src/lib/dm/can-act.ts). "Its turn has not come yet" would promise the
+  // model a turn that never comes, and whether it heard that or "is dead"
+  // would hang on where the corpse sat in the order.
+  if (enemy.status !== "alive") {
+    return `${enemy.displayName} is ${enemy.status} and cannot act.`;
   }
   const slot = encounter.order.findIndex((entry) => entry.kind === "enemy" && entry.enemyId === enemy.id);
   if (slot < 0 || slot < encounter.turnIndex) {

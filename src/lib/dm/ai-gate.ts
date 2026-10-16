@@ -9,9 +9,10 @@
 //   - a binding condition the engine keeps (a save, a duration, a spell, a
 //     source decides when it ends) is not lifted by hand.
 //
-// Only the model's calls pass through here (dispatchAdjudication). The
-// engine's own paths call the handlers directly, and the console and the
-// party lead keep their free hand.
+// Only the model's calls pass through here: those the AI's turn runs itself
+// (resolveModelCall in src/lib/dm/turn.ts) and the rest through
+// dispatchAdjudication. The engine's own paths call the handlers directly,
+// and the console and the party lead keep their free hand.
 
 import type { Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";

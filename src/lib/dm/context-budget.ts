@@ -1,3 +1,5 @@
+import type { ArcTrace } from "./arc-relevance.ts";
+import type { LoreTrace } from "./world-lore-logic.ts";
 // Pure logic for the DM prompt's context budget.
 //
 // What this replaces: a single HISTORY_CHAR_BUDGET that trimmed history by
@@ -107,6 +109,14 @@ export type ContextTrace = {
   limitTokens: number;
   promptTokens: number;
   blocks: BlockTrace[];
+  // What the story arc render chose this turn (issue #301): the planned
+  // events shown or held back, with reasons, and the beat window. Absent on
+  // turns taken before it was recorded and on campaigns without an arc.
+  arc?: ArcTrace;
+  // The world lore entries this turn kept and held back, with the reason
+  // for each and the block's measured budget (issue #305). Absent on turns
+  // taken before it was recorded and on campaigns without lore.
+  lore?: LoreTrace;
 };
 
 // Allocation ported from NarrativeEngine-P's computeBudgets

@@ -46,6 +46,8 @@ export type MaskedConfig = {
     hasTtsApiKey: boolean;
     ttsVoice: string;
     sttUrl: string;
+    sttModel: string;
+    sttOpenaiModel: string;
   };
   voiceChat: {
     enabled: "" | "on" | "off";
@@ -62,17 +64,22 @@ export type MaskedConfig = {
 export type EnvDefaults = {
   customBaseUrl: string;
   customModel: string;
+  localTextModel: string;
   hasCustomApiKey: boolean;
   comfyUrl: string;
   fluxWorkerUrl: string;
   imageBackend: string;
   hasOpenaiImageApiKey: boolean;
+  openaiImageModel: string;
+  openaiImageBaseUrl: string;
   kokoroUrl: string;
   ttsProvider: string;
   ttsBaseUrl: string;
   ttsModel: string;
   hasTtsApiKey: boolean;
   sttUrl: string;
+  sttModel: string;
+  sttOpenaiModel: string;
   discordClientId: string;
   hasDiscordClientSecret: boolean;
   publicUrl: string;
@@ -106,8 +113,10 @@ export function Field({
       {hint ? <span className="mt-1 block text-[11px] leading-4 text-stone-500">{hint}</span> : null}
     </>
   );
+  // min-w-0: a kit control truncates a long chosen label (a model's name),
+  // which must not widen its grid column past a phone's screen.
   return group ? (
-    <div role="group" aria-label={label} className="block">
+    <div role="group" aria-label={label} className="block min-w-0">
       {body}
     </div>
   ) : (

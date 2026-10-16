@@ -159,7 +159,7 @@ export function PartyPanel({
                 </span>
                 <span className="min-w-0 flex-1">
                   <Link
-                    href={`/characters/${character.id}`}
+                    href={`/characters/${character.id}?from=${encodeURIComponent(`/workshop/${workshopId}?system=party`)}`}
                     className="font-display tracking-wide text-amber-50 hover:text-amber-200"
                   >
                     {character.name}

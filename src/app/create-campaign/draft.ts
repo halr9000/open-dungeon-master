@@ -79,6 +79,9 @@ export type CampaignDraft = {
   // new hero starts with (src/lib/srd/hit-points.ts, starting-wealth.ts).
   hpMethod: GameSettings["hpMethod"];
   startingWealth: GameSettings["startingWealth"];
+  // Whether rolled 4d6 stats may be thrown again here; null follows the
+  // server's rule (src/lib/srd/ability-rerolls.ts).
+  abilityRerollBelow: GameSettings["abilityRerollBelow"];
   maxCompanions: number;
   maxGuests: number;
   voiceChat: GameSettings["voice"];
@@ -141,6 +144,7 @@ export const DEFAULT_DRAFT: CampaignDraft = {
   companions: "auto",
   hpMethod: "average",
   startingWealth: "equipment",
+  abilityRerollBelow: null,
   maxCompanions: 2,
   maxGuests: 2,
   voiceChat: {

@@ -1,7 +1,9 @@
 import { configValue, getGlobalConfig } from "@/lib/app-config";
 import { currentUser } from "@/lib/auth";
 import { imagesConfigured, storyConfigured } from "@/lib/capabilities";
+import { comfyModelPicked } from "@/lib/comfyui";
 import { getDatabase } from "@/lib/db/core";
+import { openAiImagesConfigured } from "@/lib/openai-images";
 import { configuredDefaultStorySettings } from "@/lib/runtime-defaults";
 import { serverEnv } from "@/lib/server-env";
 import { isOllamaChatModel, readOllamaTags } from "@/lib/model-registry/discovery-logic";
@@ -105,9 +107,6 @@ export async function GET() {
   // too. Config-only flags, no probes: /api/capabilities owns reachability.
   const settings = configuredDefaultStorySettings();
   const cfg = getGlobalConfig();
-  const hasOpenaiImageKey = Boolean(
-    cfg.images.openaiApiKey || serverEnv("OPENAI_IMAGE_API_KEY") || serverEnv("OPENAI_API_KEY"),
-  );
 
   return Response.json({
     openRouterConfigured: Boolean(serverEnv("OPENROUTER_API_KEY")),
@@ -121,13 +120,16 @@ export async function GET() {
       // Config-only, like the rest of this block: a self-hosted backend
       // counts here only when its URL was named. /api/capabilities adds the
       // default-URL probe.
+      // The same readiness the picture paths ask: a key and a model for
+      // OpenAI, a model or checkpoint for ComfyUI.
       images: imagesConfigured(
         settings.imageBackend,
-        hasOpenaiImageKey,
+        openAiImagesConfigured(),
         settings.imageBackend === "comfyui"
           ? configValue(cfg.images.comfyUrl, "COMFYUI_URL")
           : serverEnv("FLUX_WORKER_URL"),
         false,
+        comfyModelPicked(settings.comfyCheckpoint),
       ),
       tts: Boolean(configValue(cfg.speech.kokoroUrl, "KOKORO_URL")),
     },

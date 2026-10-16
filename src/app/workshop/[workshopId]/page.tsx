@@ -18,7 +18,8 @@ import {
 } from "@/app/workshop/[workshopId]/systems";
 import { workshopCommands } from "@/app/workshop/[workshopId]/palette-commands";
 import { CommandPalette } from "@/components/CommandPalette";
-import { markTourSeen, tourSeen } from "@/lib/tours/logic";
+import type { TourEnd } from "@/lib/tours/account-logic";
+import { finishTour, useTourFinished } from "@/lib/tours/tour-store";
 import { draftCount, worldPackDraftSchema } from "@/lib/worlds/draft";
 import { requestTourPrepare } from "@/lib/tours/prepare";
 import { HUB_TOUR, HUB_TOUR_ID, SYSTEM_TOURS, systemTourId } from "@/lib/tours/workshop";
@@ -178,21 +179,22 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
     void loadWorld();
   }, [load, loadBestiary, loadHomebrew, loadPregens, loadPlugin, loadWorld, system]);
 
-  // The once-only tours: the hub's when the workshop first loads, a tool's
-  // the first time that tool is opened, after the panel has had a moment to
-  // draw itself. A tour already on screen is left alone.
+  // The once-only tours, once per account (issue #306): the hub's when the
+  // workshop first loads, a tool's the first time that tool is opened, after
+  // the panel has had a moment to draw itself. A tour already on screen is
+  // left alone.
   // Spelled out rather than through systemTourId: a helper call at this
   // level is opaque to the React Compiler and costs the page its memoization.
   const tourId = system ? `workshop-${system}` : HUB_TOUR_ID;
+  const tourFinished = useTourFinished(tourId);
   useEffect(() => {
-    if (loading || !workshop || tour) return;
-    if (tourSeen(window.localStorage, tourId)) return;
+    if (loading || !workshop || tour || tourFinished !== false) return;
     const timer = window.setTimeout(() => setTour(tourId), 900);
     return () => clearTimeout(timer);
-  }, [loading, workshop, tourId, tour]);
+  }, [loading, workshop, tourId, tour, tourFinished]);
 
-  function closeTour() {
-    if (tour) markTourSeen(window.localStorage, tour);
+  function closeTour(how: TourEnd) {
+    if (tour) finishTour(tour, how);
     setTour(null);
   }
 

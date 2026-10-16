@@ -13,6 +13,16 @@ export async function register() {
     // itself is left running in the background. A failure here must not stop
     // the server: the worst case is the keyword fallback search already has.
     if (process.env.NEXT_PHASE !== "phase-production-build") {
+      // What the last process held in memory and a restart took from the
+      // DM, put right from the database before the first request
+      // (src/lib/dm/restart-recovery.ts). A failure must not stop the server.
+      try {
+        const { recoverDmAfterRestart } = await import("@/lib/dm/restart-recovery");
+        recoverDmAfterRestart();
+      } catch (error) {
+        console.error("[dm] could not recover what the restart interrupted", error);
+      }
+
       // Event loop delay for the admin's metrics (src/lib/metrics.ts).
       const { startProcessMetrics } = await import("@/lib/metrics");
       startProcessMetrics();

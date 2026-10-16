@@ -55,7 +55,13 @@ export type CompiledMoment = {
   links: BeatLinks;
 };
 
+// Every card whole, in reading order, for the prep cards a campaign keeps
+// (src/lib/db/prep-cards.ts, issues #301 and #302): the beat and moment
+// lines above are cut to fit a prompt, the card is not.
+export type CompiledCard = { cardId: string; kind: BeatKind; title: string; body: string };
+
 export type CompiledBoard = {
+  cards: CompiledCard[];
   lore: CompiledLore[];
   // In reading order, following the edges the DM drew. The lines alone, for
   // the summary and the older callers; `arcPlan` is the same beats whole.
@@ -192,6 +198,7 @@ export function compileBoard(beats: Beat[]): CompiledBoard {
   const spine = spineOf(board.nodes, board.order);
 
   const compiled: CompiledBoard = {
+    cards: ordered.map((node) => ({ cardId: node.id, kind: node.kind, title: node.title, body: node.body })),
     lore: [],
     arcBeats: [],
     arcPlan: [],

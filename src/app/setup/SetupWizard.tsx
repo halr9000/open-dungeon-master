@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Wizard, type WizardStep } from "@/components/ui/Wizard";
 import { GoldTitle } from "@/components/ui/GoldTitle";
 import { navigateTo } from "@/lib/navigation";
-import type { MaskedConfig } from "@/app/admin/AdminSettingsFields";
-import { draftFromConfig, draftStoryIsOpenAi, draftWithScan, type Draft } from "@/app/setup/draft";
+import type { EnvDefaults, MaskedConfig } from "@/app/admin/AdminSettingsFields";
+import { draftFromConfig, draftStoryIsOpenAi, draftWithScan, picturesBlocker as picturesStepBlocker, type Draft } from "@/app/setup/draft";
 import { PicturesStep, VoiceStep } from "@/app/setup/MediaSteps";
 import { PlayersStep } from "@/app/setup/PlayersStep";
 import { ReadyStep } from "@/app/setup/ReadyStep";
@@ -17,7 +17,9 @@ import { YourAgentStep, type MadeConnection } from "@/app/setup/YourAgentStep";
 import { storySourceForUrl } from "@/lib/setup/discovery-logic";
 import {
   PAINTING_AGENTS,
+  dictationPatch,
   joiningPatch,
+  mergePatches,
   namePatch,
   narrationPatch,
   picturesPatch,
@@ -55,7 +57,7 @@ function storyChoice(draft: Draft): StoryChoice | null {
 // everything answered so far and the admin panel shows exactly what was
 // chosen. The scan of this computer starts with the page and fills in what
 // it finds while the admin reads the first step.
-export function SetupWizard({ config: initialConfig, info }: { config: MaskedConfig; info: SetupInfo }) {
+export function SetupWizard({ config: initialConfig, env, info }: { config: MaskedConfig; env: EnvDefaults; info: SetupInfo }) {
   const [config, setConfig] = useState(initialConfig);
   const firstRun = !info.state.finishedAt;
   const [draft, setDraft] = useState<Draft>(() => draftFromConfig(initialConfig, firstRun));
@@ -65,6 +67,9 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [made, setMade] = useState<MadeConnection | null>(null);
+  // The ComfyUI at the draft's address offered models or checkpoints to
+  // pick from (PicturesStep reports it).
+  const [comfyOffers, setComfyOffers] = useState(false);
   // Bumped on each arrival at the last step, which asks the server afresh.
   const [readyVisit, setReadyVisit] = useState(0);
   const update = (change: (current: Draft) => Draft) => {
@@ -145,14 +150,24 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
     }
     if (key === "pictures") {
       if (draft.pictures === "comfyui") return picturesPatch({ kind: "comfyui", url: draft.comfy.url, checkpoint: draft.comfy.checkpoint, preset: draft.comfy.preset });
-      if (draft.pictures === "openai") return picturesPatch({ kind: "openai", apiKey: draft.picturesKey });
+      if (draft.pictures === "openai") return picturesPatch({ kind: "openai", apiKey: draft.picturesKey, model: draft.picturesModel });
       if (draft.pictures === "agent") return picturesPatch({ kind: "agent" });
       return picturesPatch({ kind: "none" });
     }
     if (key === "voice") {
-      if (draft.narration === "kokoro") return narrationPatch({ kind: "kokoro", url: draft.kokoro.url, voice: draft.kokoro.voice });
-      if (draft.narration === "openai") return narrationPatch({ kind: "openai", apiKey: draft.narrationKey });
-      return narrationPatch({ kind: "off" });
+      const narration =
+        draft.narration === "kokoro"
+          ? narrationPatch({ kind: "kokoro", url: draft.kokoro.url, voice: draft.kokoro.voice })
+          : draft.narration === "openai"
+            ? narrationPatch({ kind: "openai", apiKey: draft.narrationKey, model: draft.narrationModel })
+            : narrationPatch({ kind: "off" });
+      // The dictation model the step asked for, if it asked (VoiceStep).
+      const dictation = scan?.whisper
+        ? dictationPatch({ whisperModel: draft.dictation.whisperModel })
+        : storyIsOpenAi
+          ? dictationPatch({ openaiModel: draft.dictation.openaiModel })
+          : null;
+      return dictation ? mergePatches(narration, dictation) : narration;
     }
     if (key === "players") {
       return joiningPatch({ signupMode: draft.signupMode, publicUrl: draft.publicUrl });
@@ -204,14 +219,13 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
             ? "Choose a program."
             : null;
   const agentPaints = draft.story === "agent" && draft.agent.id !== "" && PAINTING_AGENTS.includes(draft.agent.id);
-  const picturesBlocker =
-    draft.pictures === "agent" && !config.harness.imagesVerifiedAt
-      ? "Paint a test map first: the tables only get a painter that works."
-      : draft.pictures === "comfyui" && !draft.comfy.url.trim()
-      ? "Type where ComfyUI runs, or choose another answer."
-      : draft.pictures === "openai" && !storyIsOpenAi && !draft.picturesKey.trim() && !config.images.hasOpenaiApiKey
-        ? "Paste an OpenAI key, or choose another answer."
-        : null;
+  const picturesBlocker = picturesStepBlocker(draft, {
+    agentVerified: Boolean(config.harness.imagesVerifiedAt),
+    storyIsOpenAi,
+    openaiKeySaved: config.images.hasOpenaiApiKey,
+    envImageModel: env.openaiImageModel,
+    comfyOffers,
+  });
   const voiceBlocker =
     draft.narration === "kokoro" && !draft.kokoro.url.trim()
       ? "Type where Kokoro runs, or choose another answer."
@@ -221,7 +235,9 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           !config.speech.hasTtsApiKey &&
           !config.images.hasOpenaiApiKey
         ? "Paste an OpenAI key, or choose another answer."
-        : null;
+        : draft.narration === "openai" && !draft.narrationModel.trim() && !env.ttsModel
+          ? "Pick the narration model, or choose another answer."
+          : null;
 
   const address = draft.publicUrl.trim() || info.lanUrls[0] || "";
   const title = (eyebrow: string, text: string, key: StepKey) => (
@@ -279,6 +295,8 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           agentLabel={draft.agent.id === "grok" ? "Grok Build" : "Codex"}
           onAgentVerified={() => void refreshConfig()}
           openaiKeySaved={config.images.hasOpenaiApiKey}
+          env={env}
+          onComfyOffers={setComfyOffers}
         />
       ),
       blocker: picturesBlocker,
@@ -297,6 +315,7 @@ export function SetupWizard({ config: initialConfig, info }: { config: MaskedCon
           scanning={scanning}
           storyIsOpenAi={storyIsOpenAi}
           ttsKeySaved={config.speech.hasTtsApiKey || config.images.hasOpenaiApiKey}
+          env={env}
         />
       ),
       blocker: voiceBlocker,

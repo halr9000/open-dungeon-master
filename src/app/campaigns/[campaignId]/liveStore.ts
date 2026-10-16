@@ -59,6 +59,13 @@ export function appendDmDraft(text: string) {
   }
 }
 
+// The turn withheld text it had already streamed (src/lib/dm/turn.ts,
+// dm_draft_reset): the draft becomes the narration it kept, possibly none.
+// Where the passage will be written is unchanged.
+export function replaceDmDraft(text: string) {
+  dmDraftStore.set(text);
+}
+
 export function clearDmDraft() {
   dmDraftStore.set("");
   dmDraftSeqStore.set(null);

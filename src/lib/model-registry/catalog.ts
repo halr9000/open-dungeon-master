@@ -25,6 +25,7 @@ import {
   readStoredCatalog,
   type CatalogModel,
   type ModelCatalog,
+  type ModelRole,
 } from "./catalog-logic";
 
 export const MODELS_DEV_URL = "https://models.dev/api.json";
@@ -308,15 +309,16 @@ export function fitListedModels(baseUrl: string, models: ListedModel[]): ListedM
 }
 
 // The model to preselect from a server's list, by what the catalog knows
-// and nothing else: a current row that narrates and calls tools, reasoning
-// ones first, the newest first, the cheaper first among those. A list the
-// catalog knows nothing of is taken in the server's own order.
-export function recommendListed(baseUrl: string, models: ListedModel[]): string {
+// and nothing else: a current row that can do the role's work (narrate and
+// call tools for the story, paint for pictures), reasoning ones first, the
+// newest first, the cheaper first among those. A list the catalog knows
+// nothing of is taken in the server's own order.
+export function recommendListed(baseUrl: string, models: ListedModel[], role: ModelRole = "story"): string {
   const { providers } = modelCatalog();
   const hint = providerForBaseUrl(baseUrl, providers);
   const ranked = models
     .map((model) => ({ model, row: findCatalogModel(providers, model.id, hint) }))
-    .filter(({ model, row }) => row && assessModel({ role: "story", id: model.id, catalog: row, listed: true }).fit === "ok")
+    .filter(({ model, row }) => row && assessModel({ role, id: model.id, catalog: row, listed: true }).fit === "ok")
     .sort((a, b) => {
       const x = a.row as CatalogModel;
       const y = b.row as CatalogModel;

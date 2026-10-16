@@ -33,12 +33,14 @@ export default {
         await grant.scrollIntoViewIfNeeded();
         await t.shot("calling-step");
       }
+      // An edit offers Save changes on every step, so it is taken once the
+      // Calling step has been read (or when there is no step left).
       const done = visible(page, root, /^Save changes$/);
-      if (await done.count()) {
+      const next = visible(page, root, /^\s*Continue/i);
+      if ((await done.count()) && (said || !(await next.count()))) {
         save = done.first();
         break;
       }
-      const next = visible(page, root, /^\s*Continue/i);
       check((await next.count()) > 0, `a way on from step ${step + 1} of the build editor`);
       const ready = await eventually(() => next.first().isEnabled(), { timeoutMs: 10_000, label: "Continue" }).catch(() => false);
       if (!ready) await t.shot(`step-${step + 1}`);

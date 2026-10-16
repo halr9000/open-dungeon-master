@@ -6,6 +6,7 @@ import { useId, useMemo, useState } from "react";
 import { AvatarCropDialog } from "@/app/settings/AvatarCropDialog";
 import { Wizard, type WizardNotice, type WizardStep } from "@/components/ui/Wizard";
 import { cn } from "@/lib/cn";
+import { useEffectsRoot } from "@/lib/effects-mode";
 import type { Genre } from "@/lib/schemas/game-settings";
 import type { Ability, CreateSheetInput } from "@/lib/schemas/sheet";
 import { SRD_SKILLS } from "@/lib/srd";
@@ -138,6 +139,7 @@ function CharacterBuilderForm({
   busy,
   error,
   role,
+  onCancel,
   className,
 }: {
   // The table the character is made for: its hit point method and starting
@@ -166,8 +168,15 @@ function CharacterBuilderForm({
   // Player character or DM-played ally; only the library page asks, since a
   // campaign already knows which door the character comes through.
   role?: { value: BuilderRole; onChange: (role: BuilderRole) => void };
+  // Where the first step's back arrow leads (the page or dialog it opened
+  // from), as every other wizard's does; later steps step back as before.
+  onCancel?: () => void;
   className?: string;
 }) {
+  // creator.css stills its loops under <html data-effects="low">, which only
+  // the table's session view set; the library and join pages build
+  // characters outside it.
+  useEffectsRoot();
   const {
     races: rawRaces,
     classes: rawClasses,
@@ -193,8 +202,12 @@ function CharacterBuilderForm({
     ...(initial?.asiChoices ?? []).flatMap((choice) => (choice.mode === "feat" ? [choice.feat] : [])),
   ]);
   const state = useBuilderState({ initial, initialFeatDescs, initialLevel, fixedLevel, races, classes, backgrounds });
-  const race = findRace(races, state.raceId) ?? races[0];
-  const klass = classes.find((entry) => entry.id === state.classId) ?? classes[0];
+  // No stand-in for a race or class the player has not chosen: the first
+  // row used to be shown as if picked ("Continue as Aarakocra"), so the
+  // step's own "Pick a race." could never hold. The background keeps its
+  // stand-in; its select on the first step shows it plainly.
+  const race = findRace(races, state.raceId);
+  const klass = classes.find((entry) => entry.id === state.classId);
   const background =
     backgrounds.find((entry) => entry.id === state.backgroundId) ?? backgrounds[0];
   const archetypes = useArchetypes(klass?.id ?? "");
@@ -259,12 +272,18 @@ function CharacterBuilderForm({
     onBlocked: blocked ? () => locate(blocked.target) : undefined,
   });
 
-  // A stored race, class or background these lists do not hold would be
-  // replaced by the list's first row on save; the save waits until the
-  // player picks on purpose (issue 229).
+  // A stored race, class or background these lists do not hold: the race
+  // or class shows as not chosen, the background would be replaced by the
+  // list's first row on save. The save waits until the player picks on
+  // purpose (issue 229).
   const unoffered = initial && loaded ? unofferedPicks(initial, state, races, classes, backgrounds) : [];
+  const standIns = unoffered.flatMap((entry) => (entry.standIn ? [entry.standIn] : []));
   const unofferedText = unoffered.length
-    ? `This builder does not offer ${initial?.name || "this character"}'s ${listWords(unoffered.map((entry) => entry.what))}: a table's own content, or a row this server no longer has. Saving here would put ${listWords(unoffered.map((entry) => entry.standIn))} in ${unoffered.length === 1 ? "its" : "their"} place, so the save waits until you pick on purpose. Leave without saving to keep ${initial?.name || "them"} as stored.`
+    ? `This builder does not offer ${initial?.name || "this character"}'s ${listWords(unoffered.map((entry) => entry.what))}: a table's own content, or a row this server no longer has. ${
+        standIns.length
+          ? `Saving here would put ${listWords(standIns)} in ${standIns.length === 1 ? "its" : "their"} place, so the save`
+          : "The save"
+      } waits until you pick on purpose. Leave without saving to keep ${initial?.name || "them"} as stored.`
     : "";
 
   function submit() {
@@ -452,15 +471,26 @@ function CharacterBuilderForm({
       <Wizard
         title={state.name.trim() || "New character"}
         variant="diamonds"
-        wipe
+        // The wipe paces a first build; an edit of a stored character moves
+        // between steps at once.
+        wipe={!initial}
         goldTitles
+        // A player who went back to fix one pick returns by its diamond, and
+        // an edit of a stored character saves from whichever step it is on.
+        jumpAhead
+        finishFromAnyStep={Boolean(initial)}
         notice={notice}
         aside={
-          race && klass
-            ? `${race.name} ${klass.name} · level ${derived.effectiveLevel} · d${klass.hitDie}`
+          race || klass
+            ? [
+                [race?.name, klass?.name].filter(Boolean).join(" "),
+                `level ${derived.effectiveLevel}`,
+                ...(klass ? [`d${klass.hitDie}`] : []),
+              ].join(" · ")
             : undefined
         }
         steps={steps}
+        onCancel={onCancel}
         onDone={submit}
         doneLabel={
           busy ? (

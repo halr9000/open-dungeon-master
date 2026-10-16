@@ -16,7 +16,7 @@ const { test, finish } = suite("test-enforce-character-choices");
 const table = await openTable();
 const { attunementSlotsFor } = await import("../src/lib/srd/armor.ts");
 const { toolProficiencyBonus } = await import("../src/lib/dm/roll-riders.ts");
-const { owedChoices } = await import("../src/lib/srd/owed-choices.ts");
+const { owedChoices, subclassOwed } = await import("../src/lib/srd/owed-choices.ts");
 const { withAsiLedger } = await import("../src/lib/srd/asi-ledger.ts");
 const { spellSaveDcFor } = await import("../src/lib/srd/index.ts");
 
@@ -63,6 +63,25 @@ test("Choices a level owes and the player has not made are named as owed", () =>
   assert.ok(owed.some((line) => /subclass for fighter/.test(line)), owed.join("; "));
   const rogue = owedChoices({ class: "rogue", subclass: "Thief", level: 1, classes: [], features: [], proficiencies: { ...PROF, skills: ["stealth"], tools: ["thieves' tools"] } });
   assert.ok(rogue.some((line) => /expertise in 2 more/.test(line)), rogue.join("; "));
+});
+
+test("A subclass is owed at its class's subclass level and every level after while none is chosen, and the level-up asks for it then", () => {
+  // The level-up dialog asks subclassOwed of the class level it is about to
+  // give, and the sheet's owed list asks it of the level held. The dialog
+  // once asked only when the class stood below the pick level before the
+  // level-up, so a level 1 fighter seated at a level 5 table was never
+  // offered a Martial Archetype, while the sheet said one was owed.
+  assert.equal(subclassOwed({ id: "fighter", subclass: "" }, 3), true, "fighter 3 picks its archetype");
+  assert.equal(subclassOwed({ id: "fighter", subclass: "" }, 6), true, "fighter 6 without one is still owed it");
+  assert.equal(subclassOwed({ id: "fighter", subclass: "" }, 2), false, "not before fighter 3");
+  assert.equal(subclassOwed({ id: "fighter", subclass: "Champion" }, 6), false, "a subclass is chosen once");
+  assert.equal(subclassOwed({ id: "wizard", subclass: "  " }, 5), true, "a blank name is no school");
+  assert.equal(subclassOwed({ id: "cleric" }, 1), true, "a cleric chooses its domain at 1");
+  assert.equal(subclassOwed({ id: "gunslinger", subclass: "" }, 9), false, "a class outside the tables has no pick level");
+  // The sheet and the dialog agree: what the list names is what the next
+  // level-up offers.
+  const joined = owedChoices({ class: "fighter", subclass: "", level: 5, classes: [], features: [], proficiencies: { ...PROF, skills: ["history", "insight"] } });
+  assert.ok(joined.some((line) => /subclass for fighter \(due at fighter level 3\)/.test(line)), joined.join("; "));
 });
 
 test("A cleric's domain spell on a wizard-cleric is cast at the cleric's DC", () => {

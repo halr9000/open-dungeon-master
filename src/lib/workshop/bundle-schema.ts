@@ -2,7 +2,8 @@ import { z } from "zod";
 import { storedSheetSchema } from "@/lib/schemas/sheet";
 import { GENDERS } from "@/lib/gender";
 import { GENRES } from "@/lib/schemas/game-settings";
-import { BEAT_KINDS, ROUTE_KINDS, ROUTE_LABEL_MAX } from "@/lib/workshop/board";
+import { BEAT_KINDS, BODY_MAX, ROUTE_KINDS, ROUTE_LABEL_MAX } from "@/lib/workshop/board";
+import { LORE_BODY_MAX } from "@/lib/dm/world-lore-logic";
 import { worldPackDraftSchema } from "@/lib/worlds/draft";
 
 // The shape of a workshop bundle: every field, its length and its ceiling.
@@ -87,7 +88,8 @@ const indexSchema = z.number().int().min(0).max(1_000).nullable().default(null);
 const loreSchema = z.object({
   category: z.string().trim().max(40),
   title: z.string().trim().min(1).max(200),
-  body: z.string().max(20_000).default(""),
+  // The lore editor's own cap (issue #302): what travels can be edited.
+  body: z.string().max(LORE_BODY_MAX).default(""),
   tags: z.array(z.string().trim().max(40)).max(20).default([]),
   // A secret stays a secret on the other side; a handout keeps its picture.
   visibility: z.enum(["party", "dm"]).default("party"),
@@ -219,7 +221,8 @@ const mapSchema = z.object({
 const beatSchema = z.object({
   kind: z.enum(BEAT_KINDS),
   title: z.string().trim().min(1).max(200),
-  body: z.string().max(4_000).default(""),
+  // The board's own cap (issue #302): a card that arrives can be saved.
+  body: z.string().max(BODY_MAX).default(""),
   // Arrows travel as INDEXES into this array rather than as ids, because
   // ids do not survive a bundle and an arrow that pointed at a stranger's
   // row would land nowhere.

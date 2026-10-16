@@ -1,12 +1,13 @@
 "use client";
 
 import { X } from "lucide-react";
+import type { TourEnd } from "@/lib/tours/account-logic";
 import { ui } from "@/lib/ui";
 
 // The first fight's two-row card (docs/visual-overhaul-plan.md 5.7): play a
-// card, or type your move. Shown once per browser through the tours' own
-// once-only flag, and brought back by the Hand's question mark.
-export const HAND_TUTORIAL_ID = "battle-hand-intro";
+// card, or type your move. Shown once per account through the tours' record
+// (src/lib/tours/tour-store.ts), and brought back by the Hand's question mark.
+export { HAND_TUTORIAL_ID } from "@/lib/tours/registry";
 
 const ROWS = [
   {
@@ -25,12 +26,12 @@ const ROWS = [
   },
 ];
 
-export function HandTutorial({ onDismiss }: { onDismiss: () => void }) {
+export function HandTutorial({ onDismiss }: { onDismiss: (how: TourEnd) => void }) {
   return (
     <div className="mb-2 animate-fade-up rounded-xl border border-stone-700/60 bg-stone-950/80 p-2.5" role="note" aria-label="How the hand works">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="font-display text-xs uppercase tracking-[0.18em] text-amber-200/90">Your turn, two ways</span>
-        <button type="button" onClick={onDismiss} aria-label="Close the hand tutorial" className="flex size-9 items-center justify-center rounded-lg text-stone-500 hover:text-amber-200">
+        <button type="button" onClick={() => onDismiss("ended")} aria-label="Close the hand tutorial" className="flex size-9 items-center justify-center rounded-lg text-stone-500 hover:text-amber-200">
           <X className="size-4" />
         </button>
       </div>
@@ -48,7 +49,7 @@ export function HandTutorial({ onDismiss }: { onDismiss: () => void }) {
         ))}
       </div>
       <div className="mt-2 flex justify-end">
-        <button type="button" onClick={onDismiss} className={ui.btnSmall}>
+        <button type="button" onClick={() => onDismiss("done")} className={ui.btnSmall}>
           Got it
         </button>
       </div>

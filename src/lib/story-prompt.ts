@@ -152,6 +152,14 @@ const STREAM_STRIP =
   /<\/(?:think|thinking|thought|reasoning)>|<\|?channel\|?>\s*final\s*(?:<\|?message\|?>)?|assistantfinal[:\s]*|<\|?(?:start|im_start)\|?>\s*assistant\b|<\|?(?:start|end|message|channel|return|im_start|im_end)\|?>/i;
 const STREAM_HOLDBACK_CHARS = 48;
 
+// Whether text stops inside a reasoning block it opened (a <think> or a
+// thought channel with no end yet): what follows the opener is the model's
+// reasoning, not story, even though the server left it in the reply.
+export function endsInsideReasoning(text: string): boolean {
+  const opened = lastMatchEnd(text, new RegExp(STREAM_SUPPRESS_OPEN.source, "gi"));
+  return opened >= 0 && lastMatchEnd(text, new RegExp(STREAM_SUPPRESS_END.source, "gi")) < opened;
+}
+
 function partialMarkerStart(text: string): number {
   // A trailing '<'-run with no '>' yet could be the head of a marker.
   const angle = text.lastIndexOf("<");

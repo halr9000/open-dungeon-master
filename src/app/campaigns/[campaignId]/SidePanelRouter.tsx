@@ -75,6 +75,8 @@ export type SidePanelRouterProps = {
   isLead: boolean;
   // Holds the DM seat, so the console tab exists at all.
   adjudicates: boolean;
+  // The owner or the DM proper, who may end the campaign (Setup tab).
+  canEndCampaign?: boolean;
   // The chat, for the console's queue of unanswered player actions.
   messages: CampaignMessage[];
   dmIntents: Array<{ messageId: string; userId: string; characterId: string; seq: number }>;
@@ -237,6 +239,7 @@ export function SidePanelRouter({
   visible = true,
   onOpenTab,
   adjudicates,
+  canEndCampaign = false,
   messages,
   dmIntents,
   floor,
@@ -448,6 +451,7 @@ export function SidePanelRouter({
                 onOpenSettings={onOpenTab ? () => onOpenTab("settings") : undefined}
                 humanDmTable={humanDmTable}
                 companionGenre={campaign?.gameSettings?.genre}
+                companionWorldPack={campaign?.gameSettings?.worldPack}
                 companionLevel={(() => {
                   const levels = sheets
                     .filter((sheet) => !sheet.isCompanion)
@@ -629,7 +633,13 @@ export function SidePanelRouter({
   if (tab === "settings" && campaign) {
     return (
       <Suspense fallback={<PanelLoading />}>
-        <SessionSettings campaign={campaign} isLead={isLead} steersStory={steersStory} isDm={adjudicates} />
+        <SessionSettings
+          campaign={campaign}
+          isLead={isLead}
+          steersStory={steersStory}
+          isDm={adjudicates}
+          canEnd={canEndCampaign}
+        />
       </Suspense>
     );
   }

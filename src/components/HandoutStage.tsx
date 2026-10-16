@@ -143,7 +143,7 @@ export function HandoutStage({
           <p className="mt-2 text-center text-sm text-stone-300">{handout.caption}</p>
         ) : null}
       </div>
-      <div className="absolute right-3 top-3 flex items-center gap-2 sm:right-6 sm:top-6">
+      <div className="absolute right-3 top-[max(0.75rem,env(safe-area-inset-top))] flex items-center gap-2 sm:right-6 sm:top-6">
         {image ? (
           <a
             href={image}

@@ -28,6 +28,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ChatMessage, ChatRequestOptions, UpstreamResult } from "@/lib/model-client";
+import { createStreamRepetitionGuard, firstCopyOf, streamRepetitionResponse } from "@/lib/stream-repetition";
 import { buildChildEnv, leaksServerSecret } from "./child-env.ts";
 import { childPath } from "./discover.ts";
 import { renderCompletion, renderFollowUp, renderTurn, toMcpTools, toolNames } from "./render.ts";
@@ -35,7 +36,7 @@ import { adapterFor, harnessConfig, probeHarness, resolveHarnessBinary } from ".
 import { harnessOfferFor } from "./policy.ts";
 import { getCampaignById } from "@/lib/db/campaigns";
 import type { HarnessErrorKind, HarnessEvent, HarnessSession, McpToolDefinition } from "./types.ts";
-import { isHarnessId } from "./types.ts";
+import { HARNESS_MAX_RUN_MS, isHarnessId } from "./types.ts";
 
 // A burst of parallel calls from one model reply arrives as separate HTTP
 // requests a few milliseconds apart; they are gathered into one round, as a
@@ -45,7 +46,6 @@ const ROUND_GATHER_MS = 180;
 // anything else it started gets this long between calls before it is reaped.
 const IDLE_MS_TURN = 10 * 60_000;
 const IDLE_MS_OTHER = 90_000;
-const MAX_LIFETIME_MS = 20 * 60_000;
 
 const NO_MORE_TOOLS =
   "No more tools are available this turn. Stop calling tools and write the narration for the players now.";
@@ -93,6 +93,9 @@ export class BridgeSession {
   private queue: PendingCall[] = [];
   private inflight = new Map<string, PendingCall>();
   private text = "";
+  // Reads `text` for a loop, as a model's stream is read
+  // (src/lib/stream-repetition.ts); started again whenever `text` empties.
+  private loop = createStreamRepetitionGuard();
   // What the program wrote before its last call refused for narration only:
   // the message if it writes nothing after the refusal (refuseToNarrate).
   private draft = "";
@@ -125,12 +128,25 @@ export class BridgeSession {
     this.catalogue = options.catalogue;
     this.allowed = options.allowed;
     this.isTurn = options.isTurn;
-    this.lifeTimer = setTimeout(() => this.close(), MAX_LIFETIME_MS);
+    this.lifeTimer = setTimeout(() => this.close(), HARNESS_MAX_RUN_MS);
     this.lifeTimer.unref?.();
   }
 
-  attach(program: HarnessSession) {
+  // A program that finishes starting after its session was closed (the
+  // turn timed out while it started) is closed at once and never sent the
+  // prompt: close() ran while there was no program to close, and nothing
+  // would ever close it later.
+  attach(program: HarnessSession): boolean {
+    if (this.closed) {
+      try {
+        program.close();
+      } catch {
+        // Already gone.
+      }
+      return false;
+    }
     this.program = program;
+    return true;
   }
 
   send(text: string) {
@@ -153,6 +169,10 @@ export class BridgeSession {
     }
     if (event.type === "delta") {
       this.text += event.text;
+      if (this.loop.push(event.text)) {
+        this.stopRepeating();
+        return;
+      }
       this.waiter?.onDelta?.(event.text);
       return;
     }
@@ -160,7 +180,7 @@ export class BridgeSession {
       this.finished = true;
       this.lastUsage = event.usage;
       const content = (this.text.trim() ? this.text : this.draft || event.text).trim();
-      this.text = "";
+      this.clearText();
       this.draft = "";
       // Calls still queued when the program says it is done can only be
       // strays; they are answered and dropped.
@@ -237,8 +257,29 @@ export class BridgeSession {
     if (this.text.trim()) {
       this.draft = this.text;
     }
-    this.text = "";
+    this.clearText();
     return NARRATE_NOW;
+  }
+
+  private clearText() {
+    this.text = "";
+    this.loop = createStreamRepetitionGuard();
+  }
+
+  // The program began repeating itself, so it is stopped as a model's stream
+  // would be. An ask that may only narrate has no calls to lose, and gets the
+  // text up to the end of the first copy; any other gets the halted-turn
+  // error, since its prose without the calls it never made could narrate
+  // outcomes nothing resolved.
+  private stopRepeating() {
+    const kept = firstCopyOf(this.text, this.loop.firstCopyEnd);
+    const content = kept === null ? "" : kept.trim() || this.draft.trim();
+    this.deliver(
+      this.narrateOnly && content
+        ? { message: { content }, finishReason: "repetition" }
+        : { error: streamRepetitionResponse() },
+    );
+    this.close();
   }
 
   private scheduleGather() {
@@ -258,7 +299,7 @@ export class BridgeSession {
       this.inflight.set(call.id, call);
     }
     const content = this.text.trim();
-    this.text = "";
+    this.clearText();
     this.deliver({
       message: {
         content,
@@ -671,8 +712,9 @@ async function startSession(
       env,
       onEvent: session.onEvent,
     });
-    session.attach(program);
-    session.send(rendered.prompt);
+    if (session.attach(program)) {
+      session.send(rendered.prompt);
+    }
   } catch (error) {
     session.onEvent({
       type: "error",
@@ -703,6 +745,10 @@ async function completeWithHarness(
   const rendered = renderCompletion(messages);
   let program: HarnessSession | null = null;
   let text = "";
+  // A streamed or narration-only answer is read for a loop as a model's is.
+  // A completion has no tools, so one that begins repeating is settled with
+  // its first copy, and the program is stopped below like a finished one.
+  const loop = options.onDelta || options.toolChoice === "none" ? createStreamRepetitionGuard() : null;
   let outcome: UpstreamResult;
   try {
     outcome = await new Promise<UpstreamResult>((resolve) => {
@@ -714,9 +760,12 @@ async function completeWithHarness(
         resolve(result);
       }
     };
+    // A summary may be given up to ARC_TEXT_TIMEOUT_MS (30 minutes at most),
+    // but no run outlives HARNESS_MAX_RUN_MS, the bound opencode's sweep
+    // relies on.
     const timer = setTimeout(
       () => settle({ error: harnessError("The agent program took too long to answer.", "timeout") }),
-      timeoutMs,
+      Math.min(timeoutMs, HARNESS_MAX_RUN_MS),
     );
     adapter
       .start({
@@ -731,6 +780,15 @@ async function completeWithHarness(
         onEvent: (event) => {
           if (event.type === "delta") {
             text += event.text;
+            if (loop?.push(event.text)) {
+              const kept = firstCopyOf(text, loop.firstCopyEnd);
+              settle(
+                kept === null
+                  ? { error: streamRepetitionResponse() }
+                  : { message: { content: kept.trim() }, finishReason: "repetition" },
+              );
+              return;
+            }
             options.onDelta?.(event.text);
           } else if (event.type === "turn_end") {
             settle({ message: { content: (text.trim() ? text : event.text).trim() } });

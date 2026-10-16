@@ -22,7 +22,8 @@ import type { ImportSourceSummary } from "@/app/workshop/types";
 // decides which ones this person may copy out of
 // (src/lib/db/import-sources.ts).
 //
-// Used in two places with one difference. In the lobby a campaign already
+// Used in two places with one difference. In the lobby (and the table's
+// Setup tab, once play has begun) a campaign already
 // exists, so the picker asks the server what the import WOULD do and shows
 // the collisions and overwrites. At campaign creation there is no campaign
 // yet, so there is nothing to collide with: a fresh table is empty, and the
@@ -54,6 +55,7 @@ export function ContentImportPicker({
   onChange,
   onImported,
   storyboardNote,
+  onChosen,
 }: {
   // Omitted at campaign creation, where the target does not exist yet.
   campaignId?: string;
@@ -64,6 +66,10 @@ export function ContentImportPicker({
   // Drawn under the choices when the board being brought in will write the
   // table's story arc (the AI Story Setup warning, issue 249).
   storyboardNote?: (arcComing: boolean) => ReactNode;
+  // Told which source is chosen and whether its board will write the arc,
+  // so a summary elsewhere (the creator's review) can name it and repeat the
+  // warning.
+  onChosen?: (chosen: { title: string; arcComing: boolean } | null) => void;
 }) {
   const [sources, setSources] = useState<ImportSourceSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,6 +117,11 @@ export function ContentImportPicker({
   // campaign exists to plan against).
   const arcComing =
     Boolean(chosen?.boardArc) && selection.select.includes("storyboard") && !plan?.board?.targetHasArc;
+
+  const chosenTitle = chosen?.title ?? null;
+  useEffect(() => {
+    onChosen?.(chosenTitle === null ? null : { title: chosenTitle, arcComing });
+  }, [onChosen, chosenTitle, arcComing]);
 
   // The state lands in a .then callback rather than after an await, so the
   // refetch reads as "subscribe to an external system" to React and to the

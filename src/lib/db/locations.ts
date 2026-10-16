@@ -14,6 +14,9 @@ export type CampaignLocation = {
   visited: boolean;
   isCurrent: boolean;
   mapImage: GeneratedImage | null;
+  // Why the last map render failed, while the place has no map. Kept so a
+  // reload shows the failure instead of a placeholder that never ends.
+  mapFailed: string | null;
   // The prepared map this place stands on, when the DM linked one, and the
   // sound it makes (docs/vtt-parity-implementation-plan.md section 3.5).
   preparedMapId: string | null;
@@ -37,6 +40,19 @@ type LocationRow = {
   updated_at: string;
 };
 
+// map_image_json holds the map, or, while there is none, why the last render
+// failed ({ failed }): the failure needs to outlive its ephemeral
+// media_status without a column of its own.
+type StoredMap = GeneratedImage | { failed: string };
+
+function storedMap(raw: string | null): { mapImage: GeneratedImage | null; mapFailed: string | null } {
+  const stored = parseJson<StoredMap | null>(raw, null);
+  if (stored && "url" in stored) {
+    return { mapImage: stored, mapFailed: null };
+  }
+  return { mapImage: null, mapFailed: stored && typeof stored.failed === "string" ? stored.failed : null };
+}
+
 function mapLocation(row: LocationRow): CampaignLocation {
   return {
     id: row.id,
@@ -46,7 +62,7 @@ function mapLocation(row: LocationRow): CampaignLocation {
     connections: parseJson<string[]>(row.connections_json, []),
     visited: Boolean(row.visited),
     isCurrent: Boolean(row.is_current),
-    mapImage: parseJson<GeneratedImage | null>(row.map_image_json, null),
+    ...storedMap(row.map_image_json),
     preparedMapId: row.prepared_map_id ?? null,
     ambience: parseJson<{ bed: string; music: string } | null>(row.ambience_json ?? "", null),
     createdAt: row.created_at,
@@ -82,6 +98,24 @@ export function getCurrentLocation(campaignId: string): CampaignLocation | null 
   return row ? mapLocation(row) : null;
 }
 
+// Moving to a place already on record (usually a return) adds routes rather
+// than replacing them: away from a place the model never sees its recorded
+// exits, so what it passes on the way back is a fresh guess that would drop
+// the routes already known. update_location remains the way to revise them.
+// Names are compared folded, as places are (getLocationByName).
+export function withNewNames(known: string[], added: string[]): string[] {
+  const seen = new Set(known.map(foldName));
+  const merged = [...known];
+  for (const name of added) {
+    const folded = foldName(name);
+    if (!seen.has(folded)) {
+      seen.add(folded);
+      merged.push(name);
+    }
+  }
+  return merged;
+}
+
 // Create-or-update by name, mark it current + visited, clear other currents.
 export function upsertCurrentLocation(input: {
   campaignId: string;
@@ -105,7 +139,9 @@ export function upsertCurrentLocation(input: {
         `,
       ).run(
         input.layoutDescription?.trim() || existing.layoutDescription,
-        JSON.stringify(input.connections ?? existing.connections),
+        JSON.stringify(
+          input.connections ? withNewNames(existing.connections, input.connections) : existing.connections,
+        ),
         now,
         existing.id,
       );
@@ -256,6 +292,29 @@ export function setLocationMap(locationId: string, image: GeneratedImage | null)
     .prepare(`UPDATE locations SET map_image_json = ?, updated_at = ? WHERE id = ?`)
     .run(image ? JSON.stringify(image) : null, nowIso(), locationId);
   return result.changes > 0;
+}
+
+// A map render failed. Recorded only while the place has no map: a failed
+// redraw leaves the map it already had. Not a change to the place itself, so
+// updated_at (the panel's order) is left alone.
+export function setLocationMapFailed(locationId: string, reason: string): boolean {
+  const location = getLocation(locationId);
+  if (!location || location.mapImage) {
+    return false;
+  }
+  getDatabase()
+    .prepare(`UPDATE locations SET map_image_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ failed: reason } satisfies StoredMap), locationId);
+  return true;
+}
+
+// A new render is on its way: the old failure no longer describes the place.
+export function clearLocationMapFailed(locationId: string): boolean {
+  if (!getLocation(locationId)?.mapFailed) {
+    return false;
+  }
+  getDatabase().prepare(`UPDATE locations SET map_image_json = NULL WHERE id = ?`).run(locationId);
+  return true;
 }
 
 // Link a place to a prepared map and a sound, or clear either with null.

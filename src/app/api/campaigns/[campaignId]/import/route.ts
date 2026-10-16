@@ -3,6 +3,7 @@ import { isErrorResponse, requireMember, steersStory } from "@/lib/campaign-api"
 import { getImportSourceForUser } from "@/lib/db/import-sources";
 import { planContentImport, runContentImport } from "@/lib/db/content-import";
 import { IMPORT_KINDS } from "@/lib/workshop/import";
+import { publishEphemeral } from "@/lib/events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,10 @@ export const dynamic = "force-dynamic";
 // before anything is copied. POST does the same planning again server-side
 // and then executes it, because a plan the client hands back is a plan a
 // client could have edited.
+//
+// Prep keeps arriving after session one: the lobby offers this, and so does
+// the table's Setup tab once play has begun. An ended campaign takes nothing
+// more, the same line the campaign route draws for its details.
 
 const importSchema = z.object({
   sourceId: z.string().trim().min(1).max(80),
@@ -85,6 +90,9 @@ export async function POST(
       { status: 403 },
     );
   }
+  if (context.campaign.status === "ended") {
+    return Response.json({ error: "The campaign has ended." }, { status: 400 });
+  }
   const parsed = importSchema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) {
     return Response.json({ error: "Invalid import." }, { status: 400 });
@@ -105,6 +113,12 @@ export async function POST(
   if ("error" in result) {
     return Response.json({ error: result.error }, { status: 400 });
   }
+  // An import touches a dozen tables at once (lore, places, quests, the arc,
+  // house rules), which no one incremental event expresses. At a table in
+  // play every open seat reloads its snapshot instead, so what was brought in
+  // shows without a refresh. Contentless: each seat reads back only what it
+  // may.
+  publishEphemeral(campaignId, "prep_imported", {});
   return Response.json({
     plan: result.plan,
     copied: result.copied,

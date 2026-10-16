@@ -13,6 +13,7 @@ import { handleAddCompanion, handleDismissCompanion } from "@/lib/dm/companion-t
 import { applyEncounterCall, ENCOUNTER_TOOL_NAMES } from "@/lib/dm/encounter-tools";
 import { handleApplyHazard } from "@/lib/dm/hazard-tools";
 import { handleSearchLore } from "@/lib/dm/lore-search";
+import { handleReadCard } from "@/lib/dm/prep-card-tool";
 import { applyDmMutation, MUTATION_TOOL_NAMES } from "@/lib/dm/mutations";
 import { handleWriteCampaignNote } from "@/lib/dm/note-tools";
 import {
@@ -57,6 +58,8 @@ import {
   handleRecordEvent,
   handleRequestPlayerInput,
 } from "@/lib/dm/turn";
+import { imagesAvailable } from "@/lib/capabilities";
+import { imageProducerReady } from "@/lib/image-generate";
 import { handleGenerateImage } from "@/lib/dm/images";
 import { handleRequestRoll } from "@/lib/dm/invoke-roll";
 import { handleSplitDamage } from "@/lib/dm/split-damage";
@@ -222,7 +225,11 @@ export async function dispatchAdjudication(
       return handleDismissCompanion(campaign, rawArguments, sheets);
     case "move_party":
     case "update_location": {
-      const result = handleLocationCall(campaign, name, rawArguments);
+      const pictures =
+        campaign.gameSettings.mapsEnabled &&
+        imageProducerReady(campaign.settings) &&
+        (await imagesAvailable(campaign.settings));
+      const result = handleLocationCall(campaign, name, rawArguments, pictures);
       // Bookkeeping the model's turn uses to link its narration to a map;
       // a person's narration is a separate message, so it goes no further.
       delete result.movedToNewLocation;
@@ -260,6 +267,8 @@ export async function dispatchAdjudication(
       return handleRecallStory(campaign, rawArguments);
     case "search_lore":
       return handleSearchLore(campaign.id, rawArguments);
+    case "read_card":
+      return handleReadCard(campaign, rawArguments);
     default:
       return { error: `The engine has no action called "${name}".` };
   }

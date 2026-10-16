@@ -22,7 +22,7 @@ function latestRecap(campaignId: string): { recap: string; at: string } | null {
   const rows = getDatabase()
     .prepare(
       `SELECT content, created_at FROM campaign_messages
-       WHERE campaign_id = ? AND author_type = 'dm'
+       WHERE campaign_id = ? AND author_type = 'dm' AND content NOT LIKE '(ooc)%'
        ORDER BY seq DESC LIMIT 6`,
     )
     .all(campaignId) as Array<{ content: string; created_at: string }>;

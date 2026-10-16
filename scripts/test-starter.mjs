@@ -18,13 +18,16 @@ process.env.DB_ENCRYPTION_KEY = randomBytes(32).toString("hex");
 register("./lib/register-alias.mjs", import.meta.url);
 
 const { createUser } = await import("../src/lib/db/users.ts");
-const { getCampaignById } = await import("../src/lib/db/campaigns.ts");
+const { createCampaign, getCampaignById } = await import("../src/lib/db/campaigns.ts");
+const { getDatabase } = await import("../src/lib/db/core.ts");
+const { advanceClock, getClock } = await import("../src/lib/db/clock.ts");
 const { admitSheet } = await import("../src/lib/characters/admit.ts");
 const { createSheetSchema } = await import("../src/lib/schemas/sheet.ts");
 const { createSheet, listSheets } = await import("../src/lib/db/sheets.ts");
 const { createCharacter, listCharactersForUser } = await import("../src/lib/db/characters.ts");
 const { PREGENS, pregenById, pregenSummaries } = await import("../src/lib/starter/pregens.ts");
 const { STARTER_ONE_SHOT, createStarterCampaign } = await import("../src/lib/starter/one-shot.ts");
+const { CALENDAR_PRESETS, MINUTES_PER_DAY, breakDown, dayPart, defaultClock, describeInstant, toInstant } = await import("../src/lib/dm/calendar.ts");
 
 let failed = 0;
 function test(name, run) {
@@ -54,6 +57,73 @@ test("the one-shot campaign carries its premise, its secret outline and a short 
   assert.ok(!stored.description.includes("ghoul"), "the players' premise keeps the twist");
   const solo = createStarterCampaign(host.id, { solo: true });
   assert.equal(solo.maxPlayers, 1);
+  // POST /api/starter passes this to the creator, who owns the table.
+  assert.equal(solo.role, "owner");
+});
+
+// The premise says "you arrive at dusk", and the DM narrates the hour the
+// clock shows; a campaign's clock otherwise opens at eight in the morning.
+test("the one-shot's clock opens at dusk, as its premise does, on the day a campaign opens", () => {
+  assert.match(STARTER_ONE_SHOT.description, /at dusk/);
+  const table = getCampaignById(createStarterCampaign(host.id, { solo: true }).id);
+  const now = breakDown(table.clock.calendar, table.clock.instant);
+  assert.equal(now.hour, 18);
+  assert.equal(now.minute, 0);
+  assert.equal(dayPart(now.hour), "evening");
+  const opening = defaultClock();
+  assert.equal(Math.floor(table.clock.instant / MINUTES_PER_DAY), Math.floor(opening.instant / MINUTES_PER_DAY), "only the hour moved");
+  assert.equal(table.clock.calendar.id, opening.calendar.id);
+});
+
+// A weekday named like an hour ("Midday, Greening 1 (19:00), evening") reads
+// as the hour to players and to the model, and so does one that only
+// contains it ("Dawnday", "Night's Rest").
+test("no weekday of a built-in calendar contains a time of day", () => {
+  const clockWords = ["midday", "noon", "midnight", "dawn", "dusk", "morning", "afternoon", "evening", "night"];
+  for (const calendar of CALENDAR_PRESETS) {
+    for (const weekday of calendar.weekdays) {
+      const word = clockWords.find((clockWord) => weekday.toLowerCase().includes(clockWord));
+      assert.equal(word, undefined, `${calendar.name}: ${weekday} contains "${word}"`);
+    }
+  }
+});
+
+// The turning year as code before the rename stored it: any clock that ever
+// moved keeps a whole copy of its calendar in clock_json.
+const LEGACY_TURNING_YEAR = {
+  id: "seasons",
+  name: "The turning year",
+  months: [
+    { name: "Deepwinter", days: 31 }, { name: "Frostmoon", days: 30 }, { name: "Thaw", days: 31 },
+    { name: "Greening", days: 30 }, { name: "Bloom", days: 31 }, { name: "Seedfall", days: 30 },
+    { name: "Highsun", days: 31 }, { name: "Longlight", days: 31 }, { name: "Firstharvest", days: 30 },
+    { name: "Goldfall", days: 30 }, { name: "Leafturn", days: 30 }, { name: "Yearsend", days: 30 },
+  ],
+  weekdays: ["Firstday", "Seconday", "Midday", "Fourthday", "Fifthday", "Restday"],
+  yearSuffix: "",
+  epochYear: 1,
+};
+
+test("a campaign played before the rename reads Midweek on the same day and hour, and an edited calendar keeps its own names", () => {
+  const played = createCampaign(host.id, { title: "Old table", description: "", theme: "", maxPlayers: 4, startingLevel: 1, difficulty: "normal" });
+  const nineOClock = toInstant(LEGACY_TURNING_YEAR, { month: 4, day: 1, hour: 9 });
+  const store = (id, calendar) =>
+    getDatabase()
+      .prepare(`UPDATE campaigns SET clock_json = ? WHERE id = ?`)
+      .run(JSON.stringify({ calendar, instant: nineOClock, weather: null }), id);
+  store(played.id, LEGACY_TURNING_YEAR);
+  const clock = getCampaignById(played.id).clock;
+  assert.equal(clock.instant, nineOClock);
+  assert.equal(describeInstant(clock.calendar, clock.instant), "Midweek, Greening 1, year 1 (09:00), morning, spring");
+  assert.equal(getClock(played.id).calendar.weekdays[2], "Midweek");
+  // The next move of the clock stores the new name.
+  advanceClock(played.id, 1, "hours");
+  const row = getDatabase().prepare(`SELECT clock_json FROM campaigns WHERE id = ?`).get(played.id);
+  assert.deepEqual(JSON.parse(row.clock_json).calendar.weekdays, CALENDAR_PRESETS[0].weekdays);
+
+  const edited = createCampaign(host.id, { title: "Edited table", description: "", theme: "", maxPlayers: 4, startingLevel: 1, difficulty: "normal" });
+  store(edited.id, { ...LEGACY_TURNING_YEAR, festivals: [{ month: 4, day: 1, name: "First Bloom" }] });
+  assert.match(describeInstant(getCampaignById(edited.id).clock.calendar, nineOClock), /^Midday, Greening 1/);
 });
 
 test("every ready-made hero passes the table's admission door at level 1 and arrives armed", () => {

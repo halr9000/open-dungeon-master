@@ -264,6 +264,7 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
             onSubmit={submitNew}
             busy={busy}
             error={error}
+            onCancel={() => navigateTo(`/campaigns/${campaignId}`)}
           />
         </>
       )}

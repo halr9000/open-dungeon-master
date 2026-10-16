@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { isErrorResponse, requireAdmin } from "@/lib/admin-api";
 import { PREVIEW_LINE } from "@/lib/tts";
-import { describeSpeechFailure, serverVoices, synthesizeSpeech, ttsBackend } from "@/lib/tts-backend";
+import { describeSpeechFailure, serverVoices, synthesizeSpeech, ttsBackend, withNarrationModel } from "@/lib/tts-backend";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,14 +31,18 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "Invalid test request." }, { status: 400 });
   }
   const form = parsed.data;
-  const backend = ttsBackend({
-    provider: form.provider,
-    kokoroUrl: form.kokoroUrl,
-    openaiUrl: form.baseUrl,
-    model: form.model,
-    apiKey: form.apiKey,
-    voice: form.voice,
-  });
+  // With the model settled, so a blank field that runs the server's only
+  // model says which one spoke.
+  const backend = await withNarrationModel(
+    ttsBackend({
+      provider: form.provider,
+      kokoroUrl: form.kokoroUrl,
+      openaiUrl: form.baseUrl,
+      model: form.model,
+      apiKey: form.apiKey,
+      voice: form.voice,
+    }),
+  );
   const endpoint = `${backend.v1}/audio/speech`;
   if (backend.provider === "off") {
     return Response.json({ ok: false, endpoint: "", error: "Narration is switched off, so there is nothing to test." });

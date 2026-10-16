@@ -104,6 +104,14 @@ export type BoardFacts = {
   moments: number;
   // Why the board cannot make an arc of its own, or "" when it can.
   arcProblem: string;
+  // The cards behind `beats` and the moments, by title and in the same
+  // order, so a preflight can NAME what the arc's caps would leave out
+  // (issue #301). Older callers leave them off.
+  beatTitles?: string[];
+  momentTitles?: string[];
+  // Cards whose prose reads as compressed (src/lib/workshop/prose-check.ts),
+  // said as a note the author can review (issue #302).
+  proseNotes?: Array<{ title: string; message: string }>;
 };
 
 // The arc a campaign already has, for a board joining it as a new act.
@@ -114,6 +122,9 @@ export type TargetArc = {
   // (src/lib/dm/arc-logic.ts).
   room: number;
   actRoom: boolean;
+  // How many more planned events fit: a pending event is never evicted, so
+  // moments past this stay on the prep cards and off the arc (issue #301).
+  eventRoom?: number;
 };
 
 // What happens to a board's beats when the campaign already has an arc:

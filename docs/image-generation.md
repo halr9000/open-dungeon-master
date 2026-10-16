@@ -11,7 +11,7 @@ Four backends are exposed in the Images panel:
 | MFLUX Mac | Apple Silicon (MLX) | FLUX.2-klein uncensored |
 | SDNQ GPU/CPU | NVIDIA CUDA, supported AMD (ROCm), CPU | FLUX.2-klein |
 | ComfyUI | anything ComfyUI runs on | the image model catalog, or any checkpoint |
-| OpenAI | none, the pictures are made off-box | gpt-image-1 and friends |
+| OpenAI | none, the pictures are made off-box | the picture models your key lists |
 
 ## The FLUX worker (MFLUX / SDNQ)
 
@@ -80,7 +80,9 @@ The **Image model** picker offers two kinds of choice:
   weights (fp8, int8, bf16), or a copy in a subfolder, counts. Choosing a model
   paints every campaign's ComfyUI pictures with it.
 - **Checkpoints**: any checkpoint ComfyUI lists, and a campaign may keep its
-  own. Checkpoints the catalog recognises (SDXL, Pony, SD 3.5, NetaYume,
+  own; a campaign with none of its own paints with the one picked here.
+  Nothing is painted until a model or a checkpoint is picked: the app names
+  no checkpoint itself and takes none from ComfyUI's list. Checkpoints the catalog recognises (SDXL, Pony, SD 3.5, NetaYume,
   HiDream-O1) run with their family's settings; others run with the SDXL-era
   defaults (25 steps, CFG 6). Video models, upscalers, refiners and bare
   diffusion models linked into `models/checkpoints` are left out, since none of
@@ -127,7 +129,7 @@ On strix-halo (AMD Radeon 8060S Graphics, ComfyUI 0.39.2, torch 2.14.0+rocm7.2):
 | ERNIE-Image Turbo | recommended | 68 s | 50 s | 61 s | 34.1 GB | 8 | Rich painterly fantasy: a true owlbear, a crowded forge with adventurers on the bridge, stout portraits (with elf ears). About a minute a picture, 34 GB peak. Apache-2.0. |
 | HiDream-O1 Dev | recommended | 69 s | 49 s | 60 s | 13.9 GB | 28 | Clean painted game art from one 8 GB checkpoint at a 14 GB peak: real dwarves, a true owlbear, a working forge. About a minute a picture; read the female dwarf as a bearded man. MIT. |
 | FLUX.1 schnell | works | 30 s | 25 s | 39 s | 32.6 GB | 4 | Paints dwarves as elves, the owlbear as a plain owl, and scribbles signature-like text into corners. |
-| Stable Diffusion XL | works | 43 s | 31 s | 41 s | 12.3 GB | 25 | ODM's default CyberRealistic XL: dwarves come out human and the owlbear as an owl. |
+| Stable Diffusion XL | works | 43 s | 31 s | 41 s | 12.3 GB | 25 | CyberRealistic XL: dwarves come out human and the owlbear as an owl. |
 | Pony Diffusion XL | works | 44 s | 32 s | 43 s | 12.2 GB | 25 | Drifts to anime faces and light backgrounds, misses the scene and paints the owlbear as an owl. |
 | Qwen-Image 2512 Lightning | works | 46 s | 39 s | 42 s | 76.9 GB | 4 | Qwen-Image 2512's forge at under a minute, but photographic rather than painted, the owlbear is a plain bear, and the LoRA unpacks the 20B model to a 77 GB peak. Qwen Image 2.1 Turbo paints better in less memory. |
 | PixelDiT 1.3B | works | 55 s | 39 s | 52 s | 9 GB | 30 | Lively stylised game art on only 9 GB, under a minute a picture, but it ignores the dark backgrounds, turns the forge purple, and gives dwarves elf ears. NVIDIA non-commercial licence. |
@@ -199,16 +201,19 @@ gated on the host, so a key for llama.cpp, LM Studio or OpenRouter is never
 sent to OpenAI. Keys stay server-side either way; the campaign's settings are
 masked before they reach any player.
 
-Blank model = `gpt-image-1`; set `OPENAI_IMAGE_MODEL` (or the admin field) for
-anything else. `OPENAI_IMAGE_BASE_URL` exists for OpenAI-compatible image
-proxies. The app's fast/slow dial maps onto the quality tiers (`medium` and
-`high` for the gpt-image family, `standard` and `hd` for dall-e), so **slow**
-is several times the price of **fast**. Notes:
+Pick the model in the admin panel, from the picture models the server lists
+(or set `OPENAI_IMAGE_MODEL`); with none picked, no picture is asked for.
+`OPENAI_IMAGE_BASE_URL` exists for OpenAI-compatible image proxies. The app's
+fast/slow dial maps onto the quality tiers (`medium` and `high`), so **slow**
+is several times the price of **fast**. A model that takes other tiers (a
+dall-e model behind a proxy) is asked once more without the field, at its own
+default, and a size it refuses is replaced by one from the list its refusal
+names. Notes:
 
 - Character portrait references are not used by this backend, same as ComfyUI;
   the picture comes from the text prompt alone.
-- Nothing is probed: a backend with no key simply records the request and the
-  placeholder tells the table a picture is coming.
+- Nothing is probed: a backend with no key or no model simply records the
+  request and the placeholder tells the table a picture is coming.
 - Prompts go to OpenAI, so this is the one backend that is not on-device.
 - A key that lives only in ONE campaign's Story AI panel (an admin's
   campaign: a player's campaign always runs on the server's keys) covers that

@@ -225,10 +225,17 @@ const cutByOutputCap = (response: { status?: unknown; incomplete_details?: { rea
 // output_item.done items stand in if the stream ends without it. A
 // response.failed or error event is the backend's own failure. Transport
 // trouble (a cut stream, a flood) throws, as the Chat Completions reader's
-// does, for the caller to word.
+// does, for the caller to word. Reasoning text (the raw reasoning an
+// open-weight model streams, or a hosted model's summary of it) goes to
+// onReasoningDelta alone, which may throw to stop the stream.
 export async function readResponsesReply(
   upstream: Response,
-  options: { onDelta?: StreamDeltaHandler; idleMs: number; onIdleAbort: () => void },
+  options: {
+    onDelta?: StreamDeltaHandler;
+    onReasoningDelta?: StreamDeltaHandler;
+    idleMs: number;
+    onIdleAbort: () => void;
+  },
 ): Promise<ResponsesReply> {
   const { onDelta } = options;
   if (onDelta && upstream.body) {
@@ -269,6 +276,12 @@ export async function readResponsesReply(
           if (typeof event.delta === "string" && event.delta) {
             deltas.push(event.delta);
             onDelta(event.delta);
+          }
+          break;
+        case "response.reasoning_text.delta":
+        case "response.reasoning_summary_text.delta":
+          if (typeof event.delta === "string" && event.delta) {
+            options.onReasoningDelta?.(event.delta);
           }
           break;
         case "response.output_item.done":

@@ -78,7 +78,12 @@ export function Sheet({
             <RadixDialog.Close
               className={cn(
                 "rounded-md p-1 text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200",
-                hideTitle && "absolute right-3 top-3 lg:right-4 lg:top-4",
+                // Over a full-screen editor the X floats on the content, which
+                // comes later in the page and would otherwise paint over it,
+                // leaving a phone (no backdrop to tap) only the Escape key.
+                // Those sheets fill the screen below lg, so the X also clears
+                // the status bar an installed iOS app draws over the page.
+                hideTitle && "absolute right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-10 lg:right-4 lg:top-4",
               )}
               aria-label="Close"
             >

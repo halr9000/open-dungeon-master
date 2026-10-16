@@ -1,8 +1,8 @@
 import { currentUser, unauthorized } from "@/lib/auth";
 import { openAiSpeechConfig } from "@/lib/openai-images";
-import { serverEnv } from "@/lib/server-env";
 import { decodeWav, SPEECH_SAMPLE_RATE } from "@/lib/speech-wav";
-import { currentSttBackend, whisperUrl } from "@/lib/stt-backend";
+import { currentSttBackend } from "@/lib/stt-backend";
+import { whisperModelFor, whisperUrl } from "@/lib/stt";
 import { transcribeBuiltin } from "@/lib/stt-builtin";
 import { isCampaignMember } from "@/lib/db/campaigns";
 import { isPrivateBackendHost } from "@/lib/backend-host";
@@ -65,7 +65,7 @@ export async function POST(request: Request) {
 
   const upstream = new FormData();
   upstream.set("file", audio, audio.name || "speech.webm");
-  upstream.set("model", serverEnv("STT_MODEL", "distil-large-v3"));
+  upstream.set("model", await whisperModelFor(whisperUrl()));
   try {
     const response = await fetch(`${whisperUrl()}/v1/audio/transcriptions`, {
       method: "POST",

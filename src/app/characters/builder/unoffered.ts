@@ -1,9 +1,9 @@
 // The stored picks the option lists do not hold (issue 229): a table's own
-// species, a pack row the server no longer has. The builder shows the list's
-// first row in place of a race, class or background it cannot find, and would
-// save that, so the wizard names each one and holds the save until the player
-// picks on purpose. A pick the player changed is theirs, so only the stored
-// one still selected counts.
+// species, a pack row the server no longer has. A race or class the builder
+// cannot find shows as not chosen; a background shows the list's first row in
+// its place and would save that (`standIn`). Either way the wizard names each
+// one and holds the save until the player picks on purpose. A pick the player
+// changed is theirs, so only the stored one still selected counts.
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import type { BackgroundOption, ClassOption, RaceOption } from "./useBuilderOptions";
 import { findRace } from "./useBuilderState";
@@ -14,14 +14,14 @@ export function unofferedPicks(
   races: RaceOption[],
   classes: ClassOption[],
   backgrounds: BackgroundOption[],
-): Array<{ what: string; standIn: string }> {
+): Array<{ what: string; standIn?: string }> {
   const words = (id: string) => id.replace(/[-_]/g, " ");
-  const missing: Array<{ what: string; standIn: string }> = [];
+  const missing: Array<{ what: string; standIn?: string }> = [];
   if (initial.race && state.raceId === initial.race && !findRace(races, initial.race)) {
-    missing.push({ what: `race (${words(initial.race)})`, standIn: races[0]?.name ?? "another race" });
+    missing.push({ what: `race (${words(initial.race)})` });
   }
   if (initial.class && state.classId === initial.class && !classes.some((entry) => entry.id === initial.class)) {
-    missing.push({ what: `class (${words(initial.class)})`, standIn: classes[0]?.name ?? "another class" });
+    missing.push({ what: `class (${words(initial.class)})` });
   }
   if (
     initial.background &&

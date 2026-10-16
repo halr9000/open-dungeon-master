@@ -1,5 +1,6 @@
 "use client";
 
+import { isOocAnswer } from "@/lib/dm/ooc-question";
 import { extraTurnTag } from "@/lib/battlemap/initiative-rows";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { EyeOff } from "lucide-react";
@@ -520,7 +521,7 @@ export function TabletopChronicle({
   const modes: InputKind[] = isDm ? ["narrate", "ooc"] : ["do", "say", "ooc", ...(steersStory ? (["lead"] as InputKind[]) : [])];
   const modeLabel: Record<string, string> = { do: "Do", say: "Say", ooc: "OOC", lead: "Direct", narrate: "Narrate" };
   // The drop cap goes to the first passage on the scroll, like a page.
-  const firstPassageId = recent.find((message) => message.authorType === "dm")?.id;
+  const firstPassageId = recent.find((message) => message.authorType === "dm" && !isOocAnswer(message.content))?.id;
   return (
     <aside className="cine-chronicle" aria-label="The chronicle">
       <span className="cine-chronicle-roller" aria-hidden="true" />
@@ -540,6 +541,14 @@ export function TabletopChronicle({
           ) : null}
           {recent.length === 0 ? <p className="cine-chronicle-quiet">The tale has not begun.</p> : null}
           {recent.map((message) => {
+            // The DM's out-of-character answer is a line, as table talk is.
+            if (message.authorType === "dm" && isOocAnswer(message.content)) {
+              return (
+                <p key={message.id} className="cine-chronicle-line">
+                  Dungeon Master: &ldquo;{message.content.trim()}&rdquo;
+                </p>
+              );
+            }
             if (message.authorType === "dm") {
               const parts = message.content.split(ROLL_MARKER);
               const dropcap = message.id === firstPassageId;

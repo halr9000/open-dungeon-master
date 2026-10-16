@@ -93,10 +93,21 @@ await test("a live restore stops the server taking play until it restarts", asyn
   assert.equal(proof.users, 1);
   assert.match(maintenanceState()?.reason ?? "", /restoring/);
   assert.throws(() => getDatabase(), /maintenance/);
+  // The world that was there is set aside, not deleted.
+  assert.ok(fs.existsSync(path.join(root, "data", ".odm-restore-previous", "local-roleplay.sqlite")));
+  assert.ok(!fs.existsSync(path.join(root, "data", ".odm-restore-incoming")));
   // What a restart would open: the restored world, without the later user.
   leaveMaintenance();
   const users = getDatabase().prepare("SELECT username FROM users").all().map((row) => row.username);
   assert.deepEqual(users, ["keeper"]);
+});
+
+await test("a backup after a restore leaves the set-aside world out", async () => {
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const after = await createBackup();
+  const files = listing(after.name);
+  assert.ok(files.includes("data/local-roleplay.sqlite"), files.join(","));
+  assert.ok(!files.some((file) => file.includes(".odm-restore-")), files.join(","));
 });
 
 console.warn = warn;

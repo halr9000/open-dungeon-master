@@ -285,7 +285,7 @@ function LocalPanel({
       ) : local.typed || local.baseUrl ? (
         <label className="reveal block">
           <span className="mb-1 block text-xs font-medium text-stone-400">Model name</span>
-          <input className={ui.input} value={local.model} onChange={(event) => setLocal({ model: event.target.value })} placeholder="qwen3.6-35b" />
+          <input className={ui.input} value={local.model} onChange={(event) => setLocal({ model: event.target.value })} placeholder="A model the server lists" />
           <span className="mt-1 block text-[11px] text-stone-500">The name the server knows it by. Look fills this in once the server answers.</span>
         </label>
       ) : null}

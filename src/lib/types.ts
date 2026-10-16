@@ -51,6 +51,10 @@ export type ImageRequest = {
   aspect?: AspectPreset;
   reason?: string;
   characterIds?: string[];
+  // Why the picture could not be made, once it could not (needed is then
+  // false). The failure itself is only an ephemeral media_status, so this is
+  // what a reload or a late joiner reads instead of a placeholder that spins.
+  failed?: string;
 };
 
 export type StoryMessage = {

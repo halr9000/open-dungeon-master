@@ -17,7 +17,7 @@ import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { CharacterPortrait, ui } from "@/lib/ui";
 import { offersImages, useCapabilities } from "@/lib/use-capabilities";
 import { SheetSections, StorySoFar, type CharacterEvent } from "./SheetSections";
-import { navigateTo } from "@/lib/navigation";
+import { currentQuery, navigateTo, workshopReturnPath } from "@/lib/navigation";
 import { UseInCampaignDialog } from "./UseInCampaignDialog";
 
 // Where this character is playing; see src/lib/db/characters.ts.
@@ -325,13 +325,15 @@ export default function CharacterDetailPage({
       : []),
   ];
   const working = pdfBusy || exporting || cloning || painting;
+  // Opened from a workshop's Party tool, back leads there (workshopReturnPath).
+  const backTo = workshopReturnPath(currentQuery().get("from"));
 
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 p-4 sm:p-6">
       <AppHeader />
       <ContextMenu items={actions} label={character.name} className={cn(ui.card, "ornate texture-noise mb-4 p-4 sm:p-5")}>
-        <Link href="/characters" className="-my-1 inline-flex min-h-10 items-center gap-1.5 text-sm text-stone-400 hover:text-amber-200">
-          <ArrowLeft className="size-4" /> Back to your characters
+        <Link href={backTo ?? "/characters"} className="-my-1 inline-flex min-h-10 items-center gap-1.5 text-sm text-stone-400 hover:text-amber-200">
+          <ArrowLeft className="size-4" /> {backTo ? "Back to the workshop" : "Back to your characters"}
         </Link>
         <div className="mt-2 flex items-start gap-4">
           <span className="relative shrink-0">

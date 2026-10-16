@@ -6,8 +6,8 @@ import { FAST_COST_NOTE, type Speed, type SpeedEligibility } from "@/lib/speed-t
 import type { SpeedNote } from "@/lib/speed-status";
 
 // Processing speed for one model role (issue 255): the provider's default or
-// its paid Fast tier. Offered only where the connection and model have one;
-// otherwise it says why. The cost is said before Fast is chosen, and what
+// its paid Fast tier. Offered on a connection that has one, for a named
+// model (src/lib/speed-tier.ts); otherwise it says why. The cost is said before Fast is chosen, and what
 // the last calls actually ran at is shown under it, so a downgrade to
 // standard speed is never read as Fast.
 export function SpeedField({

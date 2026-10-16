@@ -12,7 +12,7 @@ import { replyJsonObject } from "../reply-json-logic.ts";
 import type { Speaker } from "./speech.ts";
 import { QUOTE, quotedText, speakerMatchers } from "./speech-prose.ts";
 
-export const CLAIM_KINDS = ["hit", "miss", "dies", "downed", "amount", "cast", "fight_start", "roll_ask", "speaker"] as const;
+export const CLAIM_KINDS = ["hit", "miss", "dies", "downed", "amount", "cast", "fight_start", "roll_ask", "aside", "speaker"] as const;
 export type ClaimKind = (typeof CLAIM_KINDS)[number];
 
 export const ROLL_ASK_CHECKS = ["skill", "ability", "save", "initiative"] as const;
@@ -38,6 +38,7 @@ export type NarrationClaim =
       dc?: number;
       quote: string;
     }
+  | { kind: "aside"; quote: string }
   | { kind: "speaker"; line: string; speaker: Speaker };
 
 // Which claims a piece of narration could contradict or trigger, from
@@ -67,6 +68,9 @@ export type ReaderGate = {
   // The turn rolled no damage yet, and the one correction for a blow landed
   // in prose is unspent.
   unrolled: boolean;
+  // The passage may reach the table as narration, so a sentence where the
+  // narrator talks to itself about its next steps can be kept off it.
+  aside?: boolean;
 };
 
 // One read of a passage: the kinds it was asked and the claims that
@@ -93,6 +97,9 @@ export function claimKindsFor(gate: ReaderGate): ClaimKind[] {
   if (gate.rollAsk && gate.party) {
     kinds.push("roll_ask");
   }
+  if (gate.aside) {
+    kinds.push("aside");
+  }
   if (gate.speech) {
     kinds.push("speaker");
   }
@@ -114,6 +121,10 @@ const KIND_LINES: Record<ClaimKind, string> = {
     '{"kind":"fight_start","quote":Q}: the narration announces to the players that a fight begins now: a call to roll initiative, or a stat-block style enemy roster (enemy counts with challenge ratings, a surprise field).',
   roll_ask:
     '{"kind":"roll_ask","character":PARTY_REF|"all","check":"skill"|"ability"|"save"|"initiative","skill":SKILL,"ability":"str"|"dex"|"con"|"int"|"wis"|"cha","dc":N,"quote":Q}: the narration asks a party character to roll now. skill only for a skill check; ability for a save or a bare ability check; dc only when stated.',
+  // Narrow on purpose: a sentence it names is cut from the narration, so
+  // everything that only sounds like an aside is listed as not one.
+  aside:
+    '{"kind":"aside","quote":Q}: the narrator steps out of the story to talk to itself about its own work: what it will do, check, look up or set up next, or the game\'s bookkeeping that work waits on ("The quay is not on the map yet.", "I\'ll check how the table records that first."). Unlike the other kinds it is not about what happens in the story. One claim per such sentence; quote is copied from that one sentence. Never for: any character\'s words, however they are written (quoted in any style, a letter, an inscription, a song, a voice in someone\'s head); an out-of-character answer to a player; a question or an offer to the players ("What do you do?", "Let me know if you search the boat."); the story itself, even told by a narrator who says "I" because the table asked for one.',
   speaker:
     '{"kind":"speaker","ref":SPEAKER_REF,"quote":Q}: the one claim about quoted dialogue, saying only who speaks a line of it; quote is copied from inside that line\'s quotation marks. Only when the words around the line tie it to one listed person: a tag that names them or one of their other names, the person the narration is about just before or after it, or a word like "she" that points back to them. Leave the line out when its tag names nobody listed ("a guard calls", "you say"), when it answers the line before with no tag of its own, or when you would be guessing: a line left out stays the narrator\'s, and a line given to the wrong person is a mistake. One claim per quoted line.',
 };
@@ -206,6 +217,7 @@ const claimSchema = z.discriminatedUnion("kind", [
     dc: z.number().int().min(1).max(40).nullable().optional(),
     quote: quoteField,
   }),
+  z.object({ kind: z.literal("aside"), quote: quoteField }),
   z.object({ kind: z.literal("speaker"), ref: z.string().min(1).max(120), quote: quoteField }),
 ]);
 const replySchema = z.object({ claims: z.array(z.unknown()).max(40) });
@@ -306,6 +318,7 @@ export function checkClaims(raw: readonly unknown[], context: ClaimContext): Nar
         break;
       case "amount":
       case "fight_start":
+      case "aside":
         kept.push(claim);
         break;
       case "cast": {
@@ -347,4 +360,65 @@ export function checkClaims(raw: readonly unknown[], context: ClaimContext): Nar
     }
   }
   return kept;
+}
+
+// The passage with every sentence that holds one of the quotes cut out: how
+// a roll asked in words (rolls.ts rollAsksFromClaims) and the narrator's
+// asides leave the narration. A sentence runs to its end mark or the end of
+// its line; a quote that runs over several sentences cuts each of them.
+export function withoutSentences(text: string, quotes: readonly string[]): string {
+  if (!text || !quotes.length) {
+    return text;
+  }
+  // Where each cut sentence starts, and where it ends.
+  const removals = new Map<number, number>();
+  const sentences = [...text.matchAll(/[^.!?\n]+[.!?]*/g)];
+  const cut = (quote: string) => {
+    const sentence = sentences.find((match) => squash(match[0]).includes(quote));
+    if (sentence?.index === undefined) {
+      return false;
+    }
+    // Swallow trailing bold markers so no orphan ** litters the narration
+    // (leading ones sit inside the sentence match already).
+    let end = sentence.index + sentence[0].length;
+    if (text.slice(end, end + 2) === "**") {
+      end += 2;
+    }
+    removals.set(sentence.index, end);
+    return true;
+  };
+  for (const quote of quotes) {
+    if (!cut(squash(quote))) {
+      for (const piece of quote.match(/[^.!?\n]+[.!?]*/g) ?? []) {
+        if (squash(piece)) {
+          cut(squash(piece));
+        }
+      }
+    }
+  }
+  let cleaned = "";
+  let cursor = 0;
+  for (const [start, end] of [...removals].sort((a, b) => a[0] - b[0])) {
+    cleaned += text.slice(cursor, start);
+    cursor = end;
+  }
+  cleaned += text.slice(cursor);
+  return cleaned
+    .replace(/(^|\s)\*\*(\s|$)/g, "$1$2")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// A reply's prose with the narrator's asides cut out, by the reader's aside
+// claims; empty when no word of the story is left (a stray quote mark or
+// bold marker is not one), which is how a reply that was only the model's
+// plan reads.
+export function withoutAsides(text: string, claims: readonly NarrationClaim[]): string {
+  const quotes = claims.flatMap((claim) => (claim.kind === "aside" ? [claim.quote] : []));
+  if (!quotes.length) {
+    return text;
+  }
+  const kept = withoutSentences(text, quotes);
+  return /[\p{L}\p{N}]/u.test(kept) ? kept : "";
 }

@@ -287,10 +287,11 @@ export function updateMessageContent(messageId: string, content: string, speech:
 
 // The newest DM narration in the campaign. Rerolls are offered on this
 // message only: an older one has already been read, reacted to, and built on.
+// An out-of-character answer is not narration (src/lib/dm/ooc-question.ts).
 export function getLatestDmMessage(campaignId: string): CampaignMessage | null {
   const row = getDatabase()
     .prepare(
-      `SELECT * FROM campaign_messages WHERE campaign_id = ? AND author_type = 'dm' ORDER BY seq DESC LIMIT 1`,
+      `SELECT * FROM campaign_messages WHERE campaign_id = ? AND author_type = 'dm' AND content NOT LIKE '(ooc)%' ORDER BY seq DESC LIMIT 1`,
     )
     .get(campaignId) as MessageRow | undefined;
   return row ? mapMessage(row) : null;

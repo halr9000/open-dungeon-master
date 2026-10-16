@@ -171,6 +171,30 @@ test("a custom calendar survives a round trip", () => {
   assert.match(describeInstant(clock.calendar, clock.instant), /AF/);
 });
 
+// The turning year's third day was "Midday" until it collided with the time
+// of day; a stored copy of that preset reads the new name, and nothing else
+// that names a day Midday is touched.
+test("a stored turning year from before the rename reads Midweek; a calendar of the table's own keeps Midday", () => {
+  const legacyWeekdays = ["Firstday", "Seconday", "Midday", "Fourthday", "Fifthday", "Restday"];
+  const legacy = { ...SEASONS_CALENDAR, weekdays: legacyWeekdays };
+  const instant = toInstant(SEASONS_CALENDAR, { month: 4, day: 1, hour: 9 });
+  const upgraded = normalizeClock({ calendar: legacy, instant });
+  assert.deepEqual(upgraded.calendar.weekdays, SEASONS_CALENDAR.weekdays);
+  assert.equal(upgraded.instant, instant);
+  assert.equal(breakDown(upgraded.calendar, instant).weekday, "Midweek");
+  assert.deepEqual(normalizeClock(upgraded).calendar, upgraded.calendar);
+  for (const own of [
+    { ...legacy, id: "mine" },
+    { ...legacy, name: "Our year" },
+    { ...legacy, epochYear: 1200 },
+    { ...legacy, months: legacy.months.map((month, index) => (index === 0 ? { ...month, name: "Snowfall" } : month)) },
+    { ...legacy, moons: [{ name: "Pale", cycleDays: 30, offset: 0 }] },
+    { ...legacy, weekdays: ["Midday", "Restday"] },
+  ]) {
+    assert.ok(normalizeClock({ calendar: own, instant }).calendar.weekdays.includes("Midday"), `renamed ${JSON.stringify(own).slice(0, 80)}`);
+  }
+});
+
 test("the seasonal calendar's month names agree with its seasons", () => {
   // The names are the whole point of the preset, so a month called Greening
   // landing in winter is a bug a player would notice before any of us.

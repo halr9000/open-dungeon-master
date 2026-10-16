@@ -301,7 +301,7 @@ export function DmBestiaryPanel({
           open={editorOpen && editor !== null}
           onOpenChange={setEditorOpen}
           title={draft?.name || "Monster"}
-          className="top-0 h-dvh max-h-none rounded-none lg:top-1/2 lg:h-auto lg:max-h-[92vh] lg:w-[min(96vw,64rem)] lg:rounded-xl"
+          className="top-0 h-dvh max-h-none rounded-none pt-[max(0.5rem,env(safe-area-inset-top))] lg:top-1/2 lg:h-auto lg:max-h-[92vh] lg:w-[min(96vw,64rem)] lg:rounded-xl"
         >
           {editor}
         </Sheet>

@@ -201,6 +201,31 @@ await test("A raging Berserker in a frenzy makes one melee weapon attack as a bo
   world.patch(barbarian.id, { conditions: [], exhaustion: 0 });
 });
 
+// SRD 5.1 Two-Handed: the greataxe needs both hands, and a shield holds one.
+// The player's Hand offers the frenzy with the handaxe instead, and with no
+// one-handed weapon shuts the card in pc_attack's own words.
+await test("A Berserker with a shield on the arm cannot frenzy with a greataxe; the Hand offers the handaxe, and shuts the card in the engine's words when there is none.", async () => {
+  const { deriveHand } = await import("../src/lib/battlemap/hand.ts");
+  const [enemy] = await stage(barbarian);
+  const shield = { name: "Shield", qty: 1, equipped: true };
+  world.patch(barbarian.id, { conditions: ["raging"], equipment: [...world.sheet(barbarian.id).equipment, shield] });
+  try {
+    assert.equal((await kit.swing(barbarian.id, enemy.id, [15, 4], { weapon: "Handaxe" })).ok, true);
+    const greataxe = await kit.swing(barbarian.id, enemy.id, [15, 4], { weapon: "Greataxe", bonusAttack: "frenzy" });
+    assert.equal(greataxe.ok, false, "a greataxe frenzy beside a shield");
+    const cards = deriveHand(world.sheet(barbarian.id));
+    assert.equal(cards.find((card) => card.id === "attack:greataxe:frenzy"), undefined);
+    assert.ok(cards.find((card) => card.id === "attack:handaxe:frenzy"), "the handaxe frenzy card");
+    const handaxe = await kit.swing(barbarian.id, enemy.id, [15, 4], { weapon: "Handaxe", bonusAttack: "frenzy" });
+    assert.equal(handaxe.ok, true, handaxe.error);
+    world.patch(barbarian.id, { equipment: [{ name: "Greataxe", qty: 1 }, shield] });
+    const shut = deriveHand(world.sheet(barbarian.id)).find((card) => card.id === "attack:greataxe:frenzy");
+    assert.equal(shut.disabled, greataxe.error);
+  } finally {
+    world.patch(barbarian.id, { conditions: [], exhaustion: 0 });
+  }
+});
+
 // ---- Divine Strike ----
 
 await test("A Life cleric's Divine Strike deals radiant damage, so a creature resisting the mace's bludgeoning takes the 1d8 in full.", async () => {

@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { HARNESS_EFFORTS } from "@/lib/harness/types";
 import { CHECKPOINT_PRESET, isComfyPreset } from "@/lib/image-models/catalog";
+import { REROLL_LOW_DEFAULT } from "@/lib/srd/ability-rerolls";
 
 // App-wide settings editable from /admin, stored as one JSON blob under
 // app_settings.key = 'global_config'. Every string field treats "" as "no
@@ -23,9 +25,11 @@ export const globalConfigSchema = z.object({
   // The house rule for the builder's 4d6 method: a player may throw a fresh
   // six only while the kept six add up to less than this. 0 allows no
   // reroll at all; 108 (six 18s) rerolls anything. SRD 5.1 names no rule;
-  // 70 was ODM's (issue #128). Server-wide, since characters are built in
-  // the library before they join a table.
-  abilityRerollBelow: z.number().int().min(0).max(108).default(70),
+  // 70 was ODM's (issue #128, src/lib/srd/ability-rerolls.ts). The rule in
+  // the library, and at any table that sets none of its own
+  // (gameSettings.abilityRerollBelow), where the player's library six are
+  // the ones handed back.
+  abilityRerollBelow: z.number().int().min(0).max(108).default(REROLL_LOW_DEFAULT),
   // The URL players actually reach the app on (e.g. https://dungeon.example.org).
   // Used for OAuth redirect URIs; blank = APP_PUBLIC_URL env, then forwarded
   // proxy headers, then the raw request origin.
@@ -111,7 +115,8 @@ export const globalConfigSchema = z.object({
       // The "openai" backend: any OpenAI-compatible images API. The key is
       // the server owner's, applied at request time only, and never leaves
       // the server (masked like the Discord secret on the way to the admin
-      // UI). Blank model = gpt-image-1.
+      // UI). The model is the admin's pick from the server's list: a blank
+      // one is asked for, never guessed.
       openaiBaseUrl: z.string().trim().max(500).default(""),
       openaiModel: z.string().trim().max(200).default(""),
       openaiApiKey: z.string().trim().max(400).default(""),
@@ -131,6 +136,12 @@ export const globalConfigSchema = z.object({
       ttsApiKey: z.string().trim().max(400).default(""),
       ttsVoice: z.string().trim().max(120).default(""),
       sttUrl: z.string().trim().max(500).default(""),
+      // The models dictation sends: the Whisper service's (STT_MODEL is its
+      // environment fallback, push-to-talk and the voice-chat transcript
+      // alike) and OpenAI's transcription model (STT_OPENAI_MODEL). Blank
+      // skips that engine for the next one (src/lib/stt-logic.ts).
+      sttModel: z.string().trim().max(200).default(""),
+      sttOpenaiModel: z.string().trim().max(200).default(""),
     })
     .prefault({}),
   // Live voice chat (src/lib/voice/). Separate from `speech` above, which is
@@ -189,7 +200,7 @@ export const globalConfigSchema = z.object({
       // The model for mechanical work (summaries, compaction, Ask). Blank =
       // the story model.
       utilityModel: z.string().trim().max(200).default(""),
-      effort: z.enum(["", "low", "medium", "high", "xhigh", "max"]).default(""),
+      effort: z.enum(["", ...HARNESS_EFFORTS]).default(""),
       // Processing speed for the story and bookkeeping models (issue 255).
       speed: z.enum(["", "fast"]).default(""),
       utilitySpeed: z.enum(["", "fast"]).default(""),

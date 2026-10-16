@@ -34,7 +34,9 @@ export function dualWields(feats: string[] | undefined, campaignId?: string): bo
 
 // What a shield on the arm does to the swing. A two-handed weapon cannot be
 // used at all; a versatile weapon is swung in one hand whatever was asked
-// for; a lance needs both hands unless its wielder is mounted.
+// for; a lance needs both hands unless its wielder is mounted. The off-hand
+// swing of two-weapon fighting is made with a weapon in each hand (SRD 5.1),
+// so a versatile weapon there is swung in one hand too.
 export function handsRuling(input: {
   who: string;
   weapon: string;
@@ -43,6 +45,7 @@ export function handsRuling(input: {
   mounted: boolean;
   twoHandedAsked: boolean;
   shieldName: string | null;
+  offHand?: boolean;
 }): { error: string } | { twoHanded: boolean; note: string | null } {
   const needsBoth =
     input.properties.includes("two-handed") || (input.lance && !input.mounted);
@@ -53,13 +56,27 @@ export function handsRuling(input: {
       }, and ${input.who} has ${input.shieldName} on one arm. They put the shield away first (unequip it on the sheet) or attack with a one-handed weapon.`,
     };
   }
-  if (input.twoHandedAsked && input.properties.includes("versatile") && input.shieldName) {
+  const versatileAsked = input.twoHandedAsked && input.properties.includes("versatile");
+  if (versatileAsked && input.shieldName) {
     return {
       twoHanded: false,
       note: `${input.shieldName} on the arm: ${input.weapon} is swung in one hand`,
     };
   }
+  if (versatileAsked && input.offHand) {
+    return { twoHanded: false, note: `${input.weapon} is in the off hand: swung in one hand` };
+  }
   return { twoHanded: input.twoHandedAsked, note: null };
+}
+
+// A thrown weapon is a ranged attack once it leaves the hand, and a melee
+// one inside its reach (SRD 5.1, Thrown). `apart` is how many tiles lie
+// between attacker and target, null when the board does not know.
+export function thrownAtRange(
+  profile: Pick<AttackProfile, "thrown" | "reachTiles">,
+  apart: number | null,
+): boolean {
+  return profile.thrown && apart !== null && apart > profile.reachTiles;
 }
 
 // ---- two-weapon fighting ----

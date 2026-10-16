@@ -14,6 +14,7 @@ import type { Encounter, EncounterEnemy } from "@/lib/db/encounters";
 import type { Advantage } from "@/lib/dice";
 import { enemyAcWithEffects } from "@/lib/dm/ac-effects";
 import type { AttackProfile } from "@/lib/dm/attack-logic";
+import { thrownAtRange } from "@/lib/dm/attack-rules";
 import { attackSight, characterSenses, enemySenses, lightOnAttack } from "@/lib/dm/attack-light";
 import {
   characterFlanks,
@@ -75,10 +76,10 @@ export function attackGeometry(
   const cover: 0 | 2 | 5 = screen && spatials.cover < 2 ? 2 : spatials.cover;
   const effectiveAc = enemyAcWithEffects(campaignId, enemy) + cover;
   // How far apart the two stand, when the board knows. A thrown weapon is a
-  // ranged attack once it leaves the hand, a melee one inside its reach.
+  // ranged attack once it leaves the hand, a melee one inside its reach
+  // (buildAttackProfile asks the same for a versatile weapon's die).
   const apart = tilesBetween(encounterId, sheetId, enemy.id);
-  const atRange =
-    profile.ranged || (profile.thrown && apart !== null && apart > profile.reachTiles);
+  const atRange = profile.ranged || thrownAtRange(profile, apart);
   const withinFiveFeet = apart === null ? !profile.ranged : apart <= 1;
   return { spatials, cover, screen, effectiveAc, apart, atRange, withinFiveFeet };
 }

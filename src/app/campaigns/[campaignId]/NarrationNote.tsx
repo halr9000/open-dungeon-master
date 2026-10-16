@@ -32,6 +32,16 @@ export function NarrationNote() {
   }
   const server = tts.provider === "kokoro" ? "the Kokoro speech server" : "an OpenAI-compatible speech server";
   const where = tts.place === "local" || !tts.place ? "on this server's own network" : `at ${tts.place}`;
+  // The server answers but has no model to ask for (an older server sends
+  // no such field and says nothing here).
+  if (tts.needsModel) {
+    return (
+      <p className={warnClass}>
+        Narration is on, but {server} {where} has no model picked, so nothing is read aloud until an admin picks
+        one in Admin &gt; Speech.
+      </p>
+    );
+  }
   if (!tts.reachable) {
     return (
       <p className={warnClass}>

@@ -1391,16 +1391,20 @@ export function BattleMapPanel({
               </Dialog.Title>
               <div className="flex min-w-0 items-center gap-2">
                 {/* The dialog covers the Party panel, so a player fielding
-                    several characters picks who they play here (issue #189). */}
-                <PlayAsStrip
-                  campaignId={campaignId}
-                  sheets={sheets}
-                  meUserId={meUserId}
-                  activeSheetId={activeSheetId}
-                  multiCharacter={multiCharacter}
-                />
-                {playerTools}
-                <Dialog.Close className="cine-tabletop-close" aria-label="Close the board">
+                    several characters picks who they play here (issue #189).
+                    On a narrow phone the strip scrolls rather than pushing
+                    the close off the edge: it is the only way back. */}
+                <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+                  <PlayAsStrip
+                    campaignId={campaignId}
+                    sheets={sheets}
+                    meUserId={meUserId}
+                    activeSheetId={activeSheetId}
+                    multiCharacter={multiCharacter}
+                  />
+                  {playerTools}
+                </div>
+                <Dialog.Close className="cine-tabletop-close shrink-0" aria-label="Close the board">
                   <X className="size-4" />
                 </Dialog.Close>
               </div>

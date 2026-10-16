@@ -8,18 +8,25 @@ import { cn } from "@/lib/cn";
 export function GoldTitle({
   children,
   as: Tag = "h1",
+  tabIndex,
   size = "text-2xl sm:text-3xl",
   className,
   animate = true,
 }: {
   children: React.ReactNode;
   as?: "h1" | "h2" | "h3" | "p" | "span";
+  // -1 lets a flow move focus to the title (a wizard's new step).
+  tabIndex?: number;
   size?: string;
   className?: string;
   // Off for titles that are already on screen when their surroundings change.
   animate?: boolean;
 }) {
-  return <Tag className={cn("gold-title font-display", size, animate && "animate-fade-up", className)}>{children}</Tag>;
+  return (
+    <Tag tabIndex={tabIndex} className={cn("gold-title font-display", size, animate && "animate-fade-up", className)}>
+      {children}
+    </Tag>
+  );
 }
 
 // Eight copies stepping back in bronze: the extrusion under the gradient face

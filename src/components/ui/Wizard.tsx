@@ -29,7 +29,10 @@ import { ui } from "@/lib/ui";
 // unchanged: `variant="diamonds"` swaps the bar for the diamond stepper (tap a
 // completed diamond to go back), `wipe` plays the gold step wipe instead of
 // the sideways slide, and `goldTitles` sets each step title in GoldTitle.
-// These need src/app/styles/creator.css.
+// These need src/app/styles/creator.css. Two more for long forms a player
+// comes back to: `jumpAhead` lets a diamond ahead be tapped once every gate
+// before it passes, and `finishFromAnyStep` offers the done button on every
+// step once every gate passes (an edit of something already complete).
 
 export type WizardStep = {
   key: string;
@@ -74,6 +77,8 @@ export function Wizard({
   goldTitles = false,
   aside,
   notice,
+  jumpAhead = false,
+  finishFromAnyStep = false,
 }: {
   steps: WizardStep[];
   title: ReactNode;
@@ -89,6 +94,8 @@ export function Wizard({
   // A quiet line at the right of the header (the character so far).
   aside?: ReactNode;
   notice?: WizardNotice;
+  jumpAhead?: boolean;
+  finishFromAnyStep?: boolean;
 }) {
   const [internalStep, setInternalStep] = useState(0);
   const controlled = controlledStep !== undefined;
@@ -103,17 +110,33 @@ export function Wizard({
   const canContinue = current?.canContinue !== false;
   const blocker = !canContinue && current?.blocker ? current.blocker : null;
   const blockerId = useId();
+  // A step ahead is reachable when no gate from here to it holds.
+  const reachable = (index: number) =>
+    jumpAhead && index > step && steps.slice(step, index).every((s) => s.canContinue !== false);
+  const finishEarly =
+    finishFromAnyStep && !last && steps.every((s) => s.canContinue !== false);
   const { wiping, run } = useStepWipe(wipe);
 
   const labelOf = (s: WizardStep, index: number) =>
     s.label ?? (typeof s.title === "string" ? s.title : `Step ${index + 1}`);
 
-  const go = (next: number) => {
+  // The furthest step reached so far. The wipe marks progress: it plays on
+  // Continue into a step not yet seen, and every other move (Back, a
+  // diamond, "Show me", a second pass) changes step at once, so fixing a
+  // pick never costs the ceremony twice.
+  const reached = useRef(step);
+  useEffect(() => {
+    reached.current = Math.max(reached.current, step);
+  }, [step]);
+  const go = (next: number, progress = false) => {
     // With the wipe on, the step changes once the pane has gone dark.
-    run(() => {
-      if (!controlled) setInternalStep(next);
-      onStepChange?.(next);
-    });
+    run(
+      () => {
+        if (!controlled) setInternalStep(next);
+        onStepChange?.(next);
+      },
+      !(progress && next > reached.current),
+    );
   };
   const back = () => {
     if (step === 0) onCancel?.();
@@ -125,7 +148,7 @@ export function Wizard({
       return;
     }
     if (last) onDone();
-    else go(step + 1);
+    else go(step + 1, true);
   };
 
   // The notice's "Show me" may have to change step first; what it then
@@ -133,7 +156,20 @@ export function Wizard({
   // to a block on it finds the block. A ref, not state: nothing re-renders
   // for it, the step change already does.
   const afterStep = useRef<{ step: number; run: () => void } | null>(null);
+  // A step change moves focus to the new step's title, so a keyboard or
+  // screen reader user starts each step at its top and hears where they are;
+  // focus otherwise stayed on Continue, below everything the step asks. Not
+  // on the first render: opening the wizard leaves focus where it was. A
+  // "Show me" that puts focus on a pick runs after this and keeps it.
+  const track = useRef<HTMLDivElement>(null);
+  const shownStep = useRef(step);
   useEffect(() => {
+    if (shownStep.current !== step) {
+      shownStep.current = step;
+      track.current
+        ?.querySelector<HTMLElement>("section[data-active] .wizard-step-heading")
+        ?.focus({ preventScroll: true });
+    }
     const pending = afterStep.current;
     if (pending && pending.step === step) {
       afterStep.current = null;
@@ -183,8 +219,9 @@ export function Wizard({
             Step {step + 1} / {total}
             {variant === "diamonds" && current ? (
               // The gold step title sits right under the header on a phone,
-              // so the name is only repeated where there is room for it.
-              <span className="hidden text-amber-300 sm:inline"> · {labelOf(current, step)}</span>
+              // so the name is only shown where there is room for it; a
+              // screen reader hears it at every width.
+              <span className="sr-only text-amber-300 sm:not-sr-only sm:inline"> · {labelOf(current, step)}</span>
             ) : null}
           </span>
         </div>
@@ -194,6 +231,7 @@ export function Wizard({
             steps={steps.map((s, i) => ({ key: s.key, label: labelOf(s, i) }))}
             current={step}
             onSelect={go}
+            reachable={jumpAhead ? reachable : undefined}
           />
         ) : (
           <div
@@ -245,6 +283,7 @@ export function Wizard({
           slide the neighbouring step into the pane. The class is the fallback. */}
       <div className="mt-4 min-h-0 flex-1 overflow-hidden" style={{ overflow: "clip" }}>
         <div
+          ref={track}
           className={cn("flex h-full", !wipe && "transition-transform duration-[380ms] ease-snap")}
           style={{ transform: `translateX(-${step * 100}%)` }}
         >
@@ -257,11 +296,19 @@ export function Wizard({
               inert={i !== step}
             >
               {goldTitles ? (
-                <GoldTitle as="h3" size="text-lg sm:text-xl" animate={false} className="wizard-step-title">
+                <GoldTitle
+                  as="h3"
+                  size="text-lg sm:text-xl"
+                  animate={false}
+                  tabIndex={-1}
+                  className="wizard-step-title wizard-step-heading outline-none"
+                >
                   {s.title}
                 </GoldTitle>
               ) : (
-                <h3 className="font-display text-base tracking-wide text-amber-200">{s.title}</h3>
+                <h3 tabIndex={-1} className="wizard-step-heading font-display text-base tracking-wide text-amber-200 outline-none">
+                  {s.title}
+                </h3>
               )}
               {s.blurb ? (
                 <p className={cn("mt-1 text-sm text-stone-400", goldTitles && "font-serif")}>{s.blurb}</p>
@@ -307,10 +354,19 @@ export function Wizard({
           aria-disabled={!canContinue || undefined}
           aria-describedby={blocker ? blockerId : undefined}
           title={blocker ?? undefined}
-          className={cn(ui.btnPrimary, "wizard-continue", blocker && "wizard-continue-held")}
+          className={cn(
+            finishEarly ? ui.btnSecondary : ui.btnPrimary,
+            "wizard-continue",
+            blocker && "wizard-continue-held",
+          )}
         >
           {last ? doneLabel : (current?.continueLabel ?? "Continue")}
         </button>
+        {finishEarly ? (
+          <button type="button" onClick={onDone} className={ui.btnPrimary}>
+            {doneLabel}
+          </button>
+        ) : null}
       </footer>
 
       <StepWipe active={wiping} />

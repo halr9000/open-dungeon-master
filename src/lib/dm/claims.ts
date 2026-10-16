@@ -237,7 +237,8 @@ export function registeringNames(calls: ReadonlyArray<{ name: string; rawArgumen
 }
 
 // One read of a reply's prose, asking only what this moment of the turn
-// could act on, and who speaks its quoted lines.
+// could act on, who speaks its quoted lines, and which of its sentences are
+// the narrator's asides, which never reach the table.
 export async function readReply(
   campaign: Campaign,
   sheets: readonly CharacterSheet[],
@@ -252,9 +253,30 @@ export async function readReply(
     fightStart: !state.inEncounter && !state.encounterNudged,
     unrolled: !state.damageNudged && !outcomes.damageNumbers.length,
     speech: hasQuotedLine(text),
+    aside: true,
   });
   return {
     kinds,
     claims: await readClaims(campaign, { label: `turn ${turn.id}`, text, kinds, outcomes, sheets, registering: state.registering }),
   };
+}
+
+// The narrator's asides in prose no reply read covers and that goes to the
+// table as it is: the forced final call's and the rescue's after it
+// (src/lib/dm/turn.ts), a reroll's take (renarrate.ts) and a continuation
+// (continue-scene.ts). Asides alone are asked, since nothing else found
+// there could still run.
+export async function readAsides(
+  campaign: Campaign,
+  sheets: readonly CharacterSheet[],
+  turn: Pick<DmTurn, "id" | "conversation">,
+  text: string,
+): Promise<NarrationClaim[]> {
+  return readClaims(campaign, {
+    label: `turn ${turn.id}`,
+    text,
+    kinds: ["aside"],
+    outcomes: guardOutcomes(turn.conversation, liveStateFor(campaign.id)),
+    sheets,
+  });
 }

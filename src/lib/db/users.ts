@@ -1,6 +1,8 @@
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import type { DiceLook } from "@/lib/dice/dice-look";
 import { closeStreamsForSession, closeStreamsForUser } from "@/lib/live-streams";
+import { mergeLedgers, parseLedger, type TourLedger } from "@/lib/tours/account-logic";
+import { isTourId } from "@/lib/tours/registry";
 
 export type UserAvatar = {
   url: string;
@@ -144,6 +146,15 @@ export type UserSettings = {
   // The player's virtual dice (src/lib/dice/dice-look.ts); absent means
   // the tray's original look.
   diceLook?: DiceLook;
+  // The walkthroughs finished, by tour id (src/lib/tours/account-logic.ts).
+  // Written only through recordFinishedTours, which merges per tour: the
+  // profile PATCH replaces a key whole and does not accept this one.
+  tours?: TourLedger;
+  // The person's own new-campaign defaults (src/lib/campaign-defaults.ts).
+  // Written only through setCampaignDefaults and clearCampaignDefaults; the
+  // profile PATCH does not accept it, and it is read back through
+  // readStoredDefaults, never trusted as stored.
+  campaignDefaults?: unknown;
 };
 
 export function getUserSettings(userId: string): UserSettings {
@@ -159,6 +170,34 @@ export function updateUserSettings(userId: string, patch: UserSettings): UserSet
     .prepare(`UPDATE users SET settings_json = ? WHERE id = ?`)
     .run(JSON.stringify(merged), userId);
   return merged;
+}
+
+// Saving defaults touches only this key: the audio, dice and tour
+// preferences beside it stay as they were.
+export function setCampaignDefaults(userId: string, defaults: unknown) {
+  updateUserSettings(userId, { campaignDefaults: defaults });
+}
+
+export function clearCampaignDefaults(userId: string) {
+  const { campaignDefaults: _removed, ...rest } = getUserSettings(userId);
+  void _removed;
+  getDatabase()
+    .prepare(`UPDATE users SET settings_json = ? WHERE id = ?`)
+    .run(JSON.stringify(rest), userId);
+}
+
+export function finishedTours(userId: string): TourLedger {
+  return parseLedger(getUserSettings(userId).tours, isTourId);
+}
+
+// Adds finished tours to the account's record, tour by tour, keeping the
+// higher version of each: two devices finishing different tours at once
+// both land, and a page still on an older version of a tour cannot lower
+// what a newer one recorded.
+export function recordFinishedTours(userId: string, finishedNow: TourLedger): TourLedger {
+  const tours = mergeLedgers(finishedTours(userId), parseLedger(finishedNow, isTourId));
+  updateUserSettings(userId, { tours });
+  return tours;
 }
 
 export function countUsers(): number {

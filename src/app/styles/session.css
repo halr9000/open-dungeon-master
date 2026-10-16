@@ -163,6 +163,9 @@ button:hover > .rail-glyph { filter: none; opacity: 1; }
   color: var(--color-stone-200);
 }
 .session-bubble-ooc { font-style: italic; color: var(--color-stone-500); border-style: dashed; }
+/* The DM's out-of-character answer sits on the DM's side, its corner turned
+   to match. */
+.session-bubble-dm { border-radius: 1rem 1rem 1rem 0.3rem; }
 .session-speaker {
   font-family: var(--font-display, serif);
   font-size: 0.72rem;
@@ -170,9 +173,43 @@ button:hover > .rail-glyph { filter: none; opacity: 1; }
   text-transform: uppercase;
   color: var(--color-amber-200);
 }
-.sheet-medallion.session-medallion { width: 2.5rem; height: 2.5rem; margin-bottom: 0.15rem; }
+/* A speaker's face in the log is as tall as the words beside it
+   (--face-size, measured by useFaceSize), never smaller than the old 2.5rem
+   and never past --face-max, which a narrow log keeps lower so the words
+   keep their width. The log's own width decides, not the window's: the
+   table's column can be dragged down to 360px on a wide screen, and inside
+   the apps the game sits beside the shell's sidebar. The window query stays
+   for a WebView too old for container queries (the Android app asks for no
+   minimum), which drops both the container and its rule but still gives a
+   phone the lower cap. Nothing fixed inside the log is caught by the
+   containment: its menus and lightbox are portalled out of it (in the apps
+   to the game's root). */
+.session-medallion, .speech-face { --face-max: 7rem; }
+@media (max-width: 639px) {
+  .session-medallion, .speech-face { --face-max: 4.5rem; }
+}
+.session-transcript { container: session-log / inline-size; }
+@container session-log (max-width: 40rem) {
+  .session-medallion, .speech-face { --face-max: 4.5rem; }
+}
+.sheet-medallion.session-medallion {
+  --face: clamp(2.5rem, var(--face-size, 2.5rem), var(--face-max, 7rem));
+  width: var(--face);
+  height: var(--face);
+  margin-bottom: 0.15rem;
+}
 .session-medallion .sheet-medallion-face { border-width: 1.5px; box-shadow: 0 0 0 2px rgba(12, 8, 24, 0.9), 0 0 0 3px rgba(212, 171, 58, 0.3); }
-.session-medallion .sheet-medallion-emblem { right: -0.3rem; bottom: -0.3rem; width: 1.2rem; height: 1.2rem; }
+.session-medallion .sheet-medallion-emblem {
+  right: -0.3rem;
+  bottom: -0.3rem;
+  width: clamp(1.2rem, calc(var(--face) * 0.3), 1.9rem);
+  height: clamp(1.2rem, calc(var(--face) * 0.3), 1.9rem);
+}
+.speech-face {
+  --face: clamp(2.25rem, var(--face-size, 2.25rem), var(--face-max, 7rem));
+  width: var(--face);
+  height: var(--face);
+}
 .session-medallion .sheet-medallion-emblem > span { width: 100%; height: 100%; border: 0; }
 
 .session-sysline {

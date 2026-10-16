@@ -272,7 +272,7 @@ export function PluginPanel({
         onOpenChange={setWizardOpen}
         title="Guided setup"
         hideTitle
-        className="top-0 h-dvh max-h-none rounded-none lg:top-1/2 lg:h-[min(92vh,44rem)] lg:w-[min(96vw,48rem)] lg:rounded-xl"
+        className="top-0 h-dvh max-h-none rounded-none pt-[max(0.5rem,env(safe-area-inset-top))] lg:top-1/2 lg:h-[min(92vh,44rem)] lg:w-[min(96vw,48rem)] lg:rounded-xl"
       >
         <PluginWizard
           draft={draft}

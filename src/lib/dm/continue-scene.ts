@@ -1,11 +1,14 @@
 import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
 import { getDmTurn } from "@/lib/db/dm-turns";
+import { listSheets } from "@/lib/db/sheets";
 import {
   getCampaignMessage,
   getLatestDmMessage,
   setMessageVariants,
   type CampaignMessage,
 } from "@/lib/db/messages";
+import { withoutAsides } from "@/lib/dm/claims-logic";
+import { readAsides } from "@/lib/dm/claims";
 import { enqueueDmJob } from "@/lib/dm/queue";
 import { requestDmMessage } from "@/lib/dm/model";
 import { setDmStatus } from "@/lib/dm/status";
@@ -112,6 +115,12 @@ export async function runContinueScene(input: {
 
   if (failure) {
     return { error: failure, status: 502 };
+  }
+  // The narrator's asides are cut as the turn loop cuts them from its final
+  // call (src/lib/dm/turn.ts); a continuation that was only the model's plan
+  // adds nothing.
+  if (continuation) {
+    continuation = withoutAsides(continuation, await readAsides(campaign, listSheets(campaign.id), turn, continuation));
   }
   if (!continuation) {
     return { error: "The DM returned nothing; try again.", status: 502 };

@@ -29,8 +29,9 @@ docker compose up -d        # http://localhost:3005
 `:latest` follows the newest release; pin one with `ODM_IMAGE_TAG=0.10.1` in `.env`. The
 compose file pulls from Docker Hub by default; set
 `ODM_IMAGE=ghcr.io/lebbitheplow/open-dungeon-master` in `.env` to use GHCR instead. To
-build the image yourself from a clone rather than pulling it, use
-`docker compose up -d --build`.
+build the image yourself rather than pulling it, clone the repository (the first two
+lines of the [Quick start](install.md#quick-start)) and run `docker compose up -d --build`
+inside it.
 
 Nothing else is required. On first boot the container generates a database encryption
 key, stores it in the data volume, and prints it once:
@@ -62,7 +63,9 @@ the host as `host.docker.internal`, so a model server on the host must listen on
 The container reaches the host through `host.docker.internal`, so llama.cpp on
 `127.0.0.1:8001` becomes `http://host.docker.internal:8001/v1`. Every URL is
 overridable in `.env`; copy [.env.docker.example](../.env.docker.example) for the full
-list.
+list. No model is named by default: a server that lists one model runs it, and
+one that lists several has its model picked in the guided setup or the admin
+panel (or named as `OPENAI_COMPAT_MODEL` in `.env`).
 
 ```bash
 cp .env.docker.example .env    # then edit, then: docker compose up -d
@@ -101,9 +104,18 @@ in-process event bus, so it cannot be replicated or pointed at a shared volume f
 hosts. See [Storage and the single-writer rule](storage.md).
 
 To move to a newer release: `docker compose pull && docker compose up -d`. The volumes
-carry over. If you build locally instead, `docker compose up -d --build` refreshes the
+carry over. Take a backup first (the admin panel's Backups, or
+[backup-restore.md](backup-restore.md)), and for a server people rely on, pin
+`ODM_IMAGE_TAG` and move it on purpose rather than following `latest`. Going back to
+an older image after a release that changed the database's shape is refused by that
+image; it needs the backup taken before the upgrade
+([Upgrading and going back](backup-restore.md#upgrading-and-going-back)). Removing the
+container never touches the volumes; `docker compose down -v` does, so leave `-v` off. If you build locally instead, `docker compose up -d --build` refreshes the
 content pack from api.open5e.com, so the build needs network; the running container
 never does.
+
+A locally built image is updated from its clone: `git pull`, then
+`docker compose up -d --build`.
 
 ## Publishing (maintainers)
 

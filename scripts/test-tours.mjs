@@ -5,7 +5,11 @@ import { register } from "node:module";
 
 register("./lib/register-alias.mjs", import.meta.url);
 
-const { markTourSeen, placeCard, resolveSteps, skipVanished, tourSeen } = await import("../src/lib/tours/logic.ts");
+const { placeCard, resolveSteps, skipVanished } = await import("../src/lib/tours/logic.ts");
+const { finished, legacyKey, mergeLedgers, parseLedger, readDevice, settle, takeLegacy, writeDevice, deviceKey } = await import(
+  "../src/lib/tours/account-logic.ts"
+);
+const { HAND_TUTORIAL_ID, TOUR_IDS, isTourId, tourVersion } = await import("../src/lib/tours/registry.ts");
 const { DM_TOUR, PLAYER_TOUR } = await import("../src/lib/tours/table.ts");
 const { HUB_TOUR, SHELF_TOUR, SYSTEM_TOURS, systemTourId, workshopTourAnchors } = await import(
   "../src/lib/tours/workshop.ts"
@@ -89,16 +93,105 @@ test("placeCard goes below a target near the top, above one near the bottom", ()
   assert.equal(placeCard({ top: 720, left: 40, width: 100, height: 40 }, CARD, VIEW).side, "above");
 });
 
-test("tourSeen round-trips and a broken store counts as seen", () => {
+// Issue 306: which tours a person finished is the account's record; the
+// device keeps a copy per account and what it has not yet saved.
+const mapStore = () => {
   const map = new Map();
-  const store = { getItem: (key) => map.get(key) ?? null, setItem: (key, value) => map.set(key, value) };
-  assert.equal(tourSeen(store, "table-player"), false);
-  markTourSeen(store, "table-player");
-  assert.equal(tourSeen(store, "table-player"), true);
-  assert.equal(tourSeen(store, "table-dm"), false);
-  const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
-  assert.equal(tourSeen(broken, "x"), true);
-  assert.doesNotThrow(() => markTourSeen(broken, "x"));
+  return { map, getItem: (key) => map.get(key) ?? null, setItem: (key, value) => map.set(key, String(value)), removeItem: (key) => map.delete(key) };
+};
+const at = "2026-10-13T00:00:00.000Z";
+
+test("every tour a page opens by itself is in the registry, at version 1 unless revised", () => {
+  for (const id of ["table-player", "table-dm", "workshop-shelf", "workshop-hub", HAND_TUTORIAL_ID, ...Object.keys(SYSTEM_TOURS).map(systemTourId)]) {
+    assert.ok(isTourId(id), `${id} is a known tour`);
+    assert.equal(tourVersion(id), 1, `${id} starts at version 1`);
+  }
+  assert.equal(new Set(TOUR_IDS).size, TOUR_IDS.length, "no tour is listed twice");
+  assert.equal(isTourId("app"), false, "the client shell's own tour is not a server tour");
+  assert.equal(isTourId("table-player-x"), false);
+  assert.equal(isTourId(undefined), false);
+});
+
+test("a ledger keeps only known tours with a whole version, and reads either close as finished", () => {
+  const ledger = parseLedger(
+    {
+      "table-player": { version: 1, how: "ended", at },
+      "table-dm": { version: 0, how: "done", at },
+      "workshop-hub": { version: 1.5 },
+      bogus: { version: 3, how: "done", at },
+      "workshop-shelf": "done",
+      [HAND_TUTORIAL_ID]: { version: 2, how: "weird" },
+    },
+    isTourId,
+  );
+  assert.deepEqual(Object.keys(ledger).sort(), [HAND_TUTORIAL_ID, "table-player"].sort());
+  assert.equal(ledger["table-player"].how, "ended");
+  assert.equal(ledger[HAND_TUTORIAL_ID].how, "done", "an unknown close reads as done");
+  assert.deepEqual(parseLedger(null, isTourId), {});
+  assert.deepEqual(parseLedger([1, 2], isTourId), {});
+  assert.equal(finished(ledger, "table-player", 1), true, "ended early still finishes it");
+  assert.equal(finished(ledger, "table-dm", 1), false);
+});
+
+test("a revised tour opens again for anyone who finished an older version", () => {
+  const ledger = { "table-player": { version: 1, how: "done", at } };
+  assert.equal(finished(ledger, "table-player", 1), true);
+  assert.equal(finished(ledger, "table-player", 2), false, "version 2 is not finished by a version-1 record");
+  assert.equal(finished({ "table-player": { version: 3, how: "done", at } }, "table-player", 2), true);
+});
+
+test("merging keeps the higher version and the first record of a tie", () => {
+  const a = { "table-player": { version: 1, how: "done", at: "a" }, "table-dm": { version: 2, how: "done", at: "a" } };
+  const b = { "table-player": { version: 2, how: "ended", at: "b" }, "table-dm": { version: 2, how: "ended", at: "b" }, "workshop-hub": { version: 1, how: "done", at: "b" } };
+  const merged = mergeLedgers(a, b);
+  assert.equal(merged["table-player"].version, 2);
+  assert.equal(merged["table-player"].at, "b");
+  assert.equal(merged["table-dm"].at, "a", "a second finish of the same version keeps the first");
+  assert.ok(merged["workshop-hub"]);
+  assert.deepEqual(mergeLedgers(), {});
+});
+
+test("the device copy is kept per account, and a second account on the machine starts clean", () => {
+  const store = mapStore();
+  writeDevice(store, "user-a", { done: { "table-player": { version: 1, how: "done", at } }, pending: {} });
+  assert.equal(finished(readDevice(store, "user-a", isTourId).done, "table-player", 1), true);
+  assert.deepEqual(readDevice(store, "user-b", isTourId), { done: {}, pending: {} });
+  assert.ok(store.map.has(deviceKey("user-a")));
+  store.map.set(deviceKey("user-c"), "{not json");
+  assert.deepEqual(readDevice(store, "user-c", isTourId), { done: {}, pending: {} }, "a broken copy reads as empty");
+  const denied = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); }, removeItem() { throw new Error("denied"); } };
+  assert.deepEqual(readDevice(denied, "user-a", isTourId), { done: {}, pending: {} });
+  assert.doesNotThrow(() => writeDevice(denied, "user-a", { done: {}, pending: {} }));
+});
+
+test("what the account acknowledged leaves pending but stays done; what it ignored stops being sent", () => {
+  const device = {
+    done: {},
+    pending: {
+      "table-player": { version: 1, how: "done", at },
+      "table-dm": { version: 2, how: "done", at },
+      "workshop-hub": { version: 1, how: "ended", at },
+    },
+  };
+  const account = { "table-player": { version: 1, how: "done", at }, "table-dm": { version: 1, how: "done", at } };
+  const settled = settle(device, account, ["workshop-hub"]);
+  assert.deepEqual(Object.keys(settled.pending), ["table-dm"], "a newer version than the account holds is sent again");
+  assert.deepEqual(Object.keys(settled.done).sort(), ["table-dm", "table-player", "workshop-hub"]);
+  assert.equal(settled.done["table-dm"].version, 2);
+});
+
+test("the old per-browser flags move to the first account and leave the device", () => {
+  const store = mapStore();
+  store.setItem(legacyKey("table-player"), "done");
+  store.setItem(legacyKey("workshop-shelf"), "done");
+  store.setItem(legacyKey("table-dm"), "something else");
+  store.setItem(legacyKey("app"), "done");
+  const taken = takeLegacy(store, TOUR_IDS, at);
+  assert.deepEqual(Object.keys(taken).sort(), ["table-player", "workshop-shelf"]);
+  assert.equal(taken["table-player"].version, 1);
+  assert.equal(store.getItem(legacyKey("table-player")), null, "taken flags are removed");
+  assert.equal(store.getItem(legacyKey("app")), "done", "the client shell's own tour flag is left alone");
+  assert.deepEqual(takeLegacy(store, TOUR_IDS, at), {}, "a second account finds nothing to take");
 });
 
 test("a step whose target vanished is skipped the way the reader was going", () => {

@@ -10,6 +10,12 @@ export function isHarnessId(value: unknown): value is HarnessId {
   return typeof value === "string" && (HARNESS_IDS as readonly string[]).includes(value);
 }
 
+// No run of a program lives longer than this: the bridge closes every
+// session and every completion by then (src/lib/harness/bridge.ts). opencode
+// keeps its sessions in a store of its own, and one older than this cannot
+// belong to a live run (src/lib/harness/adapters/opencode.ts).
+export const HARNESS_MAX_RUN_MS = 20 * 60_000;
+
 // How far the program's own tools were taken away. "removed" means the
 // program was started with none of its built-in tools at all (proven by the
 // tool list it reports). "contained" means some remain but are boxed in: a
@@ -30,9 +36,15 @@ export type HarnessModel = {
   fast?: boolean;
   // Its vendor has deprecated it (the model catalog, src/lib/model-registry).
   deprecated?: boolean;
-  // The model an alias stands for, where the program says so (Claude Code's
-  // "opus" is claude-opus-5-5): what the catalog is asked about it.
+  // The full model id an alias resolves to today, where the program reports
+  // it (Claude Code's "opus" stands for whichever Opus model it currently
+  // runs): what the catalog is asked about it.
   catalogId?: string;
+  // The efforts this model offers, as the program lists them (Claude Code's
+  // effort levels, Codex's reasoning efforts, opencode's variants); one it
+  // lacks runs at the model's own default. An empty list means it has none,
+  // and no list at all that the program does not say.
+  efforts?: HarnessEffort[];
 };
 
 export type HarnessAuth = {
@@ -53,6 +65,9 @@ export type HarnessStatus = {
   path?: string;
   auth: HarnessAuth;
   models: HarnessModel[];
+  // The efforts of the model the program runs when none is chosen, where it
+  // says which that is: the Effort picker's choices for a blank model.
+  defaultEfforts?: HarnessEffort[];
   // What this program's lockdown can achieve. "unproven" = built from its
   // documentation and not yet run on this machine.
   lockdown: Lockdown;
@@ -69,12 +84,23 @@ export type HarnessStatus = {
   checkedAt: number;
 };
 
+// The efforts the admin can choose (HarnessConfig.effort, "" being the
+// program's own default), as the programs name them, lightest first; a
+// program's own extra levels are not offered.
+export const HARNESS_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export type HarnessEffort = (typeof HARNESS_EFFORTS)[number];
+
+export function isHarnessEffort(value: unknown): value is HarnessEffort {
+  return typeof value === "string" && (HARNESS_EFFORTS as readonly string[]).includes(value);
+}
+
 export type HarnessConfig = {
   id: HarnessId | "";
   binaryPath: string;
   model: string;
   utilityModel: string;
-  effort: "" | "low" | "medium" | "high" | "xhigh" | "max";
+  effort: "" | HarnessEffort;
   speed: "" | "fast";
   utilitySpeed: "" | "fast";
   images: "off" | "native";

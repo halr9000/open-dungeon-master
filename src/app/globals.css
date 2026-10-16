@@ -1099,6 +1099,14 @@ optgroup {
       color var(--dur-instant) var(--ease-snap),
       padding-left var(--dur-quick) var(--ease-spring);
   }
+  /* A row keeps its height. motion-press hides overflow, and a flex item
+     that hides overflow has no minimum height, so a scrolling column of
+     rows squeezed them to slivers over one another instead of scrolling
+     (issue 282, the WorldForge wiki with forty entries). */
+  [role="menu"] > [role^="menuitem"],
+  [role="listbox"] > [role="option"] {
+    flex-shrink: 0;
+  }
   [role="menu"] > [role^="menuitem"]:nth-child(2) { animation-delay: 26ms; }
   [role="menu"] > [role^="menuitem"]:nth-child(3) { animation-delay: 52ms; }
   [role="menu"] > [role^="menuitem"]:nth-child(4) { animation-delay: 78ms; }

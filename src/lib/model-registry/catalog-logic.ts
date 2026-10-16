@@ -332,7 +332,9 @@ export function providerModels(providers: CatalogProviders, providerId: string):
 
 // ---- what ODM needs of a model ----
 
-export type ModelRole = "story" | "utility" | "image";
+// narration and dictation are the speech models: what they need of a model
+// is that the speech server serves it, which no catalog row says.
+export type ModelRole = "story" | "utility" | "image" | "narration" | "dictation";
 export type ModelFit = "ok" | "warn" | "unfit" | "unknown";
 
 export type ModelVerdict = {
@@ -347,6 +349,14 @@ export type ModelVerdict = {
 // modalities and a catalog that has not heard of it.
 export function isImageModelId(id: string): boolean {
   return /(gpt-image|dall-e|imagen|flux|stable-diffusion|sdxl|image-\d|-image\b|seedream|ideogram|recraft|hidream|kandinsky|qwen-image|z-image)/i.test(id);
+}
+
+// A speech model by its name, for the speech pickers: only what is shown
+// first, with every listed model one click away, and never what is sent.
+export function isSpeechModelId(id: string, role: "narration" | "dictation"): boolean {
+  return role === "narration"
+    ? /(tts|speech|voice|kokoro|orpheus|piper|sesame)/i.test(id)
+    : /(whisper|transcri|stt|asr|parakeet|canary|voxtral)/i.test(id);
 }
 
 export function formatTokens(tokens: number): string {
@@ -406,6 +416,7 @@ export function assessModel(input: {
     warnings.push(why);
   };
   const { catalog, role } = input;
+  const writes = role === "story" || role === "utility";
   if (input.listed === false) {
     warn("Not listed by the server right now. Load it there, or pick one it lists.");
   }
@@ -413,7 +424,7 @@ export function assessModel(input: {
     if (role === "story") unfit(`${why} The storyteller runs on them: dice, sheets and scenes are all tool calls.`);
     else warn(`${why} Lore checks and bookkeeping that use them will fall back to plain text.`);
   };
-  if (role !== "image" && input.tools === false) {
+  if (writes && input.tools === false) {
     noTools("Takes no tool calls, by the server's own account.");
   }
   if (input.memory && input.memory.sizeGb && input.memory.budgetGb && input.memory.sizeGb * 1.1 > input.memory.budgetGb) {
@@ -436,7 +447,7 @@ export function assessModel(input: {
     if (!catalog.output.includes("image")) {
       unfit("Does not paint pictures: it answers in text only.");
     }
-  } else {
+  } else if (writes) {
     if (!catalog.output.includes("text")) {
       unfit("Does not write text, so it cannot narrate.");
     }

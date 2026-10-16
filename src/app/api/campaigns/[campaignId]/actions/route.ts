@@ -25,6 +25,7 @@ import { enqueueDmJob } from "@/lib/dm/queue";
 import { runResumeRecap } from "@/lib/dm/recap";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
 import { parseMessageIntent } from "@/lib/dm/intent-logic";
+import { addressesDm } from "@/lib/dm/ooc-question";
 import { spokenLine } from "@/lib/dm/speech";
 import { intentRefusal } from "@/lib/dm/intent-check";
 import { concentrationSwapFor } from "@/lib/dm/concentration-confirm";
@@ -275,7 +276,12 @@ export async function POST(
   // A person's queue takes every action as it lands, a spotlight answer
   // included: the coalescing that waits for the last answer is the AI turn's,
   // and holding answers back from a person lost all but the last of them.
-  if (humanDm ? kind !== "ooc" || isFirstAction : (kind !== "ooc" && !spotlightStillWaiting) || isFirstAction) {
+  //
+  // Table talk naming "@DM" is a question for the DM and wakes the AI for an
+  // out-of-character answer (src/lib/dm/ooc-question.ts); a person in the
+  // seat reads it where it lands.
+  const askedDm = kind === "ooc" && addressesDm(parsed.data.content);
+  if (humanDm ? kind !== "ooc" || isFirstAction : (kind !== "ooc" && !spotlightStillWaiting) || askedDm || isFirstAction) {
     if (humanDm) {
       publishPersisted(campaignId, "dm_intent_queued", {
         messageId: message.id,

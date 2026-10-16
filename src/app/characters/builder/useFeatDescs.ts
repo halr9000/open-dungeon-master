@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { contentSlug } from "@/lib/help";
 import { scopeQuery, useContentCampaign } from "@/lib/content-scope";
 import { authoredFeatDesc, registerBrowserTableFeats } from "@/lib/srd/feat-effects";
@@ -19,16 +19,35 @@ export function useFeatDescs(names: string[]): Record<string, string> {
     .map((name) => name.trim())
     .filter((name) => name && !authoredFeatDesc(name) && fetched[name.toLowerCase()] === undefined);
   const key = wanted.map((name) => name.toLowerCase()).sort().join("|");
+  // Each feat is asked for once per table, and its answer is kept however
+  // the list changes meanwhile. The key shrinks as each answer lands, and
+  // the effect used to drop every answer still on its way at that point and
+  // ask again, so a sheet with several pack feats asked over and over.
+  const inFlight = useRef(new Set<string>());
+  const live = useRef({ mounted: true, campaignId });
+  useEffect(() => {
+    live.current = { mounted: true, campaignId };
+    return () => {
+      live.current = { mounted: false, campaignId };
+    };
+  }, [campaignId]);
   useEffect(() => {
     if (!key) {
       return;
     }
-    let cancelled = false;
     for (const name of key.split("|")) {
+      const flight = `${campaignId ?? ""}|${name}`;
+      if (inFlight.current.has(flight)) {
+        continue;
+      }
+      inFlight.current.add(flight);
+      // An answer for a table the builder has since left, or after it
+      // closed, is dropped.
+      const stale = () => !live.current.mounted || live.current.campaignId !== campaignId;
       fetch(`/api/content/feats/${encodeURIComponent(contentSlug(name))}${scopeQuery(campaignId)}`)
         .then((response) => (response.ok ? response.json() : null))
         .then((body: { entry?: { source?: string; data?: Record<string, unknown> } } | null) => {
-          if (cancelled) {
+          if (stale()) {
             return;
           }
           // The row's text wherever the pack keeps it, read as the server
@@ -53,14 +72,12 @@ export function useFeatDescs(names: string[]): Record<string, string> {
           setFetched((current) => ({ ...current, [name]: desc }));
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!stale()) {
             setFetched((current) => ({ ...current, [name]: "" }));
           }
-        });
+        })
+        .finally(() => inFlight.current.delete(flight));
     }
-    return () => {
-      cancelled = true;
-    };
   }, [key, campaignId]);
   return fetched;
 }

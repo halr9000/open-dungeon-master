@@ -3,18 +3,20 @@
 // the role needs, what the admin's own tests found, and the model already
 // chosen, which is always on the list whether or not the backend still
 // lists it. Nothing here changes a setting: a model that went missing is
-// flagged, never swapped.
+// flagged, never swapped. The one a form recommends for a blank field is
+// named, so a pick saves a real name and nothing is guessed when a request
+// goes out.
 
 import { probeHarness } from "@/lib/harness/status";
 import { isHarnessId, type HarnessId } from "@/lib/harness/types";
-import { assessModel, findCatalogModel, providerForBaseUrl, type CatalogModel, type ModelRole, type ModelVerdict } from "./catalog-logic";
-import { catalogStatus, harnessCatalogProvider, modelCatalog, type CatalogStatus } from "./catalog";
-import { listCustomModels, listImageModels, listOllamaModels, ollamaBaseUrl, ollamaModelInfo } from "./discovery";
+import { assessModel, findCatalogModel, isSpeechModelId, providerForBaseUrl, type CatalogModel, type ModelRole, type ModelVerdict } from "./catalog-logic";
+import { catalogStatus, harnessCatalogProvider, modelCatalog, recommendListed, type CatalogStatus } from "./catalog";
+import { listCustomModels, listImageModels, listOllamaModels, listSpeechModels, ollamaBaseUrl, ollamaModelInfo } from "./discovery";
 import { isOllamaChatModel } from "./discovery-logic";
 import { describeMachine, machine, memoryBudgetGb, type Machine } from "./hardware";
 import { probeRecordFor, type ProbeRecord } from "./probes";
 
-export type RegistryProvider = "local" | "custom" | "harness" | "images";
+export type RegistryProvider = "local" | "custom" | "harness" | "images" | "speech";
 
 export type RegistryModel = {
   id: string;
@@ -42,6 +44,13 @@ export type ModelChoices = {
   error: string;
   needsKey: boolean;
   models: RegistryModel[];
+  // The listed model a picture or speech form recommends for a blank field
+  // (the guided setup fills it in): the catalog's pick for pictures; for
+  // speech, the server's only model (what a blank Whisper field runs,
+  // src/lib/stt.ts), else the one model that reads as a speech model of the
+  // role's kind; "" when there is no obvious one, and always "" for the
+  // storyteller's roles.
+  recommended: string;
   catalog: CatalogStatus;
   // This machine, for the local provider: what the weights have to fit in.
   hardware: { summary: string; budgetGb: number } | null;
@@ -106,6 +115,7 @@ export async function modelChoices(input: ModelChoicesInput): Promise<ModelChoic
     provider: input.provider,
     error: "",
     needsKey: false,
+    recommended: "",
     catalog: catalogStatus(),
     hardware: null,
   };
@@ -180,7 +190,35 @@ export async function modelChoices(input: ModelChoicesInput): Promise<ModelChoic
       };
     }
     const models = listing.models.map((id) => make({ id }, true));
-    return { ...base, baseUrl: listing.baseUrl, reachable: true, models: withSelected("images", models, make, selected, true) };
+    const recommended = recommendListed(listing.baseUrl, listing.models.map((id) => ({ id, label: id })), "image");
+    return { ...base, baseUrl: listing.baseUrl, reachable: true, recommended, models: withSelected("images", models, make, selected, true) };
+  }
+
+  if (input.provider === "speech") {
+    const baseUrl = input.baseUrl?.trim() ?? "";
+    const hint = providerForBaseUrl(baseUrl, modelCatalog().providers);
+    const make = (found: Found, listed: boolean | null) => row({ ...input, providerHint: hint, selected, baseUrl }, found, listed);
+    const listing = await listSpeechModels(baseUrl, input.apiKey ?? "");
+    if (!listing.ok) {
+      return {
+        ...base,
+        baseUrl: listing.baseUrl,
+        reachable: false,
+        error: listing.error,
+        needsKey: Boolean(listing.needsKey),
+        models: withSelected("speech", [], make, selected, false),
+      };
+    }
+    const role = input.role === "narration" || input.role === "dictation" ? input.role : null;
+    const named = role ? listing.models.filter((id) => isSpeechModelId(id, role)) : [];
+    const models = listing.models.map((id) => make({ id }, true));
+    return {
+      ...base,
+      baseUrl: listing.baseUrl,
+      reachable: true,
+      recommended: listing.models.length === 1 ? listing.models[0] : named.length === 1 ? named[0] : "",
+      models: withSelected("speech", models, make, selected, true),
+    };
   }
 
   // The agent program's own list, from its own discovery (model/list, the

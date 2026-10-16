@@ -10,10 +10,14 @@ import { publishEphemeral } from "@/lib/events";
 // landed above it, out of order for the table, for a reload and for the
 // DM's next turn alike.
 //
-// So once narration is on screen, the first message a person posts makes
-// the narration claim the seq before theirs; finalize writes the narration
-// into that slot. With nobody interjecting nothing changes: the narration
-// takes its seq at the end, as it always has. Lives on globalThis like the
+// So once a turn is running, the first message a person posts makes the
+// narration claim the seq before theirs; finalize writes the narration into
+// that slot. With nobody interjecting nothing changes: the narration takes
+// its seq at the end, as it always has. The slot opens when the turn starts,
+// not when its first words stream: a move posted while the model was still
+// thinking otherwise sat above the narration that never read it, and the
+// coalesced follow-up turn, finding the DM's message last, skipped it and
+// left the move unanswered. Lives on globalThis like the
 // DM queue (src/lib/dm/queue.ts), so dev-mode HMR cannot fork it. A turn
 // resumed after a restart has lost its claim and takes a fresh seq.
 
@@ -27,7 +31,7 @@ function slots() {
   return (globalThis.__odmNarrationSlots ??= new Map<string, Slot>());
 }
 
-// The turn has put narration in front of the table.
+// The turn has started, or has put narration in front of the table.
 export function narrationShown(campaignId: string, turnId: string): void {
   const slot = slots().get(campaignId);
   if (slot?.turnId !== turnId) {

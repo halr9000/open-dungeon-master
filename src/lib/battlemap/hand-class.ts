@@ -11,11 +11,12 @@ import { spendAttack } from "@/lib/dm/action-budget";
 import { hasOpenHandTechnique, hurlProblem, OPEN_HAND_NOT_FLURRY } from "@/lib/dm/attack-choice-rules";
 import { inspirationProblem, strokeOfLuckProblem } from "@/lib/dm/attack-features";
 import { weaponAttackProfile, type AttackProfile } from "@/lib/dm/attack-logic";
+import { handsRuling } from "@/lib/dm/attack-rules";
 import { hasFastHands, kiLeft } from "@/lib/dm/bonus-routes";
 import { checkAttackOptions, martialArtsApplies, type AnyBonusAttack } from "@/lib/dm/pc-attack-options";
 import { heldInspiration } from "@/lib/dm/roll-riders";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { computeSheetDerived, type SheetDerived } from "@/lib/srd";
+import { acBreakdownFor, computeSheetDerived, type SheetDerived } from "@/lib/srd";
 import { activeAuthored } from "@/lib/srd/authored-effects";
 import { authoredBonusAttackProblem } from "@/lib/srd/authored-economy";
 import { hasRapidStrike } from "@/lib/srd/authored-effects-more";
@@ -183,6 +184,18 @@ export function bonusStrikeCards(
   const profs = sheet.proficiencies.weapons;
   const cards: HandCard[] = [];
   const standing = standingGate(sheet, turn, "bonus");
+  // A two-handed weapon is not swung at all with a shield on the arm, as
+  // build() in hand.ts shuts the Attack action's cards (handsRuling in
+  // src/lib/dm/attack-rules.ts). A strike is drawn with a weapon the hands
+  // allow when the pack holds one, and shut in the engine's words when not.
+  const shieldName = acBreakdownFor(sheet).shieldName;
+  const handsProblem = (weapon: string, srd: SrdWeapon | null): string | null => {
+    if (!srd) return null;
+    const ruled = handsRuling({ who: sheet.name, weapon, properties: srd.properties ?? [], lance: false, mounted: false, twoHandedAsked: false, shieldName });
+    return "error" in ruled ? ruled.error : null;
+  };
+  const pick = (fits: (entry: Carried) => boolean): Carried | undefined =>
+    carried.find((entry) => fits(entry) && handsProblem(entry.name, entry.srd) === null) ?? carried.find(fits);
   const strike = (
     bonusAttack: AnyBonusAttack,
     weapon: string,
@@ -226,7 +239,9 @@ export function bonusStrikeCards(
       ),
     };
     const refusedGate: Gate = refused ? { reason: refused, spent: false } : null;
-    return gated(card, standing, costGate("bonus", turn, sheet, name), refusedGate);
+    const hands = handsProblem(weapon, srd);
+    const handsGate: Gate = hands ? { reason: hands, spent: false } : null;
+    return gated(card, standing, handsGate, costGate("bonus", turn, sheet, name), refusedGate);
   };
   if (holds(sheet, "martial arts")) {
     cards.push(
@@ -240,7 +255,7 @@ export function bonusStrikeCards(
     );
   }
   if (holds(sheet, "frenzy")) {
-    const melee = carried.find((entry) => entry.srd.kind === "melee");
+    const melee = pick((entry) => entry.srd.kind === "melee");
     cards.push(
       strike(
         "frenzy",
@@ -258,7 +273,7 @@ export function bonusStrikeCards(
   if (offers.length) {
     const verdict = authoredBonusAttackProblem(sheet, turn.myTurn ? budgetOf(turn, sheet) : null);
     const feature = "feature" in verdict ? verdict.feature : offers[0].held.feature;
-    const weapon = carried[0];
+    const weapon = pick(() => true);
     cards.push(
       strike(
         "feature",
@@ -272,10 +287,10 @@ export function bonusStrikeCards(
   // The bonus attacks with a use, a trigger or a weapon of their own (War
   // Priest, Unwavering Mark, Hungry Jaws, Pistol and Blade), judged by the
   // engine's own check (src/lib/dm/feature-bonus-attacks.ts).
-  const melee = carried.find((entry) => entry.srd.kind === "melee");
+  const melee = pick((entry) => entry.srd.kind === "melee");
   const own: Array<{ feature: string; weapon: Carried | null; rules: string }> = [];
   if (holds(sheet, "war priest")) {
-    own.push({ feature: "War Priest", weapon: carried[0] ?? null, rules: "After the Attack action: one weapon attack as a bonus action, a use of War Priest." });
+    own.push({ feature: "War Priest", weapon: pick(() => true) ?? null, rules: "After the Attack action: one weapon attack as a bonus action, a use of War Priest." });
   }
   if (holds(sheet, "unwavering mark")) {
     own.push({ feature: "Unwavering Mark", weapon: melee ?? null, rules: "Against your marked creature that struck someone else: a melee attack with advantage and +half your fighter level damage." });
@@ -285,7 +300,7 @@ export function bonusStrikeCards(
     if (bite) own.push({ feature: "Hungry Jaws", weapon: { name: bite.srd.name, srd: bite.srd } as Carried, rules: "A bite as a bonus action; on a hit you gain your Constitution modifier in temporary hit points." });
   }
   if (holds(sheet, "pistol and blade")) {
-    const firearm = carried.find((entry) => entry.srd.category === "firearm");
+    const firearm = pick((entry) => entry.srd.category === "firearm");
     if (firearm) own.push({ feature: "Pistol and Blade", weapon: firearm, rules: "After a melee weapon attack: one firearm attack as a bonus action." });
   }
   for (const entry of own) {

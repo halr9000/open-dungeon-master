@@ -11,8 +11,9 @@ assert.throws(() => chatEndpoint("file:///tmp/model"), /http or https/);
 
 // A fake OpenAI-compatible server. Three models:
 // - mock-model: plain Chat Completions, tools and all;
-// - gpt-6-sol: tools on Chat Completions only with reasoning_effort "none",
-//   refused with a 400 that names that fix (issue #129);
+// - gpt-6-test-none-only: tools on Chat Completions only with
+//   reasoning_effort "none", refused with a 400 that names that fix alone
+//   (OpenAI's own GPT-6 refusals offer /v1/responses too);
 // - gpt-6.1-sol: tools refused on Chat Completions with the 400 OpenAI
 //   sends, pointing at /v1/responses, which this server also serves.
 const requests = [];
@@ -44,7 +45,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { message: "Function tools with reasoning_effort are not supported for gpt-6.1-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'." } }));
     return;
   }
-  if (body.tools?.length && body.model === "gpt-6-sol" && body.reasoning_effort !== "none") {
+  if (body.tools?.length && body.model === "gpt-6-test-none-only" && body.reasoning_effort !== "none") {
     res.statusCode = 400;
     res.end(JSON.stringify({ error: { message: "Function tools need reasoning off on this model. Set reasoning_effort to 'none'." } }));
     return;
@@ -94,7 +95,7 @@ try {
   // The refusal that names reasoning_effort "none": the probe retries on
   // that route and reports it, as the server would learn it mid-campaign.
   requests.length = 0;
-  const sol = await probeBackend({ baseUrl, model: "gpt-6-sol", timeoutMs: 2_000 });
+  const sol = await probeBackend({ baseUrl, model: "gpt-6-test-none-only", timeoutMs: 2_000 });
   assert.equal(sol.ok, true, JSON.stringify(sol));
   assert.equal(sol.route, "chat-no-reasoning");
   assert.equal(sol.endpoint, `${baseUrl}/v1/chat/completions`);
@@ -122,6 +123,21 @@ try {
   assert.equal(continuation.at(-1).call_id, "call_1");
   assert.equal(onResponses[1].body.tools[0].strict, false);
   console.log("provider-capability-probe: a refusal naming /v1/responses reruns the probe there");
+
+  // OpenAI's own host is probed the same way: nothing about the route is
+  // read from the model's name, so its first tool call goes to Chat
+  // Completions and the refusal moves it.
+  requests.length = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (url, init) => realFetch(String(url).replace("https://api.openai.com", baseUrl), init);
+  try {
+    const hosted = await probeBackend({ baseUrl: "https://api.openai.com/v1", model: "gpt-6.1-sol", apiKey: "sk-test", timeoutMs: 2_000 });
+    assert.equal(hosted.route, "responses");
+    assert.equal(requests[0].path, "/v1/chat/completions", "the first try was Chat Completions");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log("provider-capability-probe: OpenAI's own host starts on Chat Completions too");
 } finally {
   await new Promise((resolve) => server.close(resolve));
 }

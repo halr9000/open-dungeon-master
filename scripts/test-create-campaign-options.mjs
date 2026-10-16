@@ -16,10 +16,13 @@ const { gameSettingsSchema } = await import("../src/lib/schemas/game-settings.ts
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const read = (relative) => fs.readFileSync(path.resolve(scriptsDir, relative), "utf8");
 
+// The payload the dialog posts is built in payload.ts (campaignPayload); the
+// dialog itself must still be the thing that sends it.
 const dialog = read("../src/app/CreateCampaignDialog.tsx");
+const payload = read("../src/app/create-campaign/payload.ts");
 const worldSetup = read("../src/app/WorldSetupFields.tsx");
 const rulesPanel = read("../src/app/campaigns/[campaignId]/RulesPanel.tsx");
-const creationSurface = `${dialog}\n${worldSetup}\n${rulesPanel}`;
+const creationSurface = `${payload}\n${worldSetup}\n${rulesPanel}`;
 
 // `stages` is deliberately absent: it tunes the turn pipeline for a slow local
 // model, which is an operator decision made in the lobby, not a table decision
@@ -74,23 +77,27 @@ test("every game setting except the omitted ones is offered at creation", () => 
   }
 });
 
-test("every intentional omission is documented in the dialog itself", () => {
+test("the dialog posts the payload this suite audits", () => {
+  assert.match(dialog, /JSON\.stringify\(campaignPayload\(/, "CreateCampaignDialog no longer sends campaignPayload");
+});
+
+test("every intentional omission is documented where the payload is built", () => {
   // A silent omission is the bug this suite exists to catch, so each
   // intentional gap has to be explained where a reader will find it.
   for (const key of DELIBERATELY_OMITTED) {
     assert.match(
-      dialog,
+      payload,
       new RegExp(key, "i"),
-      `the dialog does not mention why ${key} is left out`,
+      `payload.ts does not say why ${key} is left out`,
     );
   }
 });
 
-test("the dialog sends the settings it collects", () => {
+test("the payload sends the settings the dialog collects", () => {
   for (const key of ["relationships", "romance", "narrationGuard", "variantRules", "worldPack"]) {
     assert.ok(
-      new RegExp(`\\b${key}\\b`).test(dialog),
-      `${key} is never referenced in CreateCampaignDialog`,
+      new RegExp(`\\b${key}\\b`).test(payload),
+      `${key} is never referenced in campaignPayload`,
     );
   }
 });
@@ -98,7 +105,7 @@ test("the dialog sends the settings it collects", () => {
 test("romance cannot be sent on while bonds are off", () => {
   // Romance rides on the bond meter, so the payload has to gate it.
   assert.match(
-    dialog,
+    payload,
     /romance:\s*relationships === "off" \? "off" : romance/,
     "the dialog can post romance on with relationships off",
   );

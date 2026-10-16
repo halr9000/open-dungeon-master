@@ -7,7 +7,8 @@
 // llama.cpp, LM Studio or OpenRouter must never be posted to api.openai.com.
 //
 // Local image generation is not touched by any of this — ComfyUI stays ready
-// with no key at all — so that is asserted too.
+// with no key at all, once it has a checkpoint — so that is asserted too.
+// Neither backend is ready without a model: none is named in code.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -33,12 +34,14 @@ for (const name of [
 
 register("./lib/register-alias.mjs", import.meta.url);
 
-const { openAiImagesConfigured } = await import("../src/lib/openai-images.ts");
+const { generateOpenAiImage, openAiImagesConfigured } = await import("../src/lib/openai-images.ts");
+const { pickImageSize, readSupportedSizes } = await import("../src/lib/openai-image-size-logic.ts");
 const { imageProducerReady } = await import("../src/lib/image-generate.ts");
 const { saveGlobalConfig } = await import("../src/lib/db/app-settings.ts");
 const { imagesAvailable } = await import("../src/lib/capabilities.ts");
 const { maskStorySettings } = await import("../src/lib/db/settings.ts");
 const { DEFAULT_STORY_SETTINGS } = await import("../src/lib/defaults.ts");
+const { imageVariantsSettled } = await import("../src/lib/image-variants.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -57,8 +60,16 @@ test("with nothing configured the OpenAI backend has no producer", () => {
   assert.equal(imageProducerReady(story("openai", "", "")), false);
 });
 
-test("ComfyUI is ready without any key, exactly as before", () => {
-  assert.equal(imageProducerReady(story("comfyui", "", "")), true);
+test("a key without a model is no producer either: no model is named in code", () => {
+  assert.equal(imageProducerReady(story("openai", "https://api.openai.com/v1", "sk-test")), false);
+  // The checks below are about whose key is spent, so a model is picked.
+  saveGlobalConfig({ images: { openaiModel: "my-painter" } });
+  assert.equal(imageProducerReady(story("openai", "https://api.openai.com/v1", "sk-test")), true);
+});
+
+test("ComfyUI is ready without any key once a checkpoint is picked", () => {
+  assert.equal(imageProducerReady({ ...story("comfyui", "", ""), comfyCheckpoint: "any.safetensors" }), true);
+  assert.equal(imageProducerReady({ ...story("comfyui", "", ""), comfyCheckpoint: "" }), false, "no checkpoint and no catalog model");
   // The FLUX workers still have no producer here; their own process drives them.
   assert.equal(imageProducerReady(story("mflux-hs", "", "")), false);
   assert.equal(imageProducerReady(story("sdnq-hs", "", "")), false);
@@ -156,15 +167,19 @@ await asyncTest("a key that is not OpenAI's takes no shortcut", async () => {
 
 await asyncTest("a self-hosted backend still answers to the probe, not the key", async () => {
   // ComfyUI must never shortcut: "ready" for it means something is listening,
-  // which only the capability probe knows.
+  // which only the capability probe knows. A checkpoint is picked for the
+  // campaign and the server alike, so only the probe is left to answer.
+  saveGlobalConfig({ images: { comfyCheckpoint: "any.safetensors" } });
   assert.equal(
     await imagesAvailable({
       imageBackend: "comfyui",
       customBaseUrl: "https://api.openai.com/v1",
       customApiKey: "sk-test",
+      comfyCheckpoint: "any.safetensors",
     }),
     await imagesAvailable(),
   );
+  saveGlobalConfig({ images: { comfyCheckpoint: "" } });
 });
 
 test("the masked settings tell the panel whether THIS campaign can render", () => {
@@ -191,5 +206,125 @@ test("the masked settings tell the panel whether THIS campaign can render", () =
   assert.equal(maskStorySettings({ ...DEFAULT_STORY_SETTINGS }).imagesReady, true);
 });
 
+// ---- the request: the admin's model, or none at all ----
+
+const PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+const requests = [];
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url, init) => {
+  requests.push({ url: String(url), body: JSON.parse(init.body) });
+  return Response.json({ data: [{ b64_json: PIXEL.toString("base64") }] });
+};
+process.chdir(dir);
+const draw = (aspect = "square") => generateOpenAiImage({ prompt: "a quiet harbor", mode: "fast", aspect });
+
+await asyncTest("with no model picked a picture is refused, naming the admin page, and nothing is sent", async () => {
+  saveGlobalConfig({ images: { openaiBaseUrl: "http://images.test/v1", openaiApiKey: "sk-images", openaiModel: "" } });
+  await assert.rejects(draw, /no model picked.*Admin > Image generation/);
+  assert.equal(requests.length, 0, "the images server was asked anyway");
+});
+
+await asyncTest("a picked model is sent as saved, and every model is asked for the same sizes", async () => {
+  saveGlobalConfig({ images: { openaiModel: "my-painter-7" } });
+  const portrait = await draw("portrait");
+  assert.equal(requests.at(-1).url, "http://images.test/v1/images/generations");
+  assert.equal(requests.at(-1).body.model, "my-painter-7");
+  assert.equal(requests.at(-1).body.size, "1024x1536");
+  assert.deepEqual([portrait.width, portrait.height], [1024, 1536]);
+  await draw("landscape");
+  assert.equal(requests.at(-1).body.size, "1536x1024");
+  assert.equal(requests.at(-1).body.output_format, "webp");
+});
+
+// ---- sizes: learnt from the refusal, never from the model's name ----
+
+// OpenAI's answer to a size the model does not take, as recorded on 2026-10-13 (gpt-image-1, 640x480).
+const RECORDED_SIZE_REFUSAL = "Invalid size '640x480'. Supported sizes are 1024x1024, 1024x1536, 1536x1024, and auto.";
+const size = (text) => {
+  const [width, height] = text.split("x").map(Number);
+  return { size: text, width, height };
+};
+
+test("the refusal's list is read, and a size picked for the shape by orientation, then ratio, then area", () => {
+  assert.deepEqual(readSupportedSizes(RECORDED_SIZE_REFUSAL), [size("1024x1024"), size("1024x1536"), size("1536x1024")], "auto is not a size");
+  assert.equal(readSupportedSizes("Invalid value for quality."), null);
+  const tall = [size("1024x1024"), size("1024x1792"), size("1792x1024"), size("512x768")];
+  assert.equal(pickImageSize("portrait", tall)?.size, "512x768", "2:3 itself beats a larger 4:7");
+  assert.equal(pickImageSize("portrait", [size("1024x1792"), size("896x1792")])?.size, "1024x1792", "the nearer ratio");
+  assert.equal(pickImageSize("landscape", [size("1792x1024"), size("1536x1024"), size("768x512")])?.size, "1536x1024", "equal ratio: the larger area");
+  assert.equal(pickImageSize("square", tall)?.size, "1024x1024");
+  const squareOnly = [size("512x512"), size("1024x1024")];
+  assert.equal(pickImageSize("portrait", squareOnly)?.size, "1024x1024", "no portrait size: the largest square");
+  assert.equal(pickImageSize("landscape", squareOnly)?.size, "1024x1024");
+  assert.equal(pickImageSize("square", [size("1024x1792")]), null, "no square at all: nothing to pick");
+  assert.equal(pickImageSize("portrait", [size("1792x1024")]), null, "no portrait and no square");
+});
+
+const takes = ["1024x1024", "1024x1792", "1792x1024"];
+const sizeRequests = [];
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  sizeRequests.push(body.size);
+  if (!takes.includes(body.size)) {
+    return Response.json(
+      { error: { message: `Invalid size '${body.size}'. Supported sizes are ${takes.join(", ")}, and auto.`, type: "image_generation_user_error", param: "size", code: "invalid_value" } },
+      { status: 400 },
+    );
+  }
+  return Response.json({ data: [{ b64_json: PIXEL.toString("base64") }] });
+};
+
+await asyncTest("a refused size is learnt from the answer, retried once, and asked for straight away next time", async () => {
+  saveGlobalConfig({ images: { openaiModel: "my-painter-8" } });
+  const first = await draw("portrait");
+  assert.deepEqual(sizeRequests, ["1024x1536", "1024x1792"]);
+  assert.deepEqual([first.width, first.height], [1024, 1792], "the picture is described at the size it was made");
+  sizeRequests.length = 0;
+  await draw("portrait");
+  await draw("landscape");
+  assert.deepEqual(sizeRequests, ["1024x1792", "1792x1024"], "one refusal per model, not per picture");
+});
+
+// ---- quality: a tier the model does not take is dropped once ----
+
+// A dall-e model behind a compatible proxy, as OpenAI answered dall-e-3: it
+// takes "standard" and "hd", and portrait only at 1024x1792.
+const qualityRequests = [];
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  qualityRequests.push(body);
+  if ("quality" in body && !["standard", "hd"].includes(body.quality)) {
+    return Response.json(
+      { error: { message: `Invalid value: '${body.quality}'. Supported values are: 'standard' and 'hd'.`, type: "invalid_request_error", param: "quality", code: "invalid_value" } },
+      { status: 400 },
+    );
+  }
+  if (body.size !== "1024x1024" && body.size !== "1024x1792") {
+    return Response.json({ error: { message: `Invalid size '${body.size}'. Supported sizes are 1024x1024, 1024x1792, 1792x1024.`, param: "size" } }, { status: 400 });
+  }
+  return Response.json({ data: [{ b64_json: PIXEL.toString("base64") }] });
+};
+
+await asyncTest("a refused quality tier is dropped and the picture asked for once more, the size learnt after it", async () => {
+  saveGlobalConfig({ images: { openaiModel: "my-old-painter" } });
+  const picture = await draw("portrait");
+  assert.deepEqual(
+    qualityRequests.map((body) => [body.quality ?? null, body.size]),
+    [["medium", "1024x1536"], [null, "1024x1536"], [null, "1024x1792"]],
+  );
+  assert.deepEqual([picture.width, picture.height], [1024, 1792]);
+  // A refusal of the field that comes back again is the answer, not a loop.
+  qualityRequests.length = 0;
+  globalThis.fetch = async (url, init) => {
+    qualityRequests.push(JSON.parse(init.body));
+    return Response.json({ error: { message: "quality is not supported here", param: "quality" } }, { status: 400 });
+  };
+  await assert.rejects(draw, /quality is not supported here/);
+  assert.equal(qualityRequests.length, 2, "asked once with the field and once without");
+});
+
+globalThis.fetch = realFetch;
+await imageVariantsSettled();
+process.chdir(os.tmpdir());
 removeTempDir(dir);
 console.log(`test-openai-images: ${passed} passed`);

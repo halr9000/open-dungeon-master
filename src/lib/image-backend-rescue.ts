@@ -19,6 +19,7 @@ import { imagesProbeUrl, probeReachable } from "@/lib/capabilities";
 import { getGlobalConfig } from "@/lib/db/app-settings";
 import { getDatabase } from "@/lib/db/core";
 import { getCampaignById, updateGameSettings, updateStorySettings } from "@/lib/db/campaigns";
+import { comfyModelPicked } from "@/lib/comfyui";
 import { harnessImagesReady } from "@/lib/harness/images";
 import { openAiImagesConfigured } from "@/lib/openai-images";
 import { configuredDefaultStorySettings } from "@/lib/runtime-defaults";
@@ -54,13 +55,20 @@ export function strandedMoves(campaigns: readonly CampaignPictures[], target: Im
 }
 
 // Whether a campaign's backend can make a picture right now. One probe per
-// address, cached in the capability probe store for half a minute.
-async function canPaint(settings: Pick<StorySettings, "imageBackend" | "comfyUrl" | "customBaseUrl" | "customApiKey">): Promise<boolean> {
+// address, cached in the capability probe store for half a minute. A
+// ComfyUI with no model or checkpoint picked paints nothing however well it
+// answers, so it is no place to move a stranded campaign to.
+async function canPaint(
+  settings: Pick<StorySettings, "imageBackend" | "comfyUrl" | "comfyCheckpoint" | "customBaseUrl" | "customApiKey">,
+): Promise<boolean> {
   if (settings.imageBackend === "harness") {
     return harnessImagesReady();
   }
   if (settings.imageBackend === "openai") {
     return openAiImagesConfigured(settings);
+  }
+  if (settings.imageBackend === "comfyui" && !comfyModelPicked(settings.comfyCheckpoint)) {
+    return false;
   }
   const comfy = settings.comfyUrl || configValue(getGlobalConfig().images.comfyUrl, "COMFYUI_URL", "http://127.0.0.1:8188");
   const flux = serverEnv("FLUX_WORKER_URL", "http://127.0.0.1:7869");

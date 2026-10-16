@@ -10,6 +10,7 @@ import { closeDatabaseForRestore } from "@/lib/db/core";
 import { closeAllStreams } from "@/lib/live-streams";
 import { enterMaintenance } from "@/lib/maintenance";
 import { serverEnv } from "@/lib/server-env";
+import { commitSwap, isSwapLeftover, planSwap, stageSwap } from "@/lib/ops/state-swap";
 
 // Every step that takes time runs off the request thread: the snapshot in a
 // child process, the copies through the file system's thread pool, tar as a
@@ -105,6 +106,7 @@ async function treeBytes(target: string): Promise<number> {
   }
   let total = 0;
   for (const entry of await fs.promises.readdir(target)) {
+    if (isSwapLeftover(entry)) continue;
     total += await treeBytes(path.join(target, entry));
   }
   return total;
@@ -124,13 +126,13 @@ async function freeBytes(dir: string): Promise<number> {
 // database's own writes down with it.
 const HEADROOM_BYTES = 256 * 1024 * 1024;
 
-async function requireRoom(needed: number, ...dirs: string[]) {
+async function requireRoom(needed: number, what: string, ...dirs: string[]) {
   for (const dir of dirs) {
     const free = await freeBytes(dir);
     if (free < needed + HEADROOM_BYTES) {
       const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
       throw new BackupError(
-        `Not enough free disk for this backup: it needs about ${gib(needed + HEADROOM_BYTES)} GB at ${dir}, which has ${gib(free)} GB free.`,
+        `Not enough free disk for ${what}: it needs about ${gib(needed + HEADROOM_BYTES)} GB at ${dir}, which has ${gib(free)} GB free.`,
         507,
       );
     }
@@ -229,9 +231,9 @@ function root() {
 }
 
 // The paths a restore may replace: the ones the manifest names, and only
-// when this app manages them. A live restore deletes each one before copying
-// the archive's over it, so a manifest that could name anything else ("..",
-// "src", another folder on the disk) could delete it.
+// when this app manages them. A live restore sets each one's contents aside
+// and puts the archive's in their place, so a manifest that could name
+// anything else ("..", "src", another folder on the disk) could replace it.
 function managedPaths(manifest: { includes?: unknown }): string[] {
   const named = Array.isArray(manifest.includes) ? manifest.includes : [];
   for (const rel of named) {
@@ -330,7 +332,7 @@ async function buildBackup(options: { includeModels?: boolean }, phase: (name: s
   }
   const dir = backupDir();
   await fs.promises.mkdir(dir, { recursive: true });
-  await requireRoom(needed, os.tmpdir(), dir);
+  await requireRoom(needed, "this backup", os.tmpdir(), dir);
 
   // A consistent copy while the server keeps playing: VACUUM INTO writes a
   // snapshot from a read transaction, WAL included, without pausing writers.
@@ -350,9 +352,11 @@ async function buildBackup(options: { includeModels?: boolean }, phase: (name: s
       // snapshot that replaces it; shipping them makes the archive corrupt.
       // The live database itself is skipped too: the snapshot takes its
       // place, and copying it first doubled the largest file for nothing.
+      // So is the world a restore set aside (src/lib/ops/state-swap.ts).
       await fs.promises.cp(src, dst, {
         recursive: true,
-        filter: (from) => !/-(?:wal|shm)$/.test(from) && path.resolve(from) !== liveDb,
+        filter: (from) =>
+          !/-(?:wal|shm)$/.test(from) && path.resolve(from) !== liveDb && !isSwapLeftover(path.basename(from)),
       });
     }
     const stagedDb = path.join(stage, relativeDb);
@@ -496,10 +500,12 @@ async function proveArchive(name: string): Promise<{ proof: RestoreProof; sha256
 }
 
 // Replace the live state with a verified archive. The proof runs first and
-// touches nothing; only then does the server stop taking play (maintenance:
-// every API request is refused, every stream closed, the database closed),
-// so nothing is written to the old file after the new one is in place and
-// lost at the restart. The server stays in maintenance until it restarts.
+// touches nothing, and so does copying the archive's files in beside the live
+// ones (src/lib/ops/state-swap.ts); only then does the server stop taking
+// play (maintenance: every API request is refused, every stream closed, the
+// database closed), so nothing is written to the old file after the new one
+// is in place and lost at the restart. The swap itself is renames, undone if
+// one fails. The server stays in maintenance until it restarts.
 export async function restoreBackup(name: string): Promise<{ proof: RestoreProof }> {
   return exclusive("restore", async (phase) => {
     phase("verifying");
@@ -517,18 +523,21 @@ export async function restoreBackup(name: string): Promise<{ proof: RestoreProof
         includes?: string[];
       };
       const paths = managedPaths(manifest);
+      const units = planSwap(root(), stage, paths);
+
+      phase("copying the archive in");
+      await requireRoom(await treeBytes(stage), "this restore", root());
+      await stageSwap(root(), stage, units);
 
       phase("replacing the world");
       enterMaintenance(`restoring ${name}`);
       closeAllStreams();
       closeDatabaseForRestore();
-      for (const rel of paths) {
-        const src = path.join(stage, rel);
-        if (!fs.existsSync(src)) continue;
-        const dst = path.join(/*turbopackIgnore: true*/ root(), rel);
-        await fs.promises.rm(dst, { recursive: true, force: true });
-        await fs.promises.mkdir(path.dirname(dst), { recursive: true });
-        await fs.promises.cp(src, dst, { recursive: true });
+      try {
+        await commitSwap(root(), units);
+      } catch (error) {
+        console.error("[backup] restore swap failed; the previous world is back in place", error);
+        throw new BackupError("The restore could not put the archive in place; the world that was there is back. Restart the server.", 500);
       }
       // The sidecars belong to the database file that was just replaced; a
       // restart opens a fresh pair.

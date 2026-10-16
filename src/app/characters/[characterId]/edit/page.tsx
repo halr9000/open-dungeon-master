@@ -189,6 +189,7 @@ function EditCharacterInner({ characterId }: { characterId: string }) {
         busy={busy}
         error={error}
         role={roleEditable ? { value: role, onChange: setRole } : undefined}
+        onCancel={() => navigateTo(`/characters/${characterId}`)}
       />
     </main>
   );

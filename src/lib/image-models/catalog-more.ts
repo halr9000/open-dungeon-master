@@ -229,14 +229,14 @@ export const MORE_MODELS: readonly ComfyModel[] = [
   },
   {
     // Any checkpoint named like an SDXL model (sd_xl, SDXL, ...XL...) runs
-    // with SDXL's settings, ODM's default CyberRealistic XL among them.
+    // with SDXL's settings, CyberRealistic XL among them.
     id: "sdxl",
     label: "Stable Diffusion XL",
     family: "Stable Diffusion XL",
     maker: "Stability AI and fine-tuners",
     license: "CreativeML Open RAIL++-M",
     released: "2023-07",
-    blurb: "Any SDXL checkpoint, ODM's default CyberRealistic XL included. 7 GB, 25 steps.",
+    blurb: "Any SDXL checkpoint, CyberRealistic XL included. 7 GB, 25 steps.",
     files: {
       ckpt: checkpointFile(
         ["CyberRealisticXLPlay_V6.0.safetensors", "sd_xl_base_1.0.safetensors"],

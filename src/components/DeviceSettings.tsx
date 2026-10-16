@@ -26,6 +26,7 @@ import {
 import { AUDIO_PREF_FIELDS, writeAudioPref, type AudioPrefField } from "@/lib/audio-prefs";
 import { cn } from "@/lib/cn";
 import { DiceLookButton } from "@/components/DiceLookEditor";
+import { DictationShortcutField } from "@/components/DictationShortcutField";
 import {
   requestMotionAccess,
   supportsShake,
@@ -392,6 +393,10 @@ function MicrophoneSection({ devices }: { devices: ReturnType<typeof useDevices>
             size="sm"
             align="end"
           />
+        </div>
+        <div>
+          <span className={cn(LABEL, "mb-1 block")}>Dictation key</span>
+          <DictationShortcutField />
         </div>
       </div>
     </section>

@@ -75,18 +75,23 @@ export function isOllamaChatModel(model: Pick<OllamaModel, "id" | "family">, inf
   return !/(embed|embedding|bge-|minilm|rerank|nomic-embed|mxbai)/i.test(`${model.id} ${model.family}`);
 }
 
-// GET /v1/models of an OpenAI-compatible images API, kept to the picture
-// models. `paints` is the catalog's word on an id; a server's list carries
-// no modalities, so the name decides when the catalog has not heard of it.
-export function readImageModelList(json: unknown, paints: (id: string) => boolean | null, byName: (id: string) => boolean): string[] {
+// The ids of GET /v1/models on an OpenAI-compatible server, each once, the
+// ones `keep` accepts.
+export function readModelIdList(json: unknown, keep: (id: string) => boolean): string[] {
   if (!isRecord(json) || !Array.isArray(json.data)) return [];
   const out: string[] = [];
   for (const entry of json.data) {
     if (!isRecord(entry) || typeof entry.id !== "string") continue;
     const id = entry.id.trim();
     if (!id || id.length > 200 || out.includes(id)) continue;
-    const known = paints(id);
-    if (known === true || (known === null && byName(id))) out.push(id);
+    if (keep(id)) out.push(id);
   }
   return out;
+}
+
+// GET /v1/models of an OpenAI-compatible images API, kept to the picture
+// models. `paints` is the catalog's word on an id; a server's list carries
+// no modalities, so the name decides when the catalog has not heard of it.
+export function readImageModelList(json: unknown, paints: (id: string) => boolean | null, byName: (id: string) => boolean): string[] {
+  return readModelIdList(json, (id) => paints(id) ?? byName(id));
 }

@@ -6,6 +6,10 @@ import { registerOutput, releaseOutput } from "@/lib/audio-devices";
 import { ui } from "@/lib/ui";
 import { PageSection } from "@/components/PageShell";
 import { BuiltinSpeechCard } from "@/app/admin/BuiltinSpeechCard";
+import { ModelChoiceField } from "@/app/admin/ModelChoice";
+import { BLANK, SPEECH_MODELS, fromEnv } from "@/app/admin/model-blanks";
+import type { ModelChoices } from "@/lib/model-registry/registry";
+import { whisperSwitchedOff } from "@/lib/stt-logic";
 import {
   Field,
   SECRET_KEPT,
@@ -22,10 +26,12 @@ import {
 // server, then its address, model and key appear, and a test speaks a line
 // through exactly what is typed. The paragraph under the picker says where a
 // passage's text goes, because "Narration: on" in a campaign says nothing
-// about that.
+// about that. Every model here is picked from what its server lists; a
+// blank one sends nothing.
 
 type Speech = MaskedConfig["speech"];
 type Provider = Speech["ttsProvider"];
+
 
 type TestResult = {
   ok: boolean;
@@ -49,6 +55,7 @@ export function AdminSpeechSection({
   speech,
   env,
   apiKey,
+  openaiSpeechBaseUrl,
   onSpeech,
   onApiKey,
 }: {
@@ -56,11 +63,20 @@ export function AdminSpeechSection({
   env: EnvDefaults;
   // SECRET_KEPT until a new key is typed.
   apiKey: string;
+  // Where OpenAI dictation is sent: the picture backend's OpenAI address,
+  // whose key it borrows (src/lib/openai-images.ts).
+  openaiSpeechBaseUrl: string;
   onSpeech: (speech: Speech) => void;
   onApiKey: (value: string) => void;
 }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
+  // The paid dictation fallback is drawn once opened, so its picker does not
+  // ask OpenAI with the saved key for an admin who never uses it.
+  const [openAiDictation, setOpenAiDictation] = useState(false);
+  // What the narration server listed last, which says whether a blank model
+  // runs its only one.
+  const [narrationListing, setNarrationListing] = useState<ModelChoices | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // What "Auto" means on this server right now.
@@ -75,6 +91,16 @@ export function AdminSpeechSection({
   const kokoroAt = speech.kokoroUrl.trim() || env.kokoroUrl;
   const openaiAt = speech.ttsBaseUrl.trim() || env.ttsBaseUrl || "https://api.openai.com/v1";
   const official = host(openaiAt) === "api.openai.com";
+  const whisperAt = speech.sttUrl.trim() || env.sttUrl;
+  // No model is named in code: an OpenAI-kind server with none picked reads
+  // nothing aloud, unless it is the host's own and lists exactly one.
+  const soleNarrationModel =
+    narrationListing?.reachable === true && narrationListing.models.filter((model) => model.listed).length === 1;
+  const narrationNeedsModel =
+    provider === "openai" &&
+    !speech.ttsModel.trim() &&
+    !env.ttsModel &&
+    (official || (narrationListing?.reachable === true && !soleNarrationModel));
 
   async function test() {
     setTesting(true);
@@ -160,17 +186,19 @@ export function AdminSpeechSection({
                 placeholder={env.ttsBaseUrl || "https://api.openai.com/v1"}
               />
             </Field>
-            <Field
-              label="Model name"
-              hint={env.ttsModel ? `Env: ${env.ttsModel}` : official ? "Blank = gpt-4o-mini-tts." : "The model name your server expects. Blank = tts-1."}
-            >
-              <input
-                className={ui.input}
-                value={speech.ttsModel}
-                onChange={(event) => set({ ttsModel: event.target.value })}
-                placeholder={env.ttsModel || (official ? "gpt-4o-mini-tts" : "tts-1")}
-              />
-            </Field>
+            <ModelChoiceField
+              label="Model"
+              hint="What the server lists."
+              role="narration"
+              provider="speech"
+              baseUrl={openaiAt}
+              apiKey={apiKey === SECRET_KEPT ? "" : apiKey}
+              value={speech.ttsModel}
+              onChange={(ttsModel) => set({ ttsModel })}
+              narrow={SPEECH_MODELS.narration}
+              blankLabel={env.ttsModel ? fromEnv(env.ttsModel, "TTS_MODEL") : official ? BLANK.narration : BLANK.narrationServer}
+              onListing={setNarrationListing}
+            />
             <SecretField
               label="API key"
               isSet={speech.hasTtsApiKey}
@@ -208,6 +236,11 @@ export function AdminSpeechSection({
           </Field>
         )}
       </div>
+      {narrationNeedsModel ? (
+        <p role="status" className="mt-3 text-xs text-amber-300" data-needs-model>
+          No narration model is picked, so nothing is read aloud until you pick one.
+        </p>
+      ) : null}
       <p className="mt-3 text-xs leading-5 text-stone-400">
         {provider === "off"
           ? "No passage is read aloud and no text is sent anywhere. Campaigns that have Narration on are told it is off here."
@@ -257,7 +290,43 @@ export function AdminSpeechSection({
             placeholder={env.sttUrl}
           />
         </Field>
+        {whisperSwitchedOff(whisperAt) ? null : (
+          <ModelChoiceField
+            label="Whisper model"
+            hint="What push-to-talk and the voice-chat transcript ask the Whisper service for."
+            role="dictation"
+            provider="speech"
+            baseUrl={whisperAt}
+            value={speech.sttModel}
+            onChange={(sttModel) => onSpeech({ ...speech, sttModel })}
+            narrow={SPEECH_MODELS.dictation}
+            blankLabel={env.sttModel ? fromEnv(env.sttModel, "STT_MODEL") : BLANK.whisper}
+          />
+        )}
         <BuiltinSpeechCard />
+        <details
+          className="rounded-lg border border-stone-800 bg-stone-950/40 px-3 py-2 sm:col-span-2"
+          onToggle={(event) => {
+            if (event.currentTarget.open) setOpenAiDictation(true);
+          }}
+        >
+          <summary className="cursor-pointer text-sm text-stone-300">OpenAI transcription (paid, when nothing free listens)</summary>
+          {openAiDictation ? (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <ModelChoiceField
+                label="Transcription model"
+                hint="On the OpenAI key saved for pictures, billed to it."
+                role="dictation"
+                provider="speech"
+                baseUrl={openaiSpeechBaseUrl}
+                value={speech.sttOpenaiModel}
+                onChange={(sttOpenaiModel) => onSpeech({ ...speech, sttOpenaiModel })}
+                narrow={SPEECH_MODELS.dictation}
+                blankLabel={env.sttOpenaiModel ? fromEnv(env.sttOpenaiModel, "STT_OPENAI_MODEL") : BLANK.transcription}
+              />
+            </div>
+          ) : null}
+        </details>
       </div>
     </PageSection>
   );

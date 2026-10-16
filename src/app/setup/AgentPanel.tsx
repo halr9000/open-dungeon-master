@@ -7,6 +7,7 @@ import { CopyLine } from "@/components/CopyLine";
 import { shellHost } from "@/lib/shell-host";
 import type { Draft } from "@/app/setup/draft";
 import { ModelPicker } from "@/app/setup/SetupParts";
+import { BLANK } from "@/app/admin/model-blanks";
 import type { HarnessId, HarnessStatus } from "@/lib/harness/types";
 
 type Update = (change: (draft: Draft) => Draft) => void;
@@ -140,7 +141,7 @@ export function AgentPanel({ draft, update }: { draft: Draft; update: Update }) 
             <div className="grid gap-3 sm:grid-cols-2">
               <ModelPicker
                 label="Story model"
-                models={[{ id: "", label: "The program's own default" }, ...chosen.models.map((model) => ({ id: model.id, label: model.label }))]}
+                models={[{ id: "", label: BLANK.programDefault }, ...chosen.models.map((model) => ({ id: model.id, label: model.label }))]}
                 value={draft.agent.model}
                 recommended=""
                 onChange={(model) => setAgent({ model })}
@@ -148,7 +149,7 @@ export function AgentPanel({ draft, update }: { draft: Draft; update: Update }) 
               <ModelPicker
                 label="Bookkeeping model (summaries, Ask)"
                 models={[
-                  { id: "", label: "Same as the story model" },
+                  { id: "", label: BLANK.utility },
                   ...[...chosen.models]
                     .sort((a, b) => Number(Boolean(b.cheap)) - Number(Boolean(a.cheap)))
                     .map((model) => ({ id: model.id, label: model.cheap ? `${model.label} (light)` : model.label })),

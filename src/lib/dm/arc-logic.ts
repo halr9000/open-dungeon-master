@@ -5,6 +5,7 @@ import {
   type WorldArc,
   type WorldArcUpdate,
 } from "./world-arc-logic.ts";
+import { RENDER_EVENT_CHARS, selectPendingEvents, type ArcTrace, type SceneCues } from "./arc-relevance.ts";
 
 // Pure story-arc logic, kept free of alias imports so node test scripts
 // (scripts/test-arc.mjs) can load it directly. The arc is the DM's secret
@@ -36,6 +37,10 @@ export type ArcBeat = {
   // checklist under [NOW]. A beat without them is gated by nothing and
   // completes the old way.
   waypoints?: Waypoint[];
+  // The storyboard card this beat was compiled from (issue #301), so the
+  // card's full text stays reachable (read_card) after the line was cut to
+  // BEAT_CAP. Absent on beats a model wrote.
+  cardId?: string;
 };
 
 // What kind of thing a waypoint waits for, which decides which tool call
@@ -85,6 +90,8 @@ export type ArcEvent = {
   actHint: number | null;
   // Optional link into the cast.
   castId?: string;
+  // The storyboard card the moment came from (issue #301); see ArcBeat.
+  cardId?: string;
   status: "pending" | "fired" | "dropped";
 };
 
@@ -274,7 +281,13 @@ export type SagaUpgrade = {
   finaleBoss: { name: string; detail: string } | null;
 };
 
-const MAX_BEATS = 40;
+// Storage caps. A storyboard holds up to 120 cards (src/lib/workshop/
+// board.ts MAX_BEATS), and every one of them can be a beat or a planned
+// moment, so the arc keeps more than a board can send (issue #301): the
+// prompt is bounded by the RENDER budgets below, never by throwing authored
+// prep away. A model writes at most MAX_ACT_BEATS per act and MAX_NEW_EVENTS
+// per refresh, so these caps only ever bind on imported boards.
+const MAX_BEATS = 160;
 const MAX_ACT_BEATS = 8;
 const MAX_ACTS = 8;
 const MAX_PRIOR_SAGAS = 3;
@@ -283,7 +296,7 @@ const MAX_SKETCH_UPDATES = 2;
 const MAX_SKETCH_EXTRAS = 2;
 const MAX_SUB_ARCS = 16;
 const MAX_NEW_SUB_ARCS = 2;
-const MAX_EVENTS = 24;
+const MAX_EVENTS = 160;
 const MAX_NEW_EVENTS = 2;
 const MAX_CAST = 12;
 const MAX_NEW_CAST = 2;
@@ -309,9 +322,19 @@ const EVENT_KINDS: ArcEventKind[] = [
 // Render budgets: the arc shares GAME STATE with sheets, the encounter, and
 // the map, so every list is bounded.
 const RENDER_OPEN_SUB_ARCS = 4;
-const RENDER_PENDING_EVENTS = 4;
 const RENDER_CAST = 6;
 const RENDER_FUTURE_SKETCHES = 3;
+// The window of main beats around [NOW] (issue #301): a board act can run to
+// a hundred beats, and the ones far behind or far ahead are tokens spent on
+// a road the party is not on. A model act has at most MAX_ACT_BEATS, so an
+// ordinary arc renders whole.
+const RENDER_BEATS_BEHIND = 3;
+const RENDER_BEATS_AHEAD = 8;
+const RENDER_FUTURE_ACT_BEATS = 3;
+
+// The caps, for the import planner's preflight (src/lib/workshop/
+// import-board.ts): a board that would not fit is named before the button.
+export const ARC_LIMITS = { beats: MAX_BEATS, events: MAX_EVENTS } as const;
 
 function str(value: unknown, cap = FIELD_CAP): string {
   return String(value ?? "").trim().slice(0, cap);
@@ -448,6 +471,10 @@ function normalizeEvent(raw: unknown, fallbackId: string): ArcEvent | null {
   const castId = str(record.castId, 12);
   if (castId) {
     event.castId = castId;
+  }
+  const cardId = str(record.cardId, 64);
+  if (cardId) {
+    event.cardId = cardId;
   }
   return event;
 }
@@ -594,6 +621,10 @@ export function normalizeStoryArc(raw: unknown): StoryArc | null {
     const waypoints = normalizeWaypoints(fields?.waypoints);
     if (waypoints.length) {
       beat.waypoints = waypoints;
+    }
+    const cardId = str(fields?.cardId, 64);
+    if (cardId) {
+      beat.cardId = cardId;
     }
     beats.push(beat);
   }
@@ -1601,19 +1632,30 @@ function appendCast(arc: StoryArc, raws: Array<Omit<ArcNpc, "id" | "status">>) {
 // an act extension routinely re-proposes a thread that is still open (the
 // model is shown the arc and echoes it back), and without this the event
 // list silts up with duplicates that then crowd the prompt render.
-function appendEvents(arc: StoryArc, raws: Array<Omit<ArcEvent, "id" | "status">>) {
+//
+// At the cap, the oldest settled (fired or dropped) event makes room; a
+// pending plan is never evicted (issue #301). When every stored event is
+// still pending, the newcomer is the one that waits, and the import planner
+// names it before the button rather than this function losing it quietly.
+// Returns how many were added.
+function appendEvents(arc: StoryArc, raws: Array<Omit<ArcEvent, "id" | "status">>): number {
+  let added = 0;
   for (const raw of raws) {
     const key = raw.name.trim().toLowerCase();
     if (arc.events.some((event) => event.name.trim().toLowerCase() === key)) {
       continue;
     }
+    if (arc.events.length >= MAX_EVENTS) {
+      const settled = arc.events.findIndex((event) => event.status !== "pending");
+      if (settled < 0) {
+        continue;
+      }
+      arc.events.splice(settled, 1);
+    }
     arc.events.push({ ...raw, id: nextId("ev", arc.events), status: "pending" });
+    added += 1;
   }
-  // Shed the oldest settled events first, so pending plans survive the cap.
-  while (arc.events.length > MAX_EVENTS) {
-    const settled = arc.events.findIndex((event) => event.status !== "pending");
-    arc.events.splice(settled >= 0 ? settled : 0, 1);
-  }
+  return added;
 }
 
 // Appends a whole new act when the party has played past the current one.
@@ -1647,10 +1689,12 @@ export function applyArcExtension(arc: StoryArc, extension: ArcExtension): Story
 // How much more an arc can take: beats under the arc's cap, and whether one
 // more act fits. A storyboard joining an arc as its next act is planned
 // against this (src/lib/workshop/import.ts).
-export function arcRoom(arc: StoryArc): { room: number; actRoom: boolean } {
+export function arcRoom(arc: StoryArc): { room: number; actRoom: boolean; eventRoom: number } {
   return {
     room: Math.max(0, MAX_BEATS - arc.beats.length),
     actRoom: arc.acts < MAX_ACTS,
+    // Settled events make way for new ones; pending ones never do.
+    eventRoom: Math.max(0, MAX_EVENTS - arc.events.filter((event) => event.status === "pending").length),
   };
 }
 
@@ -1667,23 +1711,30 @@ export function arcRoom(arc: StoryArc): { room: number; actRoom: boolean } {
 // same place.
 export function appendBoardAct(
   arc: StoryArc,
-  beats: Array<{ text: string; waypoints?: Waypoint[] }>,
+  beats: Array<{ text: string; waypoints?: Waypoint[]; cardId?: string }>,
   events: Array<Omit<ArcEvent, "id" | "status">>,
   title = "",
-): { arc: StoryArc; added: number } {
+): { arc: StoryArc; added: number; eventsAdded: number } {
   const known = new Set(arc.beats.map((beat) => beat.text.trim().toLowerCase()));
   const fresh = beats
     .map((beat) => ({ ...beat, text: str(beat.text, BEAT_CAP) }))
     .filter((beat) => beat.text && !known.has(beat.text.toLowerCase()));
   const { room, actRoom } = arcRoom(arc);
   if (!fresh.length || !actRoom || !room) {
-    return { arc, added: 0 };
+    return { arc, added: 0, eventsAdded: 0 };
   }
   const next = cloneArc(arc);
   const act = next.acts + 1;
   for (const beat of fresh.slice(0, room)) {
     const waypoints = normalizeWaypoints(beat.waypoints ?? []);
-    next.beats.push({ text: beat.text, status: "pending", act, ...(waypoints.length ? { waypoints } : {}) });
+    const cardId = str(beat.cardId, 64);
+    next.beats.push({
+      text: beat.text,
+      status: "pending",
+      act,
+      ...(waypoints.length ? { waypoints } : {}),
+      ...(cardId ? { cardId } : {}),
+    });
   }
   next.acts = act;
   if (next.saga) {
@@ -1703,13 +1754,13 @@ export function appendBoardAct(
       next.saga.plannedActs = act;
     }
   }
-  appendEvents(next, events.map((event) => ({ ...event, actHint: event.actHint ?? act })));
+  const eventsAdded = appendEvents(next, events.map((event) => ({ ...event, actHint: event.actHint ?? act })));
   // The beat the table is on stays the beat the table is on; only an arc
   // that had run out of beats moves on to the new act's first.
   const playing = arc.beats.findIndex((beat) => beat.status === "active");
   reseatActiveBeat(next.beats, playing >= 0 ? playing + 1 : null);
   next.updatedAt = new Date().toISOString();
-  return { arc: next, added: Math.min(fresh.length, room) };
+  return { arc: next, added: Math.min(fresh.length, room), eventsAdded };
 }
 
 // The first act still waiting as a sketch beyond the acts already written,
@@ -1947,7 +1998,16 @@ const EVENT_LABELS: Record<ArcEventKind, string> = {
 
 // Bounded GAME STATE render. The header carries the steering instruction:
 // aim scenes at the [NOW] beat, improvise the path, never dump the plot.
-export function renderArcForPrompt(arc: StoryArc): string {
+export function renderArcForPrompt(arc: StoryArc, cues?: SceneCues): string {
+  return renderArcPrompt(arc, cues).text;
+}
+
+// The render with its own account of what it chose (issue #301): which
+// planned events were shown or held back and why, and how many beats the
+// window around [NOW] carried. `cues` is the scene as the prompt knows it;
+// without them events order by act hint alone, as the refresh passes do.
+export function renderArcPrompt(arc: StoryArc, cues?: SceneCues): { text: string; trace: ArcTrace } {
+  const trace: ArcTrace = { events: [], beats: { shown: 0, total: arc.beats.length }, chars: 0, budgetChars: 0 };
   const lines = [
     "DM story arc (secret; steer scenes toward the [NOW] beat while improvising freely on the way there; never reveal, quote, or rush it). When your narration actually accomplishes the [NOW] beat, call complete_beat in that same reply. A beat listed with waypoints cannot complete until every one is ticked; the server ticks them from your move_party, update_location, set_npc, npc_reaction, social_check, grant_item, buy_item, tick_objective and end_encounter calls, so use those tools when the party reaches a place, meets a person, gains a thing, finishes an objective or wins a fight, and pass the step's number as `waypoint` on the call that accomplishes it, whatever you call the place, person or thing:",
     `Premise: ${arc.premise}`,
@@ -1972,6 +2032,24 @@ export function renderArcForPrompt(arc: StoryArc): string {
   }
   lines.push("Main beats:");
   let renderedAct = 0;
+  // The window: a few beats behind [NOW], more ahead, and a count for the
+  // rest of the act; an act already written but not yet reached shows its
+  // first few lines. With no [NOW] (the act is played out) the window sits
+  // on the last beat.
+  const anchor = activeIndex >= 0 ? activeIndex : arc.beats.length - 1;
+  const visible = (index: number, beat: ArcBeat) =>
+    beat.act === currentAct
+      ? index >= anchor - RENDER_BEATS_BEHIND && index <= anchor + RENDER_BEATS_AHEAD
+      : arc.beats.filter((entry) => entry.act === beat.act).indexOf(beat) < RENDER_FUTURE_ACT_BEATS;
+  const hiddenBefore = new Map<number, number>();
+  const hiddenAfter = new Map<number, number>();
+  arc.beats.forEach((beat, index) => {
+    if (beat.act >= currentAct && !visible(index, beat)) {
+      const bucket = beat.act === currentAct && index < anchor ? hiddenBefore : hiddenAfter;
+      bucket.set(beat.act, (bucket.get(beat.act) ?? 0) + 1);
+    }
+  });
+  let lastShownAct = 0;
   arc.beats.slice(0, MAX_BEATS).forEach((beat, index) => {
     // Acts the party has finished collapse to one line; only the current and
     // coming acts are worth their tokens every turn. A saga sketch milestone
@@ -1996,7 +2074,20 @@ export function renderArcForPrompt(arc: StoryArc): string {
     if (beat.act !== renderedAct) {
       renderedAct = beat.act;
       lines.push(`Act ${beat.act}:`);
+      const before = hiddenBefore.get(beat.act) ?? 0;
+      if (before) {
+        lines.push(`   (${before} earlier beat${before === 1 ? "" : "s"} of this act already played)`);
+      }
     }
+    if (!visible(index, beat)) {
+      const after = hiddenAfter.get(beat.act) ?? 0;
+      if (after && lastShownAct !== beat.act) {
+        lastShownAct = beat.act;
+        lines.push(`   (...and ${after} more beat${after === 1 ? "" : "s"} in this act, in order)`);
+      }
+      return;
+    }
+    trace.beats.shown += 1;
     const detail = beat.detail ? ` | table: ${beat.detail}` : "";
     lines.push(`${index + 1}. ${BEAT_MARKERS[beat.status]} ${beat.text}${detail}`);
     // Only the beat in play shows its checklist: the others' steps are
@@ -2007,6 +2098,9 @@ export function renderArcForPrompt(arc: StoryArc): string {
           .map((waypoint, index) => `${index + 1}. [${waypoint.done ? "x" : " "}] ${waypoint.text} (${waypoint.kind})`)
           .join(" | ")}`,
       );
+    }
+    if (beat.status === "active" && beat.cardId) {
+      lines.push(`   (the card this beat was written from, in full: read_card ${index + 1})`);
     }
   });
 
@@ -2072,18 +2166,34 @@ export function renderArcForPrompt(arc: StoryArc): string {
     lines.push(
       "Planned events (opportunities, NOT a schedule; fire one only when the fiction naturally reaches its trigger, and if the table went elsewhere, hold it, adapt it, or let it go, never bend a scene to force one):",
     );
-    // Events hinted at the current act or earlier come first: they are the
-    // ones the table is most likely to walk into next.
-    const ordered = [...pending].sort(
-      (a, b) => (a.actHint ?? currentAct) - (b.actHint ?? currentAct),
-    );
-    for (const event of ordered.slice(0, RENDER_PENDING_EVENTS)) {
+    // The scene's own events first, the rest by act hint, inside a
+    // character budget (arc-relevance.ts); what was held back is named by
+    // id so the DM can still open it.
+    const castName = (event: ArcEvent) => arc.cast.find((npc) => npc.id === event.castId)?.name;
+    const eventLine = (event: ArcEvent) => {
       const extra =
         event.kind === "ally"
           ? " (an ally who fights goes through add_companion: kind party if they stay, kind guest for one scene)"
           : "";
+      return `- [${event.id}] ${EVENT_LABELS[event.kind]}: ${event.name}${event.trigger ? ` | when: ${event.trigger}` : ""} | ${event.detail}${extra}`;
+    };
+    const selection = selectPendingEvents(
+      pending.map((event) => ({ ...event, castName: castName(event) })),
+      currentAct,
+      cues,
+      (event) => eventLine(event).length,
+    );
+    for (const event of selection.included) {
+      lines.push(eventLine(event));
+    }
+    trace.events = selection.picks;
+    trace.chars = selection.chars;
+    trace.budgetChars = RENDER_EVENT_CHARS;
+    const held = selection.picks.filter((pick) => !pick.included);
+    const carded = selection.included.some((event) => event.cardId);
+    if (held.length || carded) {
       lines.push(
-        `- [${event.id}] ${EVENT_LABELS[event.kind]}: ${event.name}${event.trigger ? ` | when: ${event.trigger}` : ""} | ${event.detail}${extra}`,
+        `   (${held.length ? `${held.length} more planned and held back for room: ${held.map((pick) => pick.id).join(", ")}. ` : ""}An event's full card, when it came from the storyboard: read_card with its id.)`,
       );
     }
   }
@@ -2109,7 +2219,7 @@ export function renderArcForPrompt(arc: StoryArc): string {
         .join("; ")}`,
     );
   }
-  return lines.join("\n");
+  return { text: lines.join("\n"), trace };
 }
 
 // Player-safe quest-log projection: names and goals only, never hooks,

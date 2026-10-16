@@ -24,7 +24,9 @@ import { nameRegisterHint } from "@/lib/genres";
 import { renderWorldPrimer } from "@/lib/worlds/primer-logic";
 import { packIds } from "@/lib/worlds/reskin-logic";
 import { genreClassIds } from "@/lib/classes";
-import { renderArcForPrompt } from "@/lib/dm/arc-logic";
+import { renderArcPrompt } from "@/lib/dm/arc-logic";
+import type { ArcTrace } from "@/lib/dm/arc-relevance";
+import type { LoreTrace } from "@/lib/dm/world-lore-logic";
 import { renderWorldArcsForPrompt } from "@/lib/dm/world-arc-logic";
 import { renderFactsForPrompt, type FactLike } from "@/lib/dm/fact-logic";
 import { MOMENT_INSTRUCTION, splitAtMoment, THIS_MOMENT_HEADING, THIS_TURN_HEADING } from "@/lib/prompt-boundary";
@@ -270,6 +272,16 @@ export type DmGameState = {
   toolTokens?: number;
   // Excerpts the table pinned; injected unconditionally, no relevance filter.
   pins?: Array<{ text: string }>;
+  // The newest player line, for the arc render's scene cues (issue #301):
+  // what the party just said it is doing names the event it is walking
+  // toward before the location changes.
+  recentPlayerLine?: string;
+  // Written by buildGameStateBlock when the arc renders: what it showed and
+  // held back, copied onto contextTrace by buildDmMessages.
+  arcTrace?: ArcTrace;
+  // What the world lore block kept and held back, and why (issue #305):
+  // built with the block by buildTurnRetrieval, copied onto contextTrace.
+  loreTrace?: LoreTrace;
   // Filled in by buildDmMessages: what each block cost and what was dropped.
   // Mutable on purpose, so the caller can persist it on the dm_turns row
   // without buildDmMessages changing its return type.
@@ -664,7 +676,23 @@ export function buildGameStateBlock(state: DmGameState): string {
     sections.push(worldPrimer);
   }
   if (campaign.storyArc) {
-    sections.push(renderArcForPrompt(campaign.storyArc));
+    // The scene as cues for the planned-events pick (issue #301): the
+    // place, the people here, the foes, the current scene line and what
+    // the party last said. The arc text itself is in the "stable" part of
+    // the block; the cues only reorder a bounded list.
+    const location = state.currentLocation?.name ?? "";
+    const arc = renderArcPrompt(campaign.storyArc, {
+      location,
+      scene: campaign.scene ?? "",
+      npcs: (state.npcs ?? [])
+        .filter((npc) => !location || !npc.location || npc.location.toLowerCase() === location.toLowerCase())
+        .map((npc) => npc.name)
+        .slice(0, 12),
+      enemies: (state.encounter?.enemies ?? []).map((enemy) => enemy.name).slice(0, 12),
+      recent: state.recentPlayerLine ?? "",
+    });
+    state.arcTrace = arc.trace;
+    sections.push(arc.text);
     if (campaign.gameSettings.worldSimulation) {
       const worldArcs = renderWorldArcsForPrompt(campaign.storyArc.worldArcs);
       if (worldArcs) {
@@ -1468,6 +1496,8 @@ export function buildDmMessages(
   // prompt is the messages with them added on.
   const toolTokens = state.toolTokens ?? 0;
   state.contextTrace = {
+    ...(state.arcTrace ? { arc: state.arcTrace } : {}),
+    ...(state.loreTrace ? { lore: state.loreTrace } : {}),
     limitTokens: usableTokens(state.contextLimitTokens) + toolTokens,
     promptTokens:
       estimateTokens(systemParts.join("\n\n")) +

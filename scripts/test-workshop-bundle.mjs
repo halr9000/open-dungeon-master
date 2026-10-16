@@ -488,3 +488,25 @@ test("long lore is clipped to the pack's limits and the clipping is announced", 
 });
 
 console.log(`workshop bundle: ${passed} checks passed`);
+
+// ---- issue #302: an entry over its cap is refused by name, with the lengths ----
+
+{
+  const card = read({ storyboard: [{ kind: "event", title: "The keeper's confession", body: `${"x".repeat(4_000)}and the lost tail` }] });
+  assert.ok("error" in card, "a card over the cap was accepted");
+  assert.match(card.error, /^Storyboard card 1 \("The keeper's confession"\), its body, is 4,017 characters; the limit is 4,000\. The last 17 would be lost: "and the lost tail"\./, card.error);
+  assert.match(card.error, /import again/);
+  const entry = read({ lore: [{ category: "history", title: "The chronicle", body: "y".repeat(20_001) }] });
+  assert.ok("error" in entry);
+  assert.match(entry.error, /^Lore entry 1 \("The chronicle"\), its body, is 20,001 characters; the limit is 20,000\./, entry.error);
+  const whole = read({ storyboard: [{ kind: "event", title: "A long card", body: "x".repeat(4_000) }], lore: [{ category: "history", title: "Long", body: "y".repeat(20_000) }] });
+  assert.ok(!("error" in whole), whole.error);
+  // A readability note in the preview, naming the card, keeping the text.
+  const { bundleWarnings } = await import("../src/lib/workshop/bundle.ts");
+  const odd = read({ storyboard: [{ kind: "event", title: "Joined", body: "The road.The mill.The end.Then nothing." }] });
+  const warning = bundleWarnings(odd.bundle).find((line) => /read oddly/.test(line));
+  assert.ok(warning, "no readability warning in the preview");
+  assert.match(warning, /^Storyboard card "Joined" may read oddly: 3 places read as a missing space/);
+  assert.equal(odd.bundle.storyboard[0].body, "The road.The mill.The end.Then nothing.", "the text was changed");
+  console.log("bundle caps: over-long entries refused by item with lengths; readability noted, text kept");
+}

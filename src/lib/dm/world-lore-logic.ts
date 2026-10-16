@@ -3,6 +3,8 @@
 // and no "@/" imports so scripts/test-lore-builder.mjs can load it
 // directly; the impure rim is src/lib/db/lore.ts.
 
+import { bestPassage } from "./passage.ts";
+
 export const WORLD_LORE_CATEGORIES = [
   "geography",
   "factions",
@@ -53,8 +55,24 @@ export type WorldLoreEntry = {
 };
 
 export const LORE_TITLE_MAX = 120;
-export const LORE_BODY_MAX = 4_000;
+// The cap a bundle entry travels under too (src/lib/workshop/bundle-schema.ts
+// reads it from here), so an entry that arrived whole stays safe to edit
+// (issue #302). The prompt never carries a whole body: renderLoreForPrompt
+// clips each to an excerpt and search_lore answers with the nearest passage.
+export const LORE_BODY_MAX = 20_000;
 export const LORE_TAGS_MAX = 8;
+
+// What saving a body over the cap would cut, as a sentence for the editor
+// and the route, or "" when it fits. The routes refuse rather than slice.
+export function loreBodyOverflow(body: unknown): string {
+  const text = typeof body === "string" ? body.trim() : "";
+  if (text.length <= LORE_BODY_MAX) {
+    return "";
+  }
+  const lost = text.slice(LORE_BODY_MAX).trim();
+  const shown = lost.length > 60 ? `${lost.slice(0, 60).trimEnd()}...` : lost;
+  return `This entry is ${text.length.toLocaleString("en-US")} characters; the limit is ${LORE_BODY_MAX.toLocaleString("en-US")}. The last ${(text.length - LORE_BODY_MAX).toLocaleString("en-US")} would be lost${shown ? `: "${shown}"` : ""}.`;
+}
 
 export function normalizeLoreInput(input: {
   category?: unknown;
@@ -235,39 +253,208 @@ function clipBody(body: string, max: number): string {
   return body.length <= max ? body : `${body.slice(0, max - 3)}...`;
 }
 
-// The WORLD LORE prompt block: pinned entries first, then the retrieved
-// ones, cut off at the character budget. Full bodies stay reachable through
-// the search_lore tool. A secret is marked so the model knows the party
-// does not know it.
+// An entry's excerpt for the prompt: the whole body when it fits, else the
+// passage nearest the moment when a scorer is given (passage.ts), else the
+// head. A body with a secret passage keeps the head, so a secret's marker is
+// never cut away from its words.
+export function loreExcerpt(entry: WorldLoreEntry, max: number, score?: (text: string) => number): string {
+  if (entry.body.length > max && score && !hasSecretBlocks(entry.body)) {
+    const passage = bestPassage(entry.body, score, max);
+    if (passage) {
+      return passage;
+    }
+  }
+  return clipBody(markSecretBlocks(entry.body), max);
+}
+
+// ---- the WORLD LORE prompt block (issue #305) ----
+//
+// Pinned entries first, then the entries picked for the moment, inside a
+// character budget the caller measures from the prompt window
+// (context-retrieval.ts). A picked entry shows a short excerpt, the passage
+// of its body nearest the moment when the caller can tell; when the picks do
+// not fit at the full excerpt they shorten together before any is left out.
+// What is still left out (by the cap or the budget) is named in one closing
+// line, so the block never reads as the whole set when it is not; the full
+// bodies stay one search_lore away. A secret is marked so the model knows
+// the party does not know it.
+
+export const LORE_EXCERPT_STEPS = [300, 220, 160, 120] as const;
+// The closing line of held-back titles stops listing past this length and
+// ends ", and N more." instead, so it never takes more than HELD_LINE_ROOM.
+const HELD_LINE_MAX = 260;
+const HELD_LINE_ROOM = HELD_LINE_MAX + 20;
+
+// One entry of the turn's lore and what became of it, for the context
+// inspector (ContextPanel.tsx). Lead-only, like the rest of the trace.
+export type LorePickTrace = {
+  id: string;
+  title: string;
+  included: boolean;
+  reason: string;
+  pinned?: true;
+  secret?: true;
+  // A near match that was not close enough to ride: shown for the record,
+  // not as something the turn missed.
+  weak?: true;
+};
+
+export type LoreTrace = {
+  picks: LorePickTrace[];
+  // Characters the entry lines took, and what they were allowed.
+  chars: number;
+  budgetChars: number;
+};
+
+export type LorePickInput = { entry: WorldLoreEntry; reason: string };
+// close: it matched the moment and only the cap or the budget kept it out,
+// so the closing line names it; a weak near match is traced but not named.
+export type LoreHeldInput = { entry: WorldLoreEntry; reason: string; close: boolean };
+
+function entryLine(entry: WorldLoreEntry, excerpt: string): string {
+  const secret = entry.visibility === "dm" ? " (SECRET: the party does not know this)" : "";
+  return `- [${entry.category}] ${entry.title}${secret}: ${excerpt}`;
+}
+
+function heldLine(titles: string[]): string {
+  const head = "Also bearing on this moment, left out for room (search_lore reads them): ";
+  let line = head;
+  for (const [index, title] of titles.entries()) {
+    const next = `${index ? ", " : ""}${title}`;
+    const rest = titles.length - index;
+    if (line.length + next.length + 12 > HELD_LINE_MAX && index) {
+      return `${line}, and ${rest} more.`;
+    }
+    line += next;
+  }
+  return `${line}.`;
+}
+
+export function renderLoreBlock(input: {
+  pinned: WorldLoreEntry[];
+  picked: LorePickInput[];
+  held?: LoreHeldInput[];
+  budget: number;
+  // The excerpt of a body at most `max` characters long; the head of the
+  // body when not given.
+  excerpt?: (entry: WorldLoreEntry, max: number) => string;
+}): { text: string; trace: LoreTrace } {
+  const budget = Math.max(0, Math.floor(input.budget));
+  const makeExcerpt = input.excerpt ?? ((entry: WorldLoreEntry, max: number) => loreExcerpt(entry, max));
+  // The fit below asks for the same excerpt more than once.
+  const excerpts = new Map<string, string>();
+  const excerptOf = (entry: WorldLoreEntry, max: number) => {
+    const key = `${entry.id}\u0000${max}`;
+    let excerpt = excerpts.get(key);
+    if (excerpt === undefined) {
+      excerpt = makeExcerpt(entry, max);
+      excerpts.set(key, excerpt);
+    }
+    return excerpt;
+  };
+  // An entry appears once, in the first place it was given.
+  const seen = new Set<string>();
+  const firstTime = (id: string) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  };
+  const pinned = input.pinned.filter((entry) => firstTime(entry.id));
+  const picked = input.picked.filter(({ entry }) => firstTime(entry.id));
+  const traces: LorePickTrace[] = [];
+  const trace = (entry: WorldLoreEntry, included: boolean, reason: string, flags: { pinned?: boolean; weak?: boolean } = {}): LorePickTrace => ({
+    id: entry.id,
+    title: entry.title,
+    included,
+    reason,
+    ...(flags.pinned ? { pinned: true as const } : {}),
+    ...(entry.visibility === "dm" ? { secret: true as const } : {}),
+    ...(flags.weak ? { weak: true as const } : {}),
+  });
+
+  // Lays the block out with `room` characters for the entry lines.
+  const lay = (room: number) => {
+    const lines: string[] = [];
+    const out: LorePickTrace[] = [];
+    const left: string[] = [];
+    let used = 0;
+    // The lead pinned these; they keep the excerpt they always had and come
+    // first. One that does not fit is held back, and later ones still try.
+    for (const entry of pinned) {
+      const line = entryLine(entry, clipBody(markSecretBlocks(entry.body), LORE_EXCERPT_STEPS[0]));
+      if (used + line.length + 1 > room) {
+        out.push(trace(entry, false, "pinned; held back: over the lore budget", { pinned: true }));
+        left.push(entry.title);
+        continue;
+      }
+      lines.push(line);
+      used += line.length + 1;
+      out.push(trace(entry, true, "pinned", { pinned: true }));
+    }
+    // The picks at the longest excerpt that fits them all, else the shortest.
+    const remaining = room - used;
+    let step: number = LORE_EXCERPT_STEPS[LORE_EXCERPT_STEPS.length - 1];
+    for (const candidate of LORE_EXCERPT_STEPS) {
+      const total = picked.reduce((sum, { entry }) => sum + entryLine(entry, excerptOf(entry, candidate)).length + 1, 0);
+      if (total <= remaining) {
+        step = candidate;
+        break;
+      }
+    }
+    let shown = false;
+    for (const [index, { entry, reason }] of picked.entries()) {
+      const line = entryLine(entry, excerptOf(entry, step));
+      if (used + line.length + 1 > room) {
+        out.push(trace(entry, false, `held back: over the lore budget (rank ${index + 1}, ${reason})`));
+        left.push(entry.title);
+        continue;
+      }
+      lines.push(line);
+      used += line.length + 1;
+      shown = true;
+      out.push(trace(entry, true, `rank ${index + 1}: ${reason}${step < LORE_EXCERPT_STEPS[0] ? `; excerpt ${step} characters` : ""}`));
+    }
+    return { lines, out, left, used, shown };
+  };
+
+  const held = (input.held ?? []).filter(({ entry }) => firstTime(entry.id));
+  const capped = held.filter((entry) => entry.close).map(({ entry }) => entry.title);
+  let laid = lay(budget);
+  let names = [...laid.left, ...capped];
+  let closing = names.length ? heldLine(names) : "";
+  // The closing line comes out of the same budget: lay the entries out again
+  // in what it leaves, and name whatever that leaves out too.
+  if (closing && laid.used + closing.length > budget) {
+    laid = lay(Math.max(0, budget - HELD_LINE_ROOM));
+    names = [...laid.left, ...capped];
+    closing = heldLine(names);
+  }
+  traces.push(...laid.out, ...held.map(({ entry, reason, close }) => trace(entry, false, `held back: ${reason}`, { weak: !close })));
+
+  const blockTrace: LoreTrace = { picks: traces, chars: laid.used + closing.length, budgetChars: budget };
+  if (!laid.lines.length && !closing) {
+    return { text: "", trace: blockTrace };
+  }
+  // Retrieval keeps only close matches (lore-selection.ts), but close is
+  // still relative, so the DM is told what it got.
+  const pickedNote = laid.shown
+    ? ". The entries picked for this moment are the nearest matches, nearest first; use only those that bear on it"
+    : "";
+  return {
+    text: `WORLD LORE (established by the party lead; treat as canon${pickedNote}):\n${[...laid.lines, ...(closing ? [closing] : [])].join("\n")}`,
+    trace: blockTrace,
+  };
+}
+
+// The block for entries already chosen, in order: pinned, then the rest.
 export function renderLoreForPrompt(
   pinned: WorldLoreEntry[],
   retrieved: WorldLoreEntry[],
   budget = 1_600,
 ): string {
-  const lines: string[] = [];
-  let used = 0;
-  let retrievedShown = false;
-  const seen = new Set<string>();
-  for (const [index, entry] of [...pinned, ...retrieved].entries()) {
-    if (seen.has(entry.id)) {
-      continue;
-    }
-    seen.add(entry.id);
-    const secret = entry.visibility === "dm" ? " (SECRET: the party does not know this)" : "";
-    const line = `- [${entry.category}] ${entry.title}${secret}: ${clipBody(markSecretBlocks(entry.body), 300)}`;
-    if (used + line.length > budget) {
-      break;
-    }
-    lines.push(line);
-    used += line.length;
-    retrievedShown ||= index >= pinned.length;
-  }
-  if (!lines.length) {
-    return "";
-  }
-  // Retrieval has no relevance cut-off (fusion-logic.ts).
-  const picked = retrievedShown
-    ? ". The entries picked for this moment are the nearest matches, nearest first; use only those that bear on it"
-    : "";
-  return `WORLD LORE (established by the party lead; treat as canon${picked}):\n${lines.join("\n")}`;
+  return renderLoreBlock({
+    pinned,
+    picked: retrieved.map((entry) => ({ entry, reason: "retrieved" })),
+    budget,
+  }).text;
 }

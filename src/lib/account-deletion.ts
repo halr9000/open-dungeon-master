@@ -140,13 +140,16 @@ export function purgeAccount(userId: string) {
     // And the record of who made each stored file (src/lib/media-access.ts).
     db.prepare(`UPDATE media_files SET user_id = NULL WHERE user_id = ?`).run(userId);
 
-    // Things only this person could act on.
+    // Things only this person could act on, the dice they were owed while
+    // building a character among them (creation_rolls, which has no foreign
+    // key to cascade from).
     for (const table of [
       "pending_rolls",
       "item_proposals",
       "campaign_asks",
       "ask_briefs",
       "session_rsvps",
+      "creation_rolls",
     ]) {
       db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId);
     }

@@ -5,10 +5,13 @@
 // What each connection supports, from the providers' own documentation
 // (checked 2026-10-11):
 //   - OpenAI's API: `service_tier: "fast"` (or "priority") on Responses and
-//     Chat Completions, for GPT-6 Sol, Luna, Astra and 6.1 Sol and the
-//     GPT-5.6 models; not fine-tuned models. The reply's `service_tier`
-//     says what ran: "priority" or "fast" when it did, "default" when a
-//     ramp limit downgraded it. About twice the standard price.
+//     Chat Completions, for the models OpenAI offers it on. Which ones is
+//     not read from the name (a list kept here said gpt-4.1 had none; asked
+//     on 2026-10-13, OpenAI ran it at "priority"). A refusal drops the field
+//     and the call runs at standard speed (said so in the panel,
+//     model-client.ts), and the reply's `service_tier` says what ran:
+//     "priority" or "fast" when it did, "default" when it was downgraded.
+//     About twice the standard price.
 //   - Codex (ChatGPT sign-in): the app-server takes `serviceTier` on
 //     thread/start for that thread alone, never touching the user's own
 //     config.toml, and model/list says which models offer which tiers.
@@ -24,26 +27,17 @@
 export type Speed = "" | "fast";
 export type SpeedRole = "story" | "utility";
 
-// A model OpenAI's API serves at the Fast tier.
-export function openAiFastModel(model: string): boolean {
-  const name = model.trim().toLowerCase();
-  return !name.startsWith("ft:") && /^(gpt-6(\.\d+)?|gpt-5\.6)(-[a-z0-9.-]+)?$/.test(name);
-}
-
 export type SpeedEligibility = { ok: true } | { ok: false; reason: string };
 
-// Whether a direct API connection may ask for Fast: OpenAI's own host and
-// a model that has the tier. The admin's choice is for the server's own
-// backend; a campaign's own key is never spent at a premium on it.
+// Whether a direct API connection may ask for Fast: OpenAI's own host and a
+// named model. The admin's choice is for the server's own backend; a
+// campaign's own key is never spent at a premium on it.
 export function apiSpeedEligibility(input: { endpointKind: string; model: string }): SpeedEligibility {
   if (input.endpointKind !== "openai") {
     return { ok: false, reason: "Fast is offered on OpenAI's own API (api.openai.com). Other OpenAI-compatible servers, OpenRouter and local models have no Fast tier ODM can ask for." };
   }
   if (!input.model.trim()) {
     return { ok: false, reason: "Name the model first; Fast depends on it." };
-  }
-  if (!openAiFastModel(input.model)) {
-    return { ok: false, reason: `${input.model} has no Fast tier on OpenAI's API. GPT-6 Sol, Luna and Astra, GPT-6.1 Sol and the GPT-5.6 models do.` };
   }
   return { ok: true };
 }

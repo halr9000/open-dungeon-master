@@ -349,6 +349,7 @@ function ComposerInner({
           ) : null}
           <PushToTalk
             disabled={inputBlocked}
+            composerRef={composerRef}
             onTranscript={(text) =>
               setInput((current) => (current ? `${current} ${text}` : text))
             }

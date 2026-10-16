@@ -304,6 +304,7 @@ export function PartyPanel({
   onOpenSettings,
   humanDmTable = false,
   companionGenre,
+  companionWorldPack,
   companionLevel = 1,
   worldPack = "",
   lights = {},
@@ -361,6 +362,8 @@ export function PartyPanel({
   // also the door that lets a human DM hold a character sheet of their own.
   humanDmTable?: boolean;
   companionGenre?: Genre;
+  // The table's world pack, handed to the companion builder.
+  companionWorldPack?: string;
   companionLevel?: number;
   // The campaign's world pack, whose art stands in for an unpainted portrait.
   worldPack?: string;
@@ -905,6 +908,7 @@ export function PartyPanel({
         <CompanionBuilderDialog
           campaignId={campaignId}
           genre={companionGenre}
+          worldPackId={companionWorldPack}
           level={companionLevel}
           humanDm={humanDmTable}
           onClose={() => setBuildingCompanion(false)}

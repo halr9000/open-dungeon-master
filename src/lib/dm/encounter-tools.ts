@@ -1949,8 +1949,33 @@ export function handOnEnemyTurns(campaign: Campaign, turn: DmTurn, play: boolean
     setFloor(campaign.id, next);
     publishPersisted(campaign.id, "floor_changed", { floor: next });
   }
+  if (due.length) {
+    deathSaveAsTurnBegins(campaign);
+  }
   publishEncounter(campaign.id);
   return null;
+}
+
+// The enemies before a character have had their turns, so the character's
+// own begins now, and one those enemies put down rolls the death save that
+// begins it (SRD 5.1: at the start of each of its turns). The pointer landed
+// on them while they stood, so the pass rolled nothing for them, and the
+// turn their owner cannot take is then ended without one (advanceAfterNarration).
+// A character already down when the pointer landed rolled as it landed;
+// that happens only when nobody in the order could act, so with another
+// character able to, the save here is this turn's first.
+function deathSaveAsTurnBegins(campaign: Campaign) {
+  const encounter = getActiveEncounter(campaign.id);
+  const current = encounter?.orderReady ? encounter.order[encounter.turnIndex] : undefined;
+  if (!encounter || current?.kind !== "pc") {
+    return;
+  }
+  const enemiesById = new Map(listEnemies(encounter.id).map((enemy) => [enemy.id, enemy]));
+  const acts = (entry: OrderEntry) => entryActs(entry, enemiesById, encounter.surprisedIds);
+  if (acts(current) || !encounter.order.some((entry) => entry.kind === "pc" && entry !== current && acts(entry))) {
+    return;
+  }
+  rollDeathSave(campaign, current.characterId);
 }
 
 // The pointer rests on an AI companion at a person's table: the server

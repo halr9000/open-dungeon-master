@@ -144,6 +144,25 @@ await test("a shell that prints nothing yields an empty PATH", async () => {
   assert.equal(await loginShellPath(), "");
 });
 
+await test("names are tried in order of preference: opencode2 wherever it is, before an opencode earlier on PATH", async () => {
+  const silent = path.join(dir, "silent-shell-names");
+  writeExecutable(silent, "#!/bin/sh\nexit 0\n");
+  process.env.SHELL = silent;
+  process.env.HOME = path.join(dir, "empty-home");
+  const first = path.join(dir, "path-first");
+  const later = path.join(dir, "path-later");
+  writeExecutable(path.join(first, "odm-agent"), "#!/bin/sh\n");
+  const originalPath = process.env.PATH;
+  process.env.PATH = [first, later].join(path.delimiter);
+  try {
+    assert.equal(await findBinary(["odm-agent2", "odm-agent"]), path.join(first, "odm-agent"), "only the second name is there");
+    writeExecutable(path.join(later, "odm-agent2"), "#!/bin/sh\n");
+    assert.equal(await findBinary(["odm-agent2", "odm-agent"]), path.join(later, "odm-agent2"));
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
 removeTempDir(dir);
 console.log(`harness discover: ${passed} checks passed`);
 

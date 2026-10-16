@@ -135,7 +135,7 @@ export const worldTools: ToolDef[] = [
     function: {
       name: "travel",
       description:
-        "Resolve a stretch of overland travel, one day's leg at a time. Snow or a storm slows the march further; fast travellers take -5 passive Perception; only a slow pace allows stealth, so Stealth checks are refused while the party marches at a normal or fast pace; a failed forced-march save costs a level of exhaustion.",
+        "Resolve a stretch of overland travel, one day's leg at a time. Snow or a storm slows the march further; fast travellers take -5 passive Perception; only a slow pace allows stealth, so Stealth checks are refused while the party marches at a normal or fast pace; a failed forced-march save costs a level of exhaustion. It moves no one on the map: when the leg ends somewhere the story names, that place is a move_party call.",
       parameters: {
         type: "object",
         additionalProperties: false,

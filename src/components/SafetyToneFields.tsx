@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { VoicePreviewButton } from "@/components/VoicePreviewButton";
+import { InfoButton } from "@/components/ui/InfoDialog";
 import {
   BOUNDARIES,
   STRICTNESS,
@@ -30,7 +31,16 @@ export const BOUNDARY_LABELS: Record<Boundaries, string> = { family: "All ages",
 export const STRICTNESS_LABELS: Record<Strictness, string> = { lenient: "Lenient", standard: "By the book", harsh: "Harsh" };
 
 function ListField({ label, hint, value, onChange }: { label: string; hint: string; value: string[]; onChange: (next: string[]) => void }) {
-  const [text, setText] = useState(value.join(", "));
+  // Typed as one line and kept as a list on blur, so a half-typed entry is
+  // never cut at its comma. A list changed from outside (saved defaults laid
+  // over a new campaign) replaces the line, so the box never shows an old one.
+  const joined = value.join(", ");
+  const [text, setText] = useState(joined);
+  const [shown, setShown] = useState(joined);
+  if (joined !== shown) {
+    setShown(joined);
+    setText(joined);
+  }
   return (
     <label className="block">
       <span className="mb-1 block text-xs text-stone-400">{label}</span>
@@ -43,6 +53,12 @@ function ListField({ label, hint, value, onChange }: { label: string; hint: stri
       />
     </label>
   );
+}
+
+// Every personality and what it does, for the ⓘ beside them: a preset's
+// blurb was only ever a hover title.
+function personalitiesInfo(presets: Personality[], setsVoice: boolean): string {
+  return `${presets.map((preset) => `**${preset.name}**: ${preset.blurb}`).join("\n\n")}\n\nPicking one sets the strictness and tone above${setsVoice ? " and the narrator's voice" : ""} together; each can still be changed on its own afterwards.`;
 }
 
 export function SafetyToneFields({
@@ -80,6 +96,9 @@ export function SafetyToneFields({
       cancelled = true;
     };
   }, [showPresets]);
+  const chosenPreset = presets.find(
+    (preset) => preset.gm.strictness === gm.strictness && preset.gm.tone.join() === gm.tone.join() && (!ttsVoice || preset.ttsVoice === ttsVoice),
+  );
   const toggleTone = (tone: Tone) => {
     const has = gm.tone.includes(tone);
     if (!has && gm.tone.length >= TONE_MAX) {
@@ -126,7 +145,10 @@ export function SafetyToneFields({
       </div>
       {showPresets && presets.length ? (
         <div>
-          <p className="mb-1 text-xs uppercase tracking-wide text-stone-500">Or pick a DM personality</p>
+          <p className="mb-1 flex items-center gap-1 text-xs uppercase tracking-wide text-stone-500">
+            Or pick a DM personality
+            <InfoButton label="DM personalities" text={personalitiesInfo(presets, Boolean(onVoice))} />
+          </p>
           <div className="stagger-pop flex flex-wrap items-center gap-1.5">
             {presets.map((preset) => {
               const active = preset.gm.strictness === gm.strictness && preset.gm.tone.join() === gm.tone.join() && (!ttsVoice || preset.ttsVoice === ttsVoice);
@@ -148,6 +170,9 @@ export function SafetyToneFields({
             })}
             {ttsVoice ? <VoicePreviewButton voice={ttsVoice} /> : null}
           </div>
+          {/* The chosen personality says what it is without a hover, which a
+              finger never makes. */}
+          {chosenPreset ? <p className="mt-1 text-[11px] text-stone-500">{chosenPreset.name}: {chosenPreset.blurb}</p> : null}
         </div>
       ) : null}
     </div>

@@ -15,7 +15,12 @@
 //   await model.pointAt(world);
 //   model.script([reply({ calls: [call("pc_attack", {...})] }), reply({ text: "..." })]);
 //   const turn = await model.turn(world, "I swing at the goblin.");
+//   await settleQueue(world.campaignId);   // after a route that queues work
 //   model.close();
+//
+// failure(status, message) in a script fails that call with an HTTP error
+// instead of answering it: model.script([reply({ calls }), failure(500)])
+// is a backend that falls over partway through a turn.
 //
 // The claims reader (src/lib/dm/claims.ts) is answered apart from the
 // script: each of its calls takes the next entry of model.claims([...]) (a
@@ -54,6 +59,30 @@ export function reply({ text = "", calls = [] } = {}) {
   return { text, calls };
 }
 
+// A call the backend fails instead of answering, as a server that falls over
+// mid-turn does: an HTTP error with an OpenAI-style error body. The message
+// reaches model-client's refusal heuristics at any status
+// (src/lib/model-client.ts): one that mentions tools or functions, names an
+// unsupported parameter, or asks for another route is retried by the client
+// and spends the next scripted entry, as a real backend's refusal would. The
+// default message matches none of them, so the turn sees the error.
+export function failure(status = 500, message = "The backend fell over.") {
+  return { text: "", calls: [], fail: { status, message } };
+}
+
+// A route queues its DM jobs and returns; this waits for the campaign's
+// queue to run dry, as a reload of the page would find it.
+export async function settleQueue(campaignId, ms = 30_000) {
+  const { dmQueueDepth } = await import("../../src/lib/dm/queue.ts");
+  const until = Date.now() + ms;
+  while (dmQueueDepth(campaignId) > 0) {
+    if (Date.now() > until) {
+      throw new Error(`the DM queue for ${campaignId} never ran dry`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 // A fake OpenAI-compatible server. Each /chat/completions request takes the
 // next scripted reply (a plain narration once the script runs out) and every
 // request body is kept, so a test can read what the turn loop sent.
@@ -66,6 +95,12 @@ export async function fakeModel() {
   const fallback = reply({ text: "The moment settles, and the table waits on the next move." });
 
   function sse(res, entry) {
+    // A held reply (held() below) answers once the test lets it go, so the
+    // turn is still running while the test acts.
+    if (entry.held) {
+      entry.held.then(() => sse(res, { ...entry, held: null }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const deltas = [];
     if (entry.text) {
@@ -105,6 +140,11 @@ export async function fakeModel() {
       requests.push(body);
       const entry = script[served] ?? fallback;
       served += 1;
+      if (entry.fail) {
+        res.writeHead(entry.fail.status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message: entry.fail.message, type: "server_error" } }));
+        return;
+      }
       if (body.stream) {
         sse(res, entry);
         return;
@@ -208,4 +248,15 @@ export async function fakeModel() {
         .map((message) => ({ id: message.tool_call_id, result: JSON.parse(message.content) })),
     close: () => server.close(),
   };
+}
+
+// A reply the fake model holds back until release() is called: the DM turn
+// waits on it mid-stream, the way a slow model keeps a table waiting, while
+// the test posts what players send in the meantime.
+export function held(entry) {
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  return { entry: { ...entry, held: gate }, release };
 }

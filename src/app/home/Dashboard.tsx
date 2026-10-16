@@ -2,12 +2,18 @@
 
 import { ScrollText } from "lucide-react";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { ui } from "@/lib/ui";
 import type { SessionUser } from "@/lib/campaign-types";
 import { offersStoryModel, useCapabilities, type ClientCapabilities } from "@/lib/use-capabilities";
-import { CreateCampaignDialog } from "@/app/CreateCampaignDialog";
 import { StarterDialog } from "@/app/home/StarterDialog";
+
+// The campaign creator (every step, its field groups and the defaults
+// manager) loads when it is first opened, not with the title screen; once
+// open it stays mounted, so a draft closed half-done is there on reopening.
+const CreateCampaignDialog = lazy(() =>
+  import("@/app/CreateCampaignDialog").then((module) => ({ default: module.CreateCampaignDialog })),
+);
 import { AccountMenu, AppBrand, AppHomeButton } from "@/components/AccountMenu";
 import { DeletionBanner } from "@/components/DeletionBanner";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -55,6 +61,15 @@ export function Dashboard({ user, onLogout }: { user: SessionUser; onLogout: () 
   const [cloningId, setCloningId] = useState("");
   const [createOpen, setCreateOpen] = useState(() => requestedWizard() === "campaign");
   const [soloOpen, setSoloOpen] = useState(() => requestedWizard() === "solo");
+  // Whether each creator has been opened yet (it loads on first open).
+  const [createSeen, setCreateSeen] = useState(createOpen);
+  const [soloSeen, setSoloSeen] = useState(soloOpen);
+  if (createOpen && !createSeen) {
+    setCreateSeen(true);
+  }
+  if (soloOpen && !soloSeen) {
+    setSoloSeen(true);
+  }
   const [starterOpen, setStarterOpen] = useState(() => requestedWizard() === "starter");
   const [howToOpen, setHowToOpen] = useState(false);
   const joinInputRef = useRef<HTMLInputElement | null>(null);
@@ -264,8 +279,10 @@ export function Dashboard({ user, onLogout }: { user: SessionUser; onLogout: () 
           <HomeFooter />
         </section>
 
-        <CreateCampaignDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={onCreated} />
-        <CreateCampaignDialog solo open={soloOpen} onOpenChange={setSoloOpen} onCreated={onCreated} />
+        <Suspense fallback={null}>
+          {createSeen ? <CreateCampaignDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={onCreated} /> : null}
+          {soloSeen ? <CreateCampaignDialog solo open={soloOpen} onOpenChange={setSoloOpen} onCreated={onCreated} /> : null}
+        </Suspense>
         <StarterDialog open={starterOpen} onOpenChange={setStarterOpen} onCreated={onCreated} />
         <HowToPlayDialog open={howToOpen} onOpenChange={setHowToOpen} />
       </div>

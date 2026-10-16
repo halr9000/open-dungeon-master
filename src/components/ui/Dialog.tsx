@@ -6,7 +6,9 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 
 // Shared Radix dialog shell: blurred night overlay, animated glass panel,
-// gold display-font title. Content scrolls internally when tall.
+// gold display-font title. Content scrolls internally when tall, under a
+// title row that stays put, so the close is never scrolled out of reach of
+// a finger (a phone or a Steam Deck has no Escape key to fall back on).
 export function Dialog({
   open,
   onOpenChange,
@@ -32,12 +34,15 @@ export function Dialog({
             width,
           )}
         >
-          <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="sticky -top-6 z-10 -mx-6 -mt-6 mb-2 flex items-center justify-between gap-3 bg-stone-950/95 px-6 pb-2 pt-6">
             <RadixDialog.Title className="flex items-center gap-2 font-display text-lg tracking-wide text-amber-100">
               {icon}
               <span className="gold-title">{title}</span>
             </RadixDialog.Title>
-            <RadixDialog.Close className="rounded-md p-1 text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200">
+            <RadixDialog.Close
+              aria-label="Close"
+              className="pk-tap -m-1 flex shrink-0 items-center justify-center rounded-md p-2 text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200"
+            >
               <X className="size-4" />
             </RadixDialog.Close>
           </div>

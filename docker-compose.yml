@@ -52,9 +52,11 @@ services:
       # start until that account exists.
       ODM_SETUP_CODE: ${ODM_SETUP_CODE:-}
 
-      # Text backend: llama.cpp, or any OpenAI-compatible server.
+      # Text backend: llama.cpp, or any OpenAI-compatible server. No model is
+      # named by default: a server that lists one model runs it, and one that
+      # lists several has its model picked in the admin panel (or set here).
       OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-http://host.docker.internal:8001/v1}
-      OPENAI_COMPAT_MODEL: ${OPENAI_COMPAT_MODEL:-qwen3.6-35b}
+      OPENAI_COMPAT_MODEL: ${OPENAI_COMPAT_MODEL:-}
       OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
       DEFAULT_TEXT_PROVIDER: ${DEFAULT_TEXT_PROVIDER:-custom}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}

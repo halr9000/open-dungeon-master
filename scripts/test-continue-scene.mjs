@@ -1,6 +1,11 @@
 // Continue scene: word-count targeting, the continuation merge, echoed
-// opening removal, length capping, and the variant-set invariant.
+// opening removal, length capping, and the variant-set invariant; then whole
+// continues against a scripted fake model, for the narrator's asides a
+// continuation must not add.
 import assert from "node:assert/strict";
+import { openWorld } from "./lib/enforce-world.mjs";
+import { suite } from "./lib/enforce-harness.mjs";
+import { fakeModel, reply } from "./lib/enforce-narrator.mjs";
 import {
   CONTINUE_LOWER_RATIO,
   MAX_CONTINUED_LENGTH,
@@ -171,3 +176,63 @@ check("the reroll invariant holds after a continue", () => {
 });
 
 console.log(`continue-scene: ${passed} tests passed`);
+
+// A continuation is read for the narrator's asides like the turn loop's final
+// call (src/lib/dm/turn.ts): the reader is asked for asides alone, the
+// sentences it quotes are cut, and a continuation that was only the model's
+// plan is refused as an empty one, with the message left as it was.
+{
+  const continues = suite("test-continue-scene");
+  const world = await openWorld({ gameSettings: { ttsEnabled: false, narrationGuard: false } });
+  const kara = world.addHero({ name: "Kara", class: "fighter", level: 1 });
+  const model = await fakeModel();
+  model.pointAt(world);
+  const messages = await import("../src/lib/db/messages.ts");
+  const { runContinueScene } = await import("../src/lib/dm/continue-scene.ts");
+  const aside = (quote) => ({ kind: "aside", quote });
+  const asked = (index) => model.readerRequests[index]?.messages.at(-1)?.content ?? "";
+
+  const opening = "The ferryman coils wet rope on the quay.";
+  model.script([reply({ text: opening })]);
+  model.claims([]);
+  const first = await model.turn(world, "I walk down to the water.", kara.id);
+  assert.ok(first, "the turn wrote its narration");
+
+  await continues.test("An aside in a continuation is cut and the rest of it is added.", async () => {
+    const story = "Fog rolls off the river and he will not meet your eye.";
+    const note = "I'll set the hour before anyone speaks.";
+    model.script([reply({ text: `${story} ${note}` })]);
+    model.claims([[aside(note)]]);
+    const continued = await runContinueScene({ campaignId: world.campaignId, messageId: first.id });
+    assert.ok("message" in continued, continued.error);
+    assert.equal(continued.message.content, `${opening}\n\n${story}`);
+    assert.match(asked(0), /^Ask: aside$/m, "the reader was asked for asides alone");
+  });
+
+  await continues.test("A continuation that is only the model's plan is refused as an empty one, and the message is left as it was.", async () => {
+    const before = messages.getCampaignMessage(first.id);
+    const plan = "I will set the landing and the hour first.";
+    model.script([reply({ text: plan })]);
+    model.claims([[aside(plan)]]);
+    const continued = await runContinueScene({ campaignId: world.campaignId, messageId: first.id });
+    assert.deepEqual(continued, { error: "The DM returned nothing; try again.", status: 502 });
+    const after = messages.getCampaignMessage(first.id);
+    assert.equal(after.content, before.content, "a plan was added to the narration");
+    assert.deepEqual(after.variants, before.variants);
+  });
+
+  await continues.test("A continuation with no aside in it is read for asides and added whole.", async () => {
+    const before = messages.getCampaignMessage(first.id);
+    const story = "A bell tolls once across the water. Then the quay is silent.";
+    model.script([reply({ text: story })]);
+    model.claims([[]]);
+    const continued = await runContinueScene({ campaignId: world.campaignId, messageId: first.id });
+    assert.ok("message" in continued, continued.error);
+    assert.equal(continued.message.content, `${before.content}\n\n${story}`);
+    assert.equal(model.readerRequests.length, 1, "the continuation was read for asides");
+  });
+
+  model.close();
+  world.close();
+  continues.finish();
+}

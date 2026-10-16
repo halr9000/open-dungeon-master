@@ -14,12 +14,14 @@ import { useEffect, useState } from "react";
 export type ClientCapabilities = {
   story: { configured: boolean; reachable: boolean; model?: string };
   utility: { configured: boolean };
-  images: { configured: boolean; reachable: boolean; backend: string; openaiPlace?: string };
+  // needsModel (images and tts) arrives from servers newer than 0.26.4.
+  images: { configured: boolean; reachable: boolean; backend: string; openaiPlace?: string; needsModel?: boolean };
   // provider and place arrive from servers newer than 0.24.5.
-  tts: { configured: boolean; reachable: boolean; provider?: "kokoro" | "openai" | "off"; place?: string };
+  tts: { configured: boolean; reachable: boolean; provider?: "kokoro" | "openai" | "off"; place?: string; needsModel?: boolean };
   // backend and wantsWav arrive from servers newer than 0.23.11.
   stt: { configured: boolean; backend?: "whisper" | "builtin" | "openai" | "none"; wantsWav?: boolean };
-  voice: { enabled: boolean; mode: string };
+  // transcribes arrives from servers newer than 0.26.4.
+  voice: { enabled: boolean; mode: string; transcribes?: boolean };
 };
 
 let cached: ClientCapabilities | null = null;
@@ -69,12 +71,29 @@ export function useCapabilities(): ClientCapabilities | null {
   return value;
 }
 
+// Every fresh answer, for code that acts on a change instead of drawing it
+// (useDictation ends a live take when speech-to-text goes away). Returns the
+// unsubscribe.
+export function subscribeCapabilities(listener: (value: ClientCapabilities | null) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 // The two questions the builders ask. Both read "unknown" as "offered" so a
 // paint button only disappears on a positive answer from the server.
 
 // Is there an image backend to paint portraits, maps and scenes with?
 export function offersImages(capabilities: ClientCapabilities | null): boolean {
   return capabilities === null || capabilities.images.configured;
+}
+
+// Can voice chat be written down? A table's Transcription switch, the call's
+// 30-second rings and the "being transcribed" notices all wait on it. An
+// older server that does not say is taken at its word, as before.
+export function transcribesVoice(capabilities: ClientCapabilities | null): boolean {
+  return capabilities?.voice.transcribes !== false;
 }
 
 // Is there a text model for suggestions, drafts and the AI storyteller?

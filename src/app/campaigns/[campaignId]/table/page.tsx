@@ -1,7 +1,10 @@
 "use client";
 
+import Link from "next/link";
+import { X } from "lucide-react";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { EmptyState } from "@/components/EmptyState";
+import { ui } from "@/lib/ui";
 import { use } from "react";
 import { BattleMapPanel } from "@/app/campaigns/[campaignId]/BattleMapPanel";
 import { MapPanel } from "@/app/campaigns/[campaignId]/MapPanel";
@@ -13,7 +16,9 @@ import { SceneTitle } from "@/components/SceneTitle";
 // projection of the board, the scene art, the sky and the current title
 // card with no chrome at all, for a television at an in-person table. It
 // reads the same stream as any member's browser, so it can never show a
-// thing the server withheld from a player.
+// thing the server withheld from a player. The one piece of chrome is a
+// faint corner X back to the table, because a screen opened full-screen or
+// as an installed app has no other way out.
 export default function TablePage({ params }: { params: Promise<{ campaignId: string }> }) {
   const { campaignId } = use(params);
   const { state, refreshBattleMap, markFxPlayed, markCameraDone, markTitleCardShown } = useCampaignStream(campaignId);
@@ -26,7 +31,15 @@ export default function TablePage({ params }: { params: Promise<{ campaignId: st
   if (state.error || !state.campaign || !state.me) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-stone-950">
-        <EmptyState art="map" title={state.error || "Sign in as a member of this table to show it."} />
+        <EmptyState
+          art="map"
+          title={state.error || "Sign in as a member of this table to show it."}
+          action={
+            <Link href="/" className={ui.btnSecondary}>
+              Back to campaigns
+            </Link>
+          }
+        />
       </main>
     );
   }
@@ -60,6 +73,13 @@ export default function TablePage({ params }: { params: Promise<{ campaignId: st
           </div>
         )}
       </div>
+      <Link
+        href={`/campaigns/${campaignId}`}
+        aria-label="Back to the table"
+        className="absolute left-[max(0.75rem,env(safe-area-inset-left))] top-[max(0.75rem,env(safe-area-inset-top))] z-10 rounded-md border border-stone-700 bg-stone-950/80 p-2 text-stone-300 opacity-30 transition-opacity hover:opacity-100 focus-visible:opacity-100"
+      >
+        <X className="size-4" />
+      </Link>
       <SceneTitle card={state.titleCard} onShown={markTitleCardShown} />
       <HandoutStage campaignId={campaignId} handout={state.handout} userId={state.me.id} steersStory={false} canTakeDown={false} onDismiss={async () => {}} />
     </main>

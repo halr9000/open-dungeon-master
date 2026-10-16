@@ -229,9 +229,15 @@ export const grokAdapter: HarnessAdapter = {
       auth: signedOut
         ? { state: "signed-out" }
         : { state: models.length || /logged in/i.test(text) ? "ready" : "unknown", kind: env.XAI_API_KEY ? "api-key" : "subscription" },
-      models: models.length ? models : [{ id: "grok-4.6", label: "Grok 4.6" }],
+      // No list of our own when `grok models` gives none: a name written
+      // here would outlive the model it names.
+      models,
       lockdownProven: false,
-      message: signedOut ? "Grok Build is installed but not signed in on this machine." : undefined,
+      message: signedOut
+        ? "Grok Build is installed but not signed in on this machine."
+        : models.length
+          ? undefined
+          : "Could not read Grok Build's model list (`grok models` gave none). Type the model's name, or leave it blank for Grok's own default.",
     };
   },
   start,

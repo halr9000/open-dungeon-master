@@ -106,7 +106,8 @@ await test("An edit and a reroll keep the speakers of the lines they left alone;
   assert.deepEqual(said(kept), ["Marla Venn: Domani si parte.", "Kara: Bene."]);
 
   model.script([reply({ text: "Marla sorride. «All'alba, allora.»" })]);
-  model.claims([[{ kind: "speaker", ref: marla.id, quote: "All'alba" }]]);
+  // The take is read for asides first, then for who speaks.
+  model.claims([[], [{ kind: "speaker", ref: marla.id, quote: "All'alba" }]]);
   const rerolled = await runRenarrate({ campaignId: world.campaignId, messageId: first.id, guidance: "" });
   assert.ok("message" in rerolled, rerolled.error);
   assert.deepEqual(said(rerolled.message), ["Marla Venn: Domani si parte.", "Kara: Bene.", "Marla Venn: All'alba, allora."]);

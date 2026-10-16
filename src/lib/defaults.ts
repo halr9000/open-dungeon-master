@@ -30,13 +30,13 @@ export const DEFAULT_STORY_SETTINGS: StorySettings = {
   utilityBaseUrl: "",
   utilityApiKey: "",
   imageMode: "fast",
-  // This machine (AMD gfx1151) can't run the bundled mflux/sdnq workers, so
-  // route images through the local ComfyUI (empty comfyUrl falls back to
-  // COMFYUI_URL / http://127.0.0.1:8188). Pin the SDXL checkpoint so adding
-  // other models to ComfyUI can't shift the auto-selected checkpoints[0].
+  // Pictures go through the local ComfyUI (empty comfyUrl falls back to
+  // COMFYUI_URL / http://127.0.0.1:8188). The checkpoint is the admin's pick
+  // from what that ComfyUI has installed (Admin > Images): none is named
+  // here, and none is guessed from its list.
   imageBackend: "comfyui",
   comfyUrl: "",
-  comfyCheckpoint: "CyberRealisticXLPlay_V6.0.safetensors",
+  comfyCheckpoint: "",
   aspect: "square",
   imageGenerationEnabled: true,
   autoImages: true,

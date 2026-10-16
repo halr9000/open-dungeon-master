@@ -1,3 +1,5 @@
+import { overflowLine } from "./prose-check.ts";
+
 // The storyboard: the prep a DM does that is not a map, a monster or a
 // person, but the shape of what is going to happen.
 //
@@ -48,7 +50,11 @@ export const BEAT_HINTS: Record<BeatKind, string> = {
 };
 
 export const TITLE_MAX = 120;
-export const BODY_MAX = 2_000;
+// The same cap a bundle card travels under (src/lib/workshop/bundle-schema.ts
+// reads it from here), so a card that arrived whole can be opened and saved
+// whole (issue #302). checkBeat refuses a longer body outright rather than
+// cutting its tail.
+export const BODY_MAX = 4_000;
 export const MAX_EDGES = 8;
 export const MAX_BEATS = 120;
 
@@ -154,6 +160,13 @@ export function checkBeat(raw: unknown): BeatCheck {
   const title = text(source.title, TITLE_MAX);
   if (!title) {
     return { error: "A card needs a title, even a bad one." };
+  }
+  // Over the cap is a refusal that says what would be lost, never a slice
+  // (issue #302): the editor warns before the save, and this is the door
+  // behind it.
+  const rawBody = typeof source.body === "string" ? source.body.trim() : "";
+  if (rawBody.length > BODY_MAX) {
+    return { error: overflowLine("This card's text", rawBody, BODY_MAX) };
   }
   const edges = (Array.isArray(source.edges) ? source.edges : [])
     .map((edge) => text(edge, 64))

@@ -67,11 +67,11 @@ export function saveCoordination(phase: CoordinationPhase): CoordinationPhase {
 }
 
 // Whether the DM has narrated since a seq: a resolved plan's block is read
-// until it has.
+// until it has. An out-of-character answer is not narration.
 export function dmNarratedSince(campaignId: string, seq: number): boolean {
   return Boolean(
     getDatabase()
-      .prepare(`SELECT 1 FROM campaign_messages WHERE campaign_id = ? AND author_type = 'dm' AND seq > ? LIMIT 1`)
+      .prepare(`SELECT 1 FROM campaign_messages WHERE campaign_id = ? AND author_type = 'dm' AND content NOT LIKE '(ooc)%' AND seq > ? LIMIT 1`)
       .get(campaignId, seq),
   );
 }

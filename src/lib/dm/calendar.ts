@@ -109,7 +109,10 @@ export const SEASONS_CALENDAR: CalendarDefinition = {
     { name: "Leafturn", days: 30 },
     { name: "Yearsend", days: 30 },
   ],
-  weekdays: ["Firstday", "Seconday", "Midday", "Fourthday", "Fifthday", "Restday"],
+  // No weekday may contain a time of day: "Midday, Greening 1 (19:00),
+  // evening" read as noon to players and to the model alike. Clocks stored
+  // with the old name read the new one (normalizeClock).
+  weekdays: ["Firstday", "Seconday", "Midweek", "Fourthday", "Fifthday", "Restday"],
   yearSuffix: "",
   epochYear: 1,
 };
@@ -494,6 +497,30 @@ export function normalizeCalendarDefinition(raw: unknown): CalendarDefinition | 
   };
 }
 
+// The turning year's weekdays as it shipped until its third day stopped being
+// "Midday". Any clock that has ever moved stores a whole copy of its calendar,
+// so without this every campaign played before the rename would keep the old
+// name; renaming in place moves no date, because the weekday is picked by
+// index. Only a copy that is otherwise the preset exactly is touched: a table
+// that edited its calendar chose its own names.
+const LEGACY_SEASONS_WEEKDAYS = ["Firstday", "Seconday", "Midday", "Fourthday", "Fifthday", "Restday"];
+
+function renamedLegacyWeekdays(calendar: CalendarDefinition): CalendarDefinition {
+  const preset = SEASONS_CALENDAR;
+  const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((item, index) => item === b[index]);
+  const legacy =
+    calendar.id === preset.id &&
+    calendar.name === preset.name &&
+    calendar.yearSuffix === preset.yearSuffix &&
+    calendar.epochYear === preset.epochYear &&
+    !calendar.moons?.length &&
+    !calendar.festivals?.length &&
+    calendar.months.length === preset.months.length &&
+    calendar.months.every((month, index) => month.name === preset.months[index].name && month.days === preset.months[index].days) &&
+    sameList(calendar.weekdays, LEGACY_SEASONS_WEEKDAYS);
+  return legacy ? { ...calendar, weekdays: [...preset.weekdays] } : calendar;
+}
+
 // Anything unreadable falls back to the default clock rather than throwing:
 // a broken date should cost a campaign its calendar, not its session.
 export function normalizeClock(raw: unknown): CampaignClock {
@@ -501,7 +528,8 @@ export function normalizeClock(raw: unknown): CampaignClock {
     return defaultClock();
   }
   const record = raw as Record<string, unknown>;
-  const calendar = normalizeCalendarDefinition(record.calendar) ?? defaultClock().calendar;
+  const stored = normalizeCalendarDefinition(record.calendar);
+  const calendar = stored ? renamedLegacyWeekdays(stored) : defaultClock().calendar;
   const longRests = normalizeInstants(record.longRests);
   const shapeEnds = normalizeInstants(record.shapeEnds);
   return {

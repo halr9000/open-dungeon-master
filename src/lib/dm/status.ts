@@ -1,3 +1,4 @@
+import { latestTurnParkedByAi } from "@/lib/db/dm-turns";
 import { publishEphemeral } from "@/lib/events";
 
 // Last-published DM status per campaign, kept in memory so the campaign
@@ -28,5 +29,17 @@ export function setDmStatus(campaignId: string, state: DmStatusState) {
 }
 
 export function getDmStatus(campaignId: string): DmStatusState {
-  return statuses().get(campaignId) ?? "idle";
+  const known = statuses().get(campaignId);
+  if (known) {
+    return known;
+  }
+  // This process never set the table's status: it started after the one
+  // that did stopped. A turn the storyteller parked on physical dice is
+  // still waiting on them whatever restarted, so the turns say so, and the
+  // snapshot, continue and renarrate read what they read before the restart.
+  // The answer is kept as if this process had set it, so the turns are read
+  // once a table and every later change comes through setDmStatus.
+  const found: DmStatusState = latestTurnParkedByAi(campaignId) ? "awaiting_rolls" : "idle";
+  statuses().set(campaignId, found);
+  return found;
 }

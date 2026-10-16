@@ -260,6 +260,17 @@ test("Frenzy's bonus attack is refused while the barbarian is not raging", () =>
   const berserker = sheet({ class: "barbarian", features: [feature("Rage"), feature("Frenzy")], equipment: [item("Greataxe")] });
   assert.match(byId(deriveHand(berserker, mine()), "attack:greataxe:frenzy").disabled, /is not raging/);
   assert.equal(byId(deriveHand({ ...berserker, conditions: ["raging"] }, mine()), "attack:greataxe:frenzy").disabled, null);
+  // A shield on the arm leaves the greataxe out of use (handsRuling): the
+  // frenzy swings the one-handed weapon in the pack, and with none the card
+  // is shut in the engine's words.
+  const shielded = { ...berserker, conditions: ["raging"], equipment: [item("Greataxe"), item("Handaxe"), item("Shield", { equipped: true })] };
+  assert.equal(byId(deriveHand(shielded, mine()), "attack:greataxe:frenzy"), undefined);
+  assert.equal(byId(deriveHand(shielded, mine()), "attack:handaxe:frenzy").disabled, null);
+  const greataxeOnly = { ...shielded, equipment: [item("Greataxe"), item("Shield", { equipped: true })] };
+  assert.equal(
+    byId(deriveHand(greataxeOnly, mine()), "attack:greataxe:frenzy").disabled,
+    "Greataxe needs both hands, and Kael has Shield on one arm. They put the shield away first (unequip it on the sheet) or attack with a one-handed weapon.",
+  );
 });
 
 test("Reckless Attack is offered on the first Strength melee attack only; knock out on melee only", () => {
@@ -455,6 +466,85 @@ test("a charged item shows its count, a pending attunement shows, and a cursed o
   const status = itemStatus(sheet({ equipment: [axe] }), axe);
   assert.equal(status.cursed, true);
   assert.match(status.attuneRefusal, /is cursed/);
+});
+
+// The engine swings a versatile weapon one-handed while a shield is on the
+// arm (handsRuling), so the card must not offer the two-handed grip.
+test("a versatile weapon offers two hands only when no shield is worn", () => {
+  const free = byId(deriveHand(sheet({ equipment: [item("Longsword", { equipped: true })] }), mine()), "attack:longsword");
+  assert.match(free.rules, /Versatile: say two hands/);
+  const shielded = byId(
+    deriveHand(sheet({ equipment: [item("Longsword", { equipped: true }), item("Shield", { equipped: true })] }), mine()),
+    "attack:longsword",
+  );
+  assert.doesNotMatch(shielded.rules, /two hands/);
+  assert.equal(shielded.dice, free.dice);
+});
+
+// The bigger die is for a melee attack (SRD 5.1, Versatile), so a weapon
+// that can be thrown offers two hands in melee.
+test("a thrown versatile weapon offers two hands in melee", () => {
+  const spear = byId(deriveHand(sheet({ equipment: [item("Spear", { equipped: true })] }), mine()), "attack:spear");
+  assert.equal(spear.range, "5 ft / 20 ft");
+  assert.match(spear.rules, /Versatile: say two hands in melee for the bigger die\./);
+  const sword = byId(deriveHand(sheet({ equipment: [item("Longsword", { equipped: true })] }), mine()), "attack:longsword");
+  assert.doesNotMatch(sword.rules, /in melee/);
+});
+
+// Shillelagh as pc_attack applies it (shillelaghSwing): the quarterstaff
+// deals a d8 with WIS instead of STR, and two hands add nothing.
+test("a quarterstaff under Shillelagh shows the d8, the casting ability and no versatile hint", () => {
+  const druid = (conditions) =>
+    sheet({
+      name: "Bryn", class: "druid", conditions,
+      abilities: { str: 8, dex: 12, con: 14, int: 10, wis: 18, cha: 10 },
+      proficiencies: { saves: ["int", "wis"], skills: [], expertise: [], languages: [], tools: [], armor: ["light"], weapons: ["clubs", "quarterstaffs"] },
+      spellcasting: { ability: "wis", slots: { 1: { max: 4, used: 0 } }, prepared: [], known: [], cantrips: ["Shillelagh"] },
+      equipment: [item("Quarterstaff", { equipped: true })],
+    });
+  const plain = byId(deriveHand(druid([]), mine()), "attack:quarterstaff");
+  assert.equal(plain.damage, "1d6-1");
+  assert.match(plain.rules, /two hands/);
+  const staff = byId(deriveHand(druid(["shillelagh"]), mine()), "attack:quarterstaff");
+  assert.equal(staff.damage, "1d8+4");
+  assert.equal(staff.toHit, 4 + 2);
+  assert.match(staff.rules, /^Shillelagh: Quarterstaff deals 1d8 with the spellcasting ability/);
+  assert.doesNotMatch(staff.rules, /two hands/);
+  // A weapon the spell does not touch swings as ever.
+  const dagger = byId(deriveHand({ ...druid(["shillelagh"]), equipment: [item("Dagger")] }, mine()), "attack:dagger");
+  assert.equal(dagger.damage, "1d4+1");
+});
+
+// The off-hand swing of two-weapon fighting has a weapon in each hand, so a
+// Dual Wielder's second longsword is never offered the two-handed grip.
+test("the off-hand card of a versatile weapon does not offer two hands", () => {
+  const duelist = sheet({ feats: ["Dual Wielder"], equipment: [item("Longsword", { qty: 2, equipped: true })] });
+  const cards = deriveHand(duelist, mine());
+  assert.match(byId(cards, "attack:longsword").rules, /two hands/);
+  const off = byId(cards, "offhand:longsword");
+  assert.ok(off, "Dual Wielder deals the off-hand longsword");
+  assert.doesNotMatch(off.rules, /two hands/);
+});
+
+// handsRuling refuses a two-handed weapon outright while a shield is worn,
+// so its card is shut with the engine's own sentence instead of being
+// offered and refused.
+test("a two-handed weapon's card is shut while a shield is worn, in the engine's words", () => {
+  for (const [weapon, extra] of [["Greatsword", []], ["Longbow", [item("Arrows", { qty: 20 })]]]) {
+    const id = `attack:${weapon.toLowerCase()}`;
+    const shielded = byId(deriveHand(sheet({ equipment: [item(weapon, { equipped: true }), ...extra, item("Shield", { equipped: true })] }), mine()), id);
+    assert.equal(
+      shielded.disabled,
+      `${weapon} needs both hands, and Kael has Shield on one arm. They put the shield away first (unequip it on the sheet) or attack with a one-handed weapon.`,
+    );
+    assert.equal(byId(deriveHand(sheet({ equipment: [item(weapon, { equipped: true }), ...extra] }), mine()), id).disabled, null);
+    // A shield in the pack and off the arm leaves both hands free.
+    const doffed = sheet({ equipment: [item(weapon, { equipped: true }), ...extra, item("Shield", { equipped: false })] });
+    assert.equal(byId(deriveHand(doffed, mine()), id).disabled, null);
+  }
+  // A one-handed weapon beside the shield is swung as ever.
+  const sword = byId(deriveHand(sheet({ equipment: [item("Longsword", { equipped: true }), item("Shield", { equipped: true })] }), mine()), "attack:longsword");
+  assert.equal(sword.disabled, null);
 });
 
 console.log(`test-hand-engine: ${passed} passed`);

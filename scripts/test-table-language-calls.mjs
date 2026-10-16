@@ -209,7 +209,7 @@ const CALL = /\b(?:requestUtilityMessage|requestDmMessage|arcModelCall)\(/g;
 const CLASSIFIED = {
   // The DM turn and everything that replays its conversation: the system
   // prompt is buildDmSystem's, which carries the directive.
-  "src/lib/dm/turn.ts": { prose: 3, machine: 0 },
+  "src/lib/dm/turn.ts": { prose: 4, machine: 0 },
   "src/lib/dm/continue-scene.ts": { prose: 1, machine: 0 },
   "src/lib/dm/renarrate.ts": { prose: 1, machine: 0 },
   "src/lib/dm/narration-guard.ts": { prose: 1, machine: 0 },

@@ -87,7 +87,8 @@ export function VoiceChatFields({
       </div>
       <p className="mt-1 text-xs text-stone-500">
         The server has its own switch for live audio too; if the owner keeps it off, these
-        settings wait until it is on.
+        settings wait until it is on. Transcription is turned on from the lobby&apos;s Game
+        settings, where everyone at the table is told it is on.
       </p>
     </div>
   );

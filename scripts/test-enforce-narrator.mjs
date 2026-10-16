@@ -680,8 +680,9 @@ await test("The narration guard's rewrite has one reserved call outside the four
     reply({ text: "Kara's blade bites into the goblin." }),
     reply({ text: rewrite }),
   ]);
-  // The last call's prose is read once, by the guard at the end of the turn.
-  model.claims([[{ kind: "hit", target: normalizeCreatureName(kit.enemy(enemy.id).displayName), quote: "Kara's blade bites into the goblin." }]]);
+  // The last call's prose is read for the narrator's asides alone, then by
+  // the guard at the end of the turn.
+  model.claims([[], [{ kind: "hit", target: normalizeCreatureName(kit.enemy(enemy.id).displayName), quote: "Kara's blade bites into the goblin." }]]);
   const message = await model.turn(world, "I attack the goblin.", kara.id);
   world.clearDice();
   assert.equal(kit.enemy(enemy.id).currentHp, kit.enemy(enemy.id).maxHp, "the swing was meant to miss");
@@ -701,7 +702,7 @@ await test("Every call tells the server whether to reason: the tool decisions do
     reply({ text: "Kara's blade bites into the goblin." }),
     reply({ text: "Kara's blade whistles past the goblin, and the creature snarls as it circles back toward her with its club raised, looking for an opening." }),
   ]);
-  model.claims([[{ kind: "hit", target: normalizeCreatureName(kit.enemy(enemy.id).displayName), quote: "Kara's blade bites into the goblin." }]]);
+  model.claims([[], [{ kind: "hit", target: normalizeCreatureName(kit.enemy(enemy.id).displayName), quote: "Kara's blade bites into the goblin." }]]);
   await model.turn(world, "I attack the goblin.", kara.id);
   world.clearDice();
   const thinking = (body) => body.chat_template_kwargs?.enable_thinking;

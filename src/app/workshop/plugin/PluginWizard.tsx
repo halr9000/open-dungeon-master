@@ -34,6 +34,9 @@ export function PluginWizard({
       doneLabel="Start building"
       onDone={() => onDone(pull)}
       onCancel={onCancel}
+      // Room for the sheet's X, which floats over the header's step count
+      // (the same clearance CreateCampaignDialog and SetupWizard give it).
+      className="[&>header]:pr-9"
       steps={[
         {
           key: "name",

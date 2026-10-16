@@ -68,9 +68,19 @@ No 2024 rule was found in the bundled (no-pack) data.
 ### Creation methods
 
 Standard array, 27-point buy (8 to 15, costs 0,1,2,3,4,5,7,9), and 4d6 drop lowest as a
-pool of six placed freely. All three are implemented in the BROWSER. ODM's own rule: the
-pool may be rerolled only while it totals under 70. Racial bonuses are added after; level
-improvements cap at 20 (`applyAsiChoices`). Improvements are at character levels 4, 8, 12,
+pool of six placed freely. At the time of this audit all three ran in the browser. Since
+issue #128 the server throws and keeps the 4d6 pool (`db/creation-rolls.ts`, through
+`/api/characters/rolls`): a sheet whose scores need rolled dice is admitted only with the
+six on record, and making the character spends them. Whether a player may throw a fresh
+six is a house rule (SRD 5.1 has none), stored as a total the pool must stay under: 0 keeps
+the first roll, 108 rerolls freely, 70 is ODM's default (`srd/ability-rerolls.ts`). Admin >
+Server sets it for the library and for every table that follows the server, where a
+player has one six for all of them; a table can set its own
+(`gameSettings.abilityRerollBelow`) and then keeps a separate six for each player. A
+character made at such a table still joins its player's library, and a library character
+or an imported file entering play is checked against what the dice could give, not
+against where they were thrown. Racial bonuses are added after; level improvements cap at
+20 (`applyAsiChoices`). Improvements are at character levels 4, 8, 12,
 16, 19 only: the fighter's extra ones at 6 and 14 and the rogue's at 10 are not granted
 (documented, rules-coverage.md "Kept simplifications").
 
@@ -87,7 +97,7 @@ improvements cap at 20 (`applyAsiChoices`). Improvements are at character levels
 | ASIs at 4/8/12/16/19 for every class | rules-coverage.md |
 | Artificer offered beside the SRD twelve | `classes.json` |
 | Tool choices stored as one line ("three musical instruments of your choice") | `classes.json`, `mechanics.ts backgroundTools` comment |
-| Dice pool reroll only under 70 | `abilityDice.ts` |
+| Dice pool reroll is a house rule: under 70 unless Admin > Server or the table sets another | `srd/ability-rerolls.ts`, `db/creation-rolls.ts` |
 | Racial damage resistance and most passive traits "narrated" | `scripts/test-feature-coverage.mjs` acknowledged list |
 
 The first two are recorded as gaps anyway (medium) because nothing bounds them.

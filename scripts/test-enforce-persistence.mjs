@@ -454,6 +454,22 @@ await test("a rewind puts back the clock's own records with it: who rested, and 
   assert.equal((await world.invoke("take_rest", { kind: "long" })).ok, true);
 });
 
+await test("A rewind to a chapter opened before the turning year's third day was renamed restores that old calendar, and it reads Midweek like any stored clock.", async () => {
+  const { SEASONS_CALENDAR, describeInstant, toInstant } = await import("../src/lib/dm/calendar.ts");
+  const { world, freeze, rewind } = await chapter();
+  const legacy = { ...SEASONS_CALENDAR, weekdays: ["Firstday", "Seconday", "Midday", "Fourthday", "Fifthday", "Restday"] };
+  const opening = toInstant(legacy, { month: 4, day: 1, hour: 9 });
+  const db = getDatabase();
+  db.prepare("UPDATE campaigns SET clock_json = ? WHERE id = ?").run(JSON.stringify({ calendar: legacy, instant: opening, weather: null }), world.campaignId);
+  freeze();
+  assert.equal((await world.invoke("pass_time", { amount: 1, unit: "days" })).ok, true);
+  await rewind();
+  const stored = JSON.parse(db.prepare("SELECT clock_json FROM campaigns WHERE id = ?").get(world.campaignId).clock_json);
+  assert.equal(stored.calendar.weekdays[2], "Midday", "the rewind did not restore the snapshot's own copy of the calendar");
+  const clock = world.campaign().clock;
+  assert.equal(describeInstant(clock.calendar, clock.instant), "Midweek, Greening 1, year 1 (09:00), morning, spring");
+});
+
 await test("a snapshot taken before the purse, the effects and the clock were kept leaves them as they stand", async () => {
   const { world, hero, freeze, rewind } = await chapter();
   freeze();

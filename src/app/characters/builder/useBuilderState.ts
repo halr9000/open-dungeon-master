@@ -261,10 +261,11 @@ export function useBuilderState({
   }
   type Selection = { raceId: string; classId: string; backgroundId: string; level: number };
   const selection: Selection = { raceId, classId, backgroundId, level };
-  // The rows the builder shows for these ids: until the player picks, each
-  // list's first row stands in (CharacterBuilder.tsx does the same), and
-  // the picks have to be checked against what is shown, or an unpicked
-  // background's language slots would be trimmed away by the next change.
+  // The rows the builder shows for these ids. A race or class not yet
+  // picked is none at all (CharacterBuilder.tsx does the same); until the
+  // background is picked the list's first row stands in, and the picks have
+  // to be checked against what is shown, or an unpicked background's
+  // language slots would be trimmed away by the next change.
   function reconciled(
     next: Partial<Selection>,
     current: BuilderPicks,
@@ -272,8 +273,8 @@ export function useBuilderState({
     const ids = { ...selection, ...next };
     const background = backgrounds.find((entry) => entry.id === ids.backgroundId);
     const { picks, drops } = reconcilePicks(current, {
-      race: findRace(races, ids.raceId) ?? races[0],
-      klass: classes.find((entry) => entry.id === ids.classId) ?? classes[0],
+      race: findRace(races, ids.raceId),
+      klass: classes.find((entry) => entry.id === ids.classId),
       background: background ?? backgrounds[0],
       level: fixedLevel ?? ids.level,
     });

@@ -24,6 +24,8 @@ const { createDmTurn } = await import("../src/lib/db/dm-turns.ts");
 const { setMemberHoldRolls } = await import("../src/lib/db/campaigns.ts");
 const { ENCOUNTER_CAP_PER_TURN } = await import("../src/lib/dm/encounter-tools.ts");
 const { MUTATION_CAP_PER_TURN } = await import("../src/lib/dm/mutations.ts");
+const { enemyTurnRefusal } = await import("../src/lib/dm/enemy-turn-order.ts");
+const { patchEnemyHp } = await import("../src/lib/db/encounters.ts");
 
 const first = world.addHero({
   class: "fighter", level: 5, abilities: { str: 16 }, proficiencies: TRAINED,
@@ -280,6 +282,31 @@ await test("An enemy takes one action on its turn: one attack, or one Multiattac
   world.clearDice();
   assert.equal(one.ok, true, one.error);
   assert.equal(two.ok, false, "the same enemy attacked twice in one round, in one DM turn");
+});
+
+await test("A dead enemy is told it is dead before it is told whose turn it is, whatever the AI asks it to do (src/lib/dm/enemy-turn-order.ts).", async () => {
+  const [enemy] = await stage();
+  // The pointer is on the first hero, so the enemy's place is still ahead.
+  assert.equal(kit.current().characterId, first.id);
+  const turn = createDmTurn(world.campaignId, [], "ai");
+  assert.match(enemyTurnRefusal(world.encounter(), enemy, turn) ?? "", /turn has not come yet/, "a living enemy ahead of the pointer was let act");
+  const dead = patchEnemyHp(enemy.id, 0, "dead");
+  assert.equal(enemyTurnRefusal(world.encounter(), dead, turn), `${enemy.displayName} is dead and cannot act.`);
+
+  // Every AI action that asks the turn order first hears the same.
+  const actor = { kind: "ai", turnId: turn.id };
+  const calls = [
+    { name: "enemy_attack", args: { enemyId: enemy.id, targetCharacterId: first.id } },
+    { name: "cast_at_player", args: { casterEnemyId: enemy.id, characterId: first.id, saveAbility: "dex", dc: 12, damage: "1d6", type: "fire" } },
+    { name: "aoe_damage", args: { casterEnemyId: enemy.id, characterIds: [first.id], saveAbility: "dex", dc: 12, damage: "2d6", type: "fire" } },
+  ];
+  const hpBefore = world.sheet(first.id).currentHp;
+  for (const call of calls) {
+    const out = await invokeEngine(world.campaign(), actor, call);
+    assert.equal(out.ok, false, `${call.name} let a dead enemy act`);
+    assert.match(out.error ?? "", /is dead/, `${call.name}: ${out.error}`);
+  }
+  assert.equal(world.sheet(first.id).currentHp, hpBefore, "a dead enemy hurt somebody");
 });
 
 await test("A Multiattack makes as many attacks as the stat block says.", async () => {

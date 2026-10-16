@@ -114,9 +114,13 @@ export function rewindHaltedCall(input: {
   }
   // Compared on a whitespace-normalized opening rather than the whole string:
   // the echo keeps the raw text while the narration part is trimmed, so an
-  // exact match would miss echoes that are really there.
+  // exact match would miss echoes that are really there. The opening stops
+  // at its first sentence: the narration kept from a reply can have whole
+  // sentences cut out of it (the narrator's asides, roll asks), so only a
+  // single sentence of it is sure to stand in the echo as written.
   const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
-  const signature = normalize(last).slice(0, 48);
+  const opening = normalize(last).slice(0, 48);
+  const signature = /^.*?[.!?](?=\s|$)/.exec(opening)?.[0] ?? opening;
   if (signature && normalize(input.assistantText).includes(signature)) {
     return { narrationParts: parts, callIndex: input.callIndex, rewound: false };
   }

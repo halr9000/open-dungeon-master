@@ -4,7 +4,7 @@
 // with every derived value written by the server, or the list of what is
 // wrong with it. The rules are src/lib/srd/sheet-legality.ts; the rows they
 // are judged against are looked up by src/lib/characters/catalog.ts.
-import { legalityContextsFor, type ContextInput } from "@/lib/characters/catalog";
+import { abilityPlaceFor, legalityContextsFor, type ContextInput } from "@/lib/characters/catalog";
 import { spendAbilityPool, spendWealthRolls } from "@/lib/db/creation-rolls";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { legalizeSheet } from "@/lib/srd/sheet-legality";
@@ -48,7 +48,7 @@ export function admitSheet(
     ...(judged.rolled?.hp ? { rolledHp: judged.rolled.hp } : {}),
     settle: () => {
       if (usedPool) {
-        spendAbilityPool(input.userId);
+        spendAbilityPool(input.userId, abilityPlaceFor(input));
       }
       if (input.campaign && context.wealthRoll !== null && context.wealthRoll !== undefined) {
         spendWealthRolls(input.userId, input.campaign.id);

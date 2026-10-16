@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isSwapLeftover } from "../src/lib/ops/state-swap.ts";
 
 const scriptRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const root = path.resolve(process.env.ODM_ROOT || scriptRoot);
@@ -93,7 +94,8 @@ try {
     if (!fs.existsSync(src)) continue;
     const dst = path.join(stage, rel);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.cpSync(src, dst, { recursive: true });
+    // The world a restore set aside (src/lib/ops/state-swap.ts) stays out.
+    fs.cpSync(src, dst, { recursive: true, filter: (from) => !isSwapLeftover(path.basename(from)) });
   }
 
   const manifest = {

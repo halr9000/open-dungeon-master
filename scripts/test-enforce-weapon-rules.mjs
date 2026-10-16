@@ -18,6 +18,7 @@ import { abilityMod, proficiencyBonus, suite } from "./lib/enforce-harness.mjs";
 import { gearKit, profs } from "./lib/enforce-equipment.mjs";
 
 const { test, finish } = suite("test-enforce-weapon-rules");
+const { deriveHand } = await import("../src/lib/battlemap/hand.ts");
 
 const LEVEL = 5;
 const PB = proficiencyBonus(LEVEL);
@@ -52,6 +53,35 @@ await test("a versatile weapon rolls the bigger die in two hands and the smaller
   assert.deepEqual(swing.damageDice, [8]);
 });
 
+// SRD 5.1 Versatile: the bracketed die is the damage "when the weapon is
+// used with two hands to make a melee attack". A spear thrown past its
+// reach makes a ranged attack (Thrown), so it rolls the one-handed die, and
+// Great Weapon Fighting, written for a melee weapon wielded in two hands,
+// rerolls nothing.
+await test("A versatile weapon thrown at range rolls its one-handed die, however it was held; in melee it rolls the bigger one.", async () => {
+  arm(hero.id, {
+    str: 14,
+    equipment: [{ name: "Spear", qty: 2 }],
+    features: [...world.sheet(hero.id).features, { name: "Fighting Style: Great Weapon Fighting", source: "choice" }],
+  });
+  try {
+    kit.stand(hero.id, 1);
+    const melee = await kit.swing(hero.id, { weapon: "Spear", twoHanded: true }, 10, 1, 6);
+    assert.equal(melee.ok, true, melee.error);
+    assert.deepEqual(melee.damageDice, [8, 8], "in melee the two-handed d8, its 1 rerolled");
+    assert.equal(melee.result.damage, 6 + 2);
+    kit.stand(hero.id, 3);
+    const thrown = await kit.swing(hero.id, { weapon: "Spear", twoHanded: true }, 10, 1, 6);
+    assert.equal(thrown.ok, true, thrown.error);
+    assert.deepEqual(thrown.damageDice, [6], `the thrown spear rolled ${thrown.damageDice.map((sides) => `d${sides}`).join(", ")}`);
+    assert.equal(thrown.result.damage, 1 + 2);
+    assert.ok(thrown.result.conditionEffects.includes("Spear is thrown: one-handed die"), thrown.result.conditionEffects.join("; "));
+  } finally {
+    kit.stand(hero.id, 1);
+    world.patch(hero.id, { features: world.sheet(hero.id).features.filter((feature) => !feature.name.startsWith("Fighting Style")) });
+  }
+});
+
 await test("holding a weapon that is not versatile in two hands changes nothing", async () => {
   arm(hero.id, { str: 14, equipment: [{ name: "Mace", qty: 1 }] });
   const swing = await kit.swing(hero.id, { weapon: "Mace", twoHanded: true }, 10, 6);
@@ -70,6 +100,9 @@ await test("A two-handed weapon requires two hands to attack with, so it cannot 
   arm(hero.id, { str: 14, equipment: [{ name: "Greatsword", qty: 1, equipped: true }, { name: "Shield", qty: 1, equipped: true }, { name: "Chain Mail", qty: 1, equipped: true }] });
   const swing = await kit.swing(hero.id, { weapon: "Greatsword" }, 10, 3, 4);
   assert.equal(swing.ok, false, `the greatsword hit for ${swing.result?.damage} behind AC ${world.sheet(hero.id).ac}`);
+  // The player's Hand shuts the card with the engine's own sentence.
+  const card = deriveHand(world.sheet(hero.id)).find((entry) => entry.id === "attack:greatsword");
+  assert.equal(card.disabled, swing.error);
 });
 
 // ---- two-weapon fighting ----
@@ -89,6 +122,17 @@ await test("the off-hand swing leaves the ability modifier off the damage", asyn
   assert.equal(swing.ok, true, swing.error);
   assert.equal(swing.result.rolled, 10 + abilityMod(16) + PB);
   assert.equal(swing.result.damage, 4);
+});
+
+await test("The off-hand swing is made with a weapon in each hand, so a versatile weapon there rolls its one-handed die however it is asked for.", async () => {
+  world.patch(anchor.id, { feats: ["Dual Wielder"] });
+  arm(anchor.id, { str: 16, equipment: [{ name: "Longsword", qty: 2 }] });
+  const swing = await offHandSwing({ weapon: "Longsword", twoHanded: true }, 10, 4);
+  world.patch(anchor.id, { feats: [] });
+  assert.equal(swing.ok, true, swing.error);
+  assert.deepEqual(swing.damageDice, [8], `the off-hand longsword rolled a d${swing.damageDice[0]}`);
+  assert.equal(swing.result.damage, 4);
+  assert.ok(swing.result.conditionEffects.includes("Longsword is in the off hand: swung in one hand"), swing.result.conditionEffects.join("; "));
 });
 
 await test("the Two-Weapon Fighting style puts the modifier back", async () => {

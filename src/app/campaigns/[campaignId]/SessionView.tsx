@@ -5,6 +5,7 @@ import { LevelUpMoment, LootMoment, MomentVeil, RestMoment, TravelBanner } from 
 import { CoordinationPanel } from "@/app/campaigns/[campaignId]/CoordinationPanel";
 import { haptic, useEffectsRoot, useTurnChime } from "@/lib/effects-mode";
 import { levelForXp } from "@/lib/srd";
+import { transcribesVoice, useCapabilities } from "@/lib/use-capabilities";
 import { SceneTitle } from "@/components/SceneTitle";
 import { askConcentrationSwap, isConcentrationQuestion } from "@/components/concentration-prompt";
 import { HandoutStage } from "@/components/HandoutStage";
@@ -33,8 +34,9 @@ import {
 } from "react";
 import { JOIN_NOTE_PREFIX, latestUnintroducedJoin } from "@/lib/campaign-types";
 import { composerLimit, textLength } from "@/lib/text-limits";
-import { markTourSeen, tourSeen } from "@/lib/tours/logic";
+import type { TourEnd } from "@/lib/tours/account-logic";
 import { DM_TOUR, DM_TOUR_ID, PLAYER_TOUR, PLAYER_TOUR_ID } from "@/lib/tours/table";
+import { finishTour, useTourFinished } from "@/lib/tours/tour-store";
 import { Composer, type InputKind } from "@/app/campaigns/[campaignId]/Composer";
 import { composerGate } from "@/app/campaigns/[campaignId]/composerGate";
 import { DiceOverlay } from "@/app/campaigns/[campaignId]/DiceOverlay";
@@ -60,6 +62,9 @@ import {
 } from "@/app/campaigns/[campaignId]/SessionTabs";
 import { SessionChatColumn } from "@/app/campaigns/[campaignId]/SessionChatColumn";
 import { SessionHeader } from "@/app/campaigns/[campaignId]/SessionHeader";
+import { SessionBanner, bannerButtonClass } from "@/app/campaigns/[campaignId]/SessionBanner";
+import { isPrimaryDm } from "@/lib/dm/viewer";
+import Link from "next/link";
 import { SidePanel } from "@/app/campaigns/[campaignId]/SidePanel";
 import { useChatChime } from "@/app/campaigns/[campaignId]/useChatChime";
 import { useTableAudio } from "@/app/campaigns/[campaignId]/useTableAudio";
@@ -161,30 +166,6 @@ function subscribeDicePref(callback: () => void) {
   };
   window.addEventListener(DICE3D_EVENT, listener);
   return () => window.removeEventListener(DICE3D_EVENT, listener);
-}
-
-// The once-only flag of each table tour, read the way the dice preference
-// is: from localStorage as an external store, so finishing a tour in one
-// tab is known to every other.
-const TOUR_SEEN_EVENT = "odm-tour-seen";
-const tourSeenCache = new Map<string, boolean>();
-
-function readTourSeen(tourId: string): boolean {
-  let seen = tourSeenCache.get(tourId);
-  if (seen === undefined) {
-    seen = tourSeen(window.localStorage, tourId);
-    tourSeenCache.set(tourId, seen);
-  }
-  return seen;
-}
-
-function subscribeTourSeen(callback: () => void) {
-  const listener = () => {
-    tourSeenCache.clear();
-    callback();
-  };
-  window.addEventListener(TOUR_SEEN_EVENT, listener);
-  return () => window.removeEventListener(TOUR_SEEN_EVENT, listener);
 }
 
 // The play table. Header, the story column, the docked context column and
@@ -419,14 +400,11 @@ export function SessionView({
     setKind("narrate");
   }
 
-  // The tour for this seat runs once, the first time the table is sat at,
-  // after the layout has had a moment to settle. Help replays it.
+  // The tour for this seat runs once per account, the first time the table
+  // is sat at, after the layout has had a moment to settle; only a definite
+  // "not finished" from the account opens it (issue #306). Help replays it.
   const tourId = isDm ? DM_TOUR_ID : PLAYER_TOUR_ID;
-  const tourAlreadySeen = useSyncExternalStore(
-    subscribeTourSeen,
-    () => readTourSeen(tourId),
-    () => true,
-  );
+  const seatTourFinished = useTourFinished(tourId);
   // A phone starts the tour on the chat column: which steps apply is read
   // off the page before any step's prepare runs, and a fight with a map
   // opens the phone on the board, which would drop every composer step.
@@ -438,15 +416,19 @@ export function SessionView({
     [setMobileView],
   );
   useEffect(() => {
-    if (tourAlreadySeen) return;
+    if (seatTourFinished !== false) return;
     const timer = window.setTimeout(() => startTour(isDm ? "dm" : "player"), 1200);
     return () => clearTimeout(timer);
-  }, [tourAlreadySeen, isDm, startTour]);
-  const closeTour = useCallback(() => {
-    markTourSeen(window.localStorage, tourId);
-    window.dispatchEvent(new Event(TOUR_SEEN_EVENT));
-    setTour(null);
-  }, [tourId]);
+  }, [seatTourFinished, isDm, startTour]);
+  // The tour that was on screen is the one finished: Help can replay the
+  // other seat's, and the seat can change while a tour is open.
+  const closeTour = useCallback(
+    (how: TourEnd) => {
+      if (tour) finishTour(tour === "dm" ? DM_TOUR_ID : PLAYER_TOUR_ID, how);
+      setTour(null);
+    },
+    [tour],
+  );
   // The campaign's opening narration gets everyone's full attention: while
   // it plays for this user, do/say/lead input waits (OOC stays open).
   const firstDmMessageId = messages.find((message) => message.authorType === "dm")?.id;
@@ -459,6 +441,13 @@ export function SessionView({
   // Muted by the party lead: the server refuses the send, so the box says
   // so instead of letting the player type into a wall.
   const muted = Boolean(state.members.find((member) => member.userId === meId)?.muted);
+  // An ended campaign refuses every new action (the actions route), so the
+  // box says so the same way, and the story above it stays to be read.
+  const ended = campaign?.status === "ended";
+  const silenced = muted || ended;
+  const silencedPlaceholder = ended
+    ? "This campaign has ended. The story stays here to read."
+    : "The party lead has muted you at this table.";
   const enemyTurns = state.encounter?.enemyTurns === true;
   const gate = useMemo(
     () =>
@@ -538,7 +527,9 @@ export function SessionView({
   const voiceSettings = campaign?.gameSettings?.voice;
   const turnEnforcement = voiceSettings?.turnEnforcement ?? "soft";
   const sayRangeRule = Boolean(voiceSettings?.rules?.sayRange);
-  const transcribe = Boolean(voiceSettings?.transcribe);
+  // Nothing records or announces a transcript the server cannot write.
+  const capabilities = useCapabilities();
+  const transcribe = Boolean(voiceSettings?.transcribe) && transcribesVoice(capabilities);
   const floorUserIds =
     floor.mode === "spotlight" || floor.mode === "initiative" ? floor.userIds : EMPTY_IDS;
   const voice = useMemo(
@@ -581,7 +572,7 @@ export function SessionView({
       event.preventDefault();
       const content = input.trim();
       // Over the mode's limit the box says so and keeps the draft (issue 207).
-      if (!content || sending || gate.inputBlocked || muted || textLength(content) > composerLimit(kind, leadPrivate)) {
+      if (!content || sending || gate.inputBlocked || silenced || textLength(content) > composerLimit(kind, leadPrivate)) {
         return;
       }
       setSending(true);
@@ -633,7 +624,7 @@ export function SessionView({
         setSending(false);
       }
     },
-    [campaignId, input, sending, gate.inputBlocked, muted, kind, leadPrivate, speaker, mySheet, actingSheet],
+    [campaignId, input, sending, gate.inputBlocked, silenced, kind, leadPrivate, speaker, mySheet, actingSheet],
   );
 
   const clearChatTarget = useCallback(() => setChatTarget(null), []);
@@ -810,8 +801,8 @@ export function SessionView({
       input={input}
       setInput={setInput}
       sending={sending}
-      inputBlocked={gate.inputBlocked || muted}
-      placeholder={muted ? "The party lead has muted you at this table." : gate.placeholder}
+      inputBlocked={gate.inputBlocked || silenced}
+      placeholder={silenced ? silencedPlaceholder : gate.placeholder}
       onSubmit={submit}
       maxChars={composerLimit(kind, leadPrivate)}
       // The stage's copy opens the story for what its window leaves out;
@@ -844,6 +835,17 @@ export function SessionView({
     isLead,
     leadUserId: campaign.leadUserId,
     canTransferLead: isLead || campaign.ownerUserId === me.id,
+    // The same pair the PATCH route lets end it: the owner, or the DM proper.
+    canEndCampaign:
+      campaign.ownerUserId === me.id ||
+      isPrimaryDm(
+        {
+          dmMode: campaign.gameSettings?.dmMode ?? "ai",
+          humanDmUserId: campaign.dmUserId,
+          assistantDmUserId: campaign.assistantDmUserId,
+        },
+        me.id,
+      ),
     spotlightUserIds: floor.mode === "spotlight" ? floor.userIds : EMPTY_IDS,
     onlineUserIds: state.online,
     auditLog,
@@ -1027,6 +1029,22 @@ export function SessionView({
                   </Suspense>
                 ) : (
                   <>
+                  {ended ? (
+                    <SessionBanner
+                      glyph="tab-campaigns"
+                      tone="quiet"
+                      className="campaign-ended-banner"
+                      title="The campaign has ended"
+                      actions={
+                        <Link href="/" className={bannerButtonClass(true)}>
+                          All campaigns
+                        </Link>
+                      }
+                    >
+                      Characters from a library took their progress home with them. The story stays
+                      here to read.
+                    </SessionBanner>
+                  ) : null}
                   {/* The plan the party is coordinating (issue 254), above the
                       box its players would otherwise type their moves into. */}
                   {state.coordination ? (
@@ -1047,8 +1065,8 @@ export function SessionView({
                     setInput={setInput}
                     sending={sending}
                     error={error}
-                    inputBlocked={gate.inputBlocked || muted}
-                    placeholder={muted ? "The party lead has muted you at this table." : gate.placeholder}
+                    inputBlocked={gate.inputBlocked || silenced}
+                    placeholder={silenced ? silencedPlaceholder : gate.placeholder}
                     dmStatus={dmStatus}
                     pendingRolls={pendingRolls}
                     members={state.members}

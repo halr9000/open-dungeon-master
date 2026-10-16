@@ -2,15 +2,18 @@
 // Completions, and the old retry-without-tools arm would have swallowed
 // that refusal and run the narrator with no request_roll and no engines.
 // requestCustomMessage against a fake OpenAI (fetch is stubbed, so the
-// base URL can be api.openai.com itself and the name table applies) that
-// answers the way OpenAI documents:
-// - gpt-6.1-sol: tools on Chat Completions 400 with the message the issue
-//   quotes; reasoning_effort "none" is refused; tools work on /v1/responses;
-// - gpt-6-sol: tools on Chat Completions work only with reasoning_effort
-//   "none", and temperature is refused;
+// base URL can be api.openai.com itself) that answers the way OpenAI did
+// when asked on 2026-10-13:
+// - gpt-6.1-sol and gpt-6-sol: tools on Chat Completions 400 with the
+//   recorded message, which offers /v1/responses and reasoning_effort
+//   "none"; 6.1 refuses "none"; the story temperature is refused on
+//   whichever route the call then takes;
+// - a model whose refusal offers reasoning_effort "none" alone;
 // - gpt-4.1: unchanged.
-// Then the pure translators on their own, and a proxy host that learns its
-// route from the refusal.
+// No route is read from a model's name: every model's first tool call goes
+// to Chat Completions, and the refusal names the route it keeps for the
+// life of the process. Then the pure translators on their own, and a proxy
+// host that learns its route the same way.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -36,14 +39,21 @@ const ok = (name) => {
   console.log(`ok: ${name}`);
 };
 
+// OpenAI's answer to a tool call on Chat Completions, as recorded from
+// gpt-6-sol and gpt-6.1-sol on 2026-10-13 (the same text for both).
 const GPT6_REFUSAL = (model) => ({
   error: {
     message: `Function tools with reasoning_effort are not supported for ${model} in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.`,
     type: "invalid_request_error",
-    param: null,
+    param: "reasoning_effort",
     code: null,
   },
 });
+
+// A refusal that offers reasoning_effort "none" and nothing else.
+const NONE_ONLY_REFUSAL = {
+  error: { message: "Function tools need reasoning off on this model. Set reasoning_effort to 'none'.", type: "invalid_request_error", param: null, code: null },
+};
 
 const TOOLS = [
   {
@@ -71,7 +81,20 @@ const fakeOpenAi = async (url, init) => {
   const model = String(body.model);
   const gpt6 = /^gpt-6/.test(model);
 
+  // A backend whose refusals contradict each other: Chat offers Responses,
+  // Responses asks for reasoning off on Chat, and reasoning off on Chat
+  // offers Responses again.
+  if (model.endsWith("-flip") && body.tools?.length) {
+    return Response.json(pathname.endsWith("/responses") ? NONE_ONLY_REFUSAL : GPT6_REFUSAL(model), { status: 400 });
+  }
+
+  // In the order OpenAI answers (recorded 2026-10-13): on Chat Completions
+  // the tools are refused before anything else; the story temperature is
+  // refused on whichever route the call then takes.
   if (pathname.endsWith("/chat/completions")) {
+    if (gpt6 && body.tools?.length && body.reasoning_effort !== "none") {
+      return Response.json(model.endsWith("-none-only") ? NONE_ONLY_REFUSAL : GPT6_REFUSAL(model), { status: 400 });
+    }
     if (gpt6 && body.temperature !== undefined) {
       return Response.json(
         { error: { message: "Unsupported parameter: 'temperature' is not supported with this model.", param: "temperature", code: "unsupported_parameter" } },
@@ -83,9 +106,6 @@ const fakeOpenAi = async (url, init) => {
         { error: { message: `Unsupported value: 'none' is not supported with the '${model}' model.`, param: "reasoning_effort", code: "unsupported_value" } },
         { status: 400 },
       );
-    }
-    if (gpt6 && body.tools?.length && body.reasoning_effort !== "none") {
-      return Response.json(GPT6_REFUSAL(model), { status: 400 });
     }
     const call = {
       id: "call_chat_1",
@@ -107,6 +127,12 @@ const fakeOpenAi = async (url, init) => {
   if (pathname.endsWith("/responses")) {
     if (hostname === "no-responses.test") {
       return new Response("Not Found", { status: 404 });
+    }
+    if (gpt6 && body.temperature !== undefined) {
+      return Response.json(
+        { error: { message: "Unsupported parameter: 'temperature' is not supported with this model.", param: "temperature", code: "unsupported_parameter" } },
+        { status: 400 },
+      );
     }
     assert.equal(body.store, false, "nothing is stored on OpenAI's side");
     assert.ok(Array.isArray(body.input), "input is an item array");
@@ -157,22 +183,29 @@ const OPENAI = "https://api.openai.com/v1";
 const ask = [{ role: "user", content: "I open the door." }];
 
 try {
-  // --- gpt-6.1-sol goes straight to the Responses API --------------------
+  // --- gpt-6.1-sol starts on Chat Completions and learns Responses -------
   {
     seen.length = 0;
     const result = await requestCustomMessage(OPENAI, "gpt-6.1-sol", "sk-test", ask, { tools: TOOLS, thinking: true });
     assert.ok(!result.error, result.error ? await result.error.text() : "");
-    assert.equal(seen.length, 1, "one request, no Chat Completions attempt");
-    assert.equal(seen[0].path, "/v1/responses");
+    // As OpenAI answers: Chat refuses the tools, Responses the story
+    // temperature; both are learned.
+    assert.deepEqual(seen.map((request) => request.path), ["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
+    assert.equal(seen[0].body.tools.length, 1, "the Chat Completions try kept its tools");
+    assert.ok("temperature" in seen[1].body && !("temperature" in seen[2].body), "the refused temperature is dropped once");
+    const sent = seen.at(-1).body;
     // The cap follows OPENROUTER_MAX_TOKENS in .env.server, so only its presence is pinned.
-    assert.equal(typeof seen[0].body.max_output_tokens, "number");
-    assert.ok(!("max_completion_tokens" in seen[0].body) && !("messages" in seen[0].body));
-    assert.ok(!("chat_template_kwargs" in seen[0].body) && !("reasoning_effort" in seen[0].body));
+    assert.equal(typeof sent.max_output_tokens, "number");
+    assert.ok(!("max_completion_tokens" in sent) && !("messages" in sent));
+    assert.ok(!("chat_template_kwargs" in sent) && !("reasoning_effort" in sent), "reasoning stays on");
     assert.equal(result.message.content, "The door creaks.");
     assert.deepEqual(result.message.tool_calls, [
       { id: "call_resp_1", type: "function", function: { name: "request_roll", arguments: '{"kind":"perception"}' } },
     ]);
-    ok("gpt-6.1-sol runs its tools on /v1/responses with no wasted request");
+    seen.length = 0;
+    await requestCustomMessage(OPENAI, "gpt-6.1-sol", "sk-test", ask, { tools: TOOLS });
+    assert.deepEqual(seen.map((request) => request.path), ["/v1/responses"], "one refusal per model per process");
+    ok("gpt-6.1-sol's first tool call goes to Chat Completions, its refusal moves it to /v1/responses for good");
   }
 
   // --- the output cap is reported as finish_reason "length" on Responses --
@@ -185,7 +218,7 @@ try {
         ...(stream ? { onDelta: () => {} } : {}),
       });
       assert.ok(!result.error, result.error ? await result.error.text() : "");
-      assert.equal(seen[0].path, "/v1/responses");
+      assert.equal(seen.at(-1).path, "/v1/responses");
       assert.equal(result.finishReason, "length", `${stream ? "streamed" : "whole"} reply names the output cap`);
       assert.equal(result.message.content ?? "", "");
     }
@@ -219,29 +252,41 @@ try {
     ok("a tool result round-trips as function_call_output and the reply streams");
   }
 
-  // --- gpt-6-sol stays on Chat Completions with reasoning off -------------
+  // --- gpt-6-sol's refusal offers both: Responses, reasoning on ----------
   {
     seen.length = 0;
     const result = await requestCustomMessage(OPENAI, "gpt-6-sol", "sk-test", ask, { tools: TOOLS, thinking: true });
+    assert.ok(!result.error, result.error ? await result.error.text() : "");
+    assert.deepEqual(seen.map((request) => request.path), ["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
+    assert.ok(!("reasoning_effort" in seen.at(-1).body), "reasoning is left on");
+    assert.deepEqual(result.message.tool_calls[0].function.name, "request_roll");
+    assert.ok(!("temperature" in seen[2].body), "the refused temperature is dropped");
+    seen.length = 0;
+    await requestCustomMessage(OPENAI, "gpt-6-sol", "sk-test", ask, { tools: TOOLS });
+    assert.deepEqual(seen.map((request) => request.path), ["/v1/responses"], "the route and the dropped field are remembered");
+    ok("gpt-6-sol moves to /v1/responses with its reasoning on, the route its refusal offers first");
+  }
+
+  // --- a refusal offering only reasoning off keeps Chat Completions --------
+  {
+    seen.length = 0;
+    const result = await requestCustomMessage(OPENAI, "gpt-6-test-none-only", "sk-test", ask, { tools: TOOLS, thinking: true });
     assert.ok(!result.error, result.error ? await result.error.text() : "");
     assert.equal(seen.at(-1).path, "/v1/chat/completions");
     assert.equal(seen.at(-1).body.reasoning_effort, "none");
     assert.equal(typeof seen.at(-1).body.max_completion_tokens, "number");
     assert.deepEqual(result.message.tool_calls[0].function.name, "request_roll");
-    // The story temperature was refused once and is remembered for the model.
-    assert.equal(seen.length, 2, "the temperature 400 and the retry");
-    assert.ok(!("temperature" in seen[1].body));
     seen.length = 0;
-    await requestCustomMessage(OPENAI, "gpt-6-sol", "sk-test", ask, { tools: TOOLS });
-    assert.equal(seen.length, 1, "the refused field is not sent again");
-    assert.ok(!("temperature" in seen[0].body));
-    ok("gpt-6-sol sends reasoning_effort none with its tools, and a refused field is dropped once");
+    await requestCustomMessage(OPENAI, "gpt-6-test-none-only", "sk-test", ask, { tools: TOOLS });
+    assert.equal(seen.length, 1, "learned once");
+    assert.equal(seen[0].body.reasoning_effort, "none");
+    ok("a model whose refusal asks for reasoning_effort none gets it with its tools on Chat Completions");
   }
 
   // --- without tools, reasoning_effort is never sent ----------------------
   {
     seen.length = 0;
-    const result = await requestCustomMessage(OPENAI, "gpt-6-sol", "sk-test", ask, { tools: [], toolChoice: "none" });
+    const result = await requestCustomMessage(OPENAI, "gpt-6-test-none-only", "sk-test", ask, { tools: [], toolChoice: "none" });
     assert.ok(!result.error);
     assert.ok(!("reasoning_effort" in seen[0].body) && !("tools" in seen[0].body));
     ok("a tool-less call leaves the model's reasoning alone");
@@ -259,19 +304,18 @@ try {
     ok("gpt-4.1 gets the same Chat Completions request as before");
   }
 
-  // --- a model the table has never heard of learns from the refusal ------
+  // --- any other model learns the same way ------------------------------
   {
     seen.length = 0;
     const result = await requestCustomMessage(OPENAI, "gpt-6-nova", "sk-test", ask, { tools: TOOLS });
     assert.ok(!result.error, result.error ? await result.error.text() : "");
-    // The fake refuses the story temperature first (as OpenAI's reasoning
-    // models do), then the tools; both are learned.
-    assert.deepEqual(seen.map((request) => request.path), ["/v1/chat/completions", "/v1/chat/completions", "/v1/responses"]);
-    assert.ok(seen.slice(0, 2).every((request) => request.body.tools.length === 1), "every Chat Completions try kept its tools");
+    // Chat refuses the tools, Responses the story temperature; both learned.
+    assert.deepEqual(seen.map((request) => request.path), ["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
+    assert.equal(seen[0].body.tools.length, 1, "the Chat Completions try kept its tools");
     seen.length = 0;
     await requestCustomMessage(OPENAI, "gpt-6-nova", "sk-test", ask, { tools: TOOLS });
     assert.deepEqual(seen.map((request) => request.path), ["/v1/responses"], "remembered");
-    ok("an unknown GPT-6 model switches to the route its 400 names and remembers it");
+    ok("any model switches to the route its 400 names and remembers it");
   }
 
   // --- a proxy relaying the refusal learns the same way ------------------
@@ -280,7 +324,8 @@ try {
     const result = await requestCustomMessage("http://proxy.test/v1", "gpt-6.1-sol", "", ask, { tools: TOOLS });
     assert.ok(!result.error, result.error ? await result.error.text() : "");
     assert.equal(seen.at(-1).path, "/v1/responses");
-    assert.ok(seen.slice(0, -1).every((request) => request.path === "/v1/chat/completions" && request.body.tools.length === 1));
+    assert.equal(seen[0].path, "/v1/chat/completions");
+    assert.equal(seen[0].body.tools.length, 1, "the Chat Completions try kept its tools");
     ok("a proxy that relays OpenAI's refusal is switched to /v1/responses too");
   }
 
@@ -297,6 +342,19 @@ try {
     assert.ok(seen.every((request) => request.path.endsWith("/chat/completions") ? request.body.tools?.length : true), "a tool-less chat request went out");
     assert.match(detail.error, /failed \(404\)/);
     ok("when no route works the turn fails loudly instead of running without tools");
+  }
+
+  // --- refusals that name each other's route end the call ---------------
+  {
+    seen.length = 0;
+    const result = await requestCustomMessage(OPENAI, "gpt-6-flip", "sk-test", ask, { tools: TOOLS });
+    assert.ok(result.error, "the contradictory refusals ended in a narration");
+    const routes = seen.map((request) => `${request.path} ${request.body.reasoning_effort ?? ""}`.trim());
+    assert.deepEqual(routes.slice(0, 3), ["/v1/chat/completions", "/v1/responses", "/v1/chat/completions none"]);
+    assert.ok(seen.length <= 4, `the call kept switching: ${routes.join(", ")}`);
+    assert.ok(!routes.slice(3).includes("/v1/responses"), "went back to a route this call was refused on");
+    assert.ok(seen.every((request) => request.path.endsWith("/responses") || request.body.tools?.length), "a tool-less request went out");
+    ok("two refusals that name each other's route are not switched between without end");
   }
 
   // --- a local server without a tool template still gets the fallback ----

@@ -55,6 +55,10 @@ export async function startServer({ tree, dbPath, key, port, log }) {
     // "not configured" the UI already handles.
     DEFAULT_TEXT_PROVIDER: "",
     OPENAI_API_KEY: "",
+    // No speech-to-text either, whatever this machine runs on :8870: a
+    // scenario that dictates stands in the device's own recognizer, the same
+    // here as on CI.
+    STT_URL: "off",
   };
   const out = fs.openSync(log, "a");
   const child = spawn(process.execPath, [nextBin, "start", "-H", "127.0.0.1", "-p", String(port)], {
@@ -131,7 +135,7 @@ export const VIEWPORTS = {
   phone: { width: 412, height: 892, touch: true },
 };
 
-export async function newContext(browser, viewport, { app }) {
+export async function newContext(browser, viewport, { app, toursSeen = true }) {
   const size = VIEWPORTS[viewport];
   const context = await browser.newContext({
     viewport: { width: size.width, height: size.height },
@@ -140,6 +144,22 @@ export async function newContext(browser, viewport, { app }) {
     isMobile: size.touch && app,
     reducedMotion: "no-preference",
   });
+  // The first-visit tours open a moment after their page does, over
+  // whatever a scenario is about to press. On a slow load (the app's screens
+  // on a busy machine) the tour came after settle()'s Escapes and took the
+  // click: offer-settled's Accept and board-enlarged's figure failed that
+  // way. Every tour counts as seen before any page loads: the browser's old
+  // per-tour flag (legacyKey in src/lib/tours/account-logic.ts), which the
+  // first account to load carries to its record. Only tours-account is about
+  // the tour itself, and it asks for contexts without the flags.
+  if (!toursSeen) return context;
+  await context.addInitScript((keys) => {
+    try {
+      for (const key of keys) localStorage.setItem(key, "done");
+    } catch {
+      // A page with no storage shows its tour, and settle() closes it.
+    }
+  }, ["table-player", "table-dm", "workshop-shelf", "workshop-hub"].map((id) => `odm:tour:${id}`));
   return context;
 }
 
@@ -245,7 +265,12 @@ async function appNavigate(page, route, ids, touch) {
   const campaign = route.match(/^\/campaigns\/([^/?]+)/)?.[1];
   if (campaign) {
     const title = ids.titles?.[campaign] ?? (campaign === ids.campaignId ? ids.title : ids.lobbyTitle);
-    const tile = page.locator(".game-root a, .game-root button").filter({ hasText: new RegExp(title, "i") }).first();
+    // A title is matched as written: "Closing Table (desktop)" has
+    // parentheses a pattern would read as a group.
+    const tile = page
+      .locator(".game-root a, .game-root button")
+      .filter({ hasText: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") })
+      .first();
     if (!(await tile.isVisible().catch(() => false))) {
       await push("/");
       await sleep(2_000);

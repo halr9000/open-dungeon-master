@@ -8,14 +8,22 @@
 import assert from "node:assert/strict";
 import { openWorld } from "./lib/enforce-world.mjs";
 import { suite } from "./lib/enforce-harness.mjs";
+import { fitSequence, joinPrevious, moveEarlier, moveLater, moveTo, normalizeSequence, ownStep } from "../src/lib/dm/plan-order.ts";
 import {
   coordinationBlock,
   frozenEntries,
   humansSettled,
   lapsed,
+  orderKey,
+  orderPlan,
+  placeWords,
+  resolvedNote,
+  sequenceOf,
   setAsideNote,
   stagePlan,
   stageRequest,
+  unconfirmedOrder,
+  withSequence,
 } from "../src/lib/dm/coordination-logic.ts";
 
 const { test, finish } = suite("test-coordination");
@@ -45,6 +53,75 @@ await test("The rules: a player stages only their own characters, ready needs wo
   assert.equal(frozenEntries(phaseOf([entry({ characterId: "a", state: "drafting" })]))[0].state, "pass", "an unsettled player passes when resolved");
   assert.equal(lapsed({ status: "drafting", updatedAt: "2026-10-11T00:00:00.000Z" }, Date.parse("2026-10-11T03:00:00.000Z")), true);
   assert.match(setAsideNote(asked, "fight"), /A fight began.*none of it was carried out.*Tavi: While Brann talks/);
+});
+
+// Issue 292: the order a plan's characters act in.
+await test("Order moves: earlier, later, together and apart, a drop, and picks that change.", () => {
+  const seq = [["a"], ["b", "c"], ["d"]];
+  assert.deepEqual(moveEarlier(seq, "d"), [["a"], ["d"], ["b", "c"]], "alone, the step swaps with the one above");
+  assert.deepEqual(moveEarlier(seq, "c"), [["a"], ["c"], ["b"], ["d"]], "sharing, it takes a step of its own just before");
+  assert.deepEqual(moveLater(seq, "b"), [["a"], ["c"], ["b"], ["d"]]);
+  assert.deepEqual(moveLater(seq, "d"), seq, "the last step goes no later");
+  assert.deepEqual(moveEarlier(seq, "a"), seq, "the first step goes no earlier");
+  assert.deepEqual(joinPrevious(seq, "d"), [["a"], ["b", "c", "d"]]);
+  assert.deepEqual(ownStep(seq, "b"), [["a"], ["c"], ["b"], ["d"]]);
+  assert.deepEqual(moveTo(seq, "a", { step: 2, join: true }), [["b", "c"], ["d", "a"]], "dropped onto a step, it joins it");
+  assert.deepEqual(moveTo(seq, "d", { step: 0, join: false }), [["d"], ["a"], ["b", "c"]], "dropped on a gap, it takes a step there");
+  assert.deepEqual(fitSequence([["a"], ["b", "c"]], ["c", "a", "e"]), [["a"], ["c"], ["e"]], "a dropped pick leaves, a new one goes last");
+  assert.deepEqual(normalizeSequence([["a"], [], ["b"]], ["a", "b"]), [["a"], ["b"]]);
+  assert.equal(normalizeSequence([["a"]], ["a", "b"]), null, "a character left out");
+  assert.equal(normalizeSequence([["a"], ["a", "b"]], ["a", "b"]), null, "a character twice");
+  assert.equal(normalizeSequence([["a"], ["z"]], ["a"]), null, "a character not in the plan");
+});
+
+await test("An ordered plan: the steps every seat reads, the DM's block step by step, a reorder after Ready taken back.", () => {
+  const plan = phaseOf([
+    entry({ characterId: "t", name: "Tavi", userId: "u1" }),
+    entry({ characterId: "n", name: "Nysa", userId: "u2" }),
+    entry({ characterId: "b", name: "Brann", userId: "u3" }),
+    entry({ characterId: "m", name: "Mara", userId: null, companion: true }),
+  ]);
+  assert.equal(sequenceOf(plan), null, "no order: everyone at once");
+  const ordered = { ...plan, entries: withSequence(plan.entries, [["n"], ["t", "b"], ["m"]]) };
+  assert.deepEqual(sequenceOf(ordered), [["n"], ["t", "b"], ["m"]]);
+  assert.deepEqual(ordered.entries.map((item) => item.name), ["Nysa", "Tavi", "Brann", "Mara"], "the entries are kept in the plan's order");
+  assert.equal(placeWords(ordered, "t"), "step 2 of 3, after Nysa, at the same time as Brann");
+  assert.equal(placeWords(ordered, "n"), "step 1 of 3, first");
+
+  let staged = stagePlan(ordered, { characterId: "n", userId: "u2", text: "I knock the guard's lantern over.", state: "ready", orderSeen: orderKey(ordered) }, "t").phase;
+  staged = stagePlan(staged, { characterId: "t", userId: "u1", text: "In the dark, I slip through the gate.", state: "ready" }, "t").phase;
+  staged = stagePlan(staged, { characterId: "b", userId: "u3", state: "pass" }, "t").phase;
+  const block = coordinationBlock(staged, (id) => ({ u1: "kaleb", u2: "dana", u3: "rob" })[id]);
+  assert.match(block, /COORDINATED ACTIONS IN ORDER/);
+  assert.match(block, /Step 1 \(first\):\n- Nysa \(dana\): I knock the guard's lantern over\./);
+  assert.match(block, /Step 2 \(after step 1, at the same time\):\n- Tavi \(kaleb\): In the dark, I slip through the gate\.\n- Brann: PASSED/);
+  assert.match(block, /Step 3 \(after step 2\):\n- Mara \(AI companion\): may support the plan at this step/);
+  assert.match(block, /never carry out a later step that depended on it as though it had worked/);
+  assert.ok(block.indexOf("Nysa (dana)") < block.indexOf("Tavi (kaleb)"), "the DM reads the steps in order");
+  assert.match(resolvedNote(staged), /The party acts in order: 1\. Nysa; 2\. Tavi and Brann together; 3\. Mara\./);
+  assert.match(setAsideNote(staged, "cancelled"), /step 1, Nysa: I knock/);
+
+  // The lead puts Tavi first: Nysa, Ready, now acts after someone, and Tavi
+  // alone; both are asked again. A Ready sent for the old order is refused.
+  const reordered = orderPlan(staged, [["t"], ["n"], ["b"], ["m"]], "t2").phase;
+  assert.deepEqual(unconfirmedOrder(reordered), ["Tavi", "Nysa"]);
+  assert.equal(reordered.entries.find((item) => item.name === "Nysa").state, "drafting");
+  assert.equal(reordered.entries.find((item) => item.name === "Nysa").text, "I knock the guard's lantern over.", "the words are kept");
+  assert.equal(reordered.entries.find((item) => item.name === "Brann").state, "pass", "a pass stands");
+  assert.equal(humansSettled(reordered), false, "the plan cannot resolve on the old Ready");
+  assert.match(stagePlan(reordered, { characterId: "n", userId: "u2", state: "ready", orderSeen: orderKey(staged) }, "t3").error, /just changed the order/);
+  const confirmed = stagePlan(reordered, { characterId: "n", userId: "u2", state: "ready", orderSeen: orderKey(reordered) }, "t3").phase;
+  assert.deepEqual(unconfirmedOrder(confirmed), ["Tavi"]);
+
+  // A change that leaves a character's place alone leaves its Ready alone.
+  const swapLater = orderPlan(confirmed, [["t"], ["n"], ["m"], ["b"]], "t4").phase;
+  assert.equal(swapLater.entries.find((item) => item.name === "Nysa").state, "ready", "Nysa still acts after Tavi alone");
+  // Clearing the order is a change too, and an unordered plan reads as before.
+  const cleared = orderPlan(confirmed, null, "t5").phase;
+  assert.equal(sequenceOf(cleared), null);
+  assert.equal(cleared.entries.every((item) => item.step === undefined), true);
+  assert.equal(cleared.entries.find((item) => item.name === "Nysa").orderChanged, true);
+  assert.match(orderPlan(confirmed, [["t"], ["n"]], "t6").error, /each character in the plan once/);
 });
 
 const world = await openWorld();
@@ -148,6 +225,57 @@ await test("The lead resolves early with the missing passed, or sets the plan as
   assert.equal(cancelled.json.phase.status, "cancelled");
   assert.match(listRecentMessages(world.campaignId, 1)[0].content, /set the party's coordinated plan aside/);
   assert.equal((await act(world.owner, tavi.id, "I walk on.")).status, 202, "the table plays on as before");
+});
+
+await test("The lead sets the order at the start: every seat reads it, a reload keeps it, and the lines post in it.", async () => {
+  world.say("dm", "The gate is quiet.");
+  const refused = await post(world.owner, { action: "open", characterIds: [tavi.id, brann.id], sequence: [[brann.id]] });
+  assert.equal(refused.status, 400, "an order that leaves a character out");
+  const opened = await post(world.owner, { action: "open", characterIds: [tavi.id, brann.id, mara.id], sequence: [[brann.id], [tavi.id, mara.id]] });
+  assert.equal(opened.status, 200, opened.json.error);
+  assert.deepEqual(opened.json.phase.entries.map((item) => [item.name, item.step]), [["Brann", 1], ["Tavi", 2], ["Mara", 2]]);
+  // What a reload or a seat joining late reads is the same order.
+  const fresh = await route.GET(new Request("http://test/"), { params: Promise.resolve({ campaignId: world.campaignId }) });
+  assert.deepEqual((await fresh.json()).phase.entries.map((item) => [item.name, item.step]), [["Brann", 1], ["Tavi", 2], ["Mara", 2]]);
+  assert.equal((await post(userById(brann.userId), { action: "order", sequence: null })).status, 403, "only the lead sets the order");
+
+  // Tavi readies first; the order stays Brann's step then Tavi's, never the
+  // order the players readied in.
+  const before = countMessages(world.campaignId);
+  await post(world.owner, { action: "plan", characterId: tavi.id, text: "I slip through the gate once the guard turns.", state: "ready" });
+  const done = await post(userById(brann.userId), { action: "plan", characterId: brann.id, text: "I ask the guard about the road north.", state: "ready" });
+  assert.equal(done.json.phase.status, "resolved");
+  const posted = listRecentMessages(world.campaignId, countMessages(world.campaignId) - before);
+  const brannAt = posted.findIndex((message) => message.characterId === brann.id);
+  const taviAt = posted.findIndex((message) => message.characterId === tavi.id);
+  assert.ok(brannAt >= 0 && taviAt > brannAt, "Brann's line, step 1, posts before Tavi's");
+  assert.ok(posted.some((message) => message.authorType === "system" && /acts in order: 1\. Brann; 2\. Tavi and Mara together/.test(message.content)));
+  const block = coordinationForPrompt(world.campaignId);
+  assert.match(block, /Step 1 \(first\):\n- Brann .*road north/);
+  assert.match(block, /Step 2 \(after step 1, at the same time\):\n- Tavi .*guard turns/);
+  world.say("dm", "The guard points north as Tavi slips by.");
+});
+
+await test("A reorder after Ready: the player is told, the lead cannot resolve over them, and their new Ready resolves it.", async () => {
+  await post(world.owner, { action: "open", characterIds: [tavi.id, brann.id] });
+  const staged = await post(userById(brann.userId), { action: "plan", characterId: brann.id, text: "I climb the wall.", state: "ready" });
+  assert.equal(staged.json.phase.entries.find((item) => item.characterId === brann.id).state, "ready");
+  const ordered = await post(world.owner, { action: "order", sequence: [[tavi.id], [brann.id]] });
+  assert.equal(ordered.status, 200, ordered.json.error);
+  const brannEntry = ordered.json.phase.entries.find((item) => item.characterId === brann.id);
+  assert.equal(brannEntry.state, "drafting");
+  assert.equal(brannEntry.orderChanged, true);
+  const early = await post(world.owner, { action: "resolve" });
+  assert.equal(early.status, 409);
+  assert.match(early.json.error, /order changed after Brann was ready/);
+  await post(world.owner, { action: "plan", characterId: tavi.id, text: "I hold the rope.", state: "ready" });
+  assert.equal(currentCoordination(world.campaignId).status, "drafting", "Brann's new Ready is still owed");
+  const stale = await post(userById(brann.userId), { action: "plan", characterId: brann.id, state: "ready", orderSeen: JSON.stringify(null) });
+  assert.equal(stale.status, 400, "a Ready sent for the plan with no order");
+  const again = await post(userById(brann.userId), { action: "plan", characterId: brann.id, state: "ready", orderSeen: JSON.stringify([[tavi.id], [brann.id]]) });
+  assert.equal(again.json.phase.status, "resolved");
+  assert.match(coordinationForPrompt(world.campaignId), /Step 1 \(first\):\n- Tavi .*rope\.\nStep 2 \(after step 1\):\n- Brann .*climb the wall/);
+  world.say("dm", "Brann climbs as Tavi holds the rope.");
 });
 
 await test("A fight that begins sets an unresolved plan aside, saying what did not happen.", async () => {

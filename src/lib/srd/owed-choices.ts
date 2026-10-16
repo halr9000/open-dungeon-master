@@ -41,10 +41,22 @@ export function owedChoices(sheet: Owing): string[] {
     out.push(`expertise in ${expertise} more ${expertise === 1 ? "proficiency" : "proficiencies"}`);
   }
   for (const entry of classes) {
-    const at = subclassLevelFor(entry.id);
-    if (!entry.subclass && at !== null && at <= entry.level) {
-      out.push(`a subclass for ${entry.id} (due at ${entry.id} level ${at})`);
+    if (subclassOwed(entry, entry.level)) {
+      out.push(`a subclass for ${entry.id} (due at ${entry.id} level ${subclassLevelFor(entry.id)})`);
     }
   }
   return out;
+}
+
+// Whether a class at this class level owes its subclass: it has none, and it
+// stands at its subclass level or past it. Past it too, because a character
+// gets there without one (a level 1 build seated at a level 5 table), and the
+// server takes the pick late. The level-up dialog asks this of the level it
+// is about to give, so it offers the step whenever the sheet lists the pick
+// as owed; it used to ask only at the exact level, which left such a
+// character without a subclass for good, since once play starts the
+// level-up is a player's only door to one.
+export function subclassOwed(entry: { id: string; subclass?: string }, classLevel: number): boolean {
+  const at = subclassLevelFor(entry.id);
+  return at !== null && !(entry.subclass ?? "").trim() && at <= classLevel;
 }

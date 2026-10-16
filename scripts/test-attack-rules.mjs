@@ -18,6 +18,7 @@ const {
   resourceLeft,
   slotFree,
   smiteDice,
+  thrownAtRange,
   withLoadingFired,
 } = await import("../src/lib/dm/attack-rules.ts");
 const { ragingMeleeBonus, resolveAttackWeapon, weaponAttackProfile } = await import("../src/lib/dm/attack-logic.ts");
@@ -93,6 +94,28 @@ test("a versatile weapon behind a shield is swung in one hand whatever was asked
   assert.equal(hands("Longsword", { twoHandedAsked: true }).twoHanded, true);
   assert.equal(profileOf("Longsword", { twoHanded: true }).damageExpression, "1d10+3");
   assert.equal(profileOf("Longsword", { twoHanded: false }).damageExpression, "1d8+3");
+});
+
+// SRD 5.1 Two-Weapon Fighting: the bonus attack is made with the weapon in
+// the other hand, so the main hand holds a weapon too.
+test("the off-hand swing of a versatile weapon is one-handed whatever was asked", () => {
+  const ruled = hands("Longsword", { offHand: true, twoHandedAsked: true });
+  assert.deepEqual(ruled, { twoHanded: false, note: "Longsword is in the off hand: swung in one hand" });
+  // One hand rolls the one-handed die and is no Great Weapon Fighting swing.
+  const swing = profileOf("Longsword", { offHand: true, twoHanded: ruled.twoHanded });
+  assert.equal(swing.damageExpression, "1d8");
+  assert.equal(swing.twoHanded, false);
+  assert.deepEqual(hands("Longsword", { offHand: true }), { twoHanded: false, note: null });
+  assert.deepEqual(hands("Longsword", { offHand: false, twoHandedAsked: true }), { twoHanded: true, note: null });
+});
+
+test("a thrown weapon is a ranged attack only past its reach, and only where the board says so", () => {
+  const spear = profileOf("Spear");
+  assert.equal(thrownAtRange(spear, 1), false);
+  assert.equal(thrownAtRange(spear, 2), true);
+  assert.equal(thrownAtRange(spear, null), false);
+  assert.equal(thrownAtRange({ ...spear, reachTiles: 2 }, 2), false);
+  assert.equal(thrownAtRange(profileOf("Longsword"), 3), false);
 });
 
 test("a lance needs both hands on foot and one in the saddle", () => {

@@ -2,48 +2,39 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { Loader2, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { GoldTitle } from "@/components/ui/GoldTitle";
 import { Wizard, type WizardStep } from "@/components/ui/Wizard";
 import { submitWorldSetup } from "@/app/WorldSetupFields";
 import { submitContentImport } from "@/app/workshop/ContentImportPicker";
+import type { CampaignDefaults, CampaignDefaultSettings } from "@/lib/campaign-defaults";
 import { groupByFranchise, type WorldPackSummary } from "@/lib/worlds/summary";
 import { genrePreset } from "@/lib/genres";
 import type { Genre } from "@/lib/schemas/game-settings";
-import {
-  applyPack,
-  clearPack,
-  DEFAULT_DRAFT,
-  type CampaignDraft,
-  type WizardGates,
-} from "@/app/create-campaign/draft";
+import { applyPack, clearPack, DEFAULT_DRAFT, type CampaignDraft, type WizardGates } from "@/app/create-campaign/draft";
+import { appDefaultSettings, applyDefaults, defaultsFromDraft } from "@/app/create-campaign/defaults";
+import { DefaultsBar, DefaultsDialog, DefaultsPanel, type DefaultsActions, type StartFrom } from "@/app/create-campaign/DefaultsFields";
 import { presetTheme } from "@/app/create-campaign/portals";
-import { PremiseStep } from "@/app/create-campaign/PremiseStep";
-import { WorldStep } from "@/app/create-campaign/WorldStep";
-import { PartyStep } from "@/app/create-campaign/PartyStep";
-import { FeelStep } from "@/app/create-campaign/FeelStep";
-import { AdvancedStep } from "@/app/create-campaign/AdvancedStep";
-import { ReviewStep } from "@/app/create-campaign/ReviewStep";
+import { EssentialsStep } from "@/app/create-campaign/EssentialsStep";
+import { ExperienceStep } from "@/app/create-campaign/ExperienceStep";
+import { ReviewStep, type EditTarget } from "@/app/create-campaign/ReviewStep";
+import type { GroupId, StepKey } from "@/app/create-campaign/groups";
+import { useCampaignDefaults } from "@/app/create-campaign/useCampaignDefaults";
+import { withCapabilities, type ServerCapabilities } from "@/app/create-campaign/capabilities";
+import { campaignPayload } from "@/app/create-campaign/payload";
 
-// The slice of /api/capabilities this dialog gates on. null means the
-// endpoint never answered, and the dialog assumes everything is available:
-// a flaky capability check must never block creating a campaign.
-type ServerCapabilities = {
-  story: { configured: boolean; reachable: boolean };
-  images: { configured: boolean };
-  tts: { configured: boolean };
-};
+const STEP_KEYS: readonly StepKey[] = ["essentials", "experience", "review"];
 
-const STEP_KEYS = ["premise", "world", "party", "feel", "advanced", "review"] as const;
-type StepKey = (typeof STEP_KEYS)[number];
-
-// The new-campaign wizard: six screens over one draft (src/app/create-
-// campaign/draft.ts), paced one decision at a time instead of one long form.
-// The steps only draw fields; every default, every gate and the payload that
-// leaves for the server are decided here.
+// The new-campaign wizard: three screens over one draft (src/app/create-
+// campaign/draft.ts). The essentials, then how the table feels, then the
+// review, with every other choice in named groups a first campaign can leave
+// closed (docs/campaign-creator-guided-setup-plan.md). The steps only draw
+// fields; every default, every gate and the payload that leaves for the
+// server are decided here.
 //
 // solo: creates a one-player campaign (maxPlayers 1); the player count is
-// hidden and the lobby streamlines itself for a party of one.
+// hidden and the lobby streamlines itself for a party of one. Solo comes
+// from the entry point, never from a party size of one.
 //
 // Some game settings are deliberately not offered here; scripts/test-create-
 // campaign-options.mjs holds the list and fails if one goes missing without a
@@ -64,25 +55,60 @@ export function CreateCampaignDialog({
   // The default genre's preset writes the first theme, exactly as picking any
   // other portal would; typing in the field takes it over for good.
   const [draft, setDraft] = useState<CampaignDraft>(() => presetTheme(DEFAULT_DRAFT));
-  // The wizard's step is held here so each step can be told when it is the
-  // one on screen: every step is mounted at once, and an entrance should play
-  // when it is seen. It starts over each time the dialog opens, as it did
-  // while the wizard kept it.
+  // Every write goes through here, from handlers and callbacks only, so the
+  // ref is always the draft as last written: a save pressed right after
+  // typing reads the line just typed.
+  const latest = useRef(draft);
+  const write = (next: CampaignDraft) => {
+    latest.current = next;
+    setDraft(next);
+  };
+  // Whether the person has changed anything themselves: saved defaults that
+  // arrive after that are offered, never laid over their work.
+  const edited = useRef(false);
+  // What they wanted where the server overrode it (withCapabilities).
+  const wanted = useRef<Partial<Pick<CampaignDraft, "dmMode" | "ttsEnabled">>>({});
   const [step, setStep] = useState(0);
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<GroupId>>(() => new Set());
+  // Arrived at a step from the review's Edit, so the way back is offered.
+  const [fromReview, setFromReview] = useState(false);
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
       setStep(0);
+      setFromReview(false);
     }
   }
   const [packs, setPacks] = useState<WorldPackSummary[]>([]);
   const [capabilities, setCapabilities] = useState<ServerCapabilities | null>(null);
+  // The same answer for callbacks, which may run before the render that
+  // carries it (saved defaults landing right after it).
+  const capabilitiesNow = useRef<ServerCapabilities | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [prep, setPrep] = useState<{ title: string; arcComing: boolean } | null>(null);
+  const [startFrom, setStartFrom] = useState<StartFrom>("app");
+  const [late, setLate] = useState(false);
+  const [kept, setKept] = useState<string[]>([]);
+  const [defaultsBusy, setDefaultsBusy] = useState(false);
+  const [defaultsMessage, setDefaultsMessage] = useState<DefaultsActions["message"]>(null);
+  const [managing, setManaging] = useState(false);
+  const shell = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const pendingFocus = useRef<GroupId | "top" | null>(null);
 
-  const patch = (changes: Partial<CampaignDraft>) =>
-    setDraft((current) => ({ ...current, ...changes }));
+  const patch = (changes: Partial<CampaignDraft>) => {
+    edited.current = true;
+    // A choice the person made themselves replaces what they wanted before
+    // the server overrode it; a field the patch leaves as it was does not.
+    for (const key of Object.keys(wanted.current) as Array<keyof typeof wanted.current>) {
+      if (key in changes && changes[key] !== latest.current[key]) {
+        delete wanted.current[key];
+      }
+    }
+    write({ ...latest.current, ...changes });
+  };
 
   // Everything the AI narrator brings with it. A table running its own game
   // still gets the rules engine, the maps and the dice; what it does not get
@@ -94,9 +120,7 @@ export function CreateCampaignDialog({
   // backend at all), which hides the AI seat. "Unreachable" is a configured
   // backend that is not answering, which keeps the seat but warns.
   const storyKnownMissing = capabilities ? !capabilities.story.configured : false;
-  const storyUnreachable = capabilities
-    ? capabilities.story.configured && !capabilities.story.reachable
-    : false;
+  const storyUnreachable = capabilities ? capabilities.story.configured && !capabilities.story.reachable : false;
   const gates: WizardGates = {
     solo,
     aiNarrates,
@@ -105,6 +129,37 @@ export function CreateCampaignDialog({
     ttsAvailable: capabilities ? capabilities.tts.configured : true,
     mapsAvailable: capabilities ? capabilities.images.configured : true,
   };
+
+  const franchises = useMemo(() => groupByFranchise(packs), [packs]);
+  const selectedPack = packs.find((pack) => pack.id === draft.worldPack) ?? null;
+
+  // A saved setup (or the app's own) laid over the draft, then the server's
+  // limits over that. The campaign's own fields stay (defaults.ts).
+  const startFromSettings = (source: StartFrom, settings: CampaignDefaultSettings) => {
+    const applied = applyDefaults(latest.current, settings, selectedPack);
+    const limits = capabilitiesNow.current;
+    const limited = limits ? withCapabilities(applied.draft, limits) : { draft: applied.draft, wanted: {} };
+    wanted.current = limited.wanted;
+    write(limited.draft);
+    setKept(applied.kept);
+    setStartFrom(source);
+    setLate(false);
+  };
+
+  // Saved defaults, read each time the dialog opens: laid over a draft the
+  // person has not touched, offered beside one they have.
+  const onDefaultsLoaded = (found: CampaignDefaults | null) => {
+    if (!found) {
+      return;
+    }
+    if (edited.current) {
+      setLate(true);
+      setStartFrom("app");
+      return;
+    }
+    startFromSettings("mine", found.settings);
+  };
+  const defaults = useCampaignDefaults(open, onDefaultsLoaded);
 
   // Fetched rather than imported: the pack files are read off disk on the
   // server, and the summaries are all a picker needs.
@@ -129,18 +184,13 @@ export function CreateCampaignDialog({
         if (cancelled || !data?.story) {
           return;
         }
+        capabilitiesNow.current = data;
         setCapabilities(data);
         // Defaults follow reality: a table should not discover on turn one
-        // that the AI seat was never fillable. Maps are the exception: they
-        // wait for a picture backend instead of being switched off for good,
-        // since a server set up in the usual order (storyteller first,
-        // pictures later) would otherwise make every early campaign map-less
-        // and keep it so after pictures arrive (src/lib/image-backend-rescue.ts).
-        setDraft((current) => ({
-          ...current,
-          dmMode: !data.story.configured || !data.story.reachable ? "human" : current.dmMode,
-          ttsEnabled: data.tts?.configured ? current.ttsEnabled : false,
-        }));
+        // that the AI seat was never fillable.
+        const limited = withCapabilities(latest.current, data);
+        Object.assign(wanted.current, limited.wanted);
+        write(limited.draft);
       })
       .catch(() => {
         // No answer is not "no AI": without capabilities the dialog offers
@@ -151,150 +201,131 @@ export function CreateCampaignDialog({
     };
   }, [open]);
 
-  const franchises = useMemo(() => groupByFranchise(packs), [packs]);
-  const selectedPack = packs.find((pack) => pack.id === draft.worldPack) ?? null;
-
-  const choosePack = (pack: WorldPackSummary) => setDraft((current) => applyPack(current, pack));
+  const choosePack = (pack: WorldPackSummary) => patch(applyPack(latest.current, pack));
   // Leaving a pack hands the theme back to the genre's preset, unless the
   // person typed their own.
-  const dropPack = () => setDraft((current) => presetTheme(clearPack(current, selectedPack)));
+  const dropPack = () => patch(presetTheme(clearPack(latest.current, selectedPack)));
   // Picking a bare genre by hand leaves the pack. A pack is defined as its
   // baseGenre plus overrides, so letting the two disagree would blend the
   // pack's flavor over the wrong preset and overlay its monsters onto the
   // wrong bestiary catalog.
   const pickGenre = (genre: Genre) =>
-    setDraft((current) =>
-      presetTheme({
-        ...(current.worldPack ? clearPack(current, selectedPack) : current),
-        genre,
+    patch(presetTheme({ ...(latest.current.worldPack ? clearPack(latest.current, selectedPack) : latest.current), genre }));
+
+  // Saving reads the draft after a half-typed line or veil has been kept: an
+  // input still holding focus is blurred first, and the save waits a turn
+  // for the blur's write. What the person wanted where the server overrode it
+  // is what is saved.
+  const saveDefaults = () => {
+    const focused = typeof document === "undefined" ? null : document.activeElement;
+    if (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) {
+      focused.blur();
+    }
+    setDefaultsMessage(null);
+    setDefaultsBusy(true);
+    setTimeout(() => {
+      void defaults.save(defaultsFromDraft({ ...latest.current, ...wanted.current })).then((outcome) => {
+        setDefaultsBusy(false);
+        if (outcome.ok) {
+          setStartFrom("mine");
+          setLate(false);
+          setDefaultsMessage({ tone: "ok", text: "Saved. Campaigns you make from now on start from these choices." });
+        } else {
+          setDefaultsMessage({ tone: "error", text: `${outcome.error} Nothing here changed, and you can still create the campaign.` });
+        }
+      });
+    }, 0);
+  };
+
+  const defaultsActions: DefaultsActions = {
+    state: defaults.state,
+    startFrom,
+    late,
+    kept,
+    busy: defaultsBusy,
+    message: defaultsMessage,
+    onUseMine: () => {
+      if (defaults.state.status === "saved") {
+        startFromSettings("mine", defaults.state.defaults.settings);
+        setDefaultsMessage({ tone: "ok", text: "This campaign now starts from your defaults." });
+      }
+    },
+    onUseApp: () => {
+      startFromSettings("app", appDefaultSettings());
+      setDefaultsMessage({ tone: "ok", text: "This campaign now starts from the app's defaults." });
+    },
+    onSave: saveDefaults,
+    onRemove: () => {
+      setDefaultsBusy(true);
+      void defaults.remove().then((outcome) => {
+        setDefaultsBusy(false);
+        setStartFrom("app");
+        setDefaultsMessage(
+          outcome.ok
+            ? { tone: "ok", text: "Removed. New campaigns start from the app's defaults; this one keeps what it has." }
+            : { tone: "error", text: outcome.error },
+        );
+      });
+    },
+    onManage: () => setManaging(true),
+  };
+
+  const groups = {
+    isOpen: (id: GroupId) => openGroups.has(id),
+    setOpen: (id: GroupId, isOpen: boolean) =>
+      setOpenGroups((current) => {
+        const next = new Set(current);
+        if (isOpen) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+        return next;
       }),
-    );
+  };
+
+  // The review's Edit: the step it names, the group opened, and the way back
+  // offered on that step. Nothing in the draft moves.
+  const editFrom = (target: EditTarget) => {
+    if (target.group) {
+      groups.setOpen(target.group, true);
+    }
+    pendingFocus.current = target.group ?? "top";
+    setFromReview(true);
+    setStep(STEP_KEYS.indexOf(target.step));
+  };
+  // Once the step is on screen, its group is brought to the top of the pane
+  // and its heading takes focus (after the wizard's own focus on the title);
+  // a row with no group of its own starts the step from the top.
+  useEffect(() => {
+    const id = pendingFocus.current;
+    if (!id) {
+      return;
+    }
+    pendingFocus.current = null;
+    if (id === "top") {
+      shell.current?.querySelector<HTMLElement>("section[data-active]")?.scrollTo({ top: 0 });
+      return;
+    }
+    const group = shell.current?.querySelector<HTMLElement>(`section[data-active] [data-group="${id}"]`);
+    const pane = group?.closest<HTMLElement>("section[data-active]");
+    if (group && pane) {
+      pane.scrollTop += group.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8;
+      group.querySelector<HTMLElement>(".cc-group-toggle")?.focus({ preventScroll: true });
+    }
+  }, [step]);
 
   async function submit() {
     if (busy || (solo && storyKnownMissing)) {
       return;
     }
-    const {
-      title,
-      description,
-      theme,
-      maxPlayers,
-      startingLevel,
-      difficulty,
-      dmMode,
-      genre,
-      customGenreText,
-      tableLanguage,
-      aiStorySetup,
-      campaignLength,
-      dicePolicy,
-      ttsEnabled,
-      ttsVoice,
-      ttsSpeed,
-      ttsAutoCast,
-      mapsEnabled,
-      ambienceEnabled,
-      ambienceAuto,
-      boardDrawing,
-      enemyIntent,
-      presentation,
-      multiCharacter,
-      multiclassingEnabled,
-      midGameJoinOpen,
-      holdSubmissions,
-      narrationGuard,
-      safety,
-      gm,
-      relationships,
-      romance,
-      worldSimulation,
-      inventoryApprovals,
-      vitalsApprovals,
-      variantRules,
-      companions,
-      hpMethod,
-      startingWealth,
-      maxCompanions,
-      maxGuests,
-      worldPack,
-      voiceChat,
-      houseRules,
-      loreDrafts,
-      contentImport,
-    } = draft;
     setBusy(true);
     setError("");
     try {
       const response = await fetch("/api/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim(),
-          theme: theme.trim(),
-          maxPlayers: solo ? 1 : maxPlayers,
-          startingLevel,
-          difficulty,
-          gameSettings: {
-            dmMode,
-            genre,
-            customGenreText: customGenreText.trim(),
-            tableLanguage,
-            aiStorySetup: aiNarrates && aiStorySetup,
-            campaignLength,
-            dicePolicy,
-            ttsEnabled,
-            ttsVoice,
-            ttsSpeed,
-            ttsAutoCast,
-            mapsEnabled,
-            ambienceEnabled,
-            ambienceAuto: ambienceEnabled && ambienceAuto,
-            boardDrawing,
-            enemyIntent,
-            presentation,
-            multiCharacter,
-            multiclassingEnabled,
-            midGameJoinOpen,
-            holdSubmissions,
-            narrationGuard: aiNarrates && narrationGuard,
-            safety,
-            gm,
-            relationships,
-            // Romance rides on the bond meter, so it cannot be on without it.
-            romance: relationships === "off" ? "off" : romance,
-            worldSimulation: aiNarrates && worldSimulation,
-            inventoryApprovals,
-            vitalsApprovals,
-            variantRules,
-            companions: aiNarrates ? companions : "off",
-            hpMethod,
-            startingWealth,
-            maxCompanions,
-            maxGuests,
-            worldPack,
-            voice: voiceChat,
-            // Three gameSettings fields are deliberately not offered here.
-            //
-            // `stages` trades turn quality for speed on a slow local model,
-            // which is an operator decision, not a table decision, so it
-            // stays in the lobby's settings panel where the labels can
-            // explain which stages actually save a model call.
-            //
-            // `beatReminder` is how often a human DM is nudged to write down
-            // the story they told out loud. Nobody knows their answer before
-            // they have run a session, and the nudge is the thing that
-            // teaches them they want one, so it lives in the settings panel
-            // they are already looking at when it fires.
-            //
-            // `dmAssist` is which parts of the game an assisted-mode DM hands
-            // to the AI. Picking "I run the game, with AI help" on the first
-            // step is already the answer to "do you want help"; which help,
-            // and when, is a question a person answers at the table with the
-            // console in front of them, so all three start on and the
-            // settings panel shows them only once the mode is assisted.
-          },
-        }),
+        body: JSON.stringify(campaignPayload(latest.current, { solo, aiNarrates: latest.current.dmMode !== "human" })),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -303,6 +334,7 @@ export function CreateCampaignDialog({
       }
       // House rules and starting lore land right after the campaign row
       // exists; anything that fails to post can be re-entered in the lobby.
+      const { houseRules, loreDrafts, contentImport } = latest.current;
       await submitWorldSetup(data.campaign.id, houseRules, loreDrafts);
       // The workshop import goes last so its house rules win over the ones
       // typed in this dialog: choosing a prepared workshop is the more
@@ -318,21 +350,7 @@ export function CreateCampaignDialog({
 
   const stepProps = { draft, patch, gates };
   const title = solo ? "New solo adventure" : "New campaign";
-
-  // A step is dropped when nothing on it applies. Today every step keeps at
-  // least one field in every mode (voice chat leaves the Advanced step on a
-  // solo table, but the variant rules and prep stay), so the filter is there
-  // for the mode that changes that, not for one that exists now.
-  const applies: Record<StepKey, boolean> = {
-    premise: true,
-    world: true,
-    party: true,
-    feel: true,
-    advanced: true,
-    review: true,
-  };
-  const order = STEP_KEYS.filter((key) => applies[key]);
-  const activeKey = order[Math.min(Math.max(step, 0), order.length - 1)];
+  const activeKey = STEP_KEYS[Math.min(Math.max(step, 0), STEP_KEYS.length - 1)];
   // The step's short name stays as the eyebrow; the question under it is the
   // gold title, which rises again each time its step comes on screen.
   const heading = (key: StepKey, name: string, question: string) => (
@@ -343,80 +361,77 @@ export function CreateCampaignDialog({
       </GoldTitle>
     </span>
   );
+  const backToReview = fromReview ? (
+    <div className="cc-return">
+      <span className="min-w-0 flex-1">Editing from the review. Nothing you set is lost.</span>
+      <button type="button" className="cc-link" onClick={() => setStep(STEP_KEYS.indexOf("review"))}>
+        Back to review
+      </button>
+    </div>
+  ) : null;
+  const hasTitle = draft.title.trim().length > 0;
 
-  const steps = (
-    [
-      {
-        key: "premise",
-        label: "Premise",
-        title: heading("premise", "The premise", solo ? "What is this adventure?" : "What is this campaign?"),
-        blurb: solo ? "Name the adventure and decide who narrates." : "Name it and decide who runs the table.",
-        content: (
-          <PremiseStep
+  const steps = [
+    {
+      key: "essentials",
+      label: "Essentials",
+      title: heading("essentials", "The essentials", solo ? "What is this adventure?" : "What is this campaign?"),
+      blurb: "A name, who runs it, the party and the world. The groups at the bottom can wait.",
+      content: (
+        <>
+          {backToReview}
+          <EssentialsStep
             {...stepProps}
+            active={activeKey === "essentials"}
+            titleRef={titleRef}
+            defaultsBar={<DefaultsBar actions={defaultsActions} />}
+            groups={groups}
             packs={packs}
             franchises={franchises}
             selectedPack={selectedPack}
+            prepSource={prep?.title ?? null}
             onChoosePack={choosePack}
             onClearPack={dropPack}
-          />
-        ),
-        canContinue: draft.title.trim().length > 0,
-      },
-      {
-        key: "world",
-        label: "Setting",
-        title: heading("world", "The world", "What kind of world is this?"),
-        blurb:
-          "Pick a setting and say what the story is about. Every setting is the same 5e underneath; what changes is how the Dungeon Master talks, what the maps look like, and who lives there.",
-        continueLabel: `Continue in ${genrePreset(draft.genre).name}`,
-        content: (
-          <WorldStep
-            {...stepProps}
-            active={activeKey === "world"}
-            selectedPack={selectedPack}
             onPickGenre={pickGenre}
+            onPrepChosen={setPrep}
           />
-        ),
-      },
-      {
-        key: "party",
-        label: "Party",
-        title: heading("party", "The party", solo ? "How strong, and how hard?" : "Who is playing, and how hard?"),
-        blurb: solo ? "Where your hero begins." : "Who is adventuring, and how hard the road is.",
-        content: <PartyStep {...stepProps} />,
-      },
-      {
-        key: "feel",
-        label: "The table",
-        title: heading("feel", "The feel", "How does this table feel?"),
-        blurb: "What is on at the table. Flip any of these later in the lobby too.",
-        content: <FeelStep {...stepProps} active={activeKey === "feel"} />,
-      },
-      {
-        key: "advanced",
-        label: "Advanced",
-        title: heading("advanced", "Advanced", "The parts you can skip"),
-        blurb: "Variant rules, house rules, prep and live voice. All optional.",
-        content: <AdvancedStep {...stepProps} />,
-      },
-      {
-        key: "review",
-        label: "Review",
-        title: heading("review", "Review", "Here is what you made"),
-        blurb: "Ready the table. The cover is the tile this will wear on the home screen until you paint it one.",
-        content: (
-          <ReviewStep
-            {...stepProps}
-            active={activeKey === "review"}
-            selectedPack={selectedPack}
-            error={error}
-          />
-        ),
-        canContinue: !busy && !(solo && storyKnownMissing),
-      },
-    ] satisfies Array<WizardStep & { key: StepKey }>
-  ).filter((entry) => applies[entry.key]);
+        </>
+      ),
+      canContinue: hasTitle,
+      blocker: hasTitle ? null : solo ? "Name the adventure first." : "Name the campaign first.",
+      onBlocked: () => titleRef.current?.focus(),
+    },
+    {
+      key: "experience",
+      label: "Experience",
+      title: heading("experience", "The experience", "How does this table feel?"),
+      blurb: "How the table sounds first, then its atmosphere and safety. All of it can change later in the lobby too.",
+      content: (
+        <>
+          {backToReview}
+          <ExperienceStep {...stepProps} active={activeKey === "experience"} groups={groups} />
+        </>
+      ),
+    },
+    {
+      key: "review",
+      label: "Review",
+      title: heading("review", "Review", "Here is what you made"),
+      blurb: "Ready the table. The cover is the tile this will wear on the home screen until you paint it one.",
+      content: (
+        <ReviewStep
+          {...stepProps}
+          active={activeKey === "review"}
+          selectedPack={selectedPack}
+          prep={prep}
+          error={error}
+          onEdit={editFrom}
+          defaultsPanel={<DefaultsPanel actions={defaultsActions} />}
+        />
+      ),
+      canContinue: !busy && !(solo && storyKnownMissing),
+    },
+  ] satisfies Array<WizardStep & { key: StepKey }>;
 
   // The choices so far, in one quiet line in the header, so a later step
   // still says which world it is furnishing.
@@ -437,7 +452,10 @@ export function CreateCampaignDialog({
             sheet on a phone; the rem cap keeps it a dialog on a monitor.
             Wide at lg so the eight portals sit four across; on a phone the
             panel takes nearly the whole width so they still fit two. */}
-        <Dialog.Content className="cc-shell panel fixed left-1/2 top-1/2 z-50 flex h-[min(90vh,46rem)] w-[min(96vw,34rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl p-4 sm:p-6 lg:w-[min(96vw,60rem)]">
+        <Dialog.Content
+          ref={shell}
+          className="cc-shell panel fixed left-1/2 top-1/2 z-50 flex h-[min(90vh,46rem)] w-[min(96vw,34rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl p-4 sm:p-6 lg:w-[min(96vw,60rem)]"
+        >
           <Dialog.Title className="sr-only">{title}</Dialog.Title>
           <Dialog.Close
             aria-label="Close"
@@ -450,6 +468,9 @@ export function CreateCampaignDialog({
             aside={<span className="pr-2">{draftLine}</span>}
             variant="diamonds"
             wipe
+            // The diamonds go forward too once the name is in, so a person who
+            // only wants the review can go straight there.
+            jumpAhead
             steps={steps}
             step={step}
             onStepChange={setStep}
@@ -463,6 +484,7 @@ export function CreateCampaignDialog({
             }
             className="[&>header]:pr-9"
           />
+          <DefaultsDialog open={managing} onOpenChange={setManaging} actions={defaultsActions} />
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

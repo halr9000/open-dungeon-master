@@ -1,7 +1,7 @@
 import { spellSlotsFor } from "@/lib/srd";
 import { slotTableFor } from "@/lib/srd/multiclass";
 import { earnedAsiCountFor, removeAsiChoices } from "@/lib/srd/asi";
-import { readAsiLedger, withAsiLedger } from "@/lib/srd/asi-ledger";
+import { legacyAsiTaken, readAsiLedger, withAsiLedger } from "@/lib/srd/asi-ledger";
 import { derivedMaxHp, hpBonusPerLevelFor } from "@/lib/srd/hit-points";
 import { hpBonusPerLevel } from "@/lib/srd/race-id";
 import { isThirdCaster } from "@/lib/srd/third-caster";
@@ -45,11 +45,11 @@ import {
 //
 // It is deliberately lossy in one place, and always was: reversing an
 // ability score improvement cannot restore a score that hit the 20 cap on
-// the way up. Up-scaling grants no automatic extra improvements either; the
-// player edits the sheet in play instead. Both of those are the old
-// behaviour, written down rather than changed. Primal Champion is not an
-// improvement but a fixed +4 at barbarian 20, so it is given and taken back
-// here.
+// the way up. Up-scaling grants no automatic extra improvements either: the
+// ones between the stored level and the table's are owed instead (issue
+// 293), so the sheet lists them and the next level-up offers them. Primal
+// Champion is not an improvement but a fixed +4 at barbarian 20, so it is
+// given and taken back here.
 
 export function adaptSheetToLevel(
   input: CreateSheetInput,
@@ -122,9 +122,18 @@ export function adaptSheetToLevel(
   }
   // The count of improvements taken never passes what the level has earned,
   // so the ones given back here are offered again when the level returns.
-  const taken = readAsiLedger(sheet.features ?? []);
-  if (taken !== null && taken > keptChoiceCount) {
-    sheet.features = withAsiLedger(sheet.features ?? [], keptChoiceCount);
+  // Going up it stays what the stored character took (issue 293): nobody
+  // offered the improvements between its level and the table's, so they are
+  // owed, as a character built at the table's level is offered them. Written
+  // whenever the level changes, because the table's check reads a sheet with
+  // no count as having taken what the table's level gives.
+  const held = readAsiLedger(sheet.features ?? []);
+  const taken = Math.min(
+    keptChoiceCount,
+    held ?? Math.max(sheet.asiChoices?.length ?? 0, legacyAsiTaken(fromLevel)),
+  );
+  if (held !== null ? held !== taken : level !== fromLevel && (level >= 4 || taken > 0)) {
+    sheet.features = withAsiLedger(sheet.features ?? [], taken);
   }
 
   // Primal Champion (barbarian 20): +4 Strength and Constitution, to 24. A

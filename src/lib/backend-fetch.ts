@@ -150,6 +150,12 @@ export async function forEachStreamLine(
     if (rest) {
       onLine(rest);
     }
+  } catch (error) {
+    // A consumer can stop a harmful stream while this reader still owns it.
+    // Cancel before unwinding so buffered frames and the upstream body are not
+    // left running after the callback rejects them.
+    await reader.cancel().catch(() => {});
+    throw error;
   } finally {
     clearTimeout(idleTimer);
   }

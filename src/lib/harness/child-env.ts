@@ -69,7 +69,8 @@ const PER_HARNESS: Record<string, readonly string[]> = {
     "CLOUD_ML_REGION",
   ],
   codex: ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"],
-  opencode: ["OPENCODE_CONFIG_DIR"],
+  // OPENCODE_DB moves opencode 2's store, where it keeps its sign-ins too.
+  opencode: ["OPENCODE_CONFIG_DIR", "OPENCODE_DB"],
   grok: ["GROK_HOME", "XAI_API_KEY"],
 };
 

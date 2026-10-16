@@ -59,8 +59,33 @@ try {
   assert.equal(restoredDb.prepare("SELECT COUNT(*) AS n FROM campaigns").get().n, 1);
   restoredDb.close();
 
-  // A manifest decides what a live restore deletes first, so one that names
-  // a path the app does not manage is refused before anything is touched.
+  // A live restore over a world that moved on: the archive's state goes in,
+  // the newer one is set aside beside it, and the next backup leaves that out.
+  fs.writeFileSync(path.join(root, "public", "uploads", "later.txt"), "made after the backup\n");
+  const liveRestore = spawnSync(process.execPath, [path.join(repo, "scripts", "odm-restore.mjs"), archive, "--live"], {
+    cwd: repo,
+    env: { ...process.env, ODM_ROOT: root, PORT: "65534" },
+    encoding: "utf8",
+  });
+  assert.equal(liveRestore.status, 0, liveRestore.stderr || liveRestore.stdout);
+  assert.ok(!fs.existsSync(path.join(root, "public", "uploads", "later.txt")));
+  assert.equal(
+    fs.readFileSync(path.join(root, "public", "uploads", ".odm-restore-previous", "later.txt"), "utf8"),
+    "made after the backup\n",
+  );
+  assert.match(liveRestore.stdout, /kept in public\/uploads\/\.odm-restore-previous/);
+  const again = spawnSync(process.execPath, [path.join(repo, "scripts", "odm-backup.mjs"), backupDir], {
+    cwd: repo,
+    env: { ...process.env, ODM_ROOT: root, PORT: "65534" },
+    encoding: "utf8",
+  });
+  assert.equal(again.status, 0, again.stderr || again.stdout);
+  const againArchive = again.stdout.match(/^backup: (.+?) \(/m)?.[1];
+  const againFiles = spawnSync("tar", ["-tzf", againArchive], { encoding: "utf8" }).stdout;
+  assert.ok(!againFiles.includes(".odm-restore-"), againFiles);
+
+  // A manifest decides what a live restore replaces, so one that names a path
+  // the app does not manage is refused before anything is touched.
   const tampered = path.join(root, "tampered");
   fs.mkdirSync(tampered);
   assert.equal(spawnSync("tar", ["-xzf", archive, "-C", tampered]).status, 0);

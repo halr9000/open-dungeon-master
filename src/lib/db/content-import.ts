@@ -5,7 +5,7 @@ import { tableAuthors } from "@/lib/db/homebrew";
 import { rosterMonsters } from "@/lib/db/workshop-bundle-shelf";
 import { getCampaignById, updateGameSettings, type Campaign } from "@/lib/db/campaigns";
 import { embedPendingLore } from "@/lib/db/lore";
-import { listBeats } from "@/lib/db/workshop-beats";
+import { getBeat, listBeats } from "@/lib/db/workshop-beats";
 import { compileBoard, summarizeCompile, type CompiledBoard } from "@/lib/workshop/board-compile";
 import {
   writeStoryboardColumns,
@@ -15,6 +15,7 @@ import {
 import { getHouseRulesText, setHouseRules } from "@/lib/db/rules";
 import { mergeHouseRules } from "@/lib/rulesets/logic";
 import { arcRoom } from "@/lib/dm/arc-logic";
+import { checkProse, proseWarningLine } from "@/lib/workshop/prose-check";
 import { copiesFrom, recordOrigin, type OriginKind } from "@/lib/db/content-origins";
 import {
   copyFactions,
@@ -237,6 +238,11 @@ function boardFactsFor(source: Campaign, compiled: CompiledBoard, common: Campai
     beats: compiled.arcBeats,
     moments: compiled.moments.length,
     arcProblem: summarizeCompile(compiled, false).arcRefusal,
+    beatTitles: compiled.arcPlan.map((beat) => getBeat(beat.cardId)?.title ?? beat.cardId),
+    momentTitles: compiled.moments.map((moment) => moment.name),
+    proseNotes: listBeats(source.id)
+      .map((card) => ({ title: card.title, message: proseWarningLine(checkProse(card.body)) }))
+      .filter((note) => note.message),
   };
 }
 
@@ -446,6 +452,7 @@ export function runContentImport(input: {
       fights,
       arcMode: input.arcMode ?? "leave",
       title: source.title,
+      sourceId,
     });
     counts.copied += columns.written;
     beatsAdded = columns.beatsAdded;

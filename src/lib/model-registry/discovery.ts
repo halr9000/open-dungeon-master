@@ -1,7 +1,8 @@
 // Asking each kind of backend which models it serves: Ollama's own API for
 // the "local" provider, an OpenAI-compatible server's /models for "custom"
-// (the guided setup's reader, src/lib/setup/discovery.ts), and an
-// OpenAI-compatible images API's /models kept to the picture models. The
+// (the guided setup's reader, src/lib/setup/discovery.ts), an
+// OpenAI-compatible images API's /models kept to the picture models, and a
+// speech server's /models whole (narration and dictation). The
 // readers are pure (discovery-logic.ts); this file does the fetching, with
 // short timeouts and no retries, so a listing never holds a page.
 
@@ -10,7 +11,7 @@ import { modelsUrl, normalizeBaseUrl } from "@/lib/setup/discovery-logic";
 import { serverEnv } from "@/lib/server-env";
 import { rememberLocalContextWindow } from "@/lib/text-models";
 import { isImageModelId } from "./catalog-logic";
-import { isOllamaChatModel, readImageModelList, readOllamaShow, readOllamaTags, type OllamaModel, type OllamaModelInfo } from "./discovery-logic";
+import { isOllamaChatModel, readImageModelList, readModelIdList, readOllamaShow, readOllamaTags, type OllamaModel, type OllamaModelInfo } from "./discovery-logic";
 
 const LIST_TIMEOUT_MS = 6_000;
 const SHOW_TIMEOUT_MS = 8_000;
@@ -82,14 +83,24 @@ export function listCustomModels(baseUrl: string, apiKey: string): Promise<Model
   return listModels(baseUrl, apiKey);
 }
 
-export type ImageModelListing =
+export type ModelIdListing =
   | { ok: true; baseUrl: string; models: string[] }
   | { ok: false; baseUrl: string; error: string; needsKey?: boolean };
 
 // The picture models an OpenAI-compatible images API lists. `paints` is the
 // catalog's word on an id (true, false, or null for one it has not heard
 // of); a name that says it paints is kept when the catalog is silent.
-export async function listImageModels(baseUrlInput: string, apiKey: string, paints: (id: string) => boolean | null): Promise<ImageModelListing> {
+export function listImageModels(baseUrl: string, apiKey: string, paints: (id: string) => boolean | null): Promise<ModelIdListing> {
+  return listModelIds(baseUrl, apiKey, (json) => readImageModelList(json, paints, isImageModelId));
+}
+
+// Every model a speech server lists: a Whisper service, Speaches, OpenAI.
+// Nothing is left out; the picker narrows what it shows by name.
+export function listSpeechModels(baseUrl: string, apiKey: string): Promise<ModelIdListing> {
+  return listModelIds(baseUrl, apiKey, (json) => readModelIdList(json, () => true));
+}
+
+async function listModelIds(baseUrlInput: string, apiKey: string, read: (json: unknown) => string[]): Promise<ModelIdListing> {
   const baseUrl = normalizeBaseUrl(baseUrlInput);
   if (!baseUrl) {
     return { ok: false, baseUrl, error: "Enter the server's address." };
@@ -112,39 +123,58 @@ export async function listImageModels(baseUrlInput: string, apiKey: string, pain
     if (!response.ok) {
       return { ok: false, baseUrl, error: `${host} answered ${response.status} when asked for its models.` };
     }
-    return { ok: true, baseUrl, models: readImageModelList(await response.json().catch(() => null), paints, isImageModelId) };
+    return { ok: true, baseUrl, models: read(await response.json().catch(() => null)) };
   } catch {
     return { ok: false, baseUrl, error: `Nothing answered at ${host}. Is the server running, and is the address right?` };
   }
 }
 
-type SoleCache = Map<string, { at: number; id: string }>;
+type SoleCache = Map<string, { at: number; id: string; ttl: number }>;
 declare global {
   var __odmSoleModel: SoleCache | undefined;
 }
 const SOLE_TTL_MS = 5 * 60_000;
+// How long a speech server that did not answer is left alone: the
+// capability probe's window (src/lib/capabilities.ts PROBE_CACHE_MS), so a
+// Whisper box that is switched off costs one listing timeout per half
+// minute on the paths that have no probe of their own (the voice-chat
+// transcript, narration), not one per request.
+const SOLE_SILENT_TTL_MS = 30_000;
 
-// The one chat model a backend serves, when it serves exactly one: a
-// llama-server started with a single model, an Ollama with one pull. A
-// blank model setting runs it, so nothing has to be named in code or by
-// the admin for the plain install to work; a server with several models
-// is asked to have one picked. Remembered a few minutes per address.
-export async function soleListedModel(input: { provider: "local" | "custom"; baseUrl: string; apiKey?: string }): Promise<string> {
+// The one model a backend serves, when it serves exactly one: a
+// llama-server started with a single model, an Ollama with one pull, a
+// Whisper service with the model it loaded. A blank model setting runs it,
+// so nothing has to be named in code or by the admin for the plain install
+// to work; a server with several models is asked to have one picked.
+// Remembered a few minutes per address.
+export async function soleListedModel(input: { provider: "local" | "custom" | "speech"; baseUrl: string; apiKey?: string }): Promise<string> {
   const key = `${input.provider}::${input.baseUrl.trim()}`;
   const cache = (globalThis.__odmSoleModel ??= new Map());
   const kept = cache.get(key);
-  if (kept && Date.now() - kept.at < SOLE_TTL_MS) return kept.id;
+  if (kept && Date.now() - kept.at < kept.ttl) return kept.id;
   let id = "";
+  let answered = false;
   if (input.provider === "local") {
     const listing = await listOllamaModels(input.baseUrl || ollamaBaseUrl());
     const chat = listing.ok ? listing.models.filter((model) => isOllamaChatModel(model)) : [];
     id = chat.length === 1 ? chat[0].id : "";
+    answered = listing.ok;
+  } else if (input.provider === "speech") {
+    const listing = await listSpeechModels(input.baseUrl, input.apiKey ?? "");
+    id = listing.ok && listing.models.length === 1 ? listing.models[0] : "";
+    answered = listing.ok;
   } else {
     const listing = await listCustomModels(input.baseUrl, input.apiKey ?? "");
     id = listing.ok && listing.models.length === 1 ? listing.models[0].id : "";
+    answered = listing.ok;
   }
-  // Only an answer is remembered; a server that was down is asked again.
-  if (id) cache.set(key, { at: Date.now(), id });
+  // Whatever the server answered is remembered, "several" (or none) too, so
+  // a blank field is not listed again on every turn or page. A storyteller
+  // that was down is asked again on the next turn, which should find a
+  // server just started; a speech server that was down is left alone for
+  // the probe's window.
+  if (answered) cache.set(key, { at: Date.now(), id, ttl: SOLE_TTL_MS });
+  else if (input.provider === "speech") cache.set(key, { at: Date.now(), id: "", ttl: SOLE_SILENT_TTL_MS });
   return id;
 }
 

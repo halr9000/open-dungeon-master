@@ -44,9 +44,29 @@ export function resolve(specifier, context, nextResolve) {
 
 // TS source imports JSON without attributes (the bundler allows it);
 // plain Node insists on them, so stamp the attribute at load time.
-export function load(url, context, nextLoad) {
+//
+// Node strips the types from a .ts file but will not touch JSX, so a .tsx
+// module is compiled here. Plain library code reaches them too, not only UI
+// tests: the builder's option hooks import src/lib/content-scope.tsx, and
+// every suite that drives the builder (scripts/lib/enforce-builder.mjs)
+// stopped running under plain node when that import arrived, while Vitest,
+// which compiles .tsx itself, kept passing. TypeScript is loaded on the first
+// .tsx only, so a suite that never meets one does not pay for it.
+let typescript = null;
+export async function load(url, context, nextLoad) {
   if (url.endsWith(".json")) {
     return nextLoad(url, { ...context, importAttributes: { type: "json" } });
+  }
+  if (url.startsWith("file:") && url.endsWith(".tsx")) {
+    typescript ??= (await import("typescript")).default;
+    const source = typescript.transpileModule(fs.readFileSync(fileURLToPath(url), "utf8"), {
+      compilerOptions: {
+        jsx: typescript.JsxEmit.ReactJSX,
+        module: typescript.ModuleKind.ESNext,
+        target: typescript.ScriptTarget.ES2022,
+      },
+    }).outputText;
+    return { format: "module", shortCircuit: true, source };
   }
   return nextLoad(url, context);
 }

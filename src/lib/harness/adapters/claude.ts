@@ -13,7 +13,8 @@ import { noteSpeed } from "@/lib/speed-status";
 import path from "node:path";
 import { THIS_TURN_HEADING } from "../../prompt-boundary.ts";
 import { parseJsonLine, runProgram, spawnProgram } from "../process.ts";
-import type { HarnessAdapter, HarnessModel, HarnessStartOptions } from "../types.ts";
+import { isHarnessEffort } from "../types.ts";
+import type { HarnessAdapter, HarnessEffort, HarnessModel, HarnessStartOptions } from "../types.ts";
 
 export const CLAUDE_MCP_PREFIX = "mcp__odm__";
 
@@ -23,21 +24,37 @@ type InitializeModel = {
   description?: string;
   resolvedModel?: string;
   supportsFastMode?: boolean;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: string[];
 };
+
+// The effort levels Claude Code lists for a model; none when it says the
+// model takes no effort, and no list when it does not say.
+function claudeEfforts(entry: InitializeModel): HarnessEffort[] | undefined {
+  if (entry.supportsEffort === false) {
+    return [];
+  }
+  return entry.supportedEffortLevels?.filter(isHarnessEffort);
+}
 
 // The models of an `initialize` answer: the ones this sign-in offers, under
 // the names `--model` takes. "default" is left out because both pickers
-// already offer the program's own default. An answer without a list throws,
-// so the card says the list could not be read.
-export function parseClaudeModels(models: unknown): HarnessModel[] {
+// already offer the program's own default; its effort levels are what a
+// blank model offers. An answer without a list throws, so the card says the
+// list could not be read.
+export function parseClaudeModels(models: unknown): { models: HarnessModel[]; defaultEfforts?: HarnessEffort[] } {
   if (!Array.isArray(models)) {
     throw new Error("its answer carried no model list");
   }
-  return (models as InitializeModel[]).flatMap((entry) => {
+  const entries = models as InitializeModel[];
+  const programDefault = entries.find((entry) => entry.value === "default");
+  const defaultEfforts = programDefault ? claudeEfforts(programDefault) : undefined;
+  const listed = entries.flatMap((entry) => {
     if (!entry.value || entry.value === "default") {
       return [];
     }
     const name = entry.displayName || entry.value;
+    const efforts = claudeEfforts(entry);
     // "Opus 5.5 · Best for everyday, complex tasks" names the version the
     // alias stands for; a variant's own name ("Opus (1M context)") is kept.
     const head = entry.description?.includes(" · ") ? entry.description.split(" · ")[0] : "";
@@ -49,9 +66,11 @@ export function parseClaudeModels(models: unknown): HarnessModel[] {
         label: head.startsWith(name) ? head : name,
         fast: entry.supportsFastMode === true,
         ...(entry.resolvedModel ? { catalogId: entry.resolvedModel } : {}),
+        ...(efforts ? { efforts } : {}),
       },
     ];
   });
+  return { models: listed, ...(defaultEfforts ? { defaultEfforts } : {}) };
 }
 
 const MODELS_REQUEST_ID = "odm-models";
@@ -61,10 +80,14 @@ const MODELS_REQUEST_ID = "odm-models";
 // It is started with a turn's own flags, so a flag this version no longer
 // takes fails here, on the admin card, rather than at a table; with no model
 // call there is no system prompt to give it, and nothing to leave behind.
-export function probeClaudeModels(binary: string, env: Record<string, string>, timeoutMs = 20_000): Promise<HarnessModel[]> {
-  return new Promise<HarnessModel[]>((resolve, reject) => {
+export function probeClaudeModels(
+  binary: string,
+  env: Record<string, string>,
+  timeoutMs = 20_000,
+): Promise<ReturnType<typeof parseClaudeModels>> {
+  return new Promise<ReturnType<typeof parseClaudeModels>>((resolve, reject) => {
     let settled = false;
-    const finish = (outcome: HarnessModel[] | Error) => {
+    const finish = (outcome: ReturnType<typeof parseClaudeModels> | Error) => {
       if (settled) {
         return;
       }
@@ -389,17 +412,18 @@ export const claudeAdapter: HarnessAdapter = {
     if (installed && auth.state === "signed-out") {
       notes.push("Claude Code is installed but not signed in on this machine.");
     }
-    const models = installed
+    const { models, defaultEfforts } = installed
       ? await probeClaudeModels(binary, env).catch((error: Error) => {
           notes.push(`Claude Code did not list its models (${error.message}).`);
-          return [];
+          return { models: [], defaultEfforts: undefined };
         })
-      : [];
+      : { models: [], defaultEfforts: undefined };
     return {
       installed,
       version: installed ? version.stdout.trim().split(/\s+/)[0] : undefined,
       auth,
       models,
+      defaultEfforts,
       lockdownProven: true,
       message: notes.length > 0 ? notes.join(" ") : undefined,
     };

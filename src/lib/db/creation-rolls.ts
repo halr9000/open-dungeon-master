@@ -2,6 +2,7 @@ import { getGlobalConfig } from "@/lib/db/app-settings";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import { defaultRng } from "@/lib/dice";
 import { startingWealthDice, wealthFromFaces } from "@/lib/srd/starting-wealth";
+import { tableRerollBelow } from "@/lib/srd/ability-rerolls";
 
 // Dice a player is owed while building a character, thrown and kept by the
 // server: the six ability totals of the 4d6 method, and the starting wealth
@@ -12,8 +13,9 @@ import { startingWealthDice, wealthFromFaces } from "@/lib/srd/starting-wealth";
 // One open roll of each kind per player (and, for wealth, per table and
 // class). A roll is spent when a character is made with it.
 //
-// The table is this module's own and is created on first use, so the schema
-// file does not have to know about it.
+// The table is created with the rest of the schema (src/lib/db/core.ts), so
+// deleting a campaign or an account can clear its rows without first asking
+// whether anyone ever rolled.
 
 const POOL_SIZE = 6;
 
@@ -23,26 +25,33 @@ export function abilityRerollBelow(): number {
   return getGlobalConfig().abilityRerollBelow;
 }
 
-// Keyed by the connection, so a process that opens a second database (a
-// test, a restore) makes the table there too.
-const ensured = new WeakSet<object>();
+// Where an ability roll is kept and the rule it is thrown under. The
+// library's roll is the player's own, under the server's rule, as it always
+// was. A table that sets no rule of its own follows the server's, pool and
+// all: it hands back the same six as the library, so joining or opening
+// another table is not a fresh throw. A table that set its own rule
+// (src/lib/srd/ability-rerolls.ts) keeps a six of its own for each player,
+// thrown under that rule, and only a character made at that table can spend
+// it; its six never reach a stricter table's builder or the library's.
+//
+// What that does not bound is the character made with them: it joins the
+// player's library like any other, and a library character or a file
+// entering play is checked against what dice could give, not against where
+// they were thrown (src/lib/srd/sheet-legality.ts policyFor).
+//
+// A lead who switches a table between the server's rule and its own while a
+// player is building moves that player's dice to the other pool, so they
+// throw again there.
+export type AbilityRollPlace = { scope: string; rerollBelow: number };
 
-function db() {
-  const database = getDatabase();
-  if (!ensured.has(database)) {
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS creation_rolls (
-        user_id TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        scope TEXT NOT NULL DEFAULT '',
-        payload_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (user_id, kind, scope)
-      );
-    `);
-    ensured.add(database);
-  }
-  return database;
+export function abilityRollPlace(
+  campaign?: { id: string; gameSettings: { abilityRerollBelow?: number | null } } | null,
+): AbilityRollPlace {
+  const own = campaign?.gameSettings.abilityRerollBelow;
+  return {
+    scope: campaign && typeof own === "number" ? campaign.id : "",
+    rerollBelow: tableRerollBelow(own, abilityRerollBelow()),
+  };
 }
 
 export type AbilityPoolRoll = {
@@ -50,7 +59,7 @@ export type AbilityPoolRoll = {
   throws: Array<{ dice: number[]; dropIndex: number; total: number }>;
   totals: number[];
   // Whether a fresh six may be asked for: only while the pool adds up to
-  // less than the server's threshold.
+  // less than the threshold where it was thrown (abilityRollPlace).
   canReroll: boolean;
   rerollBelow: number;
   // True when these six were already on record and are handed back again
@@ -61,7 +70,7 @@ export type AbilityPoolRoll = {
 };
 
 function read<T>(userId: string, kind: string, scope: string): { payload: T; createdAt: string } | null {
-  const row = db()
+  const row = getDatabase()
     .prepare(`SELECT payload_json, created_at FROM creation_rolls WHERE user_id = ? AND kind = ? AND scope = ?`)
     .get(userId, kind, scope) as { payload_json: string; created_at: string } | undefined;
   if (!row) {
@@ -72,7 +81,7 @@ function read<T>(userId: string, kind: string, scope: string): { payload: T; cre
 }
 
 function write(userId: string, kind: string, scope: string, payload: unknown) {
-  db()
+  getDatabase()
     .prepare(
       `INSERT INTO creation_rolls (user_id, kind, scope, payload_json, created_at)
        VALUES (?, ?, ?, ?, ?)
@@ -83,7 +92,7 @@ function write(userId: string, kind: string, scope: string, payload: unknown) {
 }
 
 function clear(userId: string, kind: string, scope: string) {
-  db()
+  getDatabase()
     .prepare(`DELETE FROM creation_rolls WHERE user_id = ? AND kind = ? AND scope = ?`)
     .run(userId, kind, scope);
 }
@@ -100,9 +109,13 @@ function throwFour(): AbilityPoolRoll["throws"][number] {
   return { dice, dropIndex, total };
 }
 
-const shaped = (throws: AbilityPoolRoll["throws"], kept: boolean, createdAt: string | null): AbilityPoolRoll => {
+const shaped = (
+  throws: AbilityPoolRoll["throws"],
+  kept: boolean,
+  createdAt: string | null,
+  rerollBelow: number,
+): AbilityPoolRoll => {
   const totals = throws.map((entry) => entry.total);
-  const rerollBelow = abilityRerollBelow();
   return {
     throws,
     totals,
@@ -113,27 +126,28 @@ const shaped = (throws: AbilityPoolRoll["throws"], kept: boolean, createdAt: str
   };
 };
 
-// The player's open pool, or null when none was rolled.
-export function openAbilityPool(userId: string): AbilityPoolRoll | null {
-  const open = read<AbilityPoolRoll["throws"]>(userId, "abilities", "");
-  return open?.payload.length === POOL_SIZE ? shaped(open.payload, true, open.createdAt) : null;
+// The player's open pool at this place (the library unless a table is
+// given), or null when none was rolled there.
+export function openAbilityPool(userId: string, place: AbilityRollPlace = abilityRollPlace()): AbilityPoolRoll | null {
+  const open = read<AbilityPoolRoll["throws"]>(userId, "abilities", place.scope);
+  return open?.payload.length === POOL_SIZE ? shaped(open.payload, true, open.createdAt, place.rerollBelow) : null;
 }
 
 // Six throws of 4d6, the lowest die of each set aside. A pool at or over
-// the server's threshold stands: asking again returns the same six, marked
+// the place's threshold stands: asking again returns the same six, marked
 // as kept.
-export function rollAbilityPool(userId: string): AbilityPoolRoll {
-  const open = openAbilityPool(userId);
+export function rollAbilityPool(userId: string, place: AbilityRollPlace = abilityRollPlace()): AbilityPoolRoll {
+  const open = openAbilityPool(userId, place);
   if (open && !open.canReroll) {
     return open;
   }
   const throws = Array.from({ length: POOL_SIZE }, throwFour);
-  write(userId, "abilities", "", throws);
-  return shaped(throws, false, nowIso());
+  write(userId, "abilities", place.scope, throws);
+  return shaped(throws, false, nowIso(), place.rerollBelow);
 }
 
-export function spendAbilityPool(userId: string) {
-  clear(userId, "abilities", "");
+export function spendAbilityPool(userId: string, place: AbilityRollPlace = abilityRollPlace()) {
+  clear(userId, "abilities", place.scope);
 }
 
 export type WealthRoll = { classId: string; faces: number[]; gold: number };
@@ -160,7 +174,7 @@ export function rollStartingWealth(userId: string, campaignId: string, classId: 
 }
 
 export function spendWealthRolls(userId: string, campaignId: string) {
-  db()
+  getDatabase()
     .prepare(`DELETE FROM creation_rolls WHERE user_id = ? AND kind = 'wealth' AND scope LIKE ?`)
     .run(userId, `${campaignId}:%`);
 }

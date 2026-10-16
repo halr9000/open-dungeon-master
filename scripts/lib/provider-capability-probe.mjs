@@ -1,4 +1,4 @@
-import { openAiToolRoute, toolRouteFromError } from "./openai-tool-route.mjs";
+import { toolRouteFromError } from "./openai-tool-route.mjs";
 
 function cleanBase(baseUrl) {
   const value = String(baseUrl || "").trim().replace(/\/+$/, "");
@@ -22,11 +22,6 @@ function responsesEndpoint(baseUrl) {
   if (/\/responses$/.test(value)) return value;
   if (/\/v\d+$/.test(value)) return `${value}/responses`;
   return `${value}/v1/responses`;
-}
-
-function isOpenAiHost(baseUrl) {
-  const host = new URL(cleanBase(baseUrl)).hostname.toLowerCase();
-  return host === "openai.com" || host.endsWith(".openai.com");
 }
 
 async function postJson(endpoint, apiKey, body, timeoutMs) {
@@ -257,14 +252,13 @@ async function runStages(transport) {
 }
 
 // Tries a backend the way the DM loop uses it: a streamed reply, a real
-// structured tool call, and a continuation after the tool result. The
-// route is what the model's name says on OpenAI's own host; any other
-// server starts on plain Chat Completions and, when its refusal names a
+// structured tool call, and a continuation after the tool result. Every
+// backend starts on plain Chat Completions and, when its refusal names a
 // route (reasoning_effort "none", or /v1/responses), is tried once more on
-// that route, exactly as model-client.ts would learn it mid-campaign.
+// that route, exactly as model-client.ts learns it mid-campaign.
 export async function probeBackend({ baseUrl, model, apiKey = "", timeoutMs = 20_000 }) {
   if (!String(model || "").trim()) throw new Error("Model name is required.");
-  let route = isOpenAiHost(baseUrl) ? openAiToolRoute(model) : "chat";
+  let route = "chat";
   let transport = transportFor(route, baseUrl, apiKey, model, timeoutMs);
   let stages;
   try {

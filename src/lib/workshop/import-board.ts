@@ -9,6 +9,7 @@ import {
   type LinkKind,
 } from "./import-kinds.ts";
 import type { PlanInput } from "./import.ts";
+import { ARC_LIMITS } from "../dm/arc-logic.ts";
 
 // Planning the storyboard kind of an import (#156, #157, #159): what the
 // board's cards pick that the import is or is not bringing, what the source's
@@ -98,6 +99,27 @@ export function planBoard(
       message: `${board.moments} scene${board.moments === 1 ? " sits" : "s sit"} on an alternative or optional route. ${board.moments === 1 ? "It arrives" : "They arrive"} as planned moments the storyteller fires or drops when the party gets there, not as beats the party must play.`,
     });
   }
+  // What the arc's event cap leaves out is named here, before the button,
+  // rather than evicted after it (issue #301). A pending event is never
+  // evicted, so the room is what is not already pending.
+  const eventRoom = input.targetArc ? (input.targetArc.eventRoom ?? ARC_LIMITS.events) : ARC_LIMITS.events;
+  if (board.moments > eventRoom) {
+    const titles = board.momentTitles ?? [];
+    warnings.push({
+      kind: "storyboard",
+      message: `The arc has room for ${eventRoom} more planned event${eventRoom === 1 ? "" : "s"} (it holds ${ARC_LIMITS.events}); ${board.moments - eventRoom} of the board's ${board.moments} scenes on routes cannot join it${nameCards(titles.slice(eventRoom))}. ${board.moments - eventRoom === 1 ? "It keeps" : "They keep"} ${board.moments - eventRoom === 1 ? "its" : "their"} full text as a prep card the storyteller can open and search, but the arc will not offer ${board.moments - eventRoom === 1 ? "it" : "them"} as a planned event.`,
+    });
+  }
+  if (board.beats.length || board.moments) {
+    notes.push({
+      kind: "storyboard",
+      message:
+        "Every card is kept whole as a prep card the storyteller can open with read_card and find with search_lore; the arc's own lines are each card's first line.",
+    });
+  }
+  for (const note of board.proseNotes ?? []) {
+    notes.push({ kind: "storyboard", message: `"${note.title}" may read oddly: ${note.message}` });
+  }
 
   const arc = input.targetArc ?? (input.targetHasArc ? { beats: [], acts: 1, room: 0, actRoom: false } : null);
   const mode = input.arcMode ?? "leave";
@@ -113,6 +135,13 @@ export function planBoard(
   if (!arc) {
     if (board.arcProblem && board.beats.length) {
       warnings.push({ kind: "storyboard", message: `${board.arcProblem} Until then the board's beats are left out.` });
+    } else if (board.beats.length > ARC_LIMITS.beats) {
+      const over = board.beats.length - ARC_LIMITS.beats;
+      plan.newBeats = ARC_LIMITS.beats;
+      warnings.push({
+        kind: "storyboard",
+        message: `An arc holds ${ARC_LIMITS.beats} beats; the board's last ${over} cannot join it${nameCards((board.beatTitles ?? []).slice(ARC_LIMITS.beats))}. ${over === 1 ? "It keeps its" : "They keep their"} full text as a prep card, but the party will not be steered to ${over === 1 ? "it" : "them"}.`,
+      });
     }
     return plan;
   }
@@ -140,9 +169,10 @@ export function planBoard(
     });
   }
   if (fresh.length > arc.room) {
+    const freshTitles = (board.beatTitles ?? []).filter((_, index) => !known.has((board.beats[index] ?? "").trim().toLowerCase()));
     warnings.push({
       kind: "storyboard",
-      message: `The arc has room for ${arc.room} more beat${arc.room === 1 ? "" : "s"}; the last ${fresh.length - arc.room} of the board's are left out.`,
+      message: `The arc has room for ${arc.room} more beat${arc.room === 1 ? "" : "s"} (it holds ${ARC_LIMITS.beats}); the last ${fresh.length - arc.room} of the board's cannot join it${nameCards(freshTitles.slice(arc.room))}. ${fresh.length - arc.room === 1 ? "It keeps its" : "They keep their"} full text as a prep card, but the party will not be steered to ${fresh.length - arc.room === 1 ? "it" : "them"}.`,
     });
   }
   if (plan.newBeats) {
@@ -154,3 +184,13 @@ export function planBoard(
   return plan;
 }
 
+// The cards a cap leaves out, by title: the first few in full and a count
+// for the rest, so the warning names what it is about.
+function nameCards(titles: string[]): string {
+  if (!titles.length) {
+    return "";
+  }
+  const shown = titles.slice(0, 4).map((title) => `"${title}"`);
+  const more = titles.length - shown.length;
+  return `: ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
+}

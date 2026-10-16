@@ -14,7 +14,7 @@ import {
 import { nativeDictation, subscribeNativeDictation, type NativeDictation } from "@/lib/native-dictation";
 import { micBlockMessage, micBlockReason } from "@/lib/secure-context";
 import { encodeWav, SPEECH_SAMPLE_RATE, splitForUpload } from "@/lib/speech-wav";
-import { useCapabilities } from "@/lib/use-capabilities";
+import { subscribeCapabilities, useCapabilities } from "@/lib/use-capabilities";
 
 export type DictationState = "idle" | "starting" | "recording" | "transcribing" | "error";
 
@@ -406,6 +406,21 @@ export function useDictation({
       abortRef.current?.abort();
     },
     [],
+  );
+
+  // The engine going away mid-take (a capabilities refresh that finds no
+  // speech-to-text any more) ends the take. Both mic buttons hide with the
+  // engine, so nothing would be left to let go of, and the microphone would
+  // stay open until the take's time limit. A transcription already on its
+  // way is left to land.
+  useEffect(
+    () =>
+      subscribeCapabilities((next) => {
+        if (activeRef.current && pickDictationEngine(next?.stt, hasNativeDictation()) === "none") {
+          cancel();
+        }
+      }),
+    [cancel],
   );
 
   const busy = state === "starting" || state === "recording";

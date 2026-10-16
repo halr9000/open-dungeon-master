@@ -27,4 +27,21 @@ const party = renderToStaticMarkup(createElement(PartyPanel, {
 assert.ok(party.includes("Table Species"));
 assert.ok(!party.includes("homebrew:species"));
 console.log("ok: the active party panel preserves custom species display labels");
+
+// A player who does not steer the story reads the table's rules as a
+// summary, and the reroll rule for rolled stats is among them: the table's
+// own in words, or the server's when it follows the server.
+const { GameSettingsPanel } = await import("../src/app/campaigns/[campaignId]/GameSettingsPanel.tsx");
+const { normalizeGameSettings } = await import("../src/lib/schemas/game-settings.ts");
+const summary = (abilityRerollBelow) =>
+  renderToStaticMarkup(createElement(GameSettingsPanel, {
+    campaignId: world.campaignId,
+    settings: normalizeGameSettings({ abilityRerollBelow }),
+    steersStory: false,
+  }));
+assert.ok(summary(null).includes("Stats: the server&#x27;s reroll rule"));
+assert.ok(summary(0).includes("Stats: the first roll stands"));
+assert.ok(summary(85).includes("Stats: reroll a roll totalling under 85"));
+assert.ok(summary(108).includes("Stats: reroll as often as you like"));
+console.log("ok: a player's settings summary names the table's reroll rule");
 world.close();

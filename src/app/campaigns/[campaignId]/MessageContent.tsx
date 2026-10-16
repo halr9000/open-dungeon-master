@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { stripToolText } from "@/lib/dm/tool-text";
 import { segmentsOf, type Speaker, type SpokenLine } from "@/lib/dm/speech";
 import type { CastMember } from "@/lib/dm/cast";
+import { speakerFaces } from "@/lib/speaker-faces";
 import { SpeechLine } from "@/app/campaigns/[campaignId]/SpeechLine";
 import { Prose } from "@/app/campaigns/[campaignId]/Prose";
 import { RollCard } from "@/app/campaigns/[campaignId]/RollCard";
@@ -104,7 +105,10 @@ export function DmContent({ content, rollsById, sheetsById, cast = [], lines, sp
   // A creature's line is voiced but stays in the narration here: the
   // transcript gives a face only to the cast and the characters.
   const faced = lines.filter((entry) => entry.speaker.kind !== "monster");
-  const faceOf = (who: Speaker) => (who.kind === "pc" ? sheetsById.get(who.id)?.portrait?.url : undefined);
+  // A character speaks with their portrait, else the painted plate for their
+  // class and race (speakerFaces). Unlike their own lines (PlayerMessage),
+  // the player's avatar is not among them: it stands for the player, and the
+  // narration shows the character.
   if (speaker) {
     return (
       <div className="narration space-y-2">
@@ -127,7 +131,7 @@ export function DmContent({ content, rollsById, sheetsById, cast = [], lines, sp
           <div key={index} className="space-y-2">
             {segmentsOf(part.text.trim(), faced).map((segment, at) =>
               segment.kind === "speech" ? (
-                <SpeechLine key={at} speaker={segment.speaker} cast={cast} face={faceOf(segment.speaker)}>
+                <SpeechLine key={at} speaker={segment.speaker} cast={cast} faces={speakerFaces(segment.speaker, sheetsById)}>
                   <Prose text={segment.text} />
                 </SpeechLine>
               ) : (

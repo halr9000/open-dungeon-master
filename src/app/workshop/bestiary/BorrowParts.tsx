@@ -51,7 +51,7 @@ export function BorrowParts({ draft, onChange }: { draft: MonsterDraft; onChange
         <div className="reveal flex flex-col gap-1 rounded-lg border border-stone-800 bg-stone-950/50 p-2">
           <span className="flex items-center justify-between gap-2 text-xs text-stone-300">
             From {source.name}
-            <button type="button" aria-label="Close the borrowed monster" onClick={() => setSource(null)} className={ui.iconAction}>
+            <button type="button" aria-label="Close the borrowed monster" onClick={() => setSource(null)} className={cn(ui.iconAction, "pk-always pk-tap")}>
               <X className="size-3.5" />
             </button>
           </span>

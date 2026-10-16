@@ -37,12 +37,23 @@ The program never sees the server's database key or any provider key.
 | Program | How it is started | Its own tools |
 | --- | --- | --- |
 | Claude Code | `claude -p`, stream JSON | removed (`--tools ""`), checked every turn |
-| opencode | `opencode serve`, HTTP | removed (deny-all agent), checked on this machine |
-| Codex | `codex app-server`, JSON-RPC | boxed in: shell, image viewer and sub-agents off, read-only, approvals refused; its patch tool has no switch. A setting the installed Codex no longer recognises is named on the admin card |
+| opencode 2.x | `opencode serve`, HTTP | removed (deny-all agent, checked before every run); its own config folder, with only your providers and default model carried over; each run's session deleted from opencode's session list (below); checked on 2.0.27 |
+| Codex | `codex app-server`, JSON-RPC | boxed in: shell, web search, image viewer, sub-agents, goals, clock, plugins and skills off, read-only, approvals refused; ODM's tools offered directly rather than through its code runner; its patch tool, an ask-the-user tool (answered empty) and three readers of ODM's own MCP resources have no switch. Each run gets its own Codex home linking only your sign-in and config, so your `AGENTS.md` and skills stay out, and Codex's stores go with the run; checked on 0.162.1. A setting the installed Codex no longer recognises is named on the admin card |
 | Grok Build | `grok agent stdio`, ACP | boxed in: dontAsk, only ODM tools allowed |
 
 Codex and Grok Build show **(untested)** until a Test the table run passes
 on your machine.
+
+opencode keeps every session, transcript included, in its own store
+(`opencode.db` in its data folder, `~/.local/share/opencode` on Linux, or
+wherever `OPENCODE_DB` points). Each run deletes its session when it ends,
+and the next run deletes any that a stopped opencode or a stopped server
+left behind, which takes them off opencode's session list. Some traces
+stay: opencode lists each run's temp folder among its projects (and keeps
+an empty folder for it under `shell/` in its data folder), with no way to
+remove one, and the database file can keep the text of deleted sessions in
+pages SQLite has freed but not yet reused. The admin card's check leaves a
+project entry the same way.
 
 ### Pictures
 
@@ -73,7 +84,8 @@ Claude Code and opencode cannot paint.
 - **The Docker image:** only with the program installed inside the
   container; a container cannot start programs on its host. Build the image
   with `AGENT_PROGRAMS=@openai/codex` in `.env` (`docker compose up -d
-  --build`; `@anthropic-ai/claude-code` and `opencode-ai` work the same way),
+  --build`; `@anthropic-ai/claude-code` and `@opencode/cli` work the same way;
+  npm's `opencode-ai` is opencode 1.x, which is not supported),
   then sign in once with `docker compose exec open-dungeon-master codex login
   --device-auth`. The sign-in lives in the `odm-home` volume and survives
   updates. The image carries the system CA store for this: Codex is a native

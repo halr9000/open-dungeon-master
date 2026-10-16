@@ -350,6 +350,31 @@ await test("switching back keeps the stored checkpoint and submits the standard 
   assert.equal(sent.prompt["5"].inputs.sampler_name, "euler");
 });
 
+await test(
+  "in checkpoint mode with no checkpoint picked, a picture is refused naming the admin page, and ComfyUI is asked nothing",
+  fakeComfy(),
+  async ({ seen }) => {
+    await assert.rejects(
+      generateComfyImage({ url: COMFY, checkpoint: "", prompt: "a tavern", mode: "fast", aspect: "square" }),
+      /No ComfyUI checkpoint is picked.*Admin > Image generation/,
+    );
+    assert.deepEqual(seen, [], "no prompt, and no list to pick the first entry from");
+  },
+);
+
+await test(
+  "a picked checkpoint is used as saved when ComfyUI has several",
+  fakeComfy({
+    "/object_info/CheckpointLoaderSimple": () =>
+      json({ CheckpointLoaderSimple: { input: { required: { ckpt_name: [["first.safetensors", "picked.safetensors"]] } } } }),
+  }),
+  async ({ seen }) => {
+    await generateComfyImage({ url: COMFY, checkpoint: "picked.safetensors", prompt: "a tavern", mode: "fast", aspect: "square", seed: 7 });
+    const sent = JSON.parse(seen.find((call) => call.url.endsWith("/prompt")).body);
+    assert.equal(sent.prompt["1"].inputs.ckpt_name, "picked.safetensors");
+  },
+);
+
 await imageVariantsSettled();
 process.chdir(repoCwd);
 removeTempDir(dir);

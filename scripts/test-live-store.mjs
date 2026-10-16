@@ -10,8 +10,11 @@ const {
   appendDmDraft,
   clearDmDraft,
   createValueStore,
+  dmDraftSeqStore,
   dmDraftStore,
+  replaceDmDraft,
   resetLiveStores,
+  setDmDraftSeq,
   setVoiceSpeaking,
   voiceSpeakingStore,
 } = await import("../src/app/campaigns/[campaignId]/liveStore.ts");
@@ -63,6 +66,21 @@ await test("the draft grows per delta, clears on the passage, and resets with th
   assert.equal(dmDraftStore.get(), "");
   assert.equal(voiceSpeakingStore.get(), null);
   unsubscribe();
+});
+
+await test("a reset replaces the draft with the narration kept, and leaves where it will be written", () => {
+  resetLiveStores();
+  appendDmDraft("The quay is the landing. ");
+  appendDmDraft("I'll check who stands there.");
+  setDmDraftSeq(42);
+  replaceDmDraft("");
+  assert.equal(dmDraftStore.get(), "", "a reset to nothing kept empties the draft");
+  assert.equal(dmDraftSeqStore.get(), 42, "the passage's slot is not the reset's to move");
+  appendDmDraft("A ferryman coils rope.");
+  replaceDmDraft("A ferryman coils rope.");
+  appendDmDraft(" What do you do?");
+  assert.equal(dmDraftStore.get(), "A ferryman coils rope. What do you do?", "later deltas append to the kept text");
+  resetLiveStores();
 });
 
 await test("a burst of refetches costs one request in flight plus one trailing", async () => {

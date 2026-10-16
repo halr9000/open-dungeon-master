@@ -1,4 +1,5 @@
 import { getCampaignById } from "@/lib/db/campaigns";
+import { getDatabase } from "@/lib/db/core";
 import { getLatestDmMessage, updateMessageContent } from "@/lib/db/messages";
 import { dmQueuePaused, pauseDmQueue, resumeDmQueue } from "@/lib/dm/queue";
 import { runRenarrate } from "@/lib/dm/renarrate";
@@ -20,6 +21,27 @@ export function raiseXCard(campaignId: string): { at: number } {
 
 export function xCardRaised(campaignId: string): boolean {
   return dmQueuePaused(campaignId) === X_CARD_REASON;
+}
+
+// The pause is held in memory, so a restart lowered every raised X-card
+// without anyone choosing how to go on: the snapshot stopped showing it and
+// the queue ran its next job. The persisted events still say it is up, so
+// a starting server raises it again for every table whose latest X-card
+// event is the card itself rather than a resume, before anything is queued
+// behind it (src/lib/dm/restart-recovery.ts). Returns those tables.
+export function restoreXCardPauses(): string[] {
+  // SQLite answers the bare `type` from the row that holds MAX(seq).
+  const latest = getDatabase()
+    .prepare(
+      `SELECT campaign_id AS campaignId, type, MAX(seq) AS seq FROM campaign_events
+        WHERE type IN ('x_card', 'safety_resumed') GROUP BY campaign_id`,
+    )
+    .all() as Array<{ campaignId: string; type: string; seq: number }>;
+  const raised = latest.filter((row) => row.type === "x_card").map((row) => row.campaignId);
+  for (const campaignId of raised) {
+    pauseDmQueue(campaignId, X_CARD_REASON);
+  }
+  return raised;
 }
 
 export type ResumeAction = "continue" | "rewind" | "reroll";

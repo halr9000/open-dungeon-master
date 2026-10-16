@@ -1,6 +1,6 @@
 "use client";
 
-import { Eye, EyeOff, FileText, Loader2, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, FileText, Loader2, Trash2, Users, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
@@ -10,7 +10,8 @@ import { Select } from "@/components/ui/Select";
 import { appendTerm, insertAt } from "@/lib/workshop/pickers";
 import { AddFromList } from "@/components/ui/AddFromList";
 import { Markdown } from "@/components/ui/Markdown";
-import { LORE_STYLES, WORLD_LORE_CATEGORIES, type LoreLinkTarget, type LoreStyle, type WorldLoreCategory } from "@/lib/dm/world-lore-logic";
+import { LORE_BODY_MAX, LORE_STYLES, WORLD_LORE_CATEGORIES, loreBodyOverflow, type LoreLinkTarget, type LoreStyle, type WorldLoreCategory } from "@/lib/dm/world-lore-logic";
+import { checkProse } from "@/lib/workshop/prose-check";
 import { LoreImageField, VisibilitySelect } from "@/app/workshop/lore/LoreFields";
 import { CATEGORY_LABELS, type LoreDraft } from "@/app/workshop/lore/types";
 import { DictateField } from "@/components/DictateField";
@@ -57,6 +58,13 @@ export function LoreEditorForm({
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const pdfRef = useRef<HTMLInputElement>(null);
+  // The cap, said beside the text with what would be lost (issue #302);
+  // the routes refuse the same way. The readability note is a heuristic
+  // the author may dismiss.
+  const overflow = loreBodyOverflow(draft.body);
+  const prose = checkProse(draft.body);
+  const proseKey = prose.map((warning) => warning.kind).join(",");
+  const [dismissed, setDismissed] = useState("");
 
   function insertLink(title: string) {
     const field = bodyRef.current;
@@ -124,7 +132,7 @@ export function LoreEditorForm({
       <DictateField
         label="Lore entry"
         onTranscript={(text) => {
-          const next = appendDictation(draft.body, text, 4000);
+          const next = appendDictation(draft.body, text, LORE_BODY_MAX);
           onBodyChange(next, next.length);
         }}
       >
@@ -144,12 +152,34 @@ export function LoreEditorForm({
             }
           }}
           rows={rows ? 10 : 5}
-          maxLength={4000}
+          maxLength={LORE_BODY_MAX}
           placeholder={"What is established about it...\n\n# Headings, **bold**, - lists, [[The Mill]] to link, [[1d6]] to roll, and :::secret ... ::: for what only you read."}
           data-tour="lore-body"
           className={cn(ui.input, "leading-5")}
         />
       </DictateField>
+      <div className="mt-1 flex flex-wrap items-start justify-between gap-x-3 gap-y-1 text-[11px]">
+        <span className={cn("font-mono", overflow ? "text-red-400" : draft.body.length > LORE_BODY_MAX * 0.8 ? "text-amber-300" : "text-stone-500")} data-testid="lore-length">
+          {draft.body.length.toLocaleString("en-US")} / {LORE_BODY_MAX.toLocaleString("en-US")}
+        </span>
+        {overflow ? (
+          <span className="motion-shake w-full text-red-400" role="alert">
+            {overflow} Shorten it to save.
+          </span>
+        ) : null}
+        {prose.length && dismissed !== proseKey ? (
+          <span className="reveal flex w-full items-start gap-1.5 text-amber-300/90" data-testid="prose-warning">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              This may read oddly: {prose.map((warning) => warning.message).join(" ")}
+              {prose[0].samples[0] ? ` For example: ${prose[0].samples[0]}` : ""} It may have been written this way; nothing is changed.{" "}
+              <button type="button" onClick={() => setDismissed(proseKey)} className="underline">
+                Dismiss
+              </button>
+            </span>
+          </span>
+        ) : null}
+      </div>
       {complete && suggestions.length ? (
         <ul role="listbox" className="panel fx-pop absolute left-2 top-full z-20 mt-0.5 w-64 rounded-lg p-1 text-xs shadow-elev-2">
           {suggestions.map((option, index) => (

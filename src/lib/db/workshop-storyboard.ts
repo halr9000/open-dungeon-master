@@ -2,6 +2,8 @@ import { getDatabase, parseJson } from "@/lib/db/core";
 import { setQuestLog, setStoryArc, type Campaign } from "@/lib/db/campaigns";
 import { insertQuest, listQuests } from "@/lib/db/quests";
 import { appendBoardAct, normalizeStoryArc, type ArcEvent, type ArcEventKind, type Waypoint } from "@/lib/dm/arc-logic";
+import { upsertPrepCards } from "@/lib/db/prep-cards";
+import type { PrepRole } from "@/lib/dm/prep-logic";
 import { dedupeName, type ArcMode, type LinkKind } from "@/lib/workshop/import";
 import type { BeatKind, BeatLinks } from "@/lib/workshop/board";
 import type { CompiledBoard, CompiledEncounter } from "@/lib/workshop/board-compile";
@@ -274,6 +276,21 @@ function waypointsFor(
   return waypoints.filter((waypoint) => waypoint.text);
 }
 
+// The waypoints as one sentence of cues, for an event's detail and the
+// prep card's "involves" line.
+function cueLine(waypoints: Waypoint[]): string {
+  return waypoints
+    .map((waypoint) => (waypoint.kind === "fight" ? `Fight: ${waypoint.text}.` : waypoint.kind === "npc" ? `With ${waypoint.text}.` : `At ${waypoint.text}.`))
+    .join(" ");
+}
+
+// The cards an arc holds, by card id: a beat's or a planned event's.
+function placedIn(arc: { beats: Array<{ cardId?: string }>; events: Array<{ cardId?: string }> }): Set<string> {
+  return new Set(
+    [...arc.beats, ...arc.events].map((entry) => entry.cardId).filter((id): id is string => Boolean(id)),
+  );
+}
+
 const MOMENT_KIND: Record<BeatKind, ArcEventKind> = {
   setting: "setpiece",
   backstory: "setpiece",
@@ -291,10 +308,46 @@ export function writeStoryboardColumns(
   campaign: Campaign,
   compiled: CompiledBoard,
   now: string,
-  options: { resolver: BoardResolver; fights: BoardFights; arcMode: ArcMode; title: string },
-): { written: number; beatsAdded: number } {
+  options: { resolver: BoardResolver; fights: BoardFights; arcMode: ArcMode; title: string; sourceId?: string },
+): { written: number; beatsAdded: number; cardsKept: number } {
   let written = 0;
   const { resolver, fights } = options;
+  // Every card whole, whatever it became (issues #301 and #302): the arc's
+  // lines point back to these by card id, and read_card opens them.
+  const roleOf = new Map<string, PrepRole>();
+  const cueOf = new Map<string, string>();
+  const triggerOf = new Map<string, string>();
+  for (const entry of compiled.lore) {
+    roleOf.set(entry.cardId, "lore");
+  }
+  for (const id of compiled.questCards) {
+    roleOf.set(id, "quest");
+  }
+  for (const entry of compiled.encounters) {
+    roleOf.set(entry.cardId, "fight");
+  }
+  for (const entry of compiled.notes) {
+    roleOf.set(entry.cardId, "secret");
+  }
+  const keepCards = (arcPlaced: Set<string>) =>
+    upsertPrepCards(
+      campaign.id,
+      compiled.cards.map((card) => ({
+        cardId: card.cardId,
+        sourceId: options.sourceId ?? "",
+        sourceTitle: options.title,
+        kind: card.kind,
+        title: card.title,
+        body: card.body,
+        cues: cueOf.get(card.cardId) ?? "",
+        trigger: triggerOf.get(card.cardId) ?? "",
+        role: arcPlaced.has(card.cardId)
+          ? compiled.arcPlan.some((beat) => beat.cardId === card.cardId)
+            ? "beat"
+            : "moment"
+          : roleOf.get(card.cardId) ?? "unplaced",
+      })),
+    );
 
   // Hooks become quests, appended rather than replacing: a campaign in
   // progress has a quest log the party is working through. A quest already
@@ -320,20 +373,22 @@ export function writeStoryboardColumns(
     }
   }
 
-  const beats = compiled.arcPlan.map((beat) => ({
-    text: beat.text,
-    waypoints: waypointsFor(beat.cardId, beat.kind, beat.links, resolver, fights),
-  }));
+  const beats = compiled.arcPlan.map((beat) => {
+    const waypoints = waypointsFor(beat.cardId, beat.kind, beat.links, resolver, fights);
+    cueOf.set(beat.cardId, cueLine(waypoints));
+    return { text: beat.text, waypoints, cardId: beat.cardId };
+  });
   const events: Array<Omit<ArcEvent, "id" | "status">> = compiled.moments.map((moment) => {
-    const along = waypointsFor(moment.cardId, moment.kind, moment.links, resolver, fights)
-      .map((waypoint) => (waypoint.kind === "fight" ? `Fight: ${waypoint.text}.` : waypoint.kind === "npc" ? `With ${waypoint.text}.` : `At ${waypoint.text}.`))
-      .join(" ");
+    const along = cueLine(waypointsFor(moment.cardId, moment.kind, moment.links, resolver, fights));
+    cueOf.set(moment.cardId, along);
+    triggerOf.set(moment.cardId, moment.trigger);
     return {
       kind: MOMENT_KIND[moment.kind],
       name: moment.name.slice(0, 80),
       detail: `${moment.detail}${along ? ` ${along}` : ""}`.slice(0, 300),
       trigger: moment.trigger.slice(0, 200),
       actHint: null,
+      cardId: moment.cardId,
     };
   });
 
@@ -344,21 +399,24 @@ export function writeStoryboardColumns(
   // DM asked for that (#157).
   if (campaign.storyArc) {
     if (options.arcMode !== "append") {
-      return { written, beatsAdded: 0 };
+      const cardsKept = keepCards(placedIn(campaign.storyArc));
+      return { written, beatsAdded: 0, cardsKept };
     }
     const joined = appendBoardAct(campaign.storyArc, beats, events, options.title);
     if (joined.added) {
       setStoryArc(campaign.id, joined.arc);
       written += 1;
     }
-    return { written, beatsAdded: joined.added };
+    // Cards the arc's caps left out keep their text and read as unplaced.
+    const cardsKept = keepCards(placedIn(joined.arc));
+    return { written, beatsAdded: joined.added, cardsKept };
   }
   const arc = normalizeStoryArc({
     version: 3,
     premise: compiled.premise,
     stakes: "",
     antagonist: "",
-    beats: beats.map((beat) => ({ text: beat.text, status: "pending", act: 1, waypoints: beat.waypoints })),
+    beats: beats.map((beat) => ({ text: beat.text, status: "pending", act: 1, waypoints: beat.waypoints, cardId: beat.cardId })),
     acts: 1,
     finale: "",
     saga: null,
@@ -374,7 +432,7 @@ export function writeStoryboardColumns(
   if (arc) {
     setStoryArc(campaign.id, arc);
     written += 1;
-    return { written, beatsAdded: arc.beats.length };
+    return { written, beatsAdded: arc.beats.length, cardsKept: keepCards(placedIn(arc)) };
   }
-  return { written, beatsAdded: 0 };
+  return { written, beatsAdded: 0, cardsKept: keepCards(new Set()) };
 }

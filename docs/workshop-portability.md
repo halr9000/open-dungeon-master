@@ -80,6 +80,36 @@ means the words only. **No** means not carried, with the reason.
 - **Something hidden:** a DM-only note. The storyteller now reads these
   notes as DM prep notes. Before, a secret was invisible at an AI-narrated
   table.
+- **Every card, whole:** a prep card (issues #301 and #302). The arc's beat
+  is one line (the card's title and first line, cut at 220 characters) and a
+  planned moment is a name, a trigger and a short detail; the card behind
+  each is kept in full, line breaks and links included, under the id it had
+  on the board. The storyteller opens it with `read_card` (an event's
+  `[evN]` id, a beat's number, or the title) and `search_lore` finds it by
+  any passage. A second import of the same board updates the cards in place.
+
+### What fits, and what the preview says
+
+- An arc holds 160 beats and 160 planned events, more than a 120-card board
+  can send, so a fresh import never clips. A board joining a long campaign
+  as its next act can still run past the room left: the preview names the
+  cards that cannot join ("the last 3 of the board's cannot join it: ...")
+  before the button. Those cards still land as prep cards, marked unplaced,
+  and nothing pending in the arc is ever evicted to make room.
+- Each DM turn shows the main beats in a window around the `[NOW]` beat and
+  the planned events the scene is about first (the place, the people in it,
+  the fight, the party's newest line), inside a character budget. What was
+  held back is listed by id in the prompt and, with the reason, in the
+  table's Context panel.
+- A card's text holds 4,000 characters in the editor, in a bundle and on the
+  prep card alike; a lore entry holds 20,000 in all three. The editor shows
+  the count, says exactly what a save over the cap would lose, and refuses
+  the save; the routes refuse the same way. A bundle with an entry over its
+  cap is refused by item and field, with both lengths.
+- Prose that reads as compressed (missing spaces after sentences, long runs
+  of letters) gets a dismissible note in the editor, in the bundle preview
+  and in the import plan. It is a heuristic about the text as written,
+  not a finding about the import; the words are never changed.
 
 ### Not carried
 

@@ -30,7 +30,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ cam
   if (!context.campaign.gameSettings.voice.transcribe) {
     return Response.json({ error: "This table is not being transcribed." }, { status: 400 });
   }
-  if (!sttAvailable()) {
+  if (!(await sttAvailable())) {
     return Response.json({ error: "This server has no transcription service configured." }, { status: 503 });
   }
   const form = await request.formData().catch(() => null);

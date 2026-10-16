@@ -20,7 +20,7 @@ import {
   srdRaceOptions,
   type ContentRow,
 } from "@/lib/characters/options";
-import { openAbilityPool, openWealthRoll } from "@/lib/db/creation-rolls";
+import { abilityRollPlace, openAbilityPool, openWealthRoll, type AbilityRollPlace } from "@/lib/db/creation-rolls";
 import { subclassExtrasFor } from "@/lib/db/subclass-extras";
 import { tableAuthors } from "@/lib/db/homebrew";
 import { defaultRng } from "@/lib/dice";
@@ -271,6 +271,13 @@ export function legalityAuthors(input: Pick<ContextInput, "userId" | "campaign">
   return input.campaign ? tableAuthors(input.campaign.id) : [input.userId];
 }
 
+// Where the maker's ability roll for this character is kept: the table's own
+// when the character is made at a table that set its own reroll rule, the
+// library's otherwise (src/lib/db/creation-rolls.ts abilityRollPlace).
+export function abilityPlaceFor(input: Pick<ContextInput, "door" | "campaign">): AbilityRollPlace {
+  return abilityRollPlace(input.door === "table" ? input.campaign : null);
+}
+
 export function legalityContextsFor(input: ContextInput): LegalityContext[] {
   const base = legalityContextFor(input);
   const races = raceCandidatesFor(input.sheet.race, legalityAuthors(input));
@@ -290,7 +297,7 @@ export function legalityContextFor(input: ContextInput): LegalityContext {
     race: raceGrantsFor(input.sheet.race, owner),
     background: backgroundGrantsFor(input.sheet.background, owner),
     baseline: input.baseline ?? null,
-    abilityPool: made ? (openAbilityPool(input.userId)?.totals ?? null) : null,
+    abilityPool: made ? (openAbilityPool(input.userId, abilityPlaceFor(input))?.totals ?? null) : null,
     wealthRoll:
       input.door === "table" && input.campaign && settings?.startingWealth === "rolled"
         ? (openWealthRoll(input.userId, input.campaign.id, input.sheet.class)?.gold ?? null)

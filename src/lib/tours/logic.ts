@@ -1,8 +1,9 @@
 // The guided tours' pure half: what a step is, which steps a screen can
-// show, where the explaining card sits beside its target, and the
-// once-only flag. GuidedTour.tsx owns the DOM; this file owns the
-// decisions, so scripts/test-tours.mjs can drive them without a browser.
-// No "@/" imports here: the test runner loads it straight from disk.
+// show, and where the explaining card sits beside its target. GuidedTour.tsx
+// owns the DOM; this file owns the decisions, so scripts/test-tours.mjs can
+// drive them without a browser. Whether a tour was already finished is the
+// account's record (account-logic.ts, tour-store.ts). No "@/" imports here:
+// the test runner loads it straight from disk.
 
 export interface TourStep {
   id: string;
@@ -119,31 +120,4 @@ export function placeCard(
     left: centredLeft,
     side: "below",
   };
-}
-
-// The once-only flag, in whatever store the caller hands over (the page
-// passes localStorage; the tests pass a Map).
-export interface TourStore {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-export function tourKey(tourId: string): string {
-  return `odm:tour:${tourId}`;
-}
-
-export function tourSeen(store: TourStore, tourId: string): boolean {
-  try {
-    return store.getItem(tourKey(tourId)) === "done";
-  } catch {
-    return true;
-  }
-}
-
-export function markTourSeen(store: TourStore, tourId: string): void {
-  try {
-    store.setItem(tourKey(tourId), "done");
-  } catch {
-    // Storage can be denied; the tour then simply shows again next visit.
-  }
 }

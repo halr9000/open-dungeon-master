@@ -369,3 +369,27 @@ test("no premise refuses the arc with the fix rather than an error", () => {
 });
 
 console.log(`workshop board: ${passed} assertions passed.`);
+
+// ---- issue #302: a card that arrived whole can be saved whole ----
+
+{
+  const { BODY_MAX } = await import("../src/lib/workshop/board.ts");
+  assert.equal(BODY_MAX, 4_000, "the board cap no longer matches what a bundle card can carry");
+  const whole = checkBeat({ title: "A long scene", body: "b".repeat(4_000) });
+  assert.ok("beat" in whole, whole.error);
+  assert.equal(whole.beat.body.length, 4_000);
+  const over = checkBeat({ title: "A long scene", body: `${"b".repeat(4_000)}and the tail` });
+  assert.ok("error" in over, "an over-long body was cut instead of refused");
+  assert.match(over.error, /^This card's text is 4,012 characters; the limit is 4,000\. The last 12 would be lost: "and the tail"\./);
+  const compiled = compileBoard([
+    { id: "a", kind: "event", title: "A", body: "Line one.\nLine two, kept on the card.", links: {}, edges: ["b"], x: 0, y: 0 },
+    { id: "b", kind: "secret", title: "B", body: "Hidden.", links: {}, edges: [], x: 0, y: 0 },
+  ]);
+  assert.deepEqual(
+    compiled.cards.map((card) => [card.cardId, card.kind, card.body]),
+    [["a", "event", "Line one.\nLine two, kept on the card."], ["b", "secret", "Hidden."]],
+    "the compile no longer carries every card whole",
+  );
+  assert.equal(compiled.arcPlan[0].text, "A: Line one.");
+  console.log("board cap: bundle-sized cards save whole, overflow is refused by name, cards ride the compile");
+}

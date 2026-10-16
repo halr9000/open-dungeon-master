@@ -3,9 +3,12 @@
 import { Check, Download, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import type { SttStatus } from "@/lib/stt-backend";
 import { ui } from "@/lib/ui";
 
-type Status = {
+// whisper and openai arrive from servers newer than 0.26.4; the apps draw
+// this card for older hosts too, which send neither.
+type Status = Omit<SttStatus, "whisper" | "openai"> & Partial<Pick<SttStatus, "whisper" | "openai">> & {
   builtin: {
     model: string;
     downloadMb: number;
@@ -14,15 +17,22 @@ type Status = {
     progress: number;
     error: string;
   };
-  active: "whisper" | "builtin" | "openai" | "none";
 };
 
 const ACTIVE_LABEL: Record<Status["active"], string> = {
   whisper: "the Whisper service",
   builtin: "the built-in engine",
   openai: "OpenAI, on this server's key",
-  none: "nothing yet, so the mic buttons are hidden",
+  // The Android app's game screens still dictate with the phone's own
+  // recognizer (useDictation's native engine), so their mics stay.
+  none: "nothing yet, so the mic buttons are hidden (the Android app uses the phone's own recognizer)",
 };
+
+// Which "no model is picked" lines the card shows. A host older than these
+// fields sends neither, and the card says nothing of them rather than fail.
+export function modelNotes(status: Partial<Pick<Status, "whisper" | "openai">> | null): { whisper: boolean; openai: boolean } {
+  return { whisper: Boolean(status?.whisper?.needsModel), openai: Boolean(status?.openai?.needsModel) };
+}
 
 // The engine's state, or a sentence saying why it could not be read.
 async function request(method: "GET" | "POST"): Promise<Status | string> {
@@ -66,6 +76,7 @@ export function BuiltinSpeechCard() {
 
   const builtin = status?.builtin;
   const percent = Math.round((builtin?.progress ?? 0) * 100);
+  const notes = modelNotes(status);
 
   return (
     <div className="panel rounded-xl p-3 sm:col-span-2">
@@ -126,6 +137,18 @@ export function BuiltinSpeechCard() {
       {status ? (
         <p className="mt-2 border-t border-stone-800 pt-2 text-[11px] text-stone-400">
           Dictation is using <span className="text-stone-200">{ACTIVE_LABEL[status.active]}</span>.
+        </p>
+      ) : null}
+      {notes.whisper ? (
+        <p role="status" className="mt-1 text-[11px] text-amber-300">
+          A Whisper service answers, but no model is picked for it and it doesn&apos;t list exactly one, so dictation skips it. Pick
+          its model in the Whisper model field.
+        </p>
+      ) : null}
+      {notes.openai ? (
+        <p role="status" className="mt-1 text-[11px] text-amber-300">
+          An OpenAI key is saved, but no transcription model is picked, so nothing is heard until you pick one under OpenAI
+          transcription in Admin &gt; Speech.
         </p>
       ) : null}
     </div>

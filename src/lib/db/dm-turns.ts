@@ -195,6 +195,58 @@ export function getAwaitingTurn(campaignId: string): DmTurn | null {
   return row ? mapTurn(row) : null;
 }
 
+// Whether the campaign's newest AI turn is one the storyteller parked on
+// physical dice: what the status line said while the process that parked it
+// was up (src/lib/dm/status.ts reads this when it has no status of its own).
+// Only AI turns count, because a person's adjudications (an opportunity
+// strike, a zone, the console) open turns of their own mid-play without
+// touching the status line. Of those, only one that asked the model
+// (call_index above 0) is the storyteller's: a monster pass a person
+// delegates, or an agent program's turn, never owned the line. An older
+// parked turn the table walked past, with a new action instead of the roll,
+// is not the newest and reads idle, as it did then.
+export function latestTurnParkedByAi(campaignId: string): boolean {
+  const row = newestAiTurn(campaignId);
+  return row?.status === "awaiting_rolls" && row.call_index > 0;
+}
+
+// The campaign's newest AI turn: the one a parked roll may still finish
+// after a restart. A person's turns opened since (an opportunity strike, a
+// zone, the console) do not move the story past it; a newer AI turn did.
+export function getLatestAiTurnId(campaignId: string): string | null {
+  return newestAiTurn(campaignId)?.id ?? null;
+}
+
+function newestAiTurn(campaignId: string) {
+  return getDatabase()
+    .prepare(
+      `SELECT id, status, call_index FROM dm_turns WHERE campaign_id = ? AND actor = 'ai' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(campaignId) as { id: string; status: DmTurnStatus; call_index: number } | undefined;
+}
+
+// The AI turns a process was running when it stopped. After a restart no
+// process owns them (src/lib/dm/restart-recovery.ts).
+export function listRunningAiTurns(): DmTurn[] {
+  const rows = getDatabase()
+    .prepare(`SELECT * FROM dm_turns WHERE actor = 'ai' AND status = 'running' ORDER BY created_at, rowid`)
+    .all() as TurnRow[];
+  return rows.map(mapTurn);
+}
+
+// AI turns parked on physical dice whose every roll is already in: the
+// resume the last roll queued lived in memory, and a restart took it.
+export function listOrphanedParkedTurns(): Array<{ id: string; campaignId: string }> {
+  return getDatabase()
+    .prepare(
+      `SELECT t.id AS id, t.campaign_id AS campaignId FROM dm_turns t
+        WHERE t.actor = 'ai' AND t.status = 'awaiting_rolls'
+          AND NOT EXISTS (SELECT 1 FROM pending_rolls p WHERE p.turn_id = t.id AND p.status = 'pending')
+        ORDER BY t.created_at, t.rowid`,
+    )
+    .all() as Array<{ id: string; campaignId: string }>;
+}
+
 // ---- pending physical rolls ----
 
 export type PendingRollStatus = "pending" | "submitted" | "fallback";

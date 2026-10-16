@@ -65,8 +65,9 @@ export type PicturesChoice =
   // A catalog model's id as preset paints every picture with that model and
   // keeps the checkpoint for switching back.
   | { kind: "comfyui"; url: string; checkpoint: string; preset?: string }
-  // OpenAI's images API on the storyteller's OpenAI key, or on its own.
-  | { kind: "openai"; apiKey: string }
+  // OpenAI's images API on the storyteller's OpenAI key, or on its own,
+  // with the model picked from its list.
+  | { kind: "openai"; apiKey: string; model: string }
   // The agent program's own image tool, once a test picture has come back.
   | { kind: "agent" }
   // Painted placeholders. A ComfyUI started later at its default address is
@@ -86,7 +87,7 @@ export function picturesPatch(choice: PicturesChoice): Patch {
   }
   if (choice.kind === "openai") {
     const apiKey = choice.apiKey.trim();
-    return { images: { defaultBackend: "openai", openaiBaseUrl: "", ...(apiKey ? { openaiApiKey: apiKey } : {}) } };
+    return { images: { defaultBackend: "openai", openaiBaseUrl: "", openaiModel: choice.model.trim(), ...(apiKey ? { openaiApiKey: apiKey } : {}) } };
   }
   if (choice.kind === "agent") {
     // Both switches: the default backend alone leaves the agent's pictures
@@ -99,7 +100,7 @@ export function picturesPatch(choice: PicturesChoice): Patch {
 export type NarrationChoice =
   | { kind: "kokoro"; url: string; voice: string }
   // OpenAI's speech API: blank key borrows the storyteller's OpenAI key.
-  | { kind: "openai"; apiKey: string }
+  | { kind: "openai"; apiKey: string; model: string }
   | { kind: "off" };
 
 export function narrationPatch(choice: NarrationChoice): Patch {
@@ -111,15 +112,26 @@ export function narrationPatch(choice: NarrationChoice): Patch {
   if (choice.kind === "openai") {
     const apiKey = choice.apiKey.trim();
     return {
-      speech: { ttsProvider: "openai", ttsBaseUrl: "", ttsModel: "", ttsVoice: "", ...(apiKey ? { ttsApiKey: apiKey } : {}) },
+      speech: { ttsProvider: "openai", ttsBaseUrl: "", ttsModel: choice.model.trim(), ttsVoice: "", ...(apiKey ? { ttsApiKey: apiKey } : {}) },
     };
   }
   return { speech: { ttsProvider: "off" } };
 }
 
-// Dictation needs no answer: a Whisper at its usual address is found on
-// its own, and without one the built-in engine or an OpenAI key takes over
-// (src/lib/stt-logic.ts).
+// Dictation's models: a Whisper at its usual address is found on its own,
+// and without one the built-in engine or an OpenAI key takes over
+// (src/lib/stt-logic.ts), but the Whisper service and OpenAI each run only
+// with the model picked for them. Only what the step asked is written.
+export type DictationChoice = { whisperModel?: string; openaiModel?: string };
+
+export function dictationPatch(choice: DictationChoice): Patch {
+  return {
+    speech: {
+      ...(choice.whisperModel !== undefined ? { sttModel: choice.whisperModel.trim() } : {}),
+      ...(choice.openaiModel !== undefined ? { sttOpenaiModel: choice.openaiModel.trim() } : {}),
+    },
+  };
+}
 
 export type JoiningChoice = {
   signupMode: "open" | "invite" | "closed";

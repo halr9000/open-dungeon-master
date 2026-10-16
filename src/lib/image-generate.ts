@@ -1,5 +1,5 @@
 import { getGlobalConfig } from "@/lib/app-config";
-import { generateComfyImage } from "@/lib/comfyui";
+import { comfyModelPicked, generateComfyImage } from "@/lib/comfyui";
 import { comfyModel } from "@/lib/image-models/catalog";
 import { generateOpenAiImage, openAiImagesConfigured, openAiImagesPaid } from "@/lib/openai-images";
 import { generateHarnessImage, harnessImagesReady } from "@/lib/harness/images";
@@ -18,12 +18,13 @@ import type { AspectPreset, GeneratedImage, ImageMode, StorySettings } from "@/l
 //
 // Takes the campaign's settings rather than the backend alone, because the
 // OpenAI backend can run on the key the table already gave its OpenAI text
-// model (src/lib/openai-images.ts).
+// model (src/lib/openai-images.ts), and ComfyUI paints with the campaign's
+// checkpoint. Either one with no model picked has nothing to paint with.
 export function imageProducerReady(
-  settings: Pick<StorySettings, "imageBackend" | "customBaseUrl" | "customApiKey">,
+  settings: Pick<StorySettings, "imageBackend" | "customBaseUrl" | "customApiKey" | "comfyCheckpoint">,
 ): boolean {
   if (settings.imageBackend === "comfyui") {
-    return true;
+    return comfyModelPicked(settings.comfyCheckpoint);
   }
   if (settings.imageBackend === "openai") {
     return openAiImagesConfigured(settings);

@@ -32,23 +32,19 @@ const SETTING_INFO = `The setting decides how the world sounds, what the maps an
   (preset) => `**${preset.name}**: ${preset.blurb}`,
 ).join("\n\n")}`;
 
-// Step 2: the setting as eight painted portals, its custom description, the
-// theme the preset writes (and the person may overwrite), the premise, and a
-// read-back of what the choice tells the Dungeon Master.
-// Cover art is only pointed at from here: the upload and the AI painter live
-// in the campaign's details dialog, because a cover needs a campaign row to
-// hang off, and duplicating the picker here would mean two upload paths.
-export function WorldStep({
+// The setting as eight painted portals, its custom description, the theme the
+// preset writes (and the person may overwrite) and the premise. One component
+// because the portals and the theme field share the type-in: picking a
+// portal writes the preset's line into the theme while it plays.
+export function WorldFields({
   draft,
   patch,
   gates,
   active,
-  selectedPack,
   onPickGenre,
 }: StepProps & {
   // True while this is the step on screen; entrances wait for it.
   active: boolean;
-  selectedPack: WorldPackSummary | null;
   // Picking a bare genre by hand leaves the pack and lets the preset write
   // the theme, so the dialog owns the handler that does all three.
   onPickGenre: (genre: Genre) => void;
@@ -72,8 +68,8 @@ export function WorldStep({
     setTyping((current) => (plan ? { ...plan, run: (current?.run ?? 0) + 1 } : null));
   };
 
-  // Only while the line on screen is the line being typed: a pack applied
-  // from step one, or anything else that rewrote the theme, ends it.
+  // Only while the line on screen is the line being typed: a pack, saved
+  // defaults, or anything else that rewrote the theme, ends it.
   const typingNow = typing !== null && typing.text === draft.theme;
   const themeNote = draft.themeTouched
     ? "yours; nothing will overwrite it"
@@ -84,7 +80,7 @@ export function WorldStep({
         : "yours to write";
 
   return (
-    <div className={cn("space-y-4 text-sm", active && "cc-live")}>
+    <div className="space-y-4">
       <div>
         <FieldLabel className="mb-0">
           <span className="flex items-center gap-1">
@@ -94,17 +90,8 @@ export function WorldStep({
         </FieldLabel>
         <div className="cc-portal-grid">
           {portalCards(draft.genre).map((card) => (
-            <div
-              key={card.id}
-              className="cc-portal-slot"
-              style={{ "--cc-delay": `${card.delayMs}ms` } as CSSProperties}
-            >
-              <button
-                type="button"
-                onClick={() => pick(card.id)}
-                aria-pressed={card.chosen}
-                className="cc-portal motion-card"
-              >
+            <div key={card.id} className="cc-portal-slot" style={{ "--cc-delay": `${card.delayMs}ms` } as CSSProperties}>
+              <button type="button" onClick={() => pick(card.id)} aria-pressed={card.chosen} className="cc-portal motion-card">
                 <span
                   role="img"
                   aria-label={`${card.name} cover plate`}
@@ -134,8 +121,8 @@ export function WorldStep({
           <div className="cc-custom mt-2">
             <span className="cc-eyebrow mb-1 block">Describe it yourself</span>
             <p className="cc-prose mb-2 text-[13px] leading-relaxed text-stone-300">
-              Custom writes nothing for you. The theme and premise boxes stay yours, and what you
-              describe here goes to the DM in place of a preset tone.
+              Custom writes nothing for you. The theme and premise boxes stay yours, and what you describe here goes
+              to the DM in place of a preset tone.
             </p>
             <span className="cc-serif block">
               <textarea
@@ -143,6 +130,7 @@ export function WorldStep({
                 onChange={(event) => patch({ customGenreText: event.target.value })}
                 rows={2}
                 maxLength={500}
+                aria-label="Describe the world and tone"
                 placeholder="Describe the world and tone in your own words..."
                 className="cc-bare"
               />
@@ -196,12 +184,40 @@ export function WorldStep({
         </span>
       </label>
 
+      <label className="cc-field block">
+        <span className="cc-field-head">
+          <span className="cc-eyebrow">Premise</span>
+          <span className="cc-note">optional{showsAiFill ? "; the AI fills this in if left blank" : ""}</span>
+        </span>
+        <span className="cc-serif block">
+          <textarea
+            value={draft.description}
+            onChange={(event) => patch({ description: event.target.value, descriptionTouched: true })}
+            rows={2}
+            maxLength={500}
+            className="cc-bare"
+          />
+        </span>
+      </label>
+    </div>
+  );
+}
+
+// What the chosen setting tells the Dungeon Master (read-only), the language
+// the story is written in, and where cover art comes from. Cover art is only
+// pointed at: the upload and the AI painter live in the campaign's details
+// dialog, because a cover needs a campaign row to hang off.
+export function WorldDetailsFields({
+  draft,
+  patch,
+  selectedPack,
+}: Pick<StepProps, "draft" | "patch"> & { selectedPack: WorldPackSummary | null }) {
+  return (
+    <div className="space-y-4">
       <div className="cc-field">
         <div className="cc-field-head">
           <span className="cc-eyebrow">How the DM will talk</span>
-          <span className="cc-note">
-            {selectedPack ? `${selectedPack.name} adds its own voice on top` : "read-only"}
-          </span>
+          <span className="cc-note">{selectedPack ? `${selectedPack.name} adds its own voice on top` : "read-only"}</span>
         </div>
         <p key={draft.genre} className="cc-flavor cc-prose text-[13px] leading-relaxed text-stone-300">
           {dmFlavorText(draft.genre)}
@@ -231,33 +247,11 @@ export function WorldStep({
         <p className="mt-1 text-xs text-stone-500">{TABLE_LANGUAGE_HELP}</p>
       </div>
 
-      <label className="cc-field block">
-        <span className="cc-field-head">
-          <span className="cc-eyebrow">Premise</span>
-          <span className="cc-note">
-            optional{showsAiFill ? "; the AI fills this in if left blank" : ""}
-          </span>
-        </span>
-        <span className="cc-serif block">
-          <textarea
-            value={draft.description}
-            onChange={(event) =>
-              patch({ description: event.target.value, descriptionTouched: true })
-            }
-            rows={2}
-            maxLength={500}
-            className="cc-bare"
-          />
-        </span>
-      </label>
-
       <div className="flex items-start gap-3 rounded-lg border border-stone-800 bg-stone-950/40 p-3">
         <ImageIcon className="mt-0.5 size-4 shrink-0 text-amber-300/70" aria-hidden="true" />
         <div>
           <span className="block text-stone-300">Cover art</span>
-          <p className="mt-0.5 text-xs text-stone-500">
-            You can add cover art from the campaign&apos;s details once it exists.
-          </p>
+          <p className="mt-0.5 text-xs text-stone-500">You can add cover art from the campaign&apos;s details once it exists.</p>
         </div>
       </div>
     </div>

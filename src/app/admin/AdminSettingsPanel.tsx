@@ -9,6 +9,8 @@ import { PageSection } from "@/components/PageShell";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { NumberStepper } from "@/components/ui/NumberStepper";
+import { Select } from "@/components/ui/Select";
+import { REROLL_LOW_DEFAULT, rerollBelowFor, rerollChoiceOf } from "@/lib/srd/ability-rerolls";
 import { AdminInvitesSection } from "@/app/admin/AdminInvitesSection";
 import { SpeedField } from "@/app/admin/SpeedField";
 import { apiSpeedEligibility } from "@/lib/speed-tier";
@@ -20,6 +22,7 @@ import { AdminBackupSection } from "@/app/admin/AdminBackupSection";
 import { AdminStorageSection } from "@/app/admin/AdminStorageSection";
 import { BackendProbe } from "@/app/admin/BackendProbe";
 import { ModelChoiceField } from "@/app/admin/ModelChoice";
+import { BLANK, fromEnv } from "@/app/admin/model-blanks";
 import { AdminImagesSection } from "@/app/admin/AdminImagesSection";
 import { AdminSpeechSection } from "@/app/admin/AdminSpeechSection";
 import { AmbienceLibraryCard } from "@/app/admin/AmbienceLibraryCard";
@@ -59,6 +62,7 @@ function jumpTo(id: string) {
 
 // Global server settings. Each string setting overrides its env var; a blank
 // field falls back to the env value shown as the placeholder/hint.
+
 export function AdminSettingsPanel() {
   const [config, setConfig] = useState<MaskedConfig | null>(null);
   const [env, setEnv] = useState<EnvDefaults | null>(null);
@@ -185,6 +189,8 @@ export function AdminSettingsPanel() {
             ttsModel: config.speech.ttsModel,
             ttsVoice: config.speech.ttsVoice,
             sttUrl: config.speech.sttUrl,
+            sttModel: config.speech.sttModel,
+            sttOpenaiModel: config.speech.sttOpenaiModel,
             ...(ttsApiKey === SECRET_KEPT ? {} : { ttsApiKey }),
           },
         }),
@@ -325,24 +331,38 @@ export function AdminSettingsPanel() {
               />
             </Field>
             <Field
-              label="Reroll the 4d6 ability dice under a total of"
-              hint="The server throws and keeps a player's six 4d6 totals; they may throw again only while the six add up to less than this. 0 allows no reroll; 108 lets anything be rethrown. The book names no rule; 70 is the default."
+              label="Rolled 4d6 stats"
+              hint="The server throws and keeps a player's six 4d6 totals. Choose whether they may throw again: never, only when the six add up to less than a total you set (70 is the default; the book names no rule), or as often as they like. This is the rule in the library and at every table that follows the server, where a player has one six for all of them. A table can set its own rule in its settings and then keeps a separate six for each player; a character made there still joins its player's library like any other, and a library character or a file brought to a table is only checked against what the dice could give."
             >
-              <NumberStepper
-                label="Reroll the 4d6 ability dice under a total of"
-                min={0}
-                max={108}
-                step={1}
-                suffix={config.abilityRerollBelow === 0 ? "no rerolls" : "total"}
-                value={config.abilityRerollBelow}
-                onChange={(next) => {
-                  const below = Math.round(Number(next));
-                  setConfig({
-                    ...config,
-                    abilityRerollBelow: Number.isFinite(below) ? Math.min(108, Math.max(0, below)) : 70,
-                  });
-                }}
+              <Select
+                label="Rolled 4d6 stats"
+                value={rerollChoiceOf(config.abilityRerollBelow)}
+                onChange={(choice) =>
+                  setConfig({ ...config, abilityRerollBelow: rerollBelowFor(choice, config.abilityRerollBelow) })
+                }
+                options={[
+                  { value: "keep", label: "The first roll stands" },
+                  { value: "low", label: "Reroll a low roll" },
+                  { value: "free", label: "Reroll as often as they like" },
+                ]}
               />
+              {rerollChoiceOf(config.abilityRerollBelow) === "low" ? (
+                <NumberStepper
+                  label="Reroll when the six add up to less than"
+                  min={1}
+                  max={107}
+                  step={1}
+                  suffix="total"
+                  value={config.abilityRerollBelow}
+                  onChange={(next) => {
+                    const below = Math.round(Number(next));
+                    setConfig({
+                      ...config,
+                      abilityRerollBelow: Number.isFinite(below) ? Math.min(107, Math.max(1, below)) : REROLL_LOW_DEFAULT,
+                    });
+                  }}
+                />
+              ) : null}
             </Field>
           </div>
         </PageSection>
@@ -374,7 +394,7 @@ export function AdminSettingsPanel() {
               provider="local"
               value={config.text.localTextModel}
               onChange={(localTextModel) => setConfig({ ...config, text: { ...config.text, localTextModel } })}
-              placeholder="gemma4:31b-it-qat"
+              blankLabel={env.localTextModel ? fromEnv(env.localTextModel, "LOCAL_TEXT_MODEL") : BLANK.story}
             />
           )}
           <Field label="Backend base URL" hint={env.customBaseUrl ? `Env: ${env.customBaseUrl}` : undefined}>
@@ -389,14 +409,13 @@ export function AdminSettingsPanel() {
           </Field>
           <ModelChoiceField
             label="Model name"
-            hint={env.customModel ? `Env: ${env.customModel}` : undefined}
             role="story"
             provider="custom"
             baseUrl={config.text.customBaseUrl || env.customBaseUrl}
             apiKey={apiKey === SECRET_KEPT ? "" : apiKey}
             value={config.text.customModel}
             onChange={(customModel) => setConfig({ ...config, text: { ...config.text, customModel } })}
-            placeholder={env.customModel || "qwen3.6-dm"}
+            blankLabel={env.customModel ? fromEnv(env.customModel, "OPENAI_COMPAT_MODEL") : BLANK.story}
           />
         </div>
         <div className="mt-3">
@@ -471,15 +490,14 @@ export function AdminSettingsPanel() {
           />
           <ModelChoiceField
             label="Model name"
-            hint="Blank = off. Anything in the 4B-8B class is plenty; e.g. gemma4:e4b-it-qat."
+            hint="Anything in the 4B-8B class is plenty."
             role="utility"
             provider={config.text.utilityProvider === "custom" ? "custom" : "local"}
             baseUrl={config.text.utilityProvider === "custom" ? config.text.utilityBaseUrl : ""}
             apiKey={utilityApiKey === SECRET_KEPT ? "" : utilityApiKey}
             value={config.text.utilityModel}
             onChange={(utilityModel) => setConfig({ ...config, text: { ...config.text, utilityModel } })}
-            placeholder="Off"
-            blankLabel="Off (everything runs on the story model)"
+            blankLabel={BLANK.utility}
           />
           <Field
             label="Backend base URL"
@@ -539,6 +557,7 @@ export function AdminSettingsPanel() {
         speech={config.speech}
         env={env}
         apiKey={ttsApiKey}
+        openaiSpeechBaseUrl={config.images.openaiBaseUrl || env.openaiImageBaseUrl || "https://api.openai.com/v1"}
         onSpeech={(speech) => setConfig({ ...config, speech })}
         onApiKey={setTtsApiKey}
       />

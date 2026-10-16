@@ -1,3 +1,4 @@
+import { checkProse, overflowLine, proseWarningLine } from "./prose-check.ts";
 import {
   IMAGE_DATA_URL,
   MAX_BUNDLE_BYTES,
@@ -299,6 +300,18 @@ export function bundleWarnings(bundle: WorkshopBundle): string[] {
       `${dangling} link${dangling === 1 ? " points" : "s point"} at something the bundle does not hold and ${dangling === 1 ? "is" : "are"} dropped.`,
     );
   }
+  // Prose that reads as compressed, named so the author can review it
+  // after the import (issue #302). The text itself is kept as written.
+  const odd = [
+    ...bundle.storyboard.map((card) => ({ what: `Storyboard card "${card.title}"`, line: proseWarningLine(checkProse(card.body)) })),
+    ...bundle.lore.map((entry) => ({ what: `Lore entry "${entry.title}"`, line: proseWarningLine(checkProse(entry.body)) })),
+  ].filter((entry) => entry.line);
+  for (const entry of odd.slice(0, 6)) {
+    warnings.push(`${entry.what} may read oddly: ${entry.line}`);
+  }
+  if (odd.length > 6) {
+    warnings.push(`${odd.length - 6} more entries read the same way.`);
+  }
   if (bundle.plugin) {
     const pictures = Object.keys(bundle.plugin.art).length;
     warnings.push(
@@ -306,6 +319,51 @@ export function bundleWarnings(bundle: WorkshopBundle): string[] {
     );
   }
   return warnings;
+}
+
+// What a bundle's reader calls each item, for an error that names it.
+const ITEM_LABELS: Record<string, string> = {
+  lore: "Lore entry",
+  storyboard: "Storyboard card",
+  npcs: "NPC",
+  locations: "Place",
+  encounters: "Fight",
+  maps: "Map",
+  factions: "Faction",
+  monsters: "Monster",
+  shops: "Shop",
+  tables: "Roll table",
+  pregens: "Pregenerated character",
+};
+
+// A string over its cap is refused with the item, the field, both lengths
+// and the tail that would be lost (issue #302), instead of zod's
+// "String must contain at most N character(s)" at a path.
+function tooLongMessage(issue: { code: string; path: PropertyKey[]; message: string }, parsed: unknown): string | null {
+  if (issue.code !== "too_big" || !issue.path.length) {
+    return null;
+  }
+  let value: unknown = parsed;
+  for (const key of issue.path) {
+    value = value && typeof value === "object" ? (value as Record<PropertyKey, unknown>)[key] : undefined;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const max = Number(/(\d[\d_,]*)/.exec(issue.message)?.[1]?.replace(/[_,]/g, "") ?? NaN);
+  if (!Number.isFinite(max) || value.length <= max) {
+    return null;
+  }
+  const [head, index, field] = issue.path;
+  const label = ITEM_LABELS[String(head)];
+  const item = label && typeof index === "number" ? `${label} ${index + 1}` : String(head);
+  const name =
+    typeof index === "number" && parsed && typeof parsed === "object"
+      ? ((parsed as Record<string, unknown[]>)[String(head)]?.[index] as { title?: unknown; name?: unknown } | undefined)
+      : undefined;
+  const called = typeof name?.title === "string" ? name.title : typeof name?.name === "string" ? name.name : "";
+  const what = `${item}${called ? ` ("${called.slice(0, 60)}")` : ""}${field ? `, its ${String(field)},` : ""}`;
+  return `${overflowLine(what, value, max)} Shorten it in the file, or split it across two entries, and import again.`;
 }
 
 // A WorldForge export reads as a bundle carrying only the new workshop's
@@ -368,7 +426,8 @@ export function readBundle(text: string): BundleRead {
     const first = result.error.issues[0];
     return {
       error: first
-        ? `That bundle is malformed at ${first.path.join(".") || "its root"}: ${first.message}`
+        ? tooLongMessage(first, parsed) ??
+          `That bundle is malformed at ${first.path.join(".") || "its root"}: ${first.message}`
         : "That bundle is malformed.",
     };
   }

@@ -35,7 +35,7 @@ import { turnFromEncounter, turnPips, turnSignature } from "@/lib/battlemap/hand
 
 import type { TargetEdge } from "@/lib/battlemap/view-tactics";
 import { replayAnimation } from "@/lib/motion/replay";
-import { markTourSeen, tourSeen } from "@/lib/tours/logic";
+import { finishTour, useTourFinished } from "@/lib/tours/tour-store";
 import type { InputKind } from "@/lib/campaign-types";
 import type { Floor } from "@/lib/db/campaigns";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
@@ -167,9 +167,11 @@ function HandInner({
   const noticeRef = useRef<HTMLParagraphElement>(null);
 
   const collapsed = useSyncExternalStore(subscribeStore, () => readFlag(COLLAPSED_KEY), () => false);
-  const tutorialSeen = useSyncExternalStore(subscribeStore, () => tourSeen(window.localStorage, HAND_TUTORIAL_ID), () => true);
+  // Once per account, like the tours (issue #306): only a definite "not
+  // finished" from the account shows it unasked.
+  const tutorialFinished = useTourFinished(HAND_TUTORIAL_ID);
   const [tutorialAsked, setTutorialAsked] = useState(false);
-  const showTutorial = !collapsed && (tutorialAsked || (!tutorialSeen && myTurn));
+  const showTutorial = !collapsed && (tutorialAsked || (tutorialFinished === false && myTurn));
 
   // A card that stopped being playable (the turn moved on) drops out of aim.
   const picked = cards.find((card) => card.id === pickedId && !card.disabled) ?? null;
@@ -461,9 +463,8 @@ function HandInner({
 
       {showTutorial ? (
         <HandTutorial
-          onDismiss={() => {
-            markTourSeen(window.localStorage, HAND_TUTORIAL_ID);
-            window.dispatchEvent(new Event(STORE_EVENT));
+          onDismiss={(how) => {
+            finishTour(HAND_TUTORIAL_ID, how);
             setTutorialAsked(false);
           }}
         />

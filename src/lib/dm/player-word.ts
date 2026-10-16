@@ -16,6 +16,7 @@ import { getActiveEncounter } from "@/lib/db/encounters";
 import { listRecentMessages } from "@/lib/db/messages";
 import { getSheetById } from "@/lib/db/sheets";
 import { canAct } from "@/lib/dm/can-act";
+import { isNarration } from "@/lib/dm/ooc-question";
 import { resolveSheetRef } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 
@@ -25,7 +26,8 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 // a token that moved with no input).
 export function declaredThisTurn(campaignId: string, characterId: string): boolean {
   const messages = listRecentMessages(campaignId, 50);
-  const since = messages.slice(messages.findLastIndex((message) => message.authorType === "dm") + 1);
+  // An out-of-character answer in between leaves the move standing.
+  const since = messages.slice(messages.findLastIndex(isNarration) + 1);
   return since.some(
     (message) => message.authorType === "player" && message.characterId === characterId && !message.content.startsWith("(ooc)"),
   );

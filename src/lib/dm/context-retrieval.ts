@@ -5,9 +5,11 @@ import { listLoreWithEmbeddings } from "@/lib/db/lore";
 import { listRuleChunksWithEmbeddings } from "@/lib/db/rules";
 import { embed, similarityOf } from "@/lib/embeddings";
 import { probeCustomContextWindow, storyContextTokens } from "@/lib/model-client";
-import { renderLoreForPrompt, type WorldLoreEntry } from "@/lib/dm/world-lore-logic";
+import { loreExcerpt, renderLoreBlock, type LoreTrace, type WorldLoreEntry } from "@/lib/dm/world-lore-logic";
+import { loreBudgetChars, selectLore, type LoreMoment } from "@/lib/dm/lore-selection";
 import { computeBudgets, promptWindowTokens } from "@/lib/dm/context-budget";
 import { selectRuleChunks } from "@/lib/dm/rules-activation-logic";
+import { isNarration } from "@/lib/dm/ooc-question";
 import { renderHouseRules, renderVariantRules } from "@/lib/dm/rules-logic";
 import { computeIdf, fuseRanked, lexicalScore } from "@/lib/dm/fusion-logic";
 
@@ -15,6 +17,9 @@ import { computeIdf, fuseRanked, lexicalScore } from "@/lib/dm/fusion-logic";
 // moment (latest player messages + scene) is fused with IDF-weighted lexical
 // scoring over the enabled house-rule chunks and world-lore entries; only the
 // most relevant few ride the prompt. Pinned items skip retrieval entirely.
+// World lore keeps every close match up to a cap, inside a budget measured
+// from the window, and records what it kept and held back for the context
+// inspector (issue #305, src/lib/dm/lore-selection.ts).
 // Every path tolerates NULL embeddings and an unavailable embedder, so
 // retrieval can never break a turn.
 //
@@ -26,27 +31,34 @@ import { computeIdf, fuseRanked, lexicalScore } from "@/lib/dm/fusion-logic";
 // which reads order rather than magnitude.
 
 const RULES_TOP = 3;
-const LORE_TOP = 2;
 
 export type TurnRetrieval = {
   variantRulesBlock: string;
   houseRulesBlock: string;
   loreBlock: string;
+  // What the lore block kept and held back, and why; absent when the
+  // campaign has no lore.
+  loreTrace?: LoreTrace;
 };
 
 // The moment to retrieve against: the newest player messages this turn is
-// answering, grounded by the current scene label.
-function buildQuery(campaign: Campaign, history: CampaignMessage[]): string {
+// answering, grounded by the current scene label. The players' words alone
+// are the ask, which names the lore they are asking about (lore-selection.ts).
+function buildMoment(campaign: Campaign, history: CampaignMessage[]): LoreMoment {
   const playerLines: string[] = [];
   for (let index = history.length - 1; index >= 0 && playerLines.length < 3; index -= 1) {
     const message = history[index];
     if (message.authorType === "player") {
       playerLines.unshift(message.content.slice(0, 400));
-    } else if (message.authorType === "dm" && playerLines.length) {
+    } else if (isNarration(message) && playerLines.length) {
       break;
     }
   }
-  return [campaign.scene, ...playerLines].filter(Boolean).join("\n").slice(0, 1_200);
+  return {
+    scene: campaign.scene ?? "",
+    ask: playerLines.join("\n"),
+    query: [campaign.scene, ...playerLines].filter(Boolean).join("\n").slice(0, 1_200),
+  };
 }
 
 // Fuses one corpus and returns the picked entries in fused order.
@@ -102,19 +114,25 @@ export async function buildTurnRetrieval(
   const variantRulesBlock = renderVariantRules(campaign.gameSettings.variantRules);
   let houseRulesBlock = "";
   let loreBlock = "";
+  let loreTrace: LoreTrace | undefined;
   try {
     const rules = listRuleChunksWithEmbeddings(campaign.id).filter(
       (entry) => entry.chunk.enabled,
     );
     const lore = listLoreWithEmbeddings(campaign.id);
     if (rules.length || lore.length) {
-      const query = buildQuery(campaign, history);
+      const moment = buildMoment(campaign, history);
+      const { query } = moment;
       let queryVector: Float32Array | null = null;
+      // The players' words alone, for the lore's second meaning check
+      // (lore-selection.ts); embedded in the same call.
+      let askVector: Float32Array | null = null;
       const anyEmbedding =
         rules.some((entry) => entry.embedding) || lore.some((entry) => entry.embedding);
       if (query && anyEmbedding) {
         try {
-          [queryVector] = await embed([query]);
+          const askToo = moment.ask && lore.some((entry) => entry.embedding);
+          [queryVector, askVector = null] = await embed(askToo ? [query, moment.ask] : [query]);
         } catch (error) {
           // Embedder unavailable; keyword fallback carries the turn.
           console.error("[context-retrieval] embedding failed", error);
@@ -125,10 +143,11 @@ export async function buildTurnRetrieval(
       // admitted outright; only what is left competes for the retrieval
       // slots. A small enough rules document rides whole and skips retrieval
       // (src/lib/dm/rules-activation-logic.ts).
+      const retrievalTokens = computeBudgets(contextLimitTokens).retrieval;
       const activation = selectRuleChunks(
         rules.map((entry) => entry.chunk),
         query,
-        computeBudgets(contextLimitTokens).retrieval,
+        retrievalTokens,
       );
       const forcedIds = new Set(activation.forced.map((chunk) => chunk.id));
       const pinnedRules = activation.forced;
@@ -150,25 +169,41 @@ export async function buildTurnRetrieval(
       );
       houseRulesBlock = renderHouseRules(pinnedRules, retrievedRules);
 
-      const pinnedLore = lore.filter((entry) => entry.entry.pinned).map((entry) => entry.entry);
-      const retrievedLore = pickFused(
-        lore
-          .filter((entry) => !entry.entry.pinned)
-          .map((entry) => ({
-            id: entry.entry.id,
-            text: `${entry.entry.title} ${entry.entry.tags.join(" ")} ${entry.entry.body}`,
-            embedding: entry.embedding,
-            value: entry.entry as WorldLoreEntry,
+      if (lore.length) {
+        const language = campaign.gameSettings.tableLanguage;
+        const entries = lore.map(({ entry, embedding }) => ({ entry: entry as WorldLoreEntry, embedding }));
+        const pinnedLore = entries.filter(({ entry }) => entry.pinned).map(({ entry }) => entry);
+        const unpinned = entries.filter(({ entry }) => !entry.pinned);
+        const byId = new Map(unpinned.map(({ entry }) => [entry.id, entry]));
+        const selection = selectLore(
+          unpinned.map(({ entry, embedding }) => ({
+            id: entry.id,
+            title: entry.title,
+            tags: entry.tags,
+            body: entry.body,
+            similarity: similarityOf(queryVector, embedding),
+            askSimilarity: similarityOf(askVector, embedding),
           })),
-        query,
-        queryVector,
-        LORE_TOP,
-        campaign.gameSettings.tableLanguage,
-      );
-      loreBlock = renderLoreForPrompt(pinnedLore, retrievedLore);
+          moment,
+          language,
+        );
+        // A long body shows the passage nearest the moment, scored against
+        // the query's own terms the way search_lore's passages are.
+        const passageIdf = computeIdf([query], language);
+        const rendered = renderLoreBlock({
+          pinned: pinnedLore,
+          picked: selection.picked.map((pick) => ({ entry: byId.get(pick.id)!, reason: pick.reason })),
+          held: selection.held.map((held) => ({ entry: byId.get(held.id)!, reason: held.reason, close: held.close })),
+          budget: loreBudgetChars(retrievalTokens, houseRulesBlock.length),
+          excerpt: (entry, max) =>
+            loreExcerpt(entry, max, query ? (text) => lexicalScore(query, text, passageIdf, language) : undefined),
+        });
+        loreBlock = rendered.text;
+        loreTrace = rendered.trace;
+      }
     }
   } catch (error) {
     console.error("[context-retrieval] failed", error);
   }
-  return { variantRulesBlock, houseRulesBlock, loreBlock };
+  return { variantRulesBlock, houseRulesBlock, loreBlock, ...(loreTrace ? { loreTrace } : {}) };
 }

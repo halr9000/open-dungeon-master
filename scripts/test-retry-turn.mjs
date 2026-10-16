@@ -178,6 +178,19 @@ test("narration the conversation does echo is kept", () => {
   assert.equal(rewind.callIndex, 2);
 });
 
+test("narration with an aside cut from its opening still matches its echo", () => {
+  // The aside ("I'll set the hour first.") stands in the echo but not in the
+  // kept narration, so the kept text's first 48 characters never occur there
+  // as written; its first sentence does.
+  const rewind = rewindHaltedCall({
+    narrationParts: ["Fog rolls in. The ferry bell rings twice across the black water."],
+    callIndex: 2,
+    assistantText: "Fog rolls in. I'll set the hour first. The ferry bell rings twice across the black water.",
+  });
+  assert.equal(rewind.rewound, false);
+  assert.equal(rewind.callIndex, 2);
+});
+
 test("only the trailing part is ever in question", () => {
   const rewind = rewindHaltedCall({
     narrationParts: ["Echoed beat.", "Lost beat."],

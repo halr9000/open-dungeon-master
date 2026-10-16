@@ -19,6 +19,14 @@ export function currentPathname(): string {
   return nav()?.location().pathname ?? window.location.pathname;
 }
 
+// Where a character page's "back" leads when it was opened from a
+// workshop's Party tool (?from=/workshop/<id>?system=party). Only that
+// shape is taken, so a crafted link cannot send the button off the site or
+// anywhere else; anything else is null and the page goes back to the library.
+export function workshopReturnPath(from: string | null | undefined): string | null {
+  return from && /^\/workshop\/[A-Za-z0-9_-]+(\?system=[a-z-]+)?$/.test(from) ? from : null;
+}
+
 // A full navigation to another page of this server.
 export function navigateTo(url: string): void {
   const app = nav();

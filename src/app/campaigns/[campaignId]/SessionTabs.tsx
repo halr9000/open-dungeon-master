@@ -110,7 +110,11 @@ const TAB_PRESENTATION: Record<PanelTab, [string, LucideIcon, string]> = {
     RAIL_ICONS.context,
     "What the DM was actually sent last turn, and anything the budget cut.",
   ],
-  settings: ["Setup", RAIL_ICONS.settings, "Campaign settings, invites and game toggles."],
+  settings: [
+    "Setup",
+    RAIL_ICONS.settings,
+    "Campaign settings, game toggles, prep from your workshops, and ending the campaign.",
+  ],
 };
 
 // Single source of truth for the panel tab list, shared by the desktop rail

@@ -1,4 +1,5 @@
 import { configValue, getGlobalConfig } from "@/lib/app-config";
+import { soleListedModel } from "@/lib/model-registry/discovery";
 import { openAiSpeechConfig } from "@/lib/openai-images";
 import { TTS_VOICES } from "@/lib/tts-voices";
 
@@ -14,6 +15,10 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 //
 // Both kinds are the same request on the wire; the kind only picks the
 // defaults, so a server set up before this existed keeps working untouched.
+// An "openai" server's model has no default: it is the admin's pick from
+// what the server lists. With none picked, a server of the host's own that
+// lists exactly one model runs that one (narrationModel below); otherwise
+// nothing is sent.
 // The decision logic is pure and exported so scripts/test-tts-backend.mjs can
 // drive it without a network.
 
@@ -31,7 +36,6 @@ export type TtsBackend = {
 
 export const KOKORO_DEFAULT_URL = "http://127.0.0.1:8880";
 export const OPENAI_DEFAULT_URL = "https://api.openai.com/v1";
-export const OPENAI_DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
 // OpenAI publishes no voice list endpoint; these are the documented voices.
 export const OPENAI_TTS_VOICES = [
@@ -84,8 +88,7 @@ export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
     return {
       provider,
       v1: v1Root(base),
-      // A local server names its own models; only OpenAI has a default.
-      model: input.model.trim() || (official ? OPENAI_DEFAULT_TTS_MODEL : "tts-1"),
+      model: input.model.trim(),
       apiKey: input.apiKey.trim() || (official ? input.sharedOpenAiKey.trim() : ""),
       defaultVoice: input.voice.trim() || (official ? "alloy" : ""),
     };
@@ -189,6 +192,9 @@ export function describeSpeechFailure(error: unknown, backend: Pick<TtsBackend, 
   if (error instanceof SpeechEmptyError) {
     return `${where} answered without any audio.`;
   }
+  if (error instanceof SpeechModelMissingError) {
+    return error.message;
+  }
   return `${where} could not be reached at ${hostOf(backend.v1)}.`;
 }
 
@@ -217,6 +223,15 @@ export class SpeechEmptyError extends Error {
   constructor() {
     super("Speech request returned no audio.");
     this.name = "SpeechEmptyError";
+  }
+}
+
+// An OpenAI-compatible server with no model picked: refused before any
+// request, in words that say where to pick one.
+export class SpeechModelMissingError extends Error {
+  constructor() {
+    super("No narration model is picked for this server. Choose one from its list in Admin > Speech.");
+    this.name = "SpeechModelMissingError";
   }
 }
 
@@ -261,10 +276,34 @@ async function requestSpeech(backend: TtsBackend, input: string, voice: string, 
   return audio;
 }
 
+// The model a passage is asked for: the one picked (or TTS_MODEL), else, on
+// an OpenAI-compatible server that is not OpenAI itself, the only model it
+// lists, the way dictation's Whisper service runs its one (src/lib/stt.ts).
+// OpenAI lists dozens, so nothing is taken from its list. "" when there is
+// none: nothing is sent, and the readiness checks say narration is not
+// ready (src/lib/capabilities.ts).
+export async function narrationModel(backend: TtsBackend): Promise<string> {
+  if (backend.model || backend.provider !== "openai" || isOpenAiHost(backend.v1)) {
+    return backend.model;
+  }
+  return soleListedModel({ provider: "speech", baseUrl: backend.v1, apiKey: backend.apiKey });
+}
+
+// The backend with its model settled, for a caller that sends several clips
+// or names the model (the usage ledger, the render cache, the admin's test).
+export async function withNarrationModel(backend: TtsBackend): Promise<TtsBackend> {
+  const model = await narrationModel(backend);
+  return model === backend.model ? backend : { ...backend, model };
+}
+
 // One clip of speech from the configured server.
-export async function synthesizeSpeech(input: string, voice: string, speed = 1, backend: TtsBackend = ttsBackend()): Promise<Buffer> {
-  if (backend.provider === "off") {
+export async function synthesizeSpeech(input: string, voice: string, speed = 1, configured: TtsBackend = ttsBackend()): Promise<Buffer> {
+  if (configured.provider === "off") {
     throw new Error("Narration is switched off on this server.");
+  }
+  const backend = await withNarrationModel(configured);
+  if (!backend.model) {
+    throw new SpeechModelMissingError();
   }
   const voices = backend.provider === "openai" ? await serverVoiceIds(backend) : [];
   // A local server with no default named falls back to the first voice it

@@ -217,7 +217,7 @@ try {
       const { codexArgs } = await import("../src/lib/harness/adapters/codex.ts");
       mkdirSync(receiverCodexHome, { recursive: true, mode: 0o700 });
       const helper = [process.execPath, fileURLToPath(import.meta.url), "--headers", configPath].map(quoteCommand).join(" ");
-      const args = [...codexArgs({ mcpUrl: null, images: false, disableServers: [] }), "-c",
+      const args = [...codexArgs({ mcpUrl: null, images: false, disableServers: [], catalogPath: null }), "-c",
         playerMcpOverride(config.mcpUrl, helper)];
       const scratch = path.join(directory, "scratch");
       mkdirSync(scratch, { recursive: true, mode: 0o700 });

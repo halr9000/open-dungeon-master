@@ -13,6 +13,7 @@ register("./lib/register-alias.mjs", import.meta.url);
 
 const { adaptSheetToLevel } = await import("../src/lib/characters/adapt.ts");
 const { earnedAsiCount } = await import("../src/lib/srd/asi.ts");
+const { asiOwed, readAsiLedger } = await import("../src/lib/srd/asi-ledger.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -98,6 +99,44 @@ test("levelling up grants no automatic improvements", () => {
   const adapted = adaptSheetToLevel(original, 4, 12);
   assert.equal(adapted.asiChoices.length, 1);
   assert.equal(adapted.abilities.str, 18);
+});
+
+// Issue 293: the improvements between the stored level and the table's were
+// never offered, so the count of those taken stays the stored character's
+// and the table owes the rest, as it does a character built at its level.
+const fighterAt = (level) => [{ id: "fighter", level }];
+
+test("a level 1 build joining a level 5 table owes the level 4 improvement", () => {
+  const adapted = adaptSheetToLevel(sheet({ hitDice: { total: 1, spent: 0 }, maxHp: 13 }), 1, 5);
+  assert.equal(readAsiLedger(adapted.features), 0, "the join recorded an improvement nobody took");
+  assert.equal(asiOwed({ level: 5, features: adapted.features }, fighterAt(5)), 1);
+  assert.equal(adapted.abilities.str, 18, "no improvement is applied for the player");
+});
+
+test("a stored count is kept going up, and the rest are owed", () => {
+  const original = sheet({ features: [{ name: "Ability Score Improvements taken: 1", source: "story" }], asiChoices: [{ mode: "plus2", ability: "str" }] });
+  const adapted = adaptSheetToLevel(original, 4, 8);
+  assert.equal(readAsiLedger(adapted.features), 1);
+  assert.equal(asiOwed({ level: 8, features: adapted.features }, fighterAt(8)), 2, "a fighter has three by 8: 4, 6 and 8");
+});
+
+test("a stored sheet from before the count is read at its own level, not the table's", () => {
+  const adapted = adaptSheetToLevel(sheet(), 4, 8);
+  assert.equal(readAsiLedger(adapted.features), 1, "the old table gave one by level 4");
+  assert.equal(asiOwed({ level: 8, features: adapted.features }, fighterAt(8)), 2);
+});
+
+test("going down still caps the count at what the lower level earned", () => {
+  const capped = adaptSheetToLevel(sheet({ features: [{ name: "Ability Score Improvements taken: 3", source: "story" }] }), 8, 5);
+  assert.equal(readAsiLedger(capped.features), 1);
+  const legacy = adaptSheetToLevel(sheet(), 9, 5);
+  assert.equal(readAsiLedger(legacy.features), 1);
+  assert.equal(asiOwed({ level: 5, features: legacy.features }, fighterAt(5)), 0);
+});
+
+test("a sheet joining at its own level, or below 4 with nothing taken, gets no count written", () => {
+  assert.equal(readAsiLedger(adaptSheetToLevel(sheet(), 9, 9).features ?? []), null);
+  assert.equal(readAsiLedger(adaptSheetToLevel(sheet(), 1, 3).features ?? []), null);
 });
 
 // ---- multiclass ----

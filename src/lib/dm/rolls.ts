@@ -22,7 +22,7 @@ import { rollFeatureRiders } from "@/lib/dm/roll-feature-riders";
 import type { RollArgs } from "@/lib/dm/roll-args";
 import { DM_TOOL_NAME_PATTERN, toolTextRegex, xmlToolCallRegex } from "@/lib/dm/tool-text";
 import { acBreakdownFor, computeSheetDerived, findSkill } from "@/lib/srd";
-import { squash, type NarrationClaim } from "@/lib/dm/claims-logic";
+import { withoutSentences, type NarrationClaim } from "@/lib/dm/claims-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { StreamedToolCall } from "@/lib/model-client";
 import { senseCheckFailure } from "@/lib/srd/sense-checks";
@@ -248,9 +248,6 @@ export function rollAsksFromClaims(
     return { text, calls: [] };
   }
   const calls: ParsedToolCall[] = [];
-  // Where each stripped sentence starts, and where it ends.
-  const removals = new Map<number, number>();
-  const sentences = [...text.matchAll(/[^.!?\n]+[.!?]*/g)];
   for (const ask of asks) {
     const base: Record<string, unknown> = { kind: CHECK_KIND[ask.check] };
     if (ask.check === "skill") {
@@ -270,31 +267,9 @@ export function rollAsksFromClaims(
         rawArguments: JSON.stringify({ ...base, characterId }),
       });
     }
-    const quote = squash(ask.quote);
-    const sentence = sentences.find((match) => squash(match[0]).includes(quote));
-    if (sentence?.index !== undefined) {
-      // Swallow trailing bold markers so no orphan ** litters the narration
-      // (leading ones sit inside the sentence match already).
-      let end = sentence.index + sentence[0].length;
-      if (text.slice(end, end + 2) === "**") {
-        end += 2;
-      }
-      removals.set(sentence.index, end);
-    }
   }
-  let cleaned = "";
-  let cursor = 0;
-  for (const [start, end] of [...removals].sort((a, b) => a[0] - b[0])) {
-    cleaned += text.slice(cursor, start);
-    cursor = end;
-  }
-  cleaned += text.slice(cursor);
   return {
-    text: cleaned
-      .replace(/(^|\s)\*\*(\s|$)/g, "$1$2")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
+    text: withoutSentences(text, asks.map((ask) => ask.quote)),
     calls,
   };
 }

@@ -199,8 +199,21 @@ await test("settings: an invalid value and a player are refused as before", asyn
 });
 
 await test("a campaign created with empty settings still gets every default", async () => {
-  const campaignId = await newCampaign({});
-  assert.deepEqual(getCampaignById(campaignId).gameSettings, gameSettingsSchema.parse({}));
+  // Narration is the one switch the create route decides from the server
+  // (issue 275): on where a speech server is named, off where speech is
+  // switched off. Pinned both ways, so the answer does not depend on
+  // whether the machine running this has a Kokoro on its default port.
+  const speech = getGlobalConfig().speech;
+  try {
+    saveGlobalConfig({ speech: { ttsProvider: "kokoro", kokoroUrl: "http://127.0.0.1:1" } });
+    const campaignId = await newCampaign({});
+    assert.deepEqual(getCampaignById(campaignId).gameSettings, gameSettingsSchema.parse({}));
+    saveGlobalConfig({ speech: { ttsProvider: "off" } });
+    const silent = await newCampaign({});
+    assert.deepEqual(getCampaignById(silent).gameSettings, { ...gameSettingsSchema.parse({}), ttsEnabled: false });
+  } finally {
+    saveGlobalConfig({ speech });
+  }
 });
 
 // ---- rulesets ----

@@ -1,7 +1,9 @@
-// Issue 255: the admin settings offer a model role's paid Fast tier only
-// where the connection and model have one, say why not elsewhere, state the
-// price before Fast is chosen, and save the choice. The rig never calls a
-// model: it saves Fast, reads it back, and puts the settings back as found.
+// Issue 255: the admin settings offer a model role's paid Fast tier on a
+// connection that has one (OpenAI's own API) for any model named there
+// (PR 298: OpenAI's reply says whether it ran, so no list of models is
+// kept), say why not elsewhere, state the price before Fast is chosen, and
+// save the choice. The rig never calls a model: it saves Fast, reads it
+// back, and puts the settings back as found.
 import { check, eventually, sleep } from "../lib.mjs";
 
 const UNAVAILABLE = '[data-speed-unavailable]';
@@ -55,10 +57,20 @@ export default {
     });
     await t.shot("fast");
 
-    // A model without Fast: not offered, and a Fast left set is said to ask
-    // for nothing.
+    // Any other model named on OpenAI's API keeps the choice: no model is
+    // ruled out by its name.
     await model.fill("gpt-4o");
-    await eventually(async () => /has no Fast tier on OpenAI's API/.test(await storyBlock.innerText()), { label: "gpt-4o said to have no Fast tier" });
+    await eventually(async () => (await storyBlock.locator(OFFERED).count()) > 0 && (await storyBlock.locator(UNAVAILABLE).count()) === 0, {
+      label: "Fast still offered for gpt-4o on OpenAI",
+    });
+
+    // No model named (the rig's server has no OPENAI_COMPAT_MODEL, so the
+    // blank field has nothing to fall back to): not offered, and a Fast
+    // left set is said to ask for nothing.
+    await model.fill("");
+    await eventually(async () => /Name the model first; Fast depends on it\./.test(await storyBlock.innerText()), {
+      label: "a blank model said to need naming before Fast",
+    });
     check(/Fast is set, but this connection has no Fast tier, so none is asked for/.test(await storyBlock.innerText()), "a Fast left set asks for nothing");
 
     // Saved and read back.

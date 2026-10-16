@@ -78,7 +78,9 @@ export async function runResumeRecap(campaignId: string) {
           .join("\n\n"),
       },
     ],
-    {},
+    // Prose only, said as the other narration calls say it, so a recap that
+    // loops keeps its first copy (src/lib/model-client.ts cutWholeReply).
+    { toolChoice: "none" },
   );
   if (error) {
     return;

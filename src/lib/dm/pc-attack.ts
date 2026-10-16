@@ -176,7 +176,7 @@ export const pcAttackTool: ToolDef = {
         twoHanded: {
           type: "boolean",
           description:
-            "They swing a versatile weapon in both hands (bigger damage die). Ignore for other weapons.",
+            "They swing a versatile weapon in both hands (bigger damage die). Ignore for other weapons. Not for an off-hand attack.",
         },
         offHand: {
           type: "boolean",

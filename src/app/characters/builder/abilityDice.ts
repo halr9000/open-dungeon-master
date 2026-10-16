@@ -3,6 +3,7 @@
 // rule: which die is set aside, how long a toss lasts, which tier a total
 // lands in (docs/visual-overhaul-plan.md 7.2).
 
+import { REROLL_LOW_DEFAULT } from "@/lib/srd/ability-rerolls";
 import { hpBonusPerLevel } from "@/lib/srd/race-id";
 
 export type Rng = () => number;
@@ -117,8 +118,10 @@ export function assignStandard<K extends string>(
 
 // Rolling hands the player six totals up front; they are then placed on the
 // abilities like the standard array. A fresh six is only allowed when the
-// whole pool adds up to less than this.
-export const REROLL_BELOW = 70;
+// whole pool adds up to less than this: the server's default rule, which the
+// builder shows until the server has said what the rule is where the
+// character is being made.
+export const REROLL_BELOW = REROLL_LOW_DEFAULT;
 export const POOL_SIZE = 6;
 
 export type PoolRoll = FourDice & { rest: DieRest[] };
@@ -138,8 +141,9 @@ export function poolSum(pool: PoolEntry[]): number {
   return pool.reduce((sum, entry) => sum + entry.total, 0);
 }
 
-// `below` is the server's threshold (an admin setting, issue #128); the
-// constant above is the default a builder shows before it has heard it.
+// `below` is the threshold where the character is made: the server's (an
+// admin setting, issue #128) or a table's own; the constant above is the
+// default a builder shows before it has heard it.
 export function canRerollPool(pool: PoolEntry[] | null, below: number = REROLL_BELOW): boolean {
   return !pool || poolSum(pool) < below;
 }

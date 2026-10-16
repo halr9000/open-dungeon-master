@@ -150,7 +150,7 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
       damageTypeField("damageType", "Spell damage type"),
       { name: "level", label: "Spell slot level", kind: "number", min: 1, max: 9, help: "An attack spell of 1st level or higher: the slot cast from. Empty uses the spell's own level." },
       ...advantageFields(),
-      { name: "twoHanded", label: "In both hands", kind: "boolean", help: "A versatile weapon rolls its bigger die. Not with a shield on the arm." },
+      { name: "twoHanded", label: "In both hands", kind: "boolean", help: "A versatile weapon rolls its bigger die in melee. Not with a shield on the arm. Not for an off-hand attack." },
       { name: "offHand", label: "Off-hand attack", kind: "boolean", help: "The bonus action of two-weapon fighting, after an attack with a light weapon." },
       { name: "smite", label: "Divine Smite slot", kind: "number", min: 1, max: 9, help: "Paladin only. The slot is spent if the attack hits." },
       { name: "maneuver", label: "Maneuver", kind: "text", help: "Battle Master only. The Superiority Die is spent on a hit (on the roll for Precision Attack)." },

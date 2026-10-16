@@ -10,6 +10,8 @@
 //
 // Pure, for scripts/test-intent-queue.mjs.
 
+import { isNarration } from "@/lib/dm/ooc-question";
+
 export type QueuedIntent = { messageId: string; userId: string; characterId: string; seq: number };
 
 type MessageLike = {
@@ -25,7 +27,7 @@ export function queuedIntents(messages: MessageLike[], beatMessageIds: Iterable<
   const beats = new Set(beatMessageIds);
   const answered = messages.reduce(
     (latest, message) =>
-      message.authorType === "dm" && !beats.has(message.id) && message.seq > latest ? message.seq : latest,
+      isNarration(message) && !beats.has(message.id) && message.seq > latest ? message.seq : latest,
     0,
   );
   return messages

@@ -115,12 +115,14 @@ export function spawnProgram(
 
 // Runs a program to completion and returns its output, for probes
 // (`--version`, `auth status`). Never throws: a probe that fails is an answer.
+// Only the tail of a long output is kept, unless the caller needs all of it.
 export function runProgram(
   binary: string,
   args: readonly string[],
   env: Record<string, string>,
   timeoutMs = 10_000,
   cwd?: string,
+  maxStdout = 200_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const { command, prefix } = resolveWindowsShim(binary);
@@ -155,7 +157,7 @@ export function runProgram(
       finish(null);
     }, timeoutMs);
     child.stdout?.on("data", (chunk) => {
-      stdout = (stdout + String(chunk)).slice(-200_000);
+      stdout = (stdout + String(chunk)).slice(-maxStdout);
     });
     child.stderr?.on("data", (chunk) => {
       stderr = (stderr + String(chunk)).slice(-20_000);

@@ -67,13 +67,18 @@ export function WorldSetupFields({
   setHouseRules,
   loreDrafts,
   setLoreDrafts,
+  collapsible = true,
 }: {
   houseRules: string;
   setHouseRules: (text: string) => void;
   loreDrafts: LoreDraft[];
   setLoreDrafts: (drafts: LoreDraft[]) => void;
+  // Off where the fields already sit in a named group of their own (the
+  // creator's "House rules, lore and prep"): no second toggle inside it.
+  collapsible?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [toggled, setOpen] = useState(false);
+  const open = toggled || !collapsible;
   const filled =
     (houseRules.trim() ? 1 : 0) + loreDrafts.filter((draft) => draft.title.trim()).length;
 
@@ -86,24 +91,26 @@ export function WorldSetupFields({
   }
 
   return (
-    <div className="rounded-lg border border-stone-800 bg-stone-950/40">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-stone-300"
-      >
-        {open ? (
-          <ChevronDown className="size-3.5 text-stone-500" />
-        ) : (
-          <ChevronRight className="size-3.5 text-stone-500" />
-        )}
-        <span className="font-medium">World building</span>
-        <span className="text-xs text-stone-500">
-          optional{filled ? `, ${filled} item${filled === 1 ? "" : "s"}` : ""}
-        </span>
-      </button>
+    <div className={collapsible ? "rounded-lg border border-stone-800 bg-stone-950/40" : undefined}>
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-stone-300"
+        >
+          {open ? (
+            <ChevronDown className="size-3.5 text-stone-500" />
+          ) : (
+            <ChevronRight className="size-3.5 text-stone-500" />
+          )}
+          <span className="font-medium">World building</span>
+          <span className="text-xs text-stone-500">
+            optional{filled ? `, ${filled} item${filled === 1 ? "" : "s"}` : ""}
+          </span>
+        </button>
+      ) : null}
       {open ? (
-        <div className="space-y-3 border-t border-stone-800/70 p-3">
+        <div className={collapsible ? "space-y-3 border-t border-stone-800/70 p-3" : "space-y-3"}>
           <label className="block">
             <span className="mb-1 block text-xs text-stone-400">House rules</span>
             <textarea

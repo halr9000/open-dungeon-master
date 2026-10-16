@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { commitSwap, planSwap, stageSwap } from "../src/lib/ops/state-swap.ts";
 
 const scriptRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const root = path.resolve(process.env.ODM_ROOT || scriptRoot);
@@ -104,26 +105,33 @@ try {
   fs.mkdirSync(target, { recursive: true });
 
   // Only the paths this app manages (the list odm-backup.mjs writes): a live
-  // restore deletes each one first, so a manifest must not get to name
-  // anything else.
+  // restore replaces each one, so a manifest must not get to name anything
+  // else.
   const known = ["data", "public/uploads", "public/generated", "public/generated-audio", "models", ".env.server"];
   const named = Array.isArray(manifest.includes) ? manifest.includes : [];
   for (const rel of named) {
     if (!known.includes(rel)) fail(`backup manifest names a path this app does not manage: ${rel}`);
   }
   const managed = [...new Set([...named, "odm-backup.json"])];
-  for (const rel of managed) {
-    const src = path.join(stage, rel);
-    if (!fs.existsSync(src)) continue;
-    const dst = path.join(target, rel);
-    if (live) fs.rmSync(dst, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.cpSync(src, dst, { recursive: true });
+  // The archive's files are copied in beside the live ones first, then
+  // swapped in by renames that are undone if one fails
+  // (src/lib/ops/state-swap.ts): a full disk or a crash leaves the old world
+  // whole, never half replaced.
+  let kept = [];
+  try {
+    const units = planSwap(target, stage, managed);
+    await stageSwap(target, stage, units);
+    ({ kept } = await commitSwap(target, units));
+  } catch (error) {
+    fail(`${error instanceof Error ? error.message : error}; the files that were in ${target} are unchanged`);
   }
 
   console.log(`restore OK into ${target}`);
   console.log(`proof: integrity=ok campaigns=${proof.campaigns} users=${proof.users} messages=${proof.messages}`);
   if (!live) console.log("dry-run restore; the live campaign was not touched");
+  for (const rel of kept.filter((entry) => entry !== `odm-backup.json.odm-restore-previous`)) {
+    console.log(`the state that was here is kept in ${rel} until the next restore`);
+  }
 } finally {
   fs.rmSync(stage, { recursive: true, force: true });
 }

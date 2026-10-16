@@ -5,20 +5,29 @@ import { embed, similarityOf } from "@/lib/embeddings";
 import { searchScenes } from "@/lib/dm/memory-index";
 import { computeIdf, fuseRanked, lexicalScore } from "@/lib/dm/fusion-logic";
 import { hasWorldDoc, worldView } from "@/lib/db/world-forge";
+import { listPrepCards } from "@/lib/db/prep-cards";
+import { getCampaignById } from "@/lib/db/campaigns";
+import { bestPassage } from "@/lib/dm/passage";
+import { placementOf } from "@/lib/dm/prep-logic";
 import { typeFor } from "@/lib/worldforge/model";
 
 // search_lore: the DM's world-knowledge search. One query runs against
 // every canon source at once: the lead's world lore entries, the
-// server-tracked fact register, public party notes, and the semantic
-// chapter memory. recall_story remains the tool for "what happened in
-// chapter N"; this one answers "what is true about X".
+// server-tracked fact register, public party notes, the semantic chapter
+// memory, and the prep cards an imported storyboard left (DM-only, issue
+// #301). recall_story remains the tool for "what happened in chapter N";
+// this one answers "what is true about X".
+//
+// A long body answers with the passage nearest the query rather than its
+// opening (issue #302, src/lib/dm/passage.ts); the whole entry is still one
+// read_card or one lore page away.
 
 export const searchLoreTool = {
   type: "function",
   function: {
     name: "search_lore",
     description:
-      "Search the campaign's established canon: world lore, tracked facts, party notes, and past chapters. Call it before inventing details about places, factions, history, or NPCs that may already be established.",
+      "Search the campaign's established canon: world lore, tracked facts, party notes, past chapters, and the DM-only prep cards of an imported storyboard. Call it before inventing details about places, factions, history, or NPCs that may already be established. A long entry answers with the passage nearest the query.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -108,6 +117,12 @@ export async function handleSearchLore(
 
   const candidates: LoreCandidate[] = [];
   const db = getDatabase();
+  const language = campaignLanguage(campaignId);
+  // The passage of a body nearest the query, scored the way the ranking
+  // scores (lexical, against the query's own terms); the head when nothing
+  // in the body answers.
+  const passageIdf = computeIdf([query], language);
+  const passage = (body: string) => bestPassage(body, (text) => lexicalScore(query, text, passageIdf, language), TEXT_CLIP);
 
   // Lead-authored world lore.
   if (
@@ -122,9 +137,34 @@ export async function handleSearchLore(
         id: `lore:${entry.id}`,
         source: "world lore",
         ref: `${entry.category}: ${entry.title}`,
-        text: entry.body.slice(0, TEXT_CLIP),
+        text: passage(entry.body),
         haystack: `${entry.title} ${entry.tags.join(" ")} ${entry.body}`,
         embedding,
+      });
+    }
+  }
+
+  // The prep cards of an imported storyboard (src/lib/db/prep-cards.ts):
+  // DM-only, like the arc they feed, and the DM is the caller. Each says
+  // where it stands in the arc, so a card the render held back for room
+  // still surfaces when the scene reaches it.
+  if (category === "any" || ["history", "geography", "location", "npc"].includes(category)) {
+    const arc = getCampaignById(campaignId)?.storyArc ?? null;
+    for (const card of listPrepCards(campaignId)) {
+      const placement = placementOf(arc, card.cardId);
+      const standing =
+        placement?.kind === "beat"
+          ? `beat ${placement.number}, ${placement.status}`
+          : placement?.kind === "event"
+            ? `planned event ${placement.id}, ${placement.status}`
+            : card.role;
+      candidates.push({
+        id: `prep:${card.id}`,
+        source: "prep card (DM-only storyboard)",
+        ref: `${card.title} (${standing}; read_card ${placement?.kind === "event" ? placement.id : placement?.kind === "beat" ? placement.number : `"${card.title}"`} for the whole card)`,
+        text: passage(`${card.trigger ? `When: ${card.trigger}\n\n` : ""}${card.body || card.title}${card.cues ? `\n\n${card.cues}` : ""}`),
+        haystack: `${card.title} ${card.trigger} ${card.cues} ${card.body}`,
+        embedding: null,
       });
     }
   }
@@ -185,7 +225,7 @@ export async function handleSearchLore(
       id: `note:${row.id}`,
       source: "party note",
       ref: row.title || "note",
-      text: row.body.slice(0, TEXT_CLIP),
+      text: passage(row.body),
       haystack: `${row.title} ${row.body}`,
       embedding: row.embedding,
     });
@@ -211,7 +251,6 @@ export async function handleSearchLore(
     // Chapter memory unavailable; the other sources still answer.
   }
 
-  const language = campaignLanguage(campaignId);
   const idf = computeIdf(candidates.map((candidate) => candidate.haystack), language);
   const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   const results = fuseRanked(

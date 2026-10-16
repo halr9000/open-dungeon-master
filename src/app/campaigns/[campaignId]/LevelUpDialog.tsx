@@ -25,6 +25,7 @@ import {
 } from "@/lib/srd";
 import { asiLevelsFor } from "@/lib/srd/asi";
 import { asiOwed } from "@/lib/srd/asi-ledger";
+import { subclassOwed } from "@/lib/srd/owed-choices";
 import { fixedDieValue, type HpMethod } from "@/lib/srd/hit-points";
 import {
   MULTICLASS_CAP,
@@ -291,11 +292,7 @@ export function LevelUpDialog({
   const [optionPicks, setOptionPicks] = useState<string[]>([]);
   const subclassLevel = subclassLevelFor(classChoice);
   const entrySubclass = chosenEntry?.subclass ?? "";
-  const needsSubclass =
-    subclassLevel !== null &&
-    !entrySubclass.trim() &&
-    (chosenEntry?.level ?? 0) < subclassLevel &&
-    subclassLevel <= classLevelAfter;
+  const needsSubclass = subclassOwed({ id: classChoice, subclass: entrySubclass }, classLevelAfter);
   const builtInSubclasses = subclassNamesFor(classChoice);
   // Fetched for the class levelled either way: a workshop or pack subclass
   // the sheet already holds has its features in these rows, and the preview

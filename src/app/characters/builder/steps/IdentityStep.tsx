@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { UnofficialPackNotice } from "@/components/UnofficialPackNotice";
 import { GameTerm } from "@/components/ui/GameTerm";
 import { InfoButton } from "@/components/ui/InfoDialog";
@@ -47,13 +48,32 @@ export function IdentityStep({
   backgroundGroups: PickerGroup[];
   background: BackgroundOption | undefined;
 }) {
+  // The install command is for whoever runs the server. A player can do
+  // nothing with it, and a first-timer read it as something being broken.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (packInstalled) {
+      return;
+    }
+    fetch("/api/auth/me")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => setIsAdmin(Boolean(data?.user?.isAdmin)))
+      .catch(() => undefined);
+  }, [packInstalled]);
+
   return (
     <div className="space-y-4">
       {!packInstalled ? (
         <p className="rounded-lg border border-stone-700/60 bg-stone-900/60 p-3 text-xs text-stone-400">
-          Content pack not installed; showing SRD 5.1 basics only. Run
-          <span className="font-mono"> node scripts/import-open5e.mjs</span> on the server
-          for the full Open5e catalog.
+          {isAdmin ? (
+            <>
+              Content pack not installed; showing SRD 5.1 basics only. Run
+              <span className="font-mono"> node scripts/import-open5e.mjs</span> on the server
+              for the full Open5e catalog.
+            </>
+          ) : (
+            "This server uses the basic rules set (SRD 5.1), so some races, classes and backgrounds from other books are not offered."
+          )}
         </p>
       ) : null}
       {pack ? (

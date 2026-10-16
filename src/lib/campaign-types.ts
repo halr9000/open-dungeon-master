@@ -1,5 +1,6 @@
 import type { CampaignKind } from "@/lib/workshop/kind";
 import { OFFER_NOTE_PREFIX } from "@/lib/dm/proposal-logic";
+import { isNarration } from "@/lib/dm/ooc-question";
 
 export type SessionUser = {
   id: string;
@@ -158,7 +159,8 @@ export function latestUnintroducedJoin<
     return null;
   }
   const notice = joinNotice;
-  return messages.some((message) => message.authorType === "dm" && message.seq > notice.seq)
+  // An out-of-character answer does not introduce anyone.
+  return messages.some((message) => isNarration(message) && message.seq > notice.seq)
     ? null
     : notice;
 }

@@ -35,6 +35,7 @@ import { abilityMod, proficiencyBonus, suite } from "./lib/enforce-harness.mjs";
 import { combatKit, d20Faces, TRAINED } from "./lib/enforce-combat.mjs";
 
 const { test, finish } = suite("test-enforce-tail-attacks");
+const { deriveHand } = await import("../src/lib/battlemap/hand.ts");
 const world = await openWorld({ campaign: { maxPlayers: 10 } });
 const kit = await combatKit(world);
 const { resolvePcOpportunityAttacks } = await import("../src/lib/dm/opportunity.ts");
@@ -204,6 +205,10 @@ await test("Under Shillelagh a club attacks with the spellcasting ability and de
   assert.equal(swing.result.rolled, 10 + abilityMod(16) + proficiencyBonus(5), "the club did not swing with WIS");
   assert.equal(swing.damage?.breakdown?.terms?.find((term) => term.sides)?.sides, 8);
   assert.equal(swing.result.damage, 5 + abilityMod(16));
+  // The player's Hand shows the same swing.
+  const card = deriveHand(world.sheet(druid.id)).find((entry) => entry.id === "attack:club");
+  assert.equal(card.toHit, abilityMod(16) + proficiencyBonus(5));
+  assert.equal(card.damage, `1d8+${abilityMod(16)}`);
 });
 
 // ---- ranger capstones ----

@@ -96,7 +96,7 @@ function table(language) {
   });
   updateStorySettings(campaign.id, {
     textProvider: "custom", customBaseUrl: `${base}/v1`, customModel: "fake",
-    imageBackend: "comfyui", comfyUrl: base, imageGenerationEnabled: true,
+    imageBackend: "comfyui", comfyUrl: base, comfyCheckpoint: "test.safetensors", imageGenerationEnabled: true,
   });
   return getCampaignById(campaign.id);
 }
@@ -185,7 +185,7 @@ await test("an English table's map prompt carries its own words, with no call", 
 
 // Paint renders on the server's own image backend, queued after a check
 // that one exists, so the test waits for what reaches the stand-ins.
-saveGlobalConfig({ images: { comfyUrl: base } });
+saveGlobalConfig({ images: { comfyUrl: base, comfyCheckpoint: "test.safetensors" } });
 async function until(done) {
   for (let waited = 0; !done(); waited += 20) {
     assert.ok(waited < 5_000, "the paint job never ran");

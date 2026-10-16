@@ -9,9 +9,23 @@ import { ui } from "@/lib/ui";
 import { Select } from "@/components/ui/Select";
 import { comfyModelOptions, comfyModelPatch, fetchComfyModels } from "@/app/admin/AdminImagesSection";
 import { BuiltinSpeechCard } from "@/app/admin/BuiltinSpeechCard";
+import { ModelChoiceField } from "@/app/admin/ModelChoice";
+import type { ModelChoices } from "@/lib/model-registry/registry";
+import { BLANK, SPEECH_MODELS, fromEnv } from "@/app/admin/model-blanks";
+import type { EnvDefaults } from "@/app/admin/AdminSettingsFields";
 import { HarnessPictureTest } from "@/app/admin/HarnessPictureTest";
-import { comfyFromScan, type Draft } from "@/app/setup/draft";
+import { comfyFromScan, type Draft, type ModelField } from "@/app/setup/draft";
 import { ChoiceCard, ChoiceCards, Lamp, host, type ScanResult } from "@/app/setup/SetupParts";
+
+const OPENAI_V1 = "https://api.openai.com/v1";
+
+// A model field's answer, remembered so that coming back to the step never
+// fills a None the admin chose (Draft.answered).
+const answer = (current: Draft, field: ModelField): Draft["answered"] =>
+  current.answered.includes(field) ? current.answered : [...current.answered, field];
+// A Whisper service's only model already runs a blank field, which then
+// follows the service; the recommended model is filled only among several.
+const severalListed = (choices: ModelChoices) => choices.models.filter((model) => model.listed).length > 1;
 
 // Pictures and Voice: optional, so each offers "none" as a real answer, and
 // each prefers what the scan found on this computer (free) over anything
@@ -74,6 +88,8 @@ export function PicturesStep({
   agentLabel,
   onAgentVerified,
   openaiKeySaved,
+  env,
+  onComfyOffers,
 }: {
   draft: Draft;
   update: Update;
@@ -87,6 +103,10 @@ export function PicturesStep({
   agentLabel: string;
   onAgentVerified: () => void;
   openaiKeySaved: boolean;
+  env: EnvDefaults;
+  // Told whether the ComfyUI at the draft's address offers a model or a
+  // checkpoint to pick, which holds Continue until one is picked.
+  onComfyOffers?: (offers: boolean) => void;
 }) {
   const scannedComfy = scan?.comfyui ?? null;
   const address = draft.comfy.url.trim();
@@ -121,6 +141,11 @@ export function PicturesStep({
   // file for, measured ones first, then its checkpoints.
   const options = comfyModelOptions(draft.comfy, comfy && { ...comfy, device: null });
   const chosenModel = draft.comfy.preset !== CHECKPOINT_PRESET ? comfyModel(draft.comfy.preset) : undefined;
+  // The same test that shows the picker below.
+  const comfyOffers = Boolean(comfy && !comfy.error && (comfy.checkpoints.length || options.length > 1));
+  useEffect(() => {
+    onComfyOffers?.(comfyOffers);
+  }, [comfyOffers, onComfyOffers]);
   const pick = (pictures: Draft["pictures"]) =>
     update((current) => ({
       ...current,
@@ -247,6 +272,17 @@ export function PicturesStep({
               hint="Used only for pictures. Each portrait, scene and map is billed to it."
             />
           )}
+          <ModelChoiceField
+            label="Picture model"
+            hint="The picture models the key lists."
+            role="image"
+            provider="images"
+            apiKey={draft.picturesKey}
+            value={draft.picturesModel}
+            onChange={(picturesModel) => update((current) => ({ ...current, picturesModel, answered: answer(current, "pictures") }))}
+            blankLabel={env.openaiImageModel ? fromEnv(env.openaiImageModel, "OPENAI_IMAGE_MODEL") : BLANK.picture}
+            preselect={!env.openaiImageModel && !draft.answered.includes("pictures")}
+          />
         </div>
       ) : null}
     </div>
@@ -311,6 +347,7 @@ export function VoiceStep({
   scanning,
   storyIsOpenAi,
   ttsKeySaved,
+  env,
 }: {
   draft: Draft;
   update: Update;
@@ -318,6 +355,7 @@ export function VoiceStep({
   scanning: boolean;
   storyIsOpenAi: boolean;
   ttsKeySaved: boolean;
+  env: EnvDefaults;
 }) {
   const kokoro = scan?.kokoro ?? null;
   const whisper = scan?.whisper ?? null;
@@ -407,20 +445,62 @@ export function VoiceStep({
               hint="Used only for narration. Blank uses the key saved for pictures, if there is one."
             />
           )}
-          <NarrationTest body={{ provider: "openai", baseUrl: "", apiKey: draft.narrationKey }} />
+          <ModelChoiceField
+            label="Narration model"
+            role="narration"
+            provider="speech"
+            baseUrl={OPENAI_V1}
+            apiKey={draft.narrationKey}
+            value={draft.narrationModel}
+            onChange={(narrationModel) => update((current) => ({ ...current, narrationModel, answered: answer(current, "narration") }))}
+            narrow={SPEECH_MODELS.narration}
+            blankLabel={env.ttsModel ? fromEnv(env.ttsModel, "TTS_MODEL") : BLANK.narration}
+            preselect={!env.ttsModel && !draft.answered.includes("narration")}
+          />
+          <NarrationTest body={{ provider: "openai", baseUrl: "", apiKey: draft.narrationKey, model: draft.narrationModel }} />
         </div>
       ) : null}
 
       <div className="space-y-2">
         <h4 className="text-sm font-medium text-stone-200">Push-to-talk dictation</h4>
         {whisper ? (
-          <p className="su-row text-sm text-stone-300">
-            <Lamp tone="ok" /> A Whisper server at {host(whisper.url)} turns speech into text. Nothing to set up.
-          </p>
+          <>
+            <p className="su-row text-sm text-stone-300">
+              <Lamp tone="ok" /> A Whisper server at {host(whisper.url)} turns speech into text, with the model picked here.
+            </p>
+            <ModelChoiceField
+              label="Whisper model"
+              role="dictation"
+              provider="speech"
+              baseUrl={whisper.url}
+              value={draft.dictation.whisperModel}
+              onChange={(whisperModel) =>
+                update((current) => ({ ...current, dictation: { ...current.dictation, whisperModel }, answered: answer(current, "whisper") }))
+              }
+              narrow={SPEECH_MODELS.dictation}
+              blankLabel={env.sttModel ? fromEnv(env.sttModel, "STT_MODEL") : BLANK.whisper}
+              preselect={!env.sttModel && !draft.answered.includes("whisper") && severalListed}
+            />
+          </>
         ) : storyIsOpenAi ? (
-          <p className="su-row text-sm text-stone-300">
-            <Lamp tone="ok" /> The OpenAI key takes dictation too. Nothing to set up.
-          </p>
+          <>
+            <p className="su-row text-sm text-stone-300">
+              <Lamp tone="ok" /> The OpenAI key takes dictation too, with the model picked here.
+            </p>
+            <ModelChoiceField
+              label="Transcription model"
+              role="dictation"
+              provider="speech"
+              baseUrl={env.openaiImageBaseUrl || OPENAI_V1}
+              value={draft.dictation.openaiModel}
+              onChange={(openaiModel) =>
+                update((current) => ({ ...current, dictation: { ...current.dictation, openaiModel }, answered: answer(current, "transcription") }))
+              }
+              narrow={SPEECH_MODELS.dictation}
+              blankLabel={env.sttOpenaiModel ? fromEnv(env.sttOpenaiModel, "STT_OPENAI_MODEL") : BLANK.transcription}
+              preselect={!env.sttOpenaiModel && !draft.answered.includes("transcription")}
+            />
+          </>
         ) : (
           <>
             <p className="text-xs text-stone-500">

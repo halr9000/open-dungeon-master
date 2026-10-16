@@ -401,7 +401,7 @@ export function DmMapLibraryPanel({
           title={selected?.name ?? "Map"}
           // The editor brings its own top bar, with the map's name in it.
           hideTitle
-          className="top-0 h-dvh max-h-none rounded-none px-0 pb-0 pt-0 lg:top-1/2 lg:h-[94vh] lg:max-h-[94vh] lg:w-[min(98vw,110rem)] lg:rounded-xl lg:p-0"
+          className="top-0 h-dvh max-h-none rounded-none px-0 pb-0 pt-[env(safe-area-inset-top)] lg:top-1/2 lg:h-[94vh] lg:max-h-[94vh] lg:w-[min(98vw,110rem)] lg:rounded-xl lg:p-0"
         >
           <div className="h-full">{editor}</div>
         </Sheet>

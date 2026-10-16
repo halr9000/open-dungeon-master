@@ -8,6 +8,7 @@ import {
   LORE_VISIBILITIES,
   WORLD_LORE_CATEGORIES,
   LORE_STYLES,
+  loreBodyOverflow,
   normalizeLoreAudience,
   type LoreStyle,
   type LoreVisibility,
@@ -48,6 +49,11 @@ export async function PATCH(
     patch.title = raw.title.trim().slice(0, LORE_TITLE_MAX);
   }
   if (typeof raw.body === "string" && raw.body.trim()) {
+    // Refused with what would be lost, never cut (issue #302).
+    const overflow = loreBodyOverflow(raw.body);
+    if (overflow) {
+      return Response.json({ error: overflow }, { status: 400 });
+    }
     patch.body = raw.body.trim().slice(0, LORE_BODY_MAX);
   }
   if (Array.isArray(raw.tags)) {

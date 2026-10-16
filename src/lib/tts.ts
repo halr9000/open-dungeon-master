@@ -8,7 +8,7 @@ import { publishEphemeral, publishPersisted } from "@/lib/events";
 import { publishMediaStatus } from "@/lib/dm/images";
 import { stripToolText } from "@/lib/dm/tool-text";
 import { enqueueMediaJob } from "@/lib/media-queue";
-import { describeSpeechFailure, synthesizeSpeech, ttsBackend, type TtsBackend } from "@/lib/tts-backend";
+import { describeSpeechFailure, synthesizeSpeech, ttsBackend, withNarrationModel, type TtsBackend } from "@/lib/tts-backend";
 import type { Speaker, SpokenLine } from "@/lib/dm/speech";
 import { closeLiveNarration, openLiveNarration, pushLiveNarration, renderSpeech } from "@/lib/tts-render";
 import { castUnvoiced, voiceRoster, type RosterEntry } from "@/lib/tts-roster";
@@ -115,9 +115,9 @@ export function enqueueNarrationAudio(
     `tts ${messageId}`,
     async () => {
       publishMediaStatus(campaignId, "tts", messageId, "generating");
-      // Read once per passage, so every clip goes to the same server even
-      // if the admin saves a change halfway through.
-      const backend = ttsBackend();
+      // Read once per passage, so every clip goes to the same server and
+      // model even if the admin saves a change halfway through.
+      const backend = await withNarrationModel(ttsBackend());
       const paid = backend.provider === "openai" && backend.apiKey !== "" && !isPrivateBackendHost(backend.v1);
       const version = Date.now();
       const url = narrationAudioUrl(campaignId, messageId, version);

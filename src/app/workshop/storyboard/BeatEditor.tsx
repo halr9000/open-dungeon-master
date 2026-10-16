@@ -1,6 +1,7 @@
 "use client";
 
-import { Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { SectionHead } from "@/components/ui/SectionHead";
@@ -9,6 +10,7 @@ import { Field, chip, chipOn, chipRow } from "@/app/workshop/kit";
 import {
   BEAT_KINDS,
   BEAT_LABELS,
+  BODY_MAX,
   ROUTE_KINDS,
   ROUTE_LABELS,
   ROUTE_LABEL_MAX,
@@ -23,6 +25,7 @@ import {
 import { KIND_GLYPH, LINK_FIELDS, LINK_GLYPH } from "@/app/workshop/storyboard/beat-fields";
 import { DictateField } from "@/components/DictateField";
 import { appendDictation } from "@/lib/dictation";
+import { checkProse, overflowLine } from "@/lib/workshop/prose-check";
 
 // One card, open for editing: its kind and title, what happens, who and
 // where it involves, and which cards it leads to and how. Split out of
@@ -59,10 +62,18 @@ export function BeatEditor({
   onSave: () => void;
   onDelete?: () => void;
 }) {
+  // Over the cap is said here, with what would be lost, and the save is
+  // held until it fits (issue #302): the server refuses it the same way.
+  // The readability note is a heuristic the author may dismiss; the text
+  // is never changed.
+  const overflow = overflowLine("This card's text", edit.body.trim(), BODY_MAX);
+  const prose = checkProse(edit.body);
+  const [dismissed, setDismissed] = useState("");
+  const proseKey = prose.map((warning) => warning.kind).join(",");
   const saveButton = (
     <button
       type="button"
-      disabled={busy}
+      disabled={busy || Boolean(overflow)}
       onClick={onSave}
       className={cn(ui.btnPrimary, "w-fit")}
     >
@@ -102,6 +113,28 @@ export function BeatEditor({
           className={cn(ui.input, "resize-y")}
         />
       </DictateField>
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 text-[11px]">
+        <span className={cn("font-mono", overflow ? "text-red-400" : edit.body.length > BODY_MAX * 0.8 ? "text-amber-300" : "text-stone-500")} data-testid="card-length">
+          {edit.body.length.toLocaleString("en-US")} / {BODY_MAX.toLocaleString("en-US")}
+        </span>
+        {overflow ? (
+          <span className="motion-shake w-full text-red-400" role="alert">
+            {overflow} Shorten it to save.
+          </span>
+        ) : null}
+        {prose.length && dismissed !== proseKey ? (
+          <span className="reveal flex w-full items-start gap-1.5 text-amber-300/90" data-testid="prose-warning">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              This may read oddly: {prose.map((warning) => warning.message).join(" ")}
+              {prose[0].samples[0] ? ` For example: ${prose[0].samples[0]}` : ""} It may have been written this way; nothing is changed.{" "}
+              <button type="button" onClick={() => setDismissed(proseKey)} className="underline">
+                Dismiss
+              </button>
+            </span>
+          </span>
+        ) : null}
+      </div>
 
       <SectionHead title="Who and where" glyph="system-cast" className="mb-0 pt-1" />
       <div className="stagger-up grid gap-2 sm:grid-cols-2">

@@ -13,7 +13,10 @@ import { ui } from "@/lib/ui";
 // the server's own list, each row with the catalog's word on it, and the
 // model already chosen kept on the list even when the server no longer
 // names it. A model the server does not list can still be typed: the list
-// is help, not a gate. The chosen model is never changed by a listing.
+// is help, not a gate. The chosen model is never changed by a listing: the
+// obvious pick is listed first as recommended, and only the guided setup
+// fills it in (`preselect`), where the field is in front of the admin and
+// saved with its step.
 
 const TYPE_OWN = "\u0000type";
 const BLANK = "\u0000blank";
@@ -30,9 +33,21 @@ export type ModelChoiceProps = {
   harnessId?: string;
   value: string;
   onChange: (value: string) => void;
-  placeholder?: string;
-  // Blank means "off" (the utility model).
-  blankLabel?: string;
+  // What a blank runs, or that it runs nothing (src/app/admin/model-blanks.ts);
+  // a function of the listing when the answer depends on it.
+  blankLabel?: string | ((choices: ModelChoices | null) => string);
+  // What is shown first, the rest one click away: a display filter, never
+  // what is sent (the speech fields, whose servers list every kind).
+  narrow?: { keep: (id: string) => boolean; kind: string };
+  // Fill a blank value with the listing's recommended model: the guided
+  // setup only, where the field is in front of the admin and saved with its
+  // step. A blank chosen on purpose looks the same as one never chosen, so
+  // the admin panel, which anyone returns to, never fills one. A function
+  // decides from the listing (a Whisper service's only model runs a blank).
+  preselect?: boolean | ((choices: ModelChoices) => boolean);
+  // Told each listing as it lands (null when it failed), for a section that
+  // says something about what a blank runs.
+  onListing?: (choices: ModelChoices | null) => void;
 };
 
 export function modelTone(model: RegistryModel | undefined): string {
@@ -63,14 +78,25 @@ export function modelLine(model: RegistryModel | undefined): string {
 }
 
 export function ModelChoiceField(props: ModelChoiceProps) {
-  const { label, hint, role, provider, baseUrl = "", apiKey = "", harnessId, value, onChange, placeholder, blankLabel } = props;
+  const { label, hint, role, provider, baseUrl = "", apiKey = "", harnessId, value, onChange, blankLabel, narrow, preselect, onListing } = props;
   const [choices, setChoices] = useState<ModelChoices | null>(null);
   const [loading, setLoading] = useState(false);
   const [typing, setTyping] = useState(false);
   // The models that cannot do the role's work are kept off the list; one
   // click shows them, named with why.
   const [showUnfit, setShowUnfit] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const latest = useRef(0);
+  // The value and the fill rule as they are when a listing lands, which may
+  // be after a pick.
+  const picked = useRef(value);
+  const fills = useRef(preselect);
+  const told = useRef(onListing);
+  useEffect(() => {
+    picked.current = value;
+    fills.current = preselect;
+    told.current = onListing;
+  }, [value, preselect, onListing]);
 
   const load = useCallback(async () => {
     const ticket = (latest.current += 1);
@@ -83,10 +109,18 @@ export function ModelChoiceField(props: ModelChoiceProps) {
       });
       const data = (await response.json().catch(() => null)) as ModelChoices | null;
       if (ticket === latest.current) {
-        setChoices(data && Array.isArray(data.models) ? data : null);
+        const listed = data && Array.isArray(data.models) ? data : null;
+        setChoices(listed);
+        told.current?.(listed);
+        const rule = fills.current;
+        const fill = typeof rule === "function" ? Boolean(listed && rule(listed)) : rule;
+        if (fill && !picked.current.trim() && listed?.recommended) onChange(listed.recommended);
       }
     } catch {
-      if (ticket === latest.current) setChoices(null);
+      if (ticket === latest.current) {
+        setChoices(null);
+        told.current?.(null);
+      }
     } finally {
       if (ticket === latest.current) setLoading(false);
     }
@@ -103,17 +137,23 @@ export function ModelChoiceField(props: ModelChoiceProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role, provider, baseUrl, harnessId]);
 
+  const blank = typeof blankLabel === "function" ? blankLabel(choices) : blankLabel;
   const all = choices?.models ?? [];
   const chosen = all.find((model) => model.id === value);
   const unfit = all.filter((model) => model.verdict.fit === "unfit" && model.id !== value);
-  const models = showUnfit ? all : all.filter((model) => model.verdict.fit !== "unfit" || model.id === value);
+  const fit = showUnfit ? all : all.filter((model) => model.verdict.fit !== "unfit" || model.id === value);
+  const recommended = choices?.recommended ?? "";
+  const narrowed = narrow && !showAll ? fit.filter((model) => narrow.keep(model.id) || model.id === value || model.id === recommended) : fit;
+  // A server none of whose models reads as the kind shows them all.
+  const models = narrowed.length ? narrowed : fit;
+  const hidden = fit.length - models.length;
   const listable = models.length > 0 && !typing;
 
   const options: SelectOption<string>[] = [
-    ...(blankLabel ? [{ value: BLANK, label: blankLabel }] : []),
-    ...models.map((model) => ({
+    ...(blank ? [{ value: BLANK, label: blank }] : []),
+    ...[...models.filter((model) => model.id === recommended), ...models.filter((model) => model.id !== recommended)].map((model) => ({
       value: model.id,
-      label: `${model.label}${model.listed === false ? " (not listed)" : ""}${model.verdict.fit === "unfit" ? " (unfit)" : ""}`,
+      label: `${model.label}${model.id === recommended ? " (recommended)" : ""}${model.listed === false ? " (not listed)" : ""}${model.verdict.fit === "unfit" ? " (unfit)" : ""}`,
       hint: [model.note, model.verdict.summary].filter(Boolean).join(" · "),
     })),
     { value: TYPE_OWN, label: "Type a model id…" },
@@ -124,7 +164,7 @@ export function ModelChoiceField(props: ModelChoiceProps) {
       <div className="flex items-start gap-2">
         {listable ? (
           <Select
-            value={value || (blankLabel ? BLANK : "")}
+            value={value || (blank ? BLANK : "")}
             onChange={(next) => {
               if (next === TYPE_OWN) {
                 setTyping(true);
@@ -144,7 +184,7 @@ export function ModelChoiceField(props: ModelChoiceProps) {
             onBlur={() => {
               if (models.length) setTyping(false);
             }}
-            placeholder={placeholder}
+            placeholder={blank}
             aria-label={label}
           />
         )}
@@ -177,6 +217,14 @@ export function ModelChoiceField(props: ModelChoiceProps) {
           {showUnfit ? "" : " and " + (unfit.length === 1 ? "is" : "are") + " left off the list"}.{" "}
           <button type="button" className="underline hover:text-stone-300" onClick={() => setShowUnfit((on) => !on)}>
             {showUnfit ? "Hide them" : "Show them"}
+          </button>
+        </p>
+      ) : null}
+      {narrow && (hidden || showAll) ? (
+        <p className="mt-1 text-[11px] leading-4 text-stone-500">
+          {showAll ? `Showing every model the server lists. ` : `${hidden} more ${hidden === 1 ? "model" : "models"} the server lists ${hidden === 1 ? "does" : "do"} not look like ${narrow.kind}. `}
+          <button type="button" className="underline hover:text-stone-300" onClick={() => setShowAll((on) => !on)}>
+            {showAll ? `Only ${narrow.kind}` : "Show all"}
           </button>
         </p>
       ) : null}

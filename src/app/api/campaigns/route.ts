@@ -5,6 +5,7 @@ import { createCampaign, listCampaignsForUser, publicCampaign, type Campaign } f
 import { playingAsByCampaign } from "@/lib/db/sheets";
 import { homeGlanceFor, partyFacesByCampaign } from "@/lib/db/home-glance";
 import { gameSettingsSchema } from "@/lib/schemas/game-settings";
+import { narrationAvailable } from "@/lib/capabilities";
 import { CAMPAIGN_DIFFICULTIES } from "@/lib/campaign-types";
 
 export const runtime = "nodejs";
@@ -17,7 +18,10 @@ const createCampaignSchema = z.object({
   maxPlayers: z.number().int().min(1).max(8).default(5),
   startingLevel: z.number().int().min(1).max(20).default(1),
   difficulty: z.enum(CAMPAIGN_DIFFICULTIES).default("normal"),
-  gameSettings: gameSettingsSchema.partial().default({}),
+  // Narration is the one switch the route decides when unsaid (POST below),
+  // so it is carved out of the partial: zod fills a field's default through
+  // .partial(), which would say "on" for a caller that said nothing.
+  gameSettings: gameSettingsSchema.partial().extend({ ttsEnabled: z.boolean().optional() }).default({}),
 });
 
 export async function GET() {
@@ -67,6 +71,13 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid campaign settings." }, { status: 400 });
   }
 
-  const campaign = createCampaign(user.id, parsed.data);
+  // A create that says nothing about narration (an app shell's, a script's)
+  // starts it on only where the server can read aloud, the rule the
+  // new-campaign dialog applies for itself before it sends (issue 275).
+  const gameSettings = { ...parsed.data.gameSettings };
+  if (gameSettings.ttsEnabled === undefined) {
+    gameSettings.ttsEnabled = await narrationAvailable();
+  }
+  const campaign = createCampaign(user.id, { ...parsed.data, gameSettings });
   return Response.json({ campaign: publicCampaign(campaign) }, { status: 201 });
 }

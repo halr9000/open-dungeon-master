@@ -583,6 +583,13 @@ export const STORY_ADJUDICATIONS: CatalogEntry[] = [
     ],
   },
   {
+    name: "read_card",
+    label: "Read a prep card",
+    category: "story",
+    summary: "Opens the full storyboard card behind a story beat or a planned event.",
+    fields: [{ name: "ref", label: "Event id, beat number or title", kind: "text", required: true, placeholder: "ev3" }],
+  },
+  {
     name: "generate_image",
     label: "Illustrate",
     category: "story",

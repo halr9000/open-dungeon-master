@@ -32,6 +32,10 @@ export function isAgentRequest(request: Request): boolean {
 // system prompt).
 const AGENT_MARK = "[agent program in the DM seat]";
 
+export function isAgentTurn(turn: Pick<DmTurn, "conversation">): boolean {
+  return turn.conversation[0]?.content === AGENT_MARK;
+}
+
 function findAgentTurn(campaignId: string): DmTurn | null {
   const rows = getDatabase()
     .prepare(
@@ -40,7 +44,7 @@ function findAgentTurn(campaignId: string): DmTurn | null {
     .all(campaignId) as Array<{ id: string }>;
   for (const row of rows) {
     const turn = getDmTurn(row.id);
-    if (turn && turn.conversation[0]?.content === AGENT_MARK) {
+    if (turn && isAgentTurn(turn)) {
       return turn;
     }
   }

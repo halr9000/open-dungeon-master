@@ -43,6 +43,12 @@ register("./register-routes.mjs", import.meta.url);
 globalThis.__odmEmbedderPromise = Promise.resolve((texts) =>
   Promise.resolve({ tolist: () => texts.map(() => new Array(384).fill(0.1)) }),
 );
+// And no speech server: a world's campaign reads its narration aloud unless
+// told otherwise, so every DM turn a suite finished sent it to Kokoro's
+// default address (127.0.0.1:8880), failing loudly here and making real
+// audio on a machine that runs one. A provider set in the environment, or
+// saved in the admin settings by a suite, still wins.
+process.env.TTS_PROVIDER ??= "off";
 
 // ---- dice ----
 //

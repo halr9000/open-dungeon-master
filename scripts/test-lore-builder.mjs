@@ -38,7 +38,9 @@ test("normalizeLoreInput validates and bounds", () => {
     tags: ["one", "", 5, "two", ...Array(20).fill("x")],
   });
   assert.equal(ok.title.length, 120);
-  assert.equal(ok.body.length, 4000);
+  // Bounded at the bundle's cap (issue #302), so 9,000 characters stay whole.
+  assert.equal(ok.body.length, 9000);
+  assert.equal(normalizeLoreInput({ category: "magic", title: "x", body: "b".repeat(30_000) }).body.length, 20_000);
   assert.ok(ok.tags.includes("one") && ok.tags.includes("two"));
   assert.ok(ok.tags.length <= 8);
   assert.ok(!ok.tags.includes(""));
@@ -70,9 +72,31 @@ test("renderLoreForPrompt respects the budget and empty case", () => {
     entry({ id: `e${index}`, title: `Entry ${index}`, body: "b".repeat(300) }),
   );
   const block = renderLoreForPrompt([], entries, 800);
-  assert.ok(block.length <= 800 + 80);
-  assert.ok(!block.includes("Entry 9"));
+  // The entry lines and the closing line stay inside the budget; the header
+  // is outside it, as it always was.
+  const [header, ...body] = block.split("\n");
+  assert.ok(header.startsWith("WORLD LORE"));
+  assert.ok(body.join("\n").length <= 800, `${body.join("\n").length} characters`);
+  // Shorter excerpts fit more entries than the old 300-character cut did, and
+  // what still does not fit is named, never silently missing (issue #305).
+  assert.ok(body.filter((line) => line.startsWith("- [")).length >= 3);
+  assert.ok(!body.some((line) => line.startsWith("- [history] Entry 9:")));
+  assert.match(body.at(-1), /^Also bearing on this moment, left out for room \(search_lore reads them\): .*Entry 9/);
   assert.equal(renderLoreForPrompt([], [], 1600), "");
 });
 
 console.log(`test-lore-builder: ${passed} tests passed`);
+
+// ---- issue #302: the editor's cap matches the bundle's, and overflow is named ----
+
+{
+  const { LORE_BODY_MAX, loreBodyOverflow } = await import("../src/lib/dm/world-lore-logic.ts");
+  assert.equal(LORE_BODY_MAX, 20_000, "the lore cap no longer matches what a bundle entry can carry");
+  const whole = normalizeLoreInput({ category: "history", title: "The long chronicle", body: "a".repeat(20_000) });
+  assert.equal(whole.body.length, 20_000, "a bundle-sized body lost its tail on edit");
+  assert.equal(loreBodyOverflow("short"), "");
+  assert.equal(loreBodyOverflow(undefined), "");
+  const over = loreBodyOverflow(`${"a".repeat(20_000)}the tail`);
+  assert.match(over, /^This entry is 20,008 characters; the limit is 20,000\. The last 8 would be lost: "the tail"\./);
+  console.log("lore cap: bundle-sized bodies edit whole, overflow is named");
+}

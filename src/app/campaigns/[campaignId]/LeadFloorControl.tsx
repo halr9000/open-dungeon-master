@@ -4,7 +4,10 @@ import { Check, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { SectionHead } from "@/components/ui/SectionHead";
+import { Switch } from "@/components/ui/Switch";
 import { PanelError, kitButtonClass, panelField } from "./PanelKit";
+import { SequenceEditor } from "./SequenceEditor";
+import { fitSequence, type PlanSequence } from "@/lib/dm/plan-order";
 import type { Floor } from "@/lib/db/campaigns";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
 import { extraTurnTag, orderRowKey } from "@/lib/battlemap/initiative-rows";
@@ -70,6 +73,14 @@ export function LeadFloorControl({
   // in it without holding it up), the whole party when none are picked.
   const [planned, setPlanned] = useState<string[]>([]);
   const [planPrompt, setPlanPrompt] = useState("");
+  // The order they act in (issue 292), when the lead sets one: steps of
+  // character ids, kept to whoever is in the plan as the picks change.
+  const [inOrder, setInOrder] = useState(false);
+  const [orderDraft, setOrderDraft] = useState<PlanSequence>([]);
+  const participants = planned.length
+    ? planned.flatMap((id) => sheets.filter((sheet) => sheet.id === id))
+    : sheets;
+  const planSequence = fitSequence(orderDraft, participants.map((sheet) => sheet.id));
 
   // Companions have no player to wait on, so they cannot hold the floor.
   const players = sheets.filter((sheet) => !sheet.isCompanion);
@@ -115,7 +126,12 @@ export function LeadFloorControl({
       const response = await fetch(`/api/campaigns/${campaignId}/coordination`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "open", characterIds: planned, prompt: planPrompt.trim() }),
+        body: JSON.stringify({
+          action: "open",
+          characterIds: planned,
+          prompt: planPrompt.trim(),
+          sequence: inOrder && planSequence.length > 1 ? planSequence : null,
+        }),
       });
       if (!response.ok) {
         const data = (await response.json().catch(() => ({}))) as { error?: string };
@@ -124,6 +140,8 @@ export function LeadFloorControl({
       }
       setPlanned([]);
       setPlanPrompt("");
+      setInOrder(false);
+      setOrderDraft([]);
     } catch {
       setError("Could not reach the table.");
     } finally {
@@ -325,7 +343,8 @@ export function LeadFloorControl({
           />
           <p className="mb-1.5 text-xs text-stone-500">
             Each player stages what their characters do in the same moment, edits it until ready or passes, and the DM
-            resolves the whole plan as one beat. Companions join without holding it up.
+            resolves the whole plan as one beat. Companions join without holding it up. Set an order when one move has to
+            come before another.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {sheets.map((sheet) => {
@@ -346,6 +365,30 @@ export function LeadFloorControl({
               );
             })}
           </div>
+          <div className="mt-2 flex items-center justify-between gap-2 text-xs text-stone-300">
+            <span>In order{inOrder ? "" : ": off, everyone acts at once"}</span>
+            <Switch
+              on={inOrder}
+              onChange={(on) => {
+                setInOrder(on);
+                if (on && !orderDraft.length) {
+                  setOrderDraft(participants.map((sheet) => [sheet.id]));
+                }
+              }}
+              label="Set the order they act in"
+            />
+          </div>
+          {inOrder && participants.length > 1 ? (
+            <div className="reveal mt-1.5" data-coordinate-order>
+              <SequenceEditor
+                items={participants.map((sheet) => ({ id: sheet.id, name: sheet.name, companion: Boolean(sheet.isCompanion) }))}
+                sequence={planSequence}
+                onChange={setOrderDraft}
+                disabled={busy}
+                label="The order the characters act in"
+              />
+            </div>
+          ) : null}
           <div className="mt-1.5 flex gap-1.5">
             <input
               value={planPrompt}

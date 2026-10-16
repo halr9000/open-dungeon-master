@@ -28,6 +28,8 @@ import { HelpDot, MethodInfoDialog, type HpExplainerInput } from "./AbilityExpla
 import { AbilitySummary } from "./AbilitySummary";
 import { DiceDefs, DiceRow } from "./Dice";
 import { fetchOpenAbilityPool, requestAbilityPool, type AbilityPoolAnswer } from "./useTableRules";
+import { useContentCampaign } from "@/lib/content-scope";
+import { rerollWords } from "@/lib/srd/ability-rerolls";
 
 export const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
 export type AbilityMethod = "standard" | "pointbuy" | "roll";
@@ -44,14 +46,10 @@ export const ABILITY_LABELS: Record<Ability, string> = {
 const ABILITY_KEYS = Object.keys(ABILITY_LABELS) as Ability[];
 
 // What each way of getting six numbers actually costs you, for the player who
-// has never been asked this question before.
-// The 4d6 method's reroll rule in words, for the server's threshold (an
-// admin setting, issue #128).
-function rerollRule(below: number): string {
-  return below <= 0
-    ? "The six are yours to keep: this server allows no second throw."
-    : `The six are yours to keep: you may throw again only if they add up to less than ${below}.`;
-}
+// has never been asked this question before. The 4d6 entry carries the
+// server's default rule until the builder learns the rule where it is
+// rolling (rerollWords), which replaces it below.
+const BUNDLED_RULE = rerollWords(REROLL_BELOW, false).rule;
 
 const METHODS: Array<{ id: AbilityMethod; label: string; info: string }> = [
   {
@@ -71,7 +69,7 @@ const METHODS: Array<{ id: AbilityMethod; label: string; info: string }> = [
     id: "roll",
     label: "Roll 4d6",
     info:
-      `Roll four six-sided dice six times, dropping the lowest each time, then place the six totals on the abilities you choose. It can hand you a hero far above the standard array, or well below it. ${rerollRule(REROLL_BELOW)} Some tables love the swing; ask yours before choosing it.`,
+      `Roll four six-sided dice six times, dropping the lowest each time, then place the six totals on the abilities you choose. It can hand you a hero far above the standard array, or well below it. ${BUNDLED_RULE} Some tables love the swing; ask yours before choosing it.`,
   },
 ];
 
@@ -143,8 +141,13 @@ export default function AbilityEditor({
   // are that kept roll (null when thrown before the server kept dates).
   const [openPool, setOpenPool] = useState<AbilityPoolAnswer | null>(null);
   const [keptAt, setKeptAt] = useState<string | null | undefined>(undefined);
-  // The server's reroll rule; the bundled default until it has answered.
+  // Built at a table, the dice are rolled under that table's rule (its own,
+  // or the server's when it set none), and the words say so.
+  const campaignId = useContentCampaign();
+  // The reroll rule where the character is made; the bundled default until
+  // the server has answered.
   const [rerollBelow, setRerollBelow] = useState(REROLL_BELOW);
+  const words = rerollWords(rerollBelow, Boolean(campaignId));
   function learnRule(answer: { rerollBelow: number }) {
     setRerollBelow(answer.rerollBelow);
   }
@@ -172,7 +175,7 @@ export default function AbilityEditor({
   const openedWith = useRef({ method, pool });
   useEffect(() => {
     let cancelled = false;
-    fetchOpenAbilityPool().then((answer) => {
+    fetchOpenAbilityPool(campaignId).then((answer) => {
       if (cancelled || !answer) {
         return;
       }
@@ -227,7 +230,7 @@ export default function AbilityEditor({
     }
     setAsking(true);
     setRollError("");
-    const answer = await requestAbilityPool();
+    const answer = await requestAbilityPool(campaignId);
     setAsking(false);
     if ("error" in answer) {
       setRollError(answer.error);
@@ -367,13 +370,7 @@ export default function AbilityEditor({
                 onClick={throwPool}
                 disabled={anyRolling || asking || !rerollOpen}
                 aria-busy={asking}
-                title={
-                  rerollOpen
-                    ? `These add up to less than ${rerollBelow}, so you may throw again`
-                    : rerollBelow <= 0
-                      ? "This server allows no second throw"
-                      : `A reroll opens only when the six add up to less than ${rerollBelow}`
-                }
+                title={rerollOpen ? words.openTitle : words.closedTitle}
                 className={cn(ui.btnSmall, "ml-auto px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40")}
               >
                 <Dices className="size-3.5" /> Reroll
@@ -470,13 +467,7 @@ export default function AbilityEditor({
                     ) : null}
                     <span className="font-mono text-amber-200">Total {total}</span>
                     <span className="text-stone-600"> · </span>
-                    {rerollOpen
-                      ? `Under ${rerollBelow}: you may throw all six again.`
-                      : rerollBelow <= 0
-                        ? "This server allows no second throw. These six are yours."
-                        : keptAt !== undefined
-                          ? `It stays until a character uses it; a reroll opens only under ${rerollBelow}.`
-                          : `A reroll opens only under ${rerollBelow}. These six are yours.`}
+                    {rerollOpen ? words.open : keptAt !== undefined ? words.keptClosed : words.closed}
                     <span className="block text-stone-500">
                       {held !== null
                         ? "Now tap the ability that should get it."
@@ -692,7 +683,7 @@ export default function AbilityEditor({
         open={methodInfoOpen}
         onOpenChange={setMethodInfoOpen}
         methods={METHODS.map((entry) =>
-          entry.id === "roll" ? { ...entry, info: entry.info.replace(rerollRule(REROLL_BELOW), rerollRule(rerollBelow)) } : entry,
+          entry.id === "roll" ? { ...entry, info: entry.info.replace(BUNDLED_RULE, words.rule) } : entry,
         )}
         current={method}
       />

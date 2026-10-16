@@ -40,6 +40,7 @@ const {
   requestAccountDeletion,
 } = await import("../src/lib/account-deletion.ts");
 const { runJobsOnce } = await import("../src/lib/jobs.ts");
+const rolls = await import("../src/lib/db/creation-rolls.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -103,6 +104,16 @@ db.prepare(
   `INSERT INTO library_characters (id, user_id, name, race, class, sheet_json, portrait_json, created_at, updated_at)
    VALUES ('lc1', ?, 'Shared', 'elf', 'wizard', '{}', ?, ?, ?)`,
 ).run(alice.id, JSON.stringify({ url: "/uploads/shared.png" }), iso(now), iso(now));
+
+// Dice Bob and Alice are owed while building (src/lib/db/creation-rolls.ts):
+// each has a library six, and at Alice's table, which rolls its own, an
+// ability six and a class's starting wealth.
+const aliceTableRule = rolls.abilityRollPlace({ id: aliceTable.id, gameSettings: { abilityRerollBelow: 108 } });
+for (const user of [bob, alice]) {
+  rolls.rollAbilityPool(user.id);
+  rolls.rollAbilityPool(user.id, aliceTableRule);
+  rolls.rollStartingWealth(user.id, aliceTable.id, "fighter");
+}
 
 insertSession("bob-token", bob.id, iso(now + 30 * DAY));
 insertSession("bob-phone", bob.id, iso(now + 30 * DAY));
@@ -168,6 +179,12 @@ test("the transcript keeps its words minus the author, tools pass to the owner",
   assert.equal(count(`SELECT COUNT(*) AS n FROM session_rsvps WHERE user_id = ?`, bob.id), 0);
   const seat = db.prepare(`SELECT party_lead_user_id FROM campaigns WHERE id = ?`).get(aliceTable.id);
   assert.equal(seat.party_lead_user_id, null);
+});
+
+test("the dice he was owed while building go with him; Alice's stay", () => {
+  assert.equal(count(`SELECT COUNT(*) AS n FROM creation_rolls WHERE user_id = ?`, bob.id), 0);
+  assert.equal(count(`SELECT COUNT(*) AS n FROM creation_rolls WHERE user_id = ?`, alice.id), 3);
+  assert.ok(rolls.openAbilityPool(alice.id, aliceTableRule));
 });
 
 test("only pictures nothing else points at are removed from disk", () => {

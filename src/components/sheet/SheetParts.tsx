@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { GameTerm } from "@/components/ui/GameTerm";
@@ -47,14 +47,16 @@ export function PortraitMedallion({
   level,
   children,
   className,
+  style,
 }: {
   classId: string;
   level?: number;
   children: ReactNode;
   className?: string;
+  style?: CSSProperties;
 }) {
   return (
-    <div className={cn("sheet-medallion", className)}>
+    <div className={cn("sheet-medallion", className)} style={style}>
       <div className="sheet-medallion-face">{children}</div>
       <span className="sheet-medallion-emblem" title={classId}>
         <GameIcon icon={{ kind: "family", key: `class-${classId.toLowerCase()}` }} size="size-7" />

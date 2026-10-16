@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PageLoading, PageNotice } from "@/components/PageShell";
-import type { MaskedConfig } from "@/app/admin/AdminSettingsFields";
+import type { EnvDefaults, MaskedConfig } from "@/app/admin/AdminSettingsFields";
 import { SetupWizard, type SetupInfo } from "@/app/setup/SetupWizard";
 
 type Me = { id: string; username: string; isAdmin: boolean; avatar?: { url: string } | null };
@@ -14,6 +14,7 @@ type Me = { id: string; username: string; isAdmin: boolean; avatar?: { url: stri
 export default function SetupPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [config, setConfig] = useState<MaskedConfig | null>(null);
+  const [env, setEnv] = useState<EnvDefaults | null>(null);
   const [info, setInfo] = useState<SetupInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -33,6 +34,7 @@ export default function SetupPage() {
         ]);
         if (!live) return;
         if (settings?.config) setConfig(settings.config as MaskedConfig);
+        if (settings?.envDefaults) setEnv(settings.envDefaults as EnvDefaults);
         if (setup) setInfo(setup as SetupInfo);
       }
       setLoading(false);
@@ -69,7 +71,7 @@ export default function SetupPage() {
     );
   }
 
-  if (!config || !info) {
+  if (!config || !env || !info) {
     return (
       <PageNotice user={me}>
         The setup could not load this server&apos;s settings.{" "}
@@ -83,7 +85,7 @@ export default function SetupPage() {
   return (
     <main className="su-page bg-starfield">
       <div className="su-shell panel ornate texture-noise shadow-elev-2">
-        <SetupWizard config={config} info={info} />
+        <SetupWizard config={config} env={env} info={info} />
       </div>
     </main>
   );

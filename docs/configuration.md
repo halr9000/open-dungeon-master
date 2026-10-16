@@ -21,6 +21,7 @@ falls through to the env var.
 | `OPENROUTER_API_KEY` | — | Fallback key for OpenRouter URLs (else set in-app) |
 | `OPENAI_COMPAT_API_KEY` | — | Fallback key for other connected servers |
 | `FLUX_WORKER_URL` | `http://127.0.0.1:7869` | Image worker |
+| `OPENAI_IMAGE_MODEL` | — | Picture model for the OpenAI-compatible images backend. Also picked in Admin > Image generation, which wins. Without one no picture is asked for |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | Default ComfyUI server for the ComfyUI backend |
 | `ULTRA_FAST_IMAGE_GEN_DIR` | `~/ultra-fast-image-gen` | FLUX backends repo |
 | `ULTRA_FAST_IMAGE_GEN_PYTHON` | platform venv Python | Python inside the image backend venv |
@@ -34,12 +35,13 @@ falls through to the env var.
 | Variable | Default | Purpose |
 |---|---|---|
 | `CONTENT_DB_PATH` | `data/content/open5e.sqlite` | Open5e content pack (built by `node scripts/import-open5e.mjs`) |
-| `STT_URL` | `http://127.0.0.1:8870` | Push-to-talk transcription service (odm-stt.service) |
-| `STT_MODEL` | `distil-large-v3` | faster-whisper model the STT proxy requests |
+| `STT_URL` | `http://127.0.0.1:8870` | Whisper service for push-to-talk (odm-stt.service). Also set in Admin > Speech, which wins; `off` says there is none. The voice-chat transcript uses the same service, but only at an address named there or here, never the default one |
+| `STT_MODEL` | — | Model push-to-talk and the voice-chat transcript ask the Whisper service for. Also picked in Admin > Speech, which wins. Without one, the service's only model when it lists one; otherwise the Whisper service is skipped |
+| `STT_OPENAI_MODEL` | — | OpenAI transcription model for dictation when nothing free listens. Also picked in Admin > Speech, which wins. Without one OpenAI never listens |
 | `KOKORO_URL` | `http://127.0.0.1:8880` | Kokoro-FastAPI TTS service for DM narration |
 | `TTS_PROVIDER` | `kokoro` | Kind of narration server: `kokoro`, `openai` (any server with OpenAI's `/v1/audio/speech`), or `off`. Also set in Admin > Speech, which wins |
 | `TTS_BASE_URL` | `https://api.openai.com/v1` | Address of the `openai` kind of narration server |
-| `TTS_MODEL` | `kokoro`, or `gpt-4o-mini-tts` on OpenAI | Model name sent with each narration request |
+| `TTS_MODEL` | `kokoro` on Kokoro | Model name sent with each narration request. The `openai` kind has no default: pick one from the server's list in Admin > Speech, or set it here. Without one, a server that is not OpenAI itself and lists exactly one model runs it; otherwise no passage is read aloud |
 | `TTS_API_KEY` | — | Bearer key for the narration server. Blank on OpenAI itself falls back to the key saved for pictures |
 | `TTS_VOICE` | `af_heart`, or `alloy` on OpenAI | Voice used when a campaign names one the server does not have |
 | `TTS_CONCURRENCY` | `2` | Speech requests sent to the narration server at once, across every table (1 to 8). A passage with character voices is several short requests; two at a time was the fastest on a CPU Kokoro, a hosted API can take more |
@@ -476,3 +478,57 @@ Players and DMs who do not run the server have per-item exports instead:
 - A campaign's story exports as HTML, ODT or DOCX from the Story tab. That is
   a reading copy; play state (messages, sheets, floor, clock) has no file
   export and moves only with the database.
+
+## Upgrading
+
+### From 0.26.4 or earlier: every model is picked
+
+No model is named in the code any more (issue #265): each model ODM sends is
+one picked from what its backend lists, in the admin panel or the guided
+setup, or named in an environment variable. Saved settings keep working
+unchanged. An install that relied on a default that is gone must now pick:
+
+- **OpenAI pictures**: the picture model, in Admin > Image generation (or
+  `OPENAI_IMAGE_MODEL`). `gpt-image-1` was the default. Until one is picked,
+  tables are not promised pictures, and the panel says a model is missing.
+- **Narration on an OpenAI-compatible server**: the model, in Admin > Speech
+  (or `TTS_MODEL`). `gpt-4o-mini-tts` and `tts-1` were the defaults. A server
+  of your own that lists exactly one model runs it without a pick; until a
+  model can be found, new campaigns start with narration off.
+- **Dictation through OpenAI**: the transcription model, under OpenAI
+  transcription in Admin > Speech (or `STT_OPENAI_MODEL`). Without one OpenAI
+  never listens: paid dictation no longer switches itself on because a key
+  exists, and with no other engine the mic buttons hide. Admin > Speech says
+  so while a key waits for a model.
+- **A Whisper service**: nothing, if it lists one model, which a blank field
+  runs. One that lists several needs its model picked in Admin > Speech or set
+  as `STT_MODEL` (a server that lists its narration and transcription models
+  together, as Speaches does, is one); until then it is skipped, and Admin >
+  Speech says so. Push-to-talk used to send
+  `distil-large-v3` and the voice-chat transcript `whisper-1`; both now send
+  the model picked, to the same address.
+- **ComfyUI in checkpoint mode**: a checkpoint, or a catalog model, in Admin >
+  Image generation. The pinned `CyberRealisticXLPlay_V6.0.safetensors` was the
+  default, so this is every server that ran on that file. Campaigns that saved
+  a checkpoint keep it; those that have none paint with the one picked.
+
+Also new in this release:
+
+- **Fast is sent for any OpenAI model that offers it.** Which models have
+  OpenAI's paid Fast tier is no longer read from their names. A Fast left set
+  in Processing speed (Admin > Text model defaults, and the utility model) on
+  a model the old list left out asked for nothing; it is now sent, and runs
+  and bills at the priority price wherever OpenAI offers it. Check both
+  settings after upgrading.
+- **The compose file names no storyteller model.** `docker-compose.yml`
+  defaulted `OPENAI_COMPAT_MODEL` to `qwen3.6-35b`; it is now blank, so the one
+  model the server lists runs. A server that lists several needs its model
+  picked, or `OPENAI_COMPAT_MODEL` set in `.env`. `.env.example` no longer
+  sets `OPENROUTER_MODEL`.
+- **GPT-6 Sol and Luna run their tools on the Responses API** with their
+  reasoning on, as their refusals ask first (they ran on Chat Completions with
+  reasoning off, chosen by name). See [text-backends.md](text-backends.md).
+- **The desktop and Android apps** pick the picture and transcription models
+  from the key's list when an OpenAI key is saved on the Story AI screen, in
+  the app release made for this server. With an older app, pick them in
+  Admin > Image generation and Admin > Speech on the device's world.

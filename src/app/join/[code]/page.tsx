@@ -158,6 +158,13 @@ export default function JoinPage({ params }: { params: Promise<{ code: string }>
             <>
               <SectionHead title="Sign in to take your seat" glyph="tab-admin" level="h2" />
               <AuthForm joinCode={roomCode} onAuthed={() => join()} />
+              {/* A way out that is not the browser's back button, which an
+                  installed app does not have. */}
+              <p className="mt-4 text-center">
+                <Link href="/" className="text-xs text-stone-500 hover:text-amber-200">
+                  Not now, back to Open Dungeon Master
+                </Link>
+              </p>
             </>
           )}
         </div>

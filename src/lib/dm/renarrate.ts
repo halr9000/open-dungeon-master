@@ -1,10 +1,13 @@
 import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
 import { getDmTurn } from "@/lib/db/dm-turns";
+import { listSheets } from "@/lib/db/sheets";
 import {
   getCampaignMessage,
   setMessageVariants,
   type CampaignMessage,
 } from "@/lib/db/messages";
+import { withoutAsides } from "@/lib/dm/claims-logic";
+import { readAsides } from "@/lib/dm/claims";
 import { enqueueDmJob } from "@/lib/dm/queue";
 import { requestDmMessage } from "@/lib/dm/model";
 import { setDmStatus } from "@/lib/dm/status";
@@ -129,6 +132,13 @@ export async function runRenarrate(input: {
 
   if (failure) {
     return { error: failure, status: 502 };
+  }
+  // The narrator's asides ("I'll set the hour first.") are cut as the turn
+  // loop cuts them from its final call (src/lib/dm/turn.ts): only the
+  // sentences the reader quotes, and a take that was only the model's plan
+  // is no take at all.
+  if (narration) {
+    narration = withoutAsides(narration, await readAsides(campaign, listSheets(campaign.id), turn, narration));
   }
   if (!narration) {
     return { error: "The DM returned nothing; try again.", status: 502 };

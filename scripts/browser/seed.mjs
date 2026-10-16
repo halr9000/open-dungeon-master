@@ -59,6 +59,12 @@ for (let index = 1; index <= 44; index += 1) {
     say(`Passage ${index}. The rain drums on the slate roof of the old mill while the goblins argue in the yard below. Lantern light spills across the wet stones, and somewhere a chain rattles against a post as the wind turns.`, { authorType: "dm", speech: [] });
   }
 }
+// Table talk put to the DM and its out-of-character answer (PR 314): the
+// chronicle reads the answer as a line, never as a passage.
+const oocQuestion = "@DM can Tavi see the dog from the east wall?";
+const oocAnswer = "Not from there: the dog sleeps under the cart, out of sight until you round the corner.";
+say(`(ooc) ${oocQuestion}`, { authorType: "player", userId: world.owner.id, characterId: tavi.id });
+say(`(ooc) ${oocAnswer}`, { authorType: "dm", speech: [] });
 const systemLine =
   "Keep to the shadows along the east wall, wait for the second goblin to turn his back, and only then go for the lantern. If the dog wakes, we scatter and meet at the ford before dawn.";
 say(`${LEAD_NOTE_PREFIX}${systemLine}`, { authorType: "system" });
@@ -240,6 +246,82 @@ messages.insertCampaignMessage({
   content: "The ford is quiet. Across the water a lantern swings on the ferryman's hut, and the rope bridge creaks in the wind.",
 });
 
+// The seeded turn below, so lore-trace can tell its trace from one a later
+// scenario's turn on the quiet table left.
+let quietLoreTurnId = "";
+// The quiet table's world lore and the record a turn left of it (issue
+// 305): four crossings the lead tagged as a set, one of them secret, a
+// pinned entry, and lore about other things. The trace is the one turn
+// retrieval builds for a player asking for every crossing, kept on a
+// finished DM turn so the lead's Context panel has something to show.
+{
+  const { insertLoreEntry, embedPendingLore } = await import("../../src/lib/db/lore.ts");
+  const { buildTurnRetrieval } = await import("../../src/lib/dm/context-retrieval.ts");
+  const { createDmTurn, saveDmTurn } = await import("../../src/lib/db/dm-turns.ts");
+  const fordLore = (title, body, extra = {}) =>
+    insertLoreEntry({ campaignId: quiet.id, category: "geography", title, body, tags: [], ...extra });
+  const guild = fordLore("The Ferry Guild", "The guild licenses every boat on the river and fines anyone who rows without a token.", { category: "factions" });
+  getDatabase().prepare(`UPDATE lore_entries SET pinned = 1 WHERE id = ?`).run(guild.id);
+  fordLore("The Ferry", "The ferryman takes a silver piece a head and more after dark.", { tags: ["crossing"] });
+  fordLore("The Rope Bridge", "Forty planks over the gorge, three of them rotten. It holds two at a time.", { tags: ["crossing"] });
+  fordLore("The Drowned Ford", "A sunken causeway a hand under the water at low tide; the smugglers mark it with reeds.", { tags: ["crossing"], visibility: "dm" });
+  fordLore("The Shallows", "Waist-deep in late summer, chest-deep after rain, and the current pulls downstream.", { tags: ["crossing"] });
+  fordLore("Harvest Festival", "At the end of summer the farmers burn a straw giant and dance until morning.");
+  fordLore("The Lich of the Fens", "A lich sleeps beneath the fens and dreams of the kingdom it lost.");
+  await embedPendingLore(quiet.id);
+  const retrieval = await buildTurnRetrieval(campaigns.getCampaignById(quiet.id), [
+    { authorType: "player", content: "How do we get over the river? Tell me every crossing." },
+  ]);
+  if (!retrieval.loreTrace) {
+    throw new Error("the quiet table's lore left no trace");
+  }
+  const turn = createDmTurn(quiet.id, []);
+  quietLoreTurnId = turn.id;
+  saveDmTurn({
+    ...turn,
+    status: "done",
+    contextTrace: {
+      limitTokens: 40_000,
+      promptTokens: 9_000,
+      blocks: [{ id: "game-state", kind: "state", tokens: 3_000, included: true, reason: "always included", position: 1 }],
+      lore: retrieval.loreTrace,
+    },
+  });
+}
+
+// A table of three accounts that have never met a tour, for the tours'
+// account record (issue 306): one finishes the table's tour in one browser
+// and must not meet it in another, one shares that browser, and one signs in
+// where an old per-browser flag is waiting. Its own table, so the other
+// scenarios' parties are unchanged.
+const TOUR_TITLE = "First Visit";
+const tourTable = campaigns.createCampaign(world.owner.id, {
+  title: TOUR_TITLE,
+  description: "A road inn, for meeting the table's tour.",
+  theme: "high-fantasy",
+  maxPlayers: 6,
+  startingLevel: 3,
+  difficulty: "normal",
+  gameSettings: { ttsEnabled: false },
+});
+const tourAccounts = ["walker", "sharer", "heir"].map((label, index) => {
+  const user = world.addUser(label);
+  const joined = campaigns.joinByInviteCode(user.id, campaigns.getCampaignById(tourTable.id).inviteCode);
+  if ("error" in joined) {
+    throw new Error(`could not seat ${label} at ${TOUR_TITLE}: ${joined.error}`);
+  }
+  sheets.createSheet(tourTable.id, user.id, 3, heroInput({ name: ["Wren Walker", "Sela Sharer", "Hob Heir"][index], class: "fighter", level: 3 }));
+  return user;
+});
+campaigns.setCampaignStatus(tourTable.id, "active");
+messages.insertCampaignMessage({
+  campaignId: tourTable.id,
+  seq: campaigns.allocateSeq(tourTable.id),
+  authorType: "dm",
+  speech: [],
+  content: "The inn's fire is low and the road outside is empty. Someone has left a map pinned to the door.",
+});
+
 // A lobby whose imported prep already wrote a story arc, so the lead is
 // told before AI Story Setup runs over it (issue 249).
 const PREP_TITLE = "Prepared Lobby";
@@ -261,7 +343,56 @@ campaigns.setStoryArc(
   }),
 );
 
-for (const user of [world.owner, player]) {
+// Tables in play the Setup tab ends, one per viewport so the second run
+// does not open a table the first already closed, and an earlier, finished
+// campaign with prep to bring into them mid-campaign. A campaign rather than
+// a workshop because the lead's workshop shelf stays empty for
+// empty-states; both are the same copy (src/lib/db/import-sources.ts).
+const { insertRollTable } = await import("../../src/lib/db/roll-tables.ts");
+const PREP_SOURCE_TITLE = "Old Harbour";
+const prepSource = campaigns.createCampaign(world.owner.id, {
+  title: PREP_SOURCE_TITLE,
+  description: "A finished campaign with prep worth reusing.",
+  theme: "high-fantasy",
+  maxPlayers: 6,
+  startingLevel: 1,
+  difficulty: "normal",
+  gameSettings: { ttsEnabled: false },
+});
+campaigns.setCampaignStatus(prepSource.id, "ended");
+insertRollTable({
+  campaignId: prepSource.id,
+  name: "Ferry Rumours",
+  entries: [
+    { min: 1, max: 1, text: "The ferryman owes the river hag a debt." },
+    { min: 2, max: 2, text: "A lantern on the far bank never goes out." },
+  ],
+  createdByUserId: world.owner.id,
+});
+const closing = {};
+for (const viewport of ["desktop", "laptop", "phone"]) {
+  const table = campaigns.createCampaign(world.owner.id, {
+    title: `Closing Table (${viewport})`,
+    description: "A table near the end of its story.",
+    theme: "high-fantasy",
+    maxPlayers: 6,
+    startingLevel: 3,
+    difficulty: "normal",
+    gameSettings: { ttsEnabled: false },
+  });
+  campaigns.setCampaignStatus(table.id, "active");
+  sheets.createSheet(table.id, world.owner.id, 3, heroInput({ name: "Wynn Ashdown", class: "fighter", level: 3 }));
+  messages.insertCampaignMessage({
+    campaignId: table.id,
+    seq: campaigns.allocateSeq(table.id),
+    authorType: "dm",
+    speech: [],
+    content: "The last bell rings over the harbour. The road home is open.",
+  });
+  closing[viewport] = table.id;
+}
+
+for (const user of [world.owner, player, ...tourAccounts]) {
   setUserPassword(user.id, await hashPassword(PASSWORD), false);
 }
 // The lead runs the server too, for the admin settings (issue 255).
@@ -270,6 +401,9 @@ setUserAdmin(world.owner.id, true);
 const ids = {
   lead: world.owner.username,
   player: player.username,
+  walker: tourAccounts[0].username,
+  sharer: tourAccounts[1].username,
+  heir: tourAccounts[2].username,
   password: PASSWORD,
   title: TITLE,
   lobbyTitle: LOBBY_TITLE,
@@ -286,13 +420,29 @@ const ids = {
   offerSummary: offer.summary,
   quietId: quiet.id,
   quietTitle: QUIET_TITLE,
+  quietLoreTurnId,
+  tourTableId: tourTable.id,
+  tourTableTitle: TOUR_TITLE,
   ama: ama.id,
   corin: corin.id,
   preparedId: prepared.id,
   preparedTitle: PREP_TITLE,
+  prepSourceId: prepSource.id,
+  prepSourceTitle: PREP_SOURCE_TITLE,
+  closing,
   // Every campaign a scenario opens, by id, for the app's home tiles.
-  titles: { [world.campaignId]: TITLE, [lobby.id]: LOBBY_TITLE, [quiet.id]: QUIET_TITLE, [prepared.id]: PREP_TITLE },
+  titles: {
+    [world.campaignId]: TITLE,
+    [lobby.id]: LOBBY_TITLE,
+    [quiet.id]: QUIET_TITLE,
+    [prepared.id]: PREP_TITLE,
+    [tourTable.id]: TOUR_TITLE,
+    [prepSource.id]: PREP_SOURCE_TITLE,
+    ...Object.fromEntries(Object.entries(closing).map(([viewport, id]) => [id, `Closing Table (${viewport})`])),
+  },
   systemLine,
+  oocQuestion,
+  oocAnswer,
   paragraphs: paragraphs.map((text) => text.replace(/[*_]/g, "")),
 };
 getDatabase().pragma("wal_checkpoint(TRUNCATE)");

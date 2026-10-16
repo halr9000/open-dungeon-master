@@ -101,9 +101,9 @@ and clamped by code.
 ### Memory and retrieval (RAG)
 
 - **Semantic recall and memory index** - MiniLM by default (384-dim) two-phase recall over chapter summaries then verbatim scene chunks, behind the `recall_story` tool.
-- **World lore builder** - lead-authored, embedded canon retrieved per turn, with `search_lore` searching lore, facts, notes, and chapter memory at once.
+- **World lore builder** - lead-authored, embedded canon retrieved per turn, with `search_lore` searching lore, facts, notes, chapter memory and an imported storyboard's prep cards at once, answering with the passage nearest the query; `read_card` opens the whole card behind a beat or a planned event (docs/workshop-portability.md).
 - **House rules and rules manager** - embedded house-rules text plus structured variant toggles, retrieved into the prompt's variant and house-rules blocks.
-- **Per-turn context retrieval** - embeds the current moment once and rides only the most relevant lore and rule chunks into the prompt.
+- **Per-turn context retrieval** - embeds the current moment once and rides only the most relevant rule chunks into the prompt; world lore keeps every entry that matches closely (the players naming it, the scene naming it, its words, or its meaning read against both the moment and the players' words), up to six, inside a budget measured from the prompt window, shortening excerpts before leaving any out and naming what it left out. The lead's Context panel lists each entry kept or held back and why (issue #305, `src/lib/dm/lore-selection.ts`).
 - **Lore check** - a player-flagged consistency verifier that returns a verdict, citations, and a suggested rewrite.
 - **Pinned memories** - select a passage in any DM message and pin it; pins ride in every prompt under a hard token cap, and a pin that would blow the cap is refused rather than silently evicting an older one.
 - **Token-aware context budget** - per-section allocation with floors against the model's real context window, replacing a flat character count, with stable blocks ordered before volatile ones for prefix-cache hits.
@@ -127,7 +127,7 @@ and clamped by code.
 - **TTS narration** - local Kokoro renders each DM message on the serial media queue, autoplayed latest-only with per-user mute.
 - **STT push-to-talk** - proxies audio to a local faster-whisper service, kept off the network.
 - **Portrait generation** - a one-shot ComfyUI character portrait at creation, with an icon fallback.
-- **Table language** - each campaign plays in one of 15 languages (English, Danish, Dutch, Finnish, French, German, Hungarian, Indonesian, Irish, Italian, Norwegian, Portuguese, Russian, Spanish, Swedish). The DM narrates and every prose call writes in it; nothing reads story text through English word lists: one utility call per narrated reply reads its claims (a hit, a kill, a spell, a roll asked in words) for the engine to check, word matching stems with each language's Snowball stemmer and stop list, and a place's kind of scene is picked from a list rather than read from its name. Rules names, the interface and the SRD rulebook stay English, image prompts are rewritten into English, and a non-English table needs a multilingual embedding model (below).
+- **Table language** - each campaign plays in one of 15 languages (English, Danish, Dutch, Finnish, French, German, Hungarian, Indonesian, Irish, Italian, Norwegian, Portuguese, Russian, Spanish, Swedish). The DM narrates and every prose call writes in it; nothing reads story text through English word lists: one utility call per narrated reply reads its claims (a hit, a kill, a spell, a roll asked in words, a sentence where the DM talks to itself about its next steps instead of telling the story) for the engine to check or keep off the table, word matching stems with each language's Snowball stemmer and stop list, and a place's kind of scene is picked from a list rather than read from its name. Rules names, the interface and the SRD rulebook stay English, image prompts are rewritten into English, and a non-English table needs a multilingual embedding model (below).
 
 ### Human DM and the workshop
 

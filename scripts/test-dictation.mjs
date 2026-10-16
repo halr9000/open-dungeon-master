@@ -1,7 +1,23 @@
 // Dictation: how spoken words join what is already written, the take's
-// limits, the recorder format the button asks for, and the level meter.
+// limits, the recorder format the button asks for, the level meter, and
+// which engine the server listens with.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import fs, { readFileSync } from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { register } from "node:module";
+import { removeTempDir } from "./lib/remove-temp-dir.mjs";
+
+// The Whisper model is a saved setting, so the transcript checks read a
+// throwaway database, never the developer's own.
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "odm-dictation-"));
+process.env.SQLITE_DB_PATH = path.join(dir, "test.sqlite");
+process.env.DB_ENCRYPTION_KEY = randomBytes(32).toString("hex");
+for (const name of ["STT_URL", "STT_MODEL", "STT_OPENAI_MODEL"]) {
+  delete process.env[name];
+}
 
 register("./lib/register-alias.mjs", import.meta.url);
 
@@ -17,8 +33,11 @@ const {
   pickRecorderType,
 } = await import("../src/lib/dictation.ts");
 const { decodeWav, encodeWav, splitForUpload, SPEECH_CHUNK_SECONDS, SPEECH_SAMPLE_RATE } = await import("../src/lib/speech-wav.ts");
-const { pickSttBackend, sttWantsWav, whisperSwitchedOff } = await import("../src/lib/stt-logic.ts");
-const { sttProbeUrl } = await import("../src/lib/capabilities.ts");
+const { pickSttBackend, sttWantsWav, whisperNeedsModel, whisperSwitchedOff } = await import("../src/lib/stt-logic.ts");
+const { sttAvailable, sttInputs, transcribeAudio } = await import("../src/lib/stt.ts");
+const { saveGlobalConfig } = await import("../src/lib/db/app-settings.ts");
+const { forgetSoleModelsForTests } = await import("../src/lib/model-registry/discovery.ts");
+const { capabilitiesSnapshot, sttProbeUrl } = await import("../src/lib/capabilities.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -102,7 +121,7 @@ test("the capability probe asks Whisper for its model list", () => {
 });
 
 test("the server's engine: Whisper, then built-in, then OpenAI", () => {
-  const base = { explicitWhisperUrl: "", whisperReachable: false, builtinInstalled: false, openAiKey: "" };
+  const base = { explicitWhisperUrl: "", whisperReachable: false, whisperModel: "large-v3", builtinInstalled: false, openAiKey: "", openAiModel: "my-ears" };
   assert.equal(pickSttBackend(base), "none");
   assert.equal(pickSttBackend({ ...base, openAiKey: "sk-test" }), "openai");
   assert.equal(pickSttBackend({ ...base, openAiKey: "  " }), "none");
@@ -120,6 +139,107 @@ test("the server's engine: Whisper, then built-in, then OpenAI", () => {
   assert.equal(sttWantsWav("openai"), false);
 });
 
+test("an engine with no model picked is skipped for the next one", () => {
+  const base = { explicitWhisperUrl: "", whisperReachable: true, whisperModel: "", builtinInstalled: false, openAiKey: "", openAiModel: "" };
+  assert.equal(pickSttBackend({ ...base, builtinInstalled: true }), "builtin", "a Whisper that answers, with no model: built-in");
+  assert.equal(pickSttBackend({ ...base, explicitWhisperUrl: "http://stt.lan:9000", openAiKey: "sk-test", openAiModel: "my-ears" }), "openai", "then OpenAI");
+  assert.equal(pickSttBackend({ ...base, openAiKey: "sk-test" }), "none", "OpenAI with no model is skipped too");
+  assert.equal(pickSttBackend({ ...base, openAiKey: "sk-test", openAiModel: "  " }), "none");
+  assert.equal(pickSttBackend(base), "none");
+  assert.equal(whisperNeedsModel(base), true, "the admin panel is told the server needs its model");
+  assert.equal(whisperNeedsModel({ ...base, whisperModel: "large-v3" }), false);
+  assert.equal(whisperNeedsModel({ ...base, whisperReachable: false }), false, "no server, nothing to pick");
+});
+
+// The Whisper service's model: the one picked (saved, else STT_MODEL), else
+// the only one the service lists. STT_URL names the service for the
+// voice-chat transcript and for push-to-talk alike.
+process.env.STT_URL = "http://stt.test:8870";
+const realFetch = globalThis.fetch;
+let listed = ["large-v3", "small"];
+let listings = 0;
+const sent = [];
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith("/v1/models")) {
+    listings += 1;
+    if (!listed) throw new TypeError("fetch failed");
+    return Response.json({ data: listed.map((id) => ({ id })) });
+  }
+  sent.push({ url: String(url), model: init.body.get("model") });
+  return Response.json({ text: "The bridge is out." });
+};
+// The capability probe's cached answer: an address the admin named counts
+// as there either way, but only one the probe heard is asked for its list.
+const answers = async () => true;
+const silent = async () => false;
+saveGlobalConfig({ speech: { sttModel: "" } });
+assert.equal(await sttAvailable(), false, "two models and none picked: transcription is not configured");
+assert.deepEqual(await transcribeAudio(new Blob(["ring"])), { error: "This server has no transcription service configured." });
+assert.equal(sent.length, 0, "nothing was sent without a model");
+assert.equal(pickSttBackend(await sttInputs(answers)), "none", "push-to-talk skips it too");
+assert.equal(whisperNeedsModel(await sttInputs(answers)), true);
+assert.equal(listings, 1, "the service's answer, several models, is remembered, not asked again on every check");
+// A few minutes later (the memory cleared), the service runs one model.
+forgetSoleModelsForTests();
+listed = ["large-v3"];
+assert.equal(await sttAvailable(), true, "the service's only model is used");
+assert.deepEqual(await transcribeAudio(new Blob(["ring"])), { text: "The bridge is out." });
+assert.deepEqual(sent.at(-1), { url: "http://stt.test:8870/v1/audio/transcriptions", model: "large-v3" });
+assert.equal(pickSttBackend(await sttInputs(answers)), "whisper");
+// A named service the probe did not hear is not asked for its list: the
+// listing waits up to 12 s and is not the probe's to cache.
+forgetSoleModelsForTests();
+listings = 0;
+const unheard = await sttInputs(silent);
+assert.equal(listings, 0, "a service the probe did not hear was asked for its models");
+assert.equal(unheard.whisperReachable, true, "a named address still counts as there");
+assert.equal(unheard.whisperModel, "");
+process.env.STT_MODEL = "env-model";
+assert.equal(pickSttBackend(await sttInputs(async () => assert.fail("a named address with its model picked is not probed"))), "whisper");
+await transcribeAudio(new Blob(["ring"]));
+assert.equal(sent.at(-1).model, "env-model", "STT_MODEL is picked over the listed one");
+saveGlobalConfig({ speech: { sttModel: "saved-model" } });
+await transcribeAudio(new Blob(["ring"]));
+assert.equal(sent.at(-1).model, "saved-model", "the saved model wins");
+delete process.env.STT_MODEL;
+saveGlobalConfig({ speech: { sttModel: "" } });
+passed += 1;
+
+// A Whisper box that does not answer: the transcript has no probe of its
+// own, so the failed listing is remembered for the probe's half minute
+// instead of costing a listing timeout on every ring.
+forgetSoleModelsForTests();
+listed = null;
+listings = 0;
+assert.equal(await sttAvailable(), false);
+assert.deepEqual(await transcribeAudio(new Blob(["ring"])), { error: "This server has no transcription service configured." });
+assert.equal(await sttAvailable(), false);
+assert.equal(listings, 1, "a service that did not answer was asked again straight away");
+passed += 1;
+
+// The transcript sends to the address push-to-talk uses, the admin's before
+// STT_URL, so the model picked from that service's list reaches it.
+forgetSoleModelsForTests();
+listed = ["large-v3"];
+saveGlobalConfig({ speech: { sttUrl: "http://admin-stt.test:9000/" } });
+await transcribeAudio(new Blob(["ring"]));
+assert.equal(sent.at(-1).url, "http://admin-stt.test:9000/v1/audio/transcriptions", "the transcript went to STT_URL, not the admin's address");
+// Off in the admin panel is off for the transcript too.
+saveGlobalConfig({ speech: { sttUrl: "off" } });
+assert.equal(await sttAvailable(), false);
+// With nothing named, the transcript stays off: it never dials the default
+// address push-to-talk probes.
+saveGlobalConfig({ speech: { sttUrl: "" } });
+delete process.env.STT_URL;
+const before = sent.length;
+listings = 0;
+assert.equal(await sttAvailable(), false);
+assert.deepEqual(await transcribeAudio(new Blob(["ring"])), { error: "This server has no transcription service configured." });
+assert.equal(sent.length, before);
+assert.equal(listings, 0, "the default address was asked for its models");
+globalThis.fetch = realFetch;
+passed += 1;
+
 test("the page's engine follows the server, then the device", () => {
   assert.equal(pickDictationEngine(null, true), "upload");
   assert.equal(pickDictationEngine(undefined, false), "upload");
@@ -127,6 +247,49 @@ test("the page's engine follows the server, then the device", () => {
   assert.equal(pickDictationEngine({ configured: true, wantsWav: true }, true), "upload-wav");
   assert.equal(pickDictationEngine({ configured: false }, true), "native");
   assert.equal(pickDictationEngine({ configured: false }, false), "none");
+});
+
+// With no engine at all, both mic buttons stay hidden, as Admin > Speech
+// tells the admin. DictateField always did; the composer's push-to-talk
+// showed a mic that could only fail.
+test("both mic buttons hide when there is no engine", () => {
+  const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+  assert.match(read("src/lib/use-dictation.ts"), /available: engine !== "none"/);
+  assert.match(read("src/components/DictateField.tsx"), /const shown = dictation\.available;/);
+  const pushToTalk = read("src/app/campaigns/[campaignId]/PushToTalk.tsx");
+  assert.match(pushToTalk, /\bavailable \} = useDictation\(/);
+  assert.match(pushToTalk, /if \(!available\) \{\s*return null;\s*\}/);
+  // Admin > Speech says so, without promising it of the Android app, whose
+  // native engine keeps the mics on the phone's recognizer.
+  assert.match(read("src/app/admin/BuiltinSpeechCard.tsx"), /none: "nothing yet, so the mic buttons are hidden \(the Android app uses the phone's own recognizer\)"/);
+});
+
+// Voice-chat transcription asks the transcript route's own question
+// (sttAvailable): a server that cannot write anything down holds the table's
+// switch off, and the call neither records rings nor tells everyone it is
+// being transcribed. A server that does not say is taken at its word.
+const { transcribesVoice } = await import("../src/lib/use-capabilities.ts");
+test("transcription waits on a server that can write it down", () => {
+  const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+  assert.equal(transcribesVoice(null), true);
+  assert.equal(transcribesVoice({ voice: { enabled: true, mode: "auto" } }), true, "an older server's answer hid the switch");
+  assert.equal(transcribesVoice({ voice: { enabled: true, mode: "auto", transcribes: false } }), false);
+  assert.match(read("src/lib/capabilities.ts"), /transcribes: Boolean\(dictation\.explicitWhisperUrl && dictation\.whisperModel\)/);
+  const panel = read("src/app/campaigns/[campaignId]/GameSettingsPanel.tsx");
+  assert.match(panel, /on=\{settings\.voice\.transcribe && transcribes\}\s*disabled=\{!transcribes\}/);
+  assert.match(read("src/app/campaigns/[campaignId]/SessionView.tsx"), /const transcribe = Boolean\(voiceSettings\?\.transcribe\) && transcribesVoice\(capabilities\);/);
+  assert.match(read("src/app/campaigns/[campaignId]/Lobby.tsx"), /campaign\.gameSettings\.voice\.transcribe && transcribes \? \(/);
+});
+
+// A take still live when the engine goes (a capabilities refresh that finds
+// no speech-to-text) is ended by the hook: the button it would be released
+// on hides with the engine, and the recorder would run to its time limit.
+test("a live take ends when the engine goes away", () => {
+  const hook = readFileSync(new URL("../src/lib/use-dictation.ts", import.meta.url), "utf8");
+  assert.match(
+    hook,
+    /subscribeCapabilities\(\(next\) => \{\s*if \(activeRef\.current && pickDictationEngine\(next\?\.stt, hasNativeDictation\(\)\) === "none"\) \{\s*cancel\(\);/,
+  );
 });
 
 test("WAV goes out and comes back as the same samples", () => {
@@ -184,4 +347,42 @@ test("a long take goes up in parts, cut at a pause", () => {
   assert.ok(encodeWav(parts[0]).length < 8 * 1024 * 1024);
 });
 
+// A named Whisper box that takes the connection and never answers (a GPU
+// machine switched off behind a firewall that drops, not refuses): the
+// first capabilities read pays the probe's short timeout, and the next is
+// answered from the probe's cache instead of a 12 s model listing each time.
+{
+  const sockets = [];
+  const hole = net.createServer((socket) => sockets.push(socket));
+  await new Promise((resolve) => hole.listen(0, "127.0.0.1", resolve));
+  const saved = Object.fromEntries(["STT_URL", "KOKORO_URL", "COMFYUI_URL", "OPENAI_COMPAT_BASE_URL"].map((name) => [name, process.env[name]]));
+  process.env.STT_URL = `http://127.0.0.1:${hole.address().port}`;
+  // Everything else the snapshot asks refuses at once.
+  process.env.KOKORO_URL = "http://127.0.0.1:9";
+  process.env.COMFYUI_URL = "http://127.0.0.1:9";
+  process.env.OPENAI_COMPAT_BASE_URL = "http://127.0.0.1:9/v1";
+  saveGlobalConfig({ speech: { sttUrl: "", sttModel: "" } });
+  forgetSoleModelsForTests();
+  try {
+    const timed = async () => {
+      const started = Date.now();
+      await capabilitiesSnapshot();
+      return Date.now() - started;
+    };
+    const first = await timed();
+    const second = await timed();
+    assert.ok(first < 8_000, `the first snapshot took ${first} ms`);
+    assert.ok(second < 1_500, `the second snapshot took ${second} ms`);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    hole.close();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  passed += 1;
+}
+
+removeTempDir(dir);
 console.log(`dictation: ${passed} checks passed`);
