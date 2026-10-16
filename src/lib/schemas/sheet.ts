@@ -170,6 +170,33 @@ export const sheetFeatureSchema = z.object({
 });
 export type SheetFeature = z.infer<typeof sheetFeatureSchema>;
 
+// A content-pack option grant one of the character's classes opens, as the
+// sheet carries it. Derived on read from the pack's class_progression
+// option_grant rows resolved through the options table
+// (src/lib/content/option-grants.ts) — never stored, so a pack update
+// re-prices every sheet at once, the way the armor class is derived. The
+// picking itself (what the player chose from the list) arrives with the
+// level-up work; until then the grants say what is on offer and how many
+// picks each level earns.
+export type SheetOptionGrant = {
+  // The class that opens the list, as the sheet's classes name it.
+  classId: string;
+  // The class feature that opens it ("Lightsaber Forms").
+  name: string;
+  // The level it opens at.
+  level: number;
+  // The family of the options it grants ("lightsaber_form"), resolved
+  // through the pack's options table; "unknown" when none resolve yet.
+  family: string;
+  // The archetype the grant rides, when it is not the base class's.
+  archetype?: string;
+  // Picks per level: {2: 2, 3: 1} is two at 2nd and one more at 3rd.
+  picks: Record<number, number>;
+  // Picks earned by the character's level.
+  count: number;
+};
+export type SheetOptions = { grants: SheetOptionGrant[] };
+
 // Uploaded portrait/avatar reference; restricted to local uploads so a
 // sheet can never point the party's browsers at an external host.
 export const attachmentSchema = z.object({
@@ -595,6 +622,10 @@ export type CharacterSheet = {
   conditions: string[];
   conditionMeta: ConditionMetaMap;
   resources: SheetResources;
+  // The content-pack option grants the character's classes open, derived on
+  // read (src/lib/db/sheets.ts). Absent when no pack is mounted or none of
+  // the classes grants options.
+  options?: SheetOptions;
   // Active beast form, or null. Managed by the server (use_resource +
   // apply_damage in src/lib/dm/mutations.ts).
   wildShape: WildShape;

@@ -10,7 +10,7 @@ import { cn } from "@/lib/cn";
 import { conditionIconKey } from "@/lib/battlemap/condition-glyphs";
 import { describeConditionDuration } from "@/lib/dm/condition-logic";
 import { contentSlug, describeFeature } from "@/lib/help";
-import { ABILITIES } from "@/lib/schemas/sheet";
+import { ABILITIES, type SheetOptionGrant } from "@/lib/schemas/sheet";
 import { formatModifier, SRD_SKILLS } from "@/lib/srd";
 
 // The pieces of the character sheet (docs/visual-overhaul-plan.md 8b.5), one
@@ -339,6 +339,31 @@ export function FeatureChips({
         note: feature.source === "story" ? "(story)" : undefined,
         meta: feature.level ? `Level ${feature.level}` : undefined,
         text: describeFeature(classId, subclass ?? "", feature.name) ?? undefined,
+      }))}
+    />
+  );
+}
+
+// The option lists a content-pack class opens (a sentinel's Lightsaber
+// Forms, a berserker's Instincts), derived from the pack on read
+// (src/lib/content/option-grants.ts). Display only: what is on offer and
+// how many picks the level has earned; the picking itself is the level-up
+// work. `uses` expressions a pack writes ("per-rest:@classes.engineer.levels")
+// are surfaced raw until the resource model exists.
+export function OptionGrantChips({ grants }: { grants: SheetOptionGrant[] }) {
+  const familyLabel = (family: string) =>
+    family === "unknown" ? "" : family.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return (
+    <InfoChipList
+      items={grants.map((grant) => ({
+        name: grant.name,
+        icon: { kind: "feature" as const, key: grant.name, family: `class-${grant.classId}` },
+        meta: `Level ${grant.level}`,
+        note:
+          [
+            familyLabel(grant.family) || undefined,
+            grant.count ? `${grant.count} pick${grant.count === 1 ? "" : "s"} earned` : "no picks earned yet",
+          ].filter(Boolean).join(" · ") || undefined,
       }))}
     />
   );

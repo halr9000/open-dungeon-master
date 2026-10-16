@@ -29,6 +29,7 @@ import {
   FeatChips,
   FeatureChips,
   HpBar,
+  OptionGrantChips,
   PortraitMedallion,
   SheetBlock,
   SkillRows,
@@ -577,6 +578,12 @@ export function CharacterSheetDialog({
             <SheetBlock className="mt-4" title="Features and traits">
               <FeatureChips features={sheet.features} classId={sheet.class} subclass={sheet.subclass} />
               <FeatureChoicePicker sheet={sheet} mine={mine} inCombat={inCombat} />
+            </SheetBlock>
+          ) : null}
+
+          {sheet.options?.grants.length ? (
+            <SheetBlock className="mt-4" title="Class options">
+              <OptionGrantChips grants={sheet.options.grants} />
             </SheetBlock>
           ) : null}
 

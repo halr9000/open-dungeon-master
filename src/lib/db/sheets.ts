@@ -9,6 +9,8 @@ import { settleLevelChange, withoutDuplicateClasses } from "@/lib/srd/level-chan
 import { normalizeSpellcasting } from "@/lib/srd/spell-lists";
 import { settleAttunement, type Wearer } from "@/lib/srd/magic-items";
 import { itemWeightByName, repairedWeight } from "@/lib/content";
+import { getContentDb } from "@/lib/content/db";
+import { packOptionGrantsForClasses } from "@/lib/content/option-grants";
 import { homebrewRaceLabel, hydrateHomebrewGear } from "@/lib/db/homebrew";
 import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { storedGender } from "@/lib/gender";
@@ -89,6 +91,17 @@ const EMPTY_PROFICIENCIES = {
   weapons: [],
 };
 
+// The content-pack option grants the character's classes open
+// (src/lib/content/option-grants.ts), derived on read like the armor
+// class: nothing is stored, so a pack update re-prices every sheet at once
+// and a sheet of a class no pack describes carries none.
+function withPackOptions(
+  classes: Array<{ id: string; subclass?: string; level: number }>,
+): Pick<CharacterSheet, "options"> {
+  const grants = getContentDb() ? packOptionGrantsForClasses(classes) : [];
+  return grants.length ? { options: { grants } } : {};
+}
+
 function mapSheet(row: SheetRow): CharacterSheet {
   // Sheets created before the `known` spell list existed lack the field.
   const parsedCasting = parseJson<CharacterSheet["spellcasting"]>(row.spellcasting_json, null);
@@ -98,6 +111,7 @@ function mapSheet(row: SheetRow): CharacterSheet {
   // Sheets from before the cantrip list kept cantrips in prepared/known.
   const spellcasting = normalizeSpellcasting(parsedCasting);
   const raceLabel = homebrewRaceLabel(row.user_id, row.race, row.campaign_id);
+  const classList = parseJson<CharacterSheet["classes"]>(row.classes_json, []);
   return {
     id: row.id,
     campaignId: row.campaign_id,
@@ -121,7 +135,7 @@ function mapSheet(row: SheetRow): CharacterSheet {
     acOverride: row.ac_override === 1,
     speed: row.speed,
     hitDice: parseJson(row.hit_dice_json, { die: "d8" as const, total: 1, spent: 0 }),
-    classes: parseJson<CharacterSheet["classes"]>(row.classes_json, []),
+    classes: classList,
     hitDicePools: parseJson<CharacterSheet["hitDicePools"]>(row.hit_dice_pools_json, null),
     // Rows stored before the expertise field existed lack it; heal on read.
     proficiencies: (() => {
@@ -144,6 +158,9 @@ function mapSheet(row: SheetRow): CharacterSheet {
     conditions: parseJson(row.conditions_json, []),
     conditionMeta: parseJson<CharacterSheet["conditionMeta"]>(row.condition_meta_json, {}),
     resources: parseJson<CharacterSheet["resources"]>(row.resources_json, {}),
+    ...withPackOptions(
+      classList.length ? classList : [{ id: row.class, subclass: row.subclass ?? "", level: row.level }],
+    ),
     wildShape: parseJson<CharacterSheet["wildShape"]>(row.wild_shape_json, null),
     pets: parseJson<CharacterSheet["pets"]>(row.pets_json, []),
     summon: parseJson<CharacterSheet["summon"]>(row.summon_json ?? null, null),
