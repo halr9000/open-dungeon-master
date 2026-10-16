@@ -107,13 +107,32 @@ test("the sheet's options section surfaces the grants with their pick counts", (
 });
 
 test("an archetype's grants ride the subclass the sheet names", () => {
-  const granted = packOptionGrantsForClasses([
+  // Two archetypes in the fixture: the gate must discriminate, not just
+  // filter (an engineer fixture of one archetype only filters nothing).
+  const armormech = packOptionGrantsForClasses([
     { id: "engineer", subclass: "Armormech Engineering", level: 9 },
   ]);
   assert.deepEqual(
-    granted.map((grant) => grant.name),
+    armormech.map((grant) => grant.name),
     ["Armormech Modifications"],
   );
+  const astrotech = packOptionGrantsForClasses([
+    { id: "engineer", subclass: "Astrotech Engineering", level: 5 },
+  ]);
+  assert.deepEqual(astrotech.map((grant) => grant.name), ["Astrotech Modifications"]);
+  assert.equal(astrotech[0].family, "invocation");
+  // No subclass named: an archetype's grants ride nothing.
+  assert.deepEqual(
+    packOptionGrantsForClasses([{ id: "engineer", subclass: "", level: 20 }]),
+    [],
+  );
+});
+
+test("a grant whose option rows have not landed answers with its option_name", () => {
+  // The scholar's 'Tech Amateur' grant carries refSlug no option row
+  // describes; the allowlist falls back to the option_name the grant's
+  // data_json carries.
+  assert.deepEqual(packOptionNamesFor("scholar"), ["Wristpad Assist"]);
 });
 
 test("the allowlist reads the option names a class's grants declare", () => {
