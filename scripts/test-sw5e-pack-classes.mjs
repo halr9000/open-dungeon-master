@@ -91,7 +91,8 @@ test("a pack class's armor and weapons are its row's categories, named", () => {
   const monk = classMechanics("monk", packClass("monk").data);
   assert.deepEqual(monk.armor, []);
   assert.ok(monk.weapons.includes("Simple blasters"));
-  assert.ok(monk.weapons.includes("Martial vibroweapons"));
+  assert.ok(monk.weapons.includes("Simple vibroweapons"));
+  assert.ok(!monk.weapons.includes("Martial vibroweapons"), monk.weapons.join(", "));
   assert.ok(monk.weapons.includes("mvb:vibroblade"), monk.weapons.join(", "));
 });
 
