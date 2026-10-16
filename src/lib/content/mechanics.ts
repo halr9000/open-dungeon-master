@@ -488,12 +488,49 @@ function v2ProficiencyFields(data: Record<string, unknown>): Record<string, stri
   return fields;
 }
 
+// A content-pack class row names its training in the game's own short codes
+// (the SW5e pack's lgt/med/hvy/shl armor and sbl/mbl/svb/mvb/slw/mlw weapon
+// groups, plus granular per-weapon grants like "mvb:vibroblade"). A code
+// becomes the category it names; anything else — a prose entry, a granular
+// grant — passes as written, for the pack's items to name later.
+const ARMOR_CODES: Record<string, string> = {
+  lgt: "Light armor",
+  med: "Medium armor",
+  hvy: "Heavy armor",
+  shl: "Shields",
+};
+const WEAPON_CODES: Record<string, string> = {
+  sbl: "Simple blasters",
+  mbl: "Martial blasters",
+  svb: "Simple vibroweapons",
+  mvb: "Martial vibroweapons",
+  slw: "Simple lightweapons",
+  mlw: "Martial lightweapons",
+};
+
+function proficiencyEntries(value: unknown, codes: Record<string, string>): string[] {
+  const entries = Array.isArray(value) ? value.map((entry) => String(entry).trim()) : proficiencyList(value);
+  return entries
+    .map((entry) => codes[entry.toLowerCase()] ?? entry)
+    .filter((entry) => entry && entry.toLowerCase() !== "none");
+}
+
+// An ability named either way: the short id a pack row writes ("str") or the
+// long name prose uses ("Strength").
+function abilityFromName(value: unknown): Ability | undefined {
+  const name = normalizeText(value);
+  if ((ABILITIES as readonly string[]).includes(name)) {
+    return name as Ability;
+  }
+  return ABILITY_BY_NAME[name];
+}
+
 const FULL_CASTERS = new Set(["bard", "cleric", "druid", "sorcerer", "wizard"]);
 const HALF_CASTERS = new Set(["paladin", "ranger"]);
 
 export function classMechanics(slug: string, row: Record<string, unknown>): ClassMechanics {
   const data = row.prof_armor === undefined ? { ...row, ...v2ProficiencyFields(row) } : row;
-  const hitDieRaw = Number.parseInt(String(data.hit_dice ?? "").replace(/^\d*d/i, ""), 10);
+  const hitDieRaw = Number.parseInt(String(data.hit_dice ?? data.hit_die ?? "").replace(/^\d*d/i, ""), 10);
   const hitDie = ([6, 8, 10, 12] as const).includes(hitDieRaw as 6 | 8 | 10 | 12)
     ? (hitDieRaw as 6 | 8 | 10 | 12)
     : 8;
@@ -501,12 +538,20 @@ export function classMechanics(slug: string, row: Record<string, unknown>): Clas
   const savesText = normalizeText(data.prof_saving_throws);
   // A v2 row's structured saves win over its prose, which can disagree (the
   // marshal's text says Wisdom and Charisma, its saving_throws Con and Wis).
+  // A content-pack class row (the SW5e pack) writes its saving throws as an
+  // array of the abilities' short ids, which the prose parse below cannot
+  // read; falling past it is how a Scout arrived at the stub pair.
   const saves = Array.isArray(data.saving_throws)
     ? (data.saving_throws as Array<{ name?: unknown }>).flatMap((save) => {
         const ability = ABILITY_BY_NAME[normalizeText(save.name)];
         return ability ? [ability] : [];
       })
-    : (Object.keys(ABILITY_BY_NAME) as Array<keyof typeof ABILITY_BY_NAME>)
+    : Array.isArray(data.prof_saving_throws)
+      ? (data.prof_saving_throws as unknown[]).flatMap((entry) => {
+          const ability = abilityFromName(entry);
+          return ability ? [ability] : [];
+        })
+      : (Object.keys(ABILITY_BY_NAME) as Array<keyof typeof ABILITY_BY_NAME>)
         .filter((name) => savesText.includes(name))
         .map((name) => ABILITY_BY_NAME[name]);
 
@@ -515,14 +560,11 @@ export function classMechanics(slug: string, row: Record<string, unknown>): Clas
   const count = COUNT_WORDS[countMatch?.[1]?.toLowerCase() ?? ""] ?? 2;
   const from = skillsInText(skillsText);
 
-  const spellAbilityName = normalizeText(data.spellcasting_ability);
-  const spellAbility =
-    spellAbilityName && ABILITY_BY_NAME[spellAbilityName]
-      ? (ABILITY_BY_NAME[spellAbilityName] as "int" | "wis" | "cha")
-      : null;
+  const spellAbility = abilityFromName(data.spellcasting_ability);
+  const spellCaster = spellAbility === "int" || spellAbility === "wis" || spellAbility === "cha" ? spellAbility : null;
 
   const baseSlug = slug.toLowerCase();
-  const casterType = baseSlug === "artificer"
+  let casterType = baseSlug === "artificer"
     ? ("artificer" as const)
     : FULL_CASTERS.has(baseSlug)
     ? ("full" as const)
@@ -531,15 +573,32 @@ export function classMechanics(slug: string, row: Record<string, unknown>): Clas
       : baseSlug === "warlock"
         ? ("pact" as const)
         : ("none" as const);
+  // A content-pack class row states its own casting pace (the SW5e pack's
+  // spellcaster_type). "3/4" has no table of its own here yet — the half
+  // table is the nearest one carried — until the pack's slot model exists
+  // (the resource epic).
+  const stated = normalizeText(data.spellcaster_type);
+  const statedCaster: ClassMechanics["casterType"] | null =
+    stated === "none"
+      ? "none"
+      : stated === "full" || stated === "half" || stated === "artificer" || stated === "pact"
+        ? (stated as ClassMechanics["casterType"])
+        // normalizeText turns "3/4" into "3 4".
+        : stated === "3/4" || stated === "3 4"
+          ? "half"
+          : null;
+  if (statedCaster) {
+    casterType = statedCaster;
+  }
 
   return {
     hitDie,
     saves: saves.length ? saves : ["str", "con"],
     skillChoices: { count, from: from.length ? from : [...ALL_SKILLS] },
-    armor: proficiencyList(data.prof_armor),
-    weapons: proficiencyList(data.prof_weapons),
+    armor: proficiencyEntries(data.prof_armor, ARMOR_CODES),
+    weapons: proficiencyEntries(data.prof_weapons, WEAPON_CODES),
     tools: proficiencyList(data.prof_tools),
-    spellAbility: spellAbility && casterType !== "none" ? spellAbility : spellAbility,
+    spellAbility: spellCaster,
     casterType,
   };
 }
