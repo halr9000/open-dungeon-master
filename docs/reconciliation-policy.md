@@ -49,15 +49,16 @@ Output: a JSON log with a per-entry outcome — `success` / `partial` /
 Idempotent: a second run on a fixed sheet is a no-op. The log is the only
 thing Stage 2 sees.
 
-### Stage 2 — agent intent pass
+### Stage 2 — agent intent pass (no code: the agent IS stage 2)
 
-Read-only over the sheet; input is *only* the Stage 1 log plus character
-context (classes, feats, background). For each flagged entry:
+Stage 2 is performed by the assistant in conversation, not by an in-app
+component. Input is *only* the Stage 1 log plus character context (classes,
+feats, background) — never the raw sheet. For each flagged entry:
 
 1. Hypothesize the legal mechanism that produces the observed state.
 2. Verify against the pack: the feat/feature exists, prerequisites hold.
-3. Propose a concrete write into a review report: mint the grant, convert to
-   an explicit **house-grant**, or recommend removal.
+3. Propose to the authority holder: mint the grant, convert to an explicit
+   **house-grant**, or recommend removal.
 
 **Writes are gated on approval from the sheet's authority holder** — the GM,
 who in ODM can also be the player. Same authority precedent as story-content
@@ -88,7 +89,8 @@ or needs a decision on.
 
 - `scripts/reconcile-sheet.mjs`: skills first (the proven pain point). Saves,
   tools, and languages follow the same shape once proven.
-- Log schema and Stage 2 prompt template under `scripts/reconcile/`.
+- Log schema under `scripts/reconcile/`, designed for agent consumption:
+  self-contained (the agent sees the log alone), with evidence per warning.
 - Wiring: run Stage 1 automatically at the end of `oc-fvtt-convert.py`;
   standalone mode for stored characters.
 - Tests: idempotency, Maurice's sheet as fixture (canonicalize + missing
