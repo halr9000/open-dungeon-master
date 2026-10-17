@@ -192,10 +192,38 @@ export type SheetOptionGrant = {
   archetype?: string;
   // Picks per level: {2: 2, 3: 1} is two at 2nd and one more at 3rd.
   picks: Record<number, number>;
+  // Whether each level's picks may replace a pick already held, as the
+  // pack's data_json carries the flag per level (absent = permanent: the
+  // picks stay and the next level adds, never swaps).
+  replacement?: Record<number, boolean>;
   // Picks earned by the character's level.
   count: number;
 };
-export type SheetOptions = { grants: SheetOptionGrant[] };
+export type SheetOptions = {
+  grants: SheetOptionGrant[];
+  // What the player picked from those grants, stored on the sheet
+  // (options_picks_json) by the level-up, keyed by grant key
+  // `${classId}|${name}` and holding the option slugs the pack's options
+  // table names. The grants stay derived; the picks are the player's own
+  // record (src/lib/srd/level-up.ts validates and settles them).
+  picks?: Record<string, string[]>;
+  // The actions the picks open, derived on read like the grants and never
+  // stored: a picked option whose pack row carries an action economy is an
+  // action the sheet can take (a bonus-action form shows as one), with the
+  // option's uses expression surfaced raw until the resource model exists.
+  actions?: SheetOptionAction[];
+};
+export type SheetOptionAction = {
+  name: string;
+  slug: string;
+  family: string;
+  economy: "action" | "bonus" | "reaction";
+  // The class whose grant opened the option.
+  classId: string;
+  // The grant that opened it ("Berserker Instincts").
+  grantName: string;
+  uses: string | null;
+};
 
 // Uploaded portrait/avatar reference; restricted to local uploads so a
 // sheet can never point the party's browsers at an external host.
@@ -439,6 +467,15 @@ export const patchSheetSchema = z.object({
   // The Ability Score Improvements taken with this level: two points each,
   // or a feat. Only as many as the class's new level owes.
   asiChoices: z.array(asiChoiceSchema).max(MAX_ASI_CHOICES).optional(),
+  // The content-pack option picks this level earns (Berserker Instincts,
+  // Choose Fighting Style...), keyed by grant key `${classId}|${name}` as
+  // the sheet's options.grants carry them. Each list is the grant's FULL
+  // final pick list in option slugs (the pack's options table's slugs); the
+  // server holds it to the grant's pool, its earned budget and its
+  // replacement right, and settles what is stored (src/lib/srd/level-up.ts).
+  levelUpOptions: z
+    .record(z.string().max(140), z.array(z.string().trim().min(1).max(80)).max(20))
+    .optional(),
   // The picks the feats taken with this level leave open (Linguist's three
   // languages), keyed by feat name.
   featChoices: featChoicesSchema.optional(),
@@ -571,6 +608,15 @@ export const fullPatchSheetSchema = patchSheetSchema.extend({
   // (class/subclass = first entry, level = summed) in patchSheet.
   classes: z.array(classEntrySchema).max(3).optional(),
   hitDicePools: z.array(hitDicePoolSchema).max(3).optional(),
+  // The content-pack option picks the level-up settled: stored on the sheet
+  // (options_picks_json) and read back inside the derived options section.
+  // Engine-managed — the pick validation is the level-up's
+  // (src/lib/srd/level-up.ts).
+  options: z
+    .object({
+      picks: z.record(z.string().max(140), z.array(z.string().trim().min(1).max(80)).max(20)),
+    })
+    .optional(),
 });
 export type FullPatchSheetInput = z.infer<typeof fullPatchSheetSchema>;
 

@@ -1520,6 +1520,11 @@ function ensureSchema(db: SqliteDatabase) {
     // Death-save track for a character at 0 HP; NULL = not dying. Managed
     // by the server death engine (src/lib/dm/death.ts).
     ["death_saves_json", `TEXT`],
+    // The content-pack option picks the level-up settled (Berserker
+    // Instincts, Choose Fighting Style...), keyed by grant key. Stored
+    // while the grants themselves stay derived on read
+    // (src/lib/db/sheets.ts withPackOptions).
+    ["options_picks_json", `TEXT`],
     // Spell currently concentrated on; NULL = none. Managed by the server
     // concentration engine (src/lib/dm/concentration.ts).
     ["concentrating_on", `TEXT`],

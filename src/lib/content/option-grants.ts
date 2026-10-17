@@ -17,9 +17,13 @@
 // grants at all, so a class the pack describes grants from the pack's rows
 // whichever table describes its features. The class-feature half of that
 // flip belongs to the level-up work.
-import type { SheetOptionGrant } from "@/lib/schemas/sheet";
+import type {
+  SheetOptionAction,
+  SheetOptionGrant,
+  SheetOptions,
+} from "@/lib/schemas/sheet";
 
-export type { SheetOptionGrant };
+export type { SheetOptionAction, SheetOptionGrant, SheetOptions };
 
 // One option the pack's options table describes, as the engines will
 // consume it. `uses` is the pack's own resource expression, formula strings
@@ -38,6 +42,9 @@ export type PackOption = {
 // and the pick budget. `choices` is the per-level pick count the pack's
 // data_json carries ({2: {count: 2}, 7: {count: 1}, ...}) flattened to
 // level → count; a row without one picks `count` at its own level.
+// `replacement` is the same dict's replacement flag, level → boolean
+// (absent everywhere = the picks are permanent: the next level adds, never
+// swaps).
 export type PackOptionGrant = {
   level: number;
   name: string;
@@ -45,6 +52,7 @@ export type PackOptionGrant = {
   archetype: string | null;
   count: number | null;
   choices: Record<number, number>;
+  replacement?: Record<number, boolean>;
   // The option's own name as the grant row carries it (the pack's
   // data_json), for a grant whose option rows have not landed in the
   // options table yet.
@@ -123,6 +131,9 @@ export function packOptionGrantsForClasses(
         family,
         ...(grant.archetype ? { archetype: grant.archetype } : {}),
         picks,
+        ...(grant.replacement && Object.keys(grant.replacement).length
+          ? { replacement: grant.replacement }
+          : {}),
         count: Object.entries(picks)
           .filter(([level]) => Number(level) <= entry.level)
           .reduce((sum, [, count]) => sum + count, 0),
@@ -150,4 +161,105 @@ function packOptionNamesRaw(classSlug: string): string[] {
     }
   }
   return names;
+}
+
+// The sheet's key for one grant: the class plus the feature that opens the
+// list, lowercased — the same key the sheet's options.picks are stored
+// under, so a level-up, a stored sheet and the derived actions read agree
+// on one address for each grant.
+export function grantKeyFor(classId: string, name: string): string {
+  return `${classId.trim().toLowerCase()}|${name.trim().toLowerCase()}`;
+}
+
+// The option slugs one grant's rows offer — the pool a level-up pick is
+// held to. A grant whose rows share a name (one row per option) answers
+// with all of them; an unknown grant answers empty.
+export function packOptionPoolFor(classSlug: string, grantName: string): string[] {
+  const wanted = grantName.trim().toLowerCase();
+  return [
+    ...new Set(
+      packOptionGrantsFor(classSlug)
+        .filter((grant) => grant.name.trim().toLowerCase() === wanted)
+        .map((grant) => grant.refSlug)
+        .filter(Boolean),
+    ),
+  ];
+}
+
+// The option names a sheet's own stored picks carry for one class — the
+// write-time allowlist's picks-provenance (catalog.ts unions them with the
+// grant pools): a name already picked is provenance the same way the pool
+// is, so a pack update that shrinks a pool under a stored sheet does not
+// turn the sheet's settled picks into refusals.
+export function pickedOptionNamesFor(
+  sheet: object | null | undefined,
+  classId: string,
+): string[] {
+  // The sheet arrives as whatever the door carries — a full CharacterSheet
+  // or a CreateSheetInput pick; only its options.picks are read.
+  const picks =
+    (sheet as { options?: { picks?: Record<string, string[]> } } | null | undefined)?.options?.picks ??
+    {};
+  const prefix = `${classId.trim().toLowerCase()}|`;
+  const names: string[] = [];
+  for (const [key, slugs] of Object.entries(picks)) {
+    if (!key.trim().toLowerCase().startsWith(prefix)) {
+      continue;
+    }
+    for (const slug of slugs) {
+      const name = PACK_OPTIONS.get(slug.trim().toLowerCase())?.name;
+      if (name) {
+        names.push(name);
+      }
+    }
+  }
+  return [...new Set(names)];
+}
+
+const ACTION_ECONOMIES = new Set(["action", "bonus", "reaction"]);
+
+// The actions the stored picks open, derived on read and never stored: for
+// every grant the character's classes open (base class and the archetypes
+// the subclasses name, at the levels they have reached), a pick whose pack
+// row carries an action economy is an action the sheet can take — a
+// bonus-action lightsaber form shows as one. The uses expression rides
+// along raw until the resource model exists.
+export function packOptionActionsFor(
+  classes: Array<{ id: string; subclass?: string; level: number }>,
+  picks: Record<string, string[]> | undefined,
+): SheetOptionAction[] {
+  if (!picks) {
+    return [];
+  }
+  const out: SheetOptionAction[] = [];
+  for (const entry of classes) {
+    const slug = entry.id.trim().toLowerCase();
+    const wanted = entry.subclass ? slugKey(entry.subclass) : null;
+    for (const grant of packOptionGrantsFor(slug)) {
+      if (grant.archetype && (!wanted || slugKey(grant.archetype) !== wanted)) {
+        continue;
+      }
+      if (grant.level > Math.max(1, Math.min(20, entry.level))) {
+        continue;
+      }
+      const option = PACK_OPTIONS.get(grant.refSlug);
+      const economy = option?.actionEconomy ?? "";
+      if (!option || !ACTION_ECONOMIES.has(economy)) {
+        continue;
+      }
+      if (!(picks[grantKeyFor(slug, grant.name)] ?? []).includes(grant.refSlug)) {
+        continue;
+      }
+      out.push({
+        name: option.name,
+        slug: grant.refSlug,
+        family: option.family,
+        economy: economy as SheetOptionAction["economy"],
+        classId: slug,
+        grantName: grant.name,
+        uses: option.uses,
+      });
+    }
+  }
+  return out;
 }

@@ -159,17 +159,22 @@ function registerPackOptionTables(db: SqliteDatabase): void {
     for (const row of rows) {
       const slug = row.class_slug.trim().toLowerCase();
       const grants = byClass.get(slug) ?? [];
-      let choices: Record<number, number> = {};
+      const choices: Record<number, number> = {};
+      const replacement: Record<number, boolean> = {};
       let optionName: string | null = null;
       try {
         const data = row.data_json ? (JSON.parse(row.data_json) as Record<string, unknown>) : null;
-        const raw = data?.choices as Record<string, { count?: unknown }> | undefined;
+        const raw = data?.choices as Record<string, { count?: unknown; replacement?: unknown }> | undefined;
         if (raw && typeof raw === "object") {
-          choices = Object.fromEntries(
-            Object.entries(raw)
-              .map(([level, step]) => [Number.parseInt(level, 10), Number(step?.count ?? 0)])
-              .filter(([level, count]) => Number.isFinite(level) && count > 0),
-          );
+          for (const [level, step] of Object.entries(raw)) {
+            const count = Number(step?.count ?? 0);
+            if (Number.isFinite(Number.parseInt(level, 10)) && count > 0) {
+              choices[Number.parseInt(level, 10)] = count;
+            }
+            if (typeof step?.replacement === "boolean") {
+              replacement[Number.parseInt(level, 10)] = step.replacement;
+            }
+          }
         }
         optionName = typeof data?.option_name === "string" ? data.option_name : null;
       } catch {
@@ -182,6 +187,7 @@ function registerPackOptionTables(db: SqliteDatabase): void {
         archetype: row.archetype_slug,
         count: row.count,
         choices,
+        ...(Object.keys(replacement).length ? { replacement } : {}),
         optionName,
       });
       byClass.set(slug, grants);
