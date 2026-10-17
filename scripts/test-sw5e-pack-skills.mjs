@@ -71,6 +71,7 @@ if (fs.existsSync(sw5ePackPath)) {
   // this test points at.
   globalThis.__odmContentDb = undefined;
   const { getContentDb, contentPackInstalled } = await import("../src/lib/content/db.ts");
+  const { backgroundMechanics, skillsInText } = await import("../src/lib/content/mechanics.ts");
 
   test("the mounted pack's skills table replaces the SRD set", () => {
     assert.ok(getContentDb(), "content pack opened");
@@ -117,6 +118,24 @@ if (fs.existsSync(sw5ePackPath)) {
     assert.equal(activeSkillMatching("investigation")?.id, "inv");
     // arcana is gone with the pack: nothing answers for it.
     assert.equal(activeSkillMatching("arcana"), null);
+  });
+
+  test("a SW5e background's choose-two line parses as a choice over the pack's skills", () => {
+    // Jensaarai's line, verbatim from the pack — one of 61 backgrounds the
+    // pack writes "Choose two from ...". Lore resolves because the parser
+    // reads the ACTIVE set (the pack's rows), not the bundled SRD's.
+    const grants = backgroundMechanics({
+      skill_proficiencies: "Choose two from Insight, Intimidation, Lore, and Perception",
+      languages: "One of your choice",
+    });
+    assert.deepEqual(grants.skills, [], "no fixed skills: the line is all choice");
+    assert.deepEqual(grants.skillChoice, { count: 2, from: ["ins", "itm", "lor", "prc"] });
+    // The builder's filter admits it: exactly two skills to train.
+    assert.equal(grants.skills.length + (grants.skillChoice?.count ?? 0), 2);
+    // The pack's other non-SRD skills resolve by name too.
+    assert.deepEqual(skillsInText("Piloting and Technology"), ["pil", "tec"]);
+    // A fixed-skills line under the pack reads the pack's ids.
+    assert.deepEqual(skillsInText("Athletics and Stealth"), ["ath", "ste"]);
   });
 
   test("the derived sheet reads the active set", () => {

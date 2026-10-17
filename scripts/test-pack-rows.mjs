@@ -139,6 +139,18 @@ test("background skills: the fixed ones are granted, a choice is a pick of its c
   const occultist = background("occultist");
   assert.deepEqual(occultist.skills, ["arcana", "religion"]);
   assert.equal(occultist.skillChoice, undefined);
+  // The imperative the SW5e pack writes for all 61 of its backgrounds:
+  // "Choose two from ..." is a choice, not four fixed skills (a background
+  // granting four fixed skills is refused by the builder's two-skill rule).
+  // Lore is not an SRD skill: unmounted, the parser answers with the skills
+  // it knows and the pick rides the active set's full list only when no
+  // name resolved.
+  const chooseTwo = backgroundMechanics({
+    skill_proficiencies: "Choose two from Insight, Intimidation, Lore, and Perception",
+    languages: "One of your choice",
+  });
+  assert.deepEqual(chooseTwo.skills, []);
+  assert.deepEqual(chooseTwo.skillChoice, { count: 2, from: ["insight", "intimidation", "perception"] });
 });
 
 test("'Any' ability increases become the builder's asiChoice pickers", () => {

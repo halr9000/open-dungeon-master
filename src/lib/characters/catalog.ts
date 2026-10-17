@@ -97,6 +97,11 @@ export function raceCandidatesFor(raceId: string, authors?: Authors): RaceGrants
   }
   const found: RaceGrants[] = [];
   const rows = listRaces({ limit: 200, userIds: authorIds(authors), includeArchived: true });
+  // The sheet may carry the race's display spelling ("Miraluka") while the
+  // pack keys its rows by slug ("miraluka"): ask the pack by slug and keep
+  // the sheet's spelling as the grants' id — the same admission the
+  // background side already makes — instead of refusing the character.
+  const slug = id.toLowerCase();
   const packed = rows.length
     ? packRaceOptions(
         rows.map((row) => ({
@@ -106,11 +111,11 @@ export function raceCandidatesFor(raceId: string, authors?: Authors): RaceGrants
           document: row.document,
           data: row.data,
         })),
-        [id],
-      ).find((option) => option.id === id)
+        [slug],
+      ).find((option) => option.id === slug || option.id === id)
     : undefined;
   if (packed) {
-    found.push({ ...packed, feats: racialFeatCount(packed.id) });
+    found.push({ ...packed, id, feats: racialFeatCount(packed.id) });
   }
   const bundled = srdRaceFor(id);
   const option = bundled ? srdRaceOptions().find((entry) => entry.id === bundled.id) : undefined;

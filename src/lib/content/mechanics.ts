@@ -221,14 +221,28 @@ function normalizeText(value: unknown) {
     .trim();
 }
 
-// Find 5e skill ids mentioned in prose ("Choose two from Acrobatics, ...").
-// Substring matching on normalized text survives Open5e's comma glitches
-// ("Animal, Handling").
+// Find skill ids mentioned in prose ("Choose two from Acrobatics, ..."),
+// against the ACTIVE skill set: the mounted pack's rows when it declares a
+// skills table (a SW5e background's "Choose two from Insight, Intimidation,
+// Lore, and Perception" must resolve lore, which the bundled SRD has never
+// heard of), the bundled SRD 18 otherwise. A row matches by its name; the
+// bundled ids additionally match with their underscores spaced, so the SRD
+// session reads exactly as it always has. Substring matching on normalized
+// text survives Open5e's comma glitches ("Animal, Handling").
 export function skillsInText(text: unknown): string[] {
   const normalized = ` ${normalizeText(text)} `;
-  return ALL_SKILLS.filter((skill) =>
-    normalized.includes(` ${skill.replace(/_/g, " ")} `),
-  );
+  const found: string[] = [];
+  for (const skill of activeSkills()) {
+    const name = normalizeText((skill as { name?: string }).name);
+    const id = skill.id;
+    if (
+      (name && normalized.includes(` ${name} `)) ||
+      (id.includes("_") && normalized.includes(` ${id.replace(/_/g, " ")} `))
+    ) {
+      found.push(id);
+    }
+  }
+  return found;
 }
 
 const COUNT_WORDS: Record<string, number> = {
@@ -638,16 +652,35 @@ function backgroundField(data: Record<string, unknown>, field: string): string {
 function backgroundSkills(text: string): Pick<BackgroundMechanics, "skills" | "skillChoice"> {
   // Where the fixed skills end and the pick begins: "and either Insight or
   // History", "plus one of your choice from among ...", "Your choice of two
-  // from among ...", "any one skill of your choice", "Two of your choice".
-  const choice = /\b(?:(?:one|two|three|four)\s+of your choice|either|your choice|any)\b/i.exec(text);
+  // from among ...", "any one skill of your choice", "Two of your choice",
+  // and the imperative the SW5e pack writes for all 61 of its backgrounds:
+  // "Choose two from Insight, Intimidation, Lore, and Perception".
+  const choice =
+    /\b(?:(one|two|three|four)\s+of your choice|choose\s+(one|two|three|four)\s+from|either|your choice|any)\b/i.exec(
+      text,
+    );
   if (!choice) {
     return { skills: skillsInText(text) };
   }
   const skills = skillsInText(text.slice(0, choice.index));
   const rest = text.slice(choice.index);
   const named = skillsInText(rest).filter((skill) => !skills.includes(skill));
-  const count = COUNT_WORDS[/\b(one|two|three|four)\b/i.exec(rest)?.[1].toLowerCase() ?? ""] ?? 1;
-  return { skills, skillChoice: { count, from: named.length ? named : [...ALL_SKILLS] } };
+  // The count word may ride inside the matched phrase ("Choose two from")
+  // or after it ("two of your choice from among ...").
+  const countWord =
+    choice[1] ??
+    choice[2] ??
+    /\b(one|two|three|four)\b/i.exec(choice[0])?.[1] ??
+    /\b(one|two|three|four)\b/i.exec(rest)?.[1] ??
+    "";
+  const count = COUNT_WORDS[countWord.toLowerCase()] ?? 1;
+  return {
+    skills,
+    skillChoice: {
+      count,
+      from: named.length ? named : activeSkills().map((skill) => skill.id),
+    },
+  };
 }
 
 // A choice stays one entry, the way the bundled backgrounds write "one

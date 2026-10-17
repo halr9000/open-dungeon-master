@@ -45,10 +45,20 @@ export function activeSkills(): SrdSkill[] {
   return packSkillRows.length ? (packSkillRows as SrdSkill[]) : SRD_SKILL_LIST;
 }
 
-// A skill from the active set by id.
+// A skill from the active set by id or by name. The id first: the bundled
+// list's ids are the names lowercased, so the two coincide; the pack's rows
+// carry Foundry short-codes (`lor`, `prc`) instead, and every surface that
+// writes a sheet — the builder, an import, a level-up pick — spells skills
+// by NAME ("Lore"), so the name must resolve too. Case-insensitive, since
+// legality lowercases everything it judges.
 export function findActiveSkill(id: string): SrdSkill | null {
   const wanted = id.trim();
-  return activeSkills().find((skill) => skill.id === wanted) ?? null;
+  const active = activeSkills();
+  return (
+    active.find((skill) => skill.id === wanted) ??
+    active.find((skill) => skill.name.toLowerCase() === wanted.toLowerCase()) ??
+    null
+  );
 }
 
 // The active set's equivalent of a bundled skill id: the same id when the

@@ -29,8 +29,27 @@ const contentDbPath = () =>
   process.env.CONTENT_DB_PATH ||
   path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "content", "open5e.sqlite");
 
+// Whether THIS module graph has registered the pack's registries. Kept in
+// module scope deliberately — a server runtime may hold several module
+// graphs over one process (a Next.js app does: pages, route handlers,
+// instrumentation each bundle their own copy of the registry modules), the
+// DB handle memoizes on globalThis and is shared by all of them, but the
+// registry state lives in module scope — each graph must register its own
+// copy, and a graph that arrives late must not skip that because the handle
+// is already memoized. Every register call is an idempotent setter, so
+// re-running them per graph is free.
+let registrationsDone = false;
+
 export function getContentDb(): SqliteDatabase | null {
   if (globalThis.__odmContentDb !== undefined) {
+    if (!registrationsDone && globalThis.__odmContentDb) {
+      const db = globalThis.__odmContentDb;
+      registerPackFeats(db);
+      registerPackClassProgression(db);
+      registerPackOptionTables(db);
+      loadPackSkills(db);
+      registrationsDone = true;
+    }
     return globalThis.__odmContentDb;
   }
   if (!existsSync(/*turbopackIgnore: true*/ contentDbPath())) {
@@ -43,6 +62,7 @@ export function getContentDb(): SqliteDatabase | null {
   registerPackClassProgression(db);
   registerPackOptionTables(db);
   loadPackSkills(db);
+  registrationsDone = true;
   return db;
 }
 

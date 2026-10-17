@@ -160,8 +160,17 @@ export function judgeProficiencies(input: ProficiencyInput): ProficiencyVerdict 
   const saves = uniqueNames([...(primary?.saves ?? []), ...(held?.saves ?? [])]) as Ability[];
 
   // ---- skills ----
-  const fixed = uniqueNames([...(background?.skills ?? []), ...(race.skills ?? [])].map(lower));
-  const sentSkills = uniqueNames(sent.skills.map(lower));
+  // A sheet spells a skill the way its writer did — the builder writes the
+  // active row's id, an import writes the display name ("Lore") — and a
+  // pack's ids are its own short codes (`lor`), not the names. Every side
+  // of every comparison below goes through the resolver to the active row's
+  // id, so a name and its id are the same skill wherever they meet. An
+  // unknown skill resolves to its lowercased self and is refused below.
+  const canonicalSkill = (skill: string) => findSkill(lower(skill))?.id ?? lower(skill);
+  const fixed = uniqueNames(
+    [...(background?.skills ?? []), ...(race.skills ?? [])].map(canonicalSkill),
+  );
+  const sentSkills = uniqueNames(sent.skills.map(canonicalSkill));
   for (const skill of sentSkills) {
     if (!findSkill(skill)) {
       problems.push(`"${skill}" is not one of the eighteen skills.`);
@@ -175,7 +184,7 @@ export function judgeProficiencies(input: ProficiencyInput): ProficiencyVerdict 
     slots.push({
       label: `${background.name}`,
       count: background.skillChoice.count,
-      from: new Set(background.skillChoice.from.map(lower)),
+      from: new Set(background.skillChoice.from.map(canonicalSkill)),
     });
   }
   if (primary) {
