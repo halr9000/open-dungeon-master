@@ -1123,9 +1123,9 @@ export const requestRollTool = {
         },
         skill: {
           type: "string",
-          // Read at serialization time, not module load: the pack loader may
-          // mount after this module loads, and the enum must be the active
-          // skill set (the pack's under the SW5e pack).
+          // Read at serialization time, not module load: the pack loader
+          // may mount after this module loads, and the enum must be the
+          // active skill set (the pack set under the SW5e pack).
           get enum() {
             return activeSkills().map((skill) => skill.id);
           },
