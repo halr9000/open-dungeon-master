@@ -39,6 +39,56 @@ BG_SKILL_OFFERS = {
     "jensaarai": {"Insight", "Intimidation", "Lore", "Perception"},
     "scoundrel": {"Deception", "Insight", "Performance", "Sleight of Hand"},
 }
+PACK_DB = "/home/halr9000/projects/sw5e-odm-pack/sw5e.sqlite"
+
+
+def _pack_row_text(table, name):
+    """data_json text of the pack row whose name matches case-insensitively."""
+    import sqlite3
+    try:
+        db = sqlite3.connect(f"file:{PACK_DB}?mode=ro", uri=True)
+        row = db.execute(
+            f"select data_json from {table} where lower(name)=lower(?)", (name,)
+        ).fetchone()
+    except Exception as exc:
+        print(f"  warn: pack DB lookup failed for {table}/{name}: {exc}")
+        return None
+    return row[0] if row else None
+
+
+def bg_skill_offers(bg):
+    """Display-name set of the background's skill-choice pool, from the pack."""
+    if not bg:
+        return None
+    raw = _pack_row_text("backgrounds", bg)
+    if not raw:
+        return None
+    m = re.search(r"(?:one|two|three|four) of your choice from ([^.]+)", raw, re.I)
+    if not m:
+        return None
+    valid = {v.lower() for v in SKILL_NAMES.values()}
+    offers = {p.strip().lower() for p in re.split(r",| and ", m.group(1))}
+    offers &= valid
+    return offers or None
+
+
+def feat_skill_grants(feat_names):
+    """feat name -> skill names its pack row grants ('proficiency in the X skill')."""
+    import json as _json
+    grants = {}
+    for name in feat_names:
+        raw = _pack_row_text("feats", name)
+        if not raw:
+            continue
+        try:
+            txt = re.sub(r"<[^>]+>", " ", _json.dumps(_json.loads(raw)))
+        except Exception:
+            txt = raw
+        for m in re.finditer(r"proficiency in the ([A-Za-z ]+?) skill", txt, re.I):
+            grants.setdefault(name, []).append(m.group(1).strip())
+    return grants
+
+
 # SW5e weaponProf codes -> readable strings for ODM's free-text list
 WEAPON_PROFS = {
     "sbl": "Simple blasters", "mbl": "Martial blasters",
@@ -111,37 +161,59 @@ def convert(actor):
     # caps trained skills at background 2 + class 2 + feat choices + species
     # grants, so a flat list of every proficient FVTT skill is refused; the
     # converter must DISTRIBUTE them across sources.
-    SW5E_ONLY_SKILLS = {"tec", "pil"}
+    # The pack's skills table covers Technology/Piloting; nothing is skipped.
     trained = []
     for code, v in s.get("skills", {}).items():
         name = SKILL_NAMES.get(code)
-        if not name or code in SW5E_ONLY_SKILLS:
+        if not name:
             continue
         val = v.get("value") or 0
         if val >= 1:
             trained.append((name, val, code))
 
-    # POC finding 8b (updated): FVTT sheets carry no per-skill provenance, so
-    # the split is reconstructed: 2 from the background's own offer list
-    # first (background pools are the narrowest), then 2 for the class (a
-    # class offers all 18), and the remainder go to feats that pick skills
-    # ("pick two skills or tools" feats), recorded under the feat's name via
-    # sheet.featChoices so the import door admits them.
+    # POC finding 8b (v3): FVTT sheets carry no per-skill provenance, so the
+    # split is reconstructed. Offer pools and feat skill-grants are read from
+    # the mounted pack DB rather than hand-maintained dicts. Order:
+    #   1. a trained skill exactly one actor feat can grant (and which no
+    #      background offers) rides that feat via sheet.featChoices;
+    #   2. up to 2 from the background's offer pool;
+    #   3. the next 2 are the class's picks (a class offers all 18);
+    #   4. leftovers ride any granting feat, else Practiced if the actor has
+    #      it, else are dropped with a warning.
+    # The flat `skills` list carries EVERY trained skill; legality subtracts
+    # the feat picks before judging offers and re-applies them through
+    # applyFeatGrants (sheet-legality issue #147). featChoices keys must name
+    # feats the sheet actually has or the engine ignores them (Maurice bug).
     feat_choices = {}
+    feat_names = [i["name"] for i in items if i["type"] == "feat"]
+    feat_grants = feat_skill_grants(feat_names)
     if trained:
-        # The flat list carries EVERY trained skill; legality subtracts the
-        # feat picks before judging the background/class offers and re-applies
-        # them through applyFeatGrants (sheet-legality issue #147).
         skills = [n for n, val, code in trained]
-        bg_offers = BG_SKILL_OFFERS.get((bg or "").lower())
+        grant_map = {}
+        for fname, sks in feat_grants.items():
+            for sk in sks:
+                grant_map.setdefault(sk.lower(), []).append(fname)
+        bg_offers = bg_skill_offers(bg)
+        assigned = {n for n, val, code in trained
+                    if len(grant_map.get(n.lower(), [])) == 1
+                    and (not bg_offers or n.lower() not in bg_offers)}
+        for n in assigned:
+            feat_choices.setdefault(grant_map[n.lower()][0], {"skills": []})["skills"].append(n)
+        remaining = [(n, val, code) for n, val, code in trained if n not in assigned]
         if bg_offers:
-            bg_picked = {n for n, val, code in trained if n in bg_offers}
+            bg_picked = [n for n, val, code in remaining if n.lower() in bg_offers][:2]
         else:
-            bg_picked = {n for n, val, code in sorted(trained, key=lambda t: -t[1])[:2]}
-        rest = [(n, val, code) for n, val, code in trained if n not in bg_picked]
-        leftover = rest[2:]  # first two are the class's picks
-        if leftover:
-            feat_choices["Practiced"] = {"skills": [n for n, val, code in leftover]}
+            bg_picked = [n for n, val, code in sorted(remaining, key=lambda t: -t[1])[:2]]
+        remaining = [(n, val, code) for n, val, code in remaining if n not in bg_picked]
+        leftover = remaining[2:]  # first two of what's left are the class's picks
+        for n, val, code in leftover:
+            fs = grant_map.get(n.lower(), [])
+            if fs:
+                feat_choices.setdefault(fs[0], {"skills": []})["skills"].append(n)
+            elif "Practiced" in feat_names:
+                feat_choices.setdefault("Practiced", {"skills": []})["skills"].append(n)
+            else:
+                print(f"  warn: trained skill '{n}' has no granting feat; dropped")
     else:
         skills = []
 
