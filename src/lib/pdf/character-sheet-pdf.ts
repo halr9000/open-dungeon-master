@@ -28,10 +28,11 @@ import type {
 import {
   computeSheetDerived,
   findClass,
+  findSkill,
   formatModifier,
   XP_THRESHOLDS,
 } from "@/lib/srd";
-import { activeSkills } from "@/lib/content/skills";
+import { activeSkills, resolveSkillEntry } from "@/lib/content/skills";
 import { classListFor, slotTableFor } from "@/lib/srd/multiclass";
 import { weaponAttackProfile, weaponOf } from "@/lib/dm/attack-logic";
 import { matchWeapon } from "@/lib/srd/weapons";
@@ -355,8 +356,14 @@ function drawSavesAndSkills(
   heading(ctx, x + 4, y - 11, "Skills");
   ry = y - 24;
   const expertise = c.proficiencies.expertise ?? [];
+  // Stored lists may carry display names instead of the active set's ids
+  // (older sheets predate canonical storage); resolve every entry before
+  // matching so the checkbox ticks either way.
+  const held = new Set(
+    [...c.proficiencies.skills, ...expertise].map((entry) => resolveSkillEntry(entry)?.id ?? entry),
+  );
   for (const skill of activeSkillList) {
-    const proficient = c.proficiencies.skills.includes(skill.id) || expertise.includes(skill.id);
+    const proficient = held.has(skill.id);
     checkbox(ctx, x + 5, ry, 8, proficient);
     field(ctx, x + 16, ry - 2, 20, 12, formatModifier(derived.skills[skill.id] ?? 0), { size: 8, align: TextAlignment.Center });
     ctx.page.drawText(`${skill.name} (${skill.ability.toUpperCase()})`, {

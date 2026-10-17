@@ -45,14 +45,21 @@ export function activeSkills(): SrdSkill[] {
   return packSkillRows.length ? (packSkillRows as SrdSkill[]) : SRD_SKILL_LIST;
 }
 
-// A skill from the active set by id or by name. The id first: the bundled
-// list's ids are the names lowercased, so the two coincide; the pack's rows
-// carry Foundry short-codes (`lor`, `prc`) instead, and every surface that
-// writes a sheet — the builder, an import, a level-up pick — spells skills
-// by NAME ("Lore"), so the name must resolve too. Case-insensitive, since
-// legality lowercases everything it judges.
+// A skill from the active set BY ID. Strict: a bundled id that the pack
+// replaced ("acrobatics") resolves to null — replacement, never a merge;
+// bridging a bundled id to the pack's row is activeSkillMatching's job.
 export function findActiveSkill(id: string): SrdSkill | null {
   const wanted = id.trim();
+  return activeSkills().find((skill) => skill.id === wanted) ?? null;
+}
+
+// A skill from the active set by id OR name — for entries a SHEET stores:
+// players and older sheets spell skills ("Lore", "Persuasion"), the pack's
+// rows carry Foundry short-codes (`lor`, `prc`). Case-insensitive, since
+// legality lowercases everything it judges. (Not findActiveSkill: that one
+// must stay id-strict so a replaced bundled id stays null.)
+export function resolveSkillEntry(entry: string): SrdSkill | null {
+  const wanted = entry.trim();
   const active = activeSkills();
   return (
     active.find((skill) => skill.id === wanted) ??

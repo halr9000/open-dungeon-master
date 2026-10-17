@@ -14,6 +14,7 @@
 // reading of the text is src/lib/srd/feat-grant-text.ts. Pure.
 import type { Proficiencies } from "@/lib/schemas/sheet";
 import { ALL_SKILLS } from "@/lib/content/mechanics";
+import { resolveSkillEntry } from "@/lib/content/skills";
 import { featSpellsOwed, type CastingAbility } from "@/lib/srd/feat-spells";
 import { featGrantSpec, featGrantsAnything, lowerText as lower, type FeatGrantSpec, type PickKind } from "@/lib/srd/feat-grant-text";
 import { SRD_WEAPONS } from "@/lib/srd/weapons";
@@ -205,10 +206,15 @@ export function applyFeatGrants(input: FeatGrantInput): FeatGrantVerdict {
         }
         continue;
       }
-      skills.push(skill);
+      // Store the ACTIVE skill's id (the pack's short code when a pack is
+      // mounted, the bundled id otherwise), never the pick's spelling — a
+      // display name stored here makes every id-keyed consumer (the PDF's
+      // checkboxes, derived-skill lookups) miss the proficiency.
+      const canonical = resolveSkillEntry(skill)?.id ?? skill;
+      skills.push(canonical);
       // Knowledge Domain's skills come doubled.
-      if (spec.pickedExpertise && !has(expertise, skill)) {
-        expertise.push(skill);
+      if (spec.pickedExpertise && !has(expertise, canonical)) {
+        expertise.push(canonical);
       }
     }
     // Expertise the grant names outright, on skills it also names.

@@ -26,7 +26,7 @@ import type {
 import { itemCastNumbers } from "@/lib/srd/item-cast-credit";
 
 import type { SrdBackground, SrdClass, SrdRace, SrdSkill } from "@/lib/srd/srd-types";
-import { activeSkillMatching, activeSkills, findActiveSkill } from "@/lib/content/skills";
+import { activeSkillMatching, activeSkills, findActiveSkill, resolveSkillEntry } from "@/lib/content/skills";
 
 export type { SrdBackground, SrdClass, SrdRace, SrdSkill } from "@/lib/srd/srd-types";
 
@@ -463,11 +463,20 @@ export function computeSheetDerived(
   const halfScope = defense.halfProficiency ?? null;
   const halfPb = halfScope === "physical" ? Math.ceil(pb / 2) : Math.floor(pb / 2);
   const expertise = sheet.proficiencies.expertise ?? [];
+  // Stored lists may carry display names instead of the active set's ids
+  // (older sheets, feat picks stored verbatim); resolve before matching so
+  // a stored "Persuasion" still counts as the pack's `prc` proficiency.
+  const heldSkills = new Set(
+    [...sheet.proficiencies.skills, ...expertise].map((entry) => resolveSkillEntry(entry)?.id ?? entry),
+  );
+  const heldExpertise = new Set(
+    expertise.map((entry) => resolveSkillEntry(entry)?.id ?? entry),
+  );
   const skillParts = Object.fromEntries(
     activeSkills().map((skill) => {
-      const trained = expertise.includes(skill.id)
+      const trained = heldExpertise.has(skill.id)
         ? { label: "expertise", value: pb * 2 }
-        : sheet.proficiencies.skills.includes(skill.id)
+        : heldSkills.has(skill.id)
           ? { label: "proficiency", value: pb }
           : halfProficiencyCovers(halfScope, skill.ability)
             ? { label: "half proficiency", value: halfPb }
