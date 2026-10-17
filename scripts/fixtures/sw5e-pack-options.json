@@ -279,6 +279,22 @@
       "prerequisite": "Engineer (Astrotech Engineering) 5",
       "actionEconomy": null,
       "uses": null
+    },
+    {
+      "slug": "fyrnocks-instinct",
+      "name": "Fyrnock's Instinct",
+      "family": "invocation",
+      "prerequisite": "Berserker",
+      "actionEconomy": "bonus",
+      "uses": "per-rest:2"
+    },
+    {
+      "slug": "loth-cats-instinct",
+      "name": "Loth-cat's Instinct",
+      "family": "invocation",
+      "prerequisite": "Berserker",
+      "actionEconomy": "bonus",
+      "uses": null
     }
   ],
   "grants": [
@@ -286,12 +302,18 @@
       "classSlug": "sentinel",
       "level": 2,
       "kind": "option_grant",
-      "name": "Lightsaber Forms",
-      "refSlug": "form-of-ight",
+      "name": "Sentinel Ideals",
+      "refSlug": "ideal-of-the-agile",
       "count": 2,
       "choices": {
         "2": 2,
-        "3": 1
+        "6": 1,
+        "11": 1
+      },
+      "replacement": {
+        "2": false,
+        "6": false,
+        "11": false
       },
       "archetype": null
     },
@@ -299,12 +321,18 @@
       "classSlug": "sentinel",
       "level": 2,
       "kind": "option_grant",
-      "name": "Lightsaber Forms",
-      "refSlug": "ataru-form",
+      "name": "Sentinel Ideals",
+      "refSlug": "ideal-of-the-fighter",
       "count": 2,
       "choices": {
         "2": 2,
-        "3": 1
+        "6": 1,
+        "11": 1
+      },
+      "replacement": {
+        "2": false,
+        "6": false,
+        "11": false
       },
       "archetype": null
     },
@@ -345,8 +373,13 @@
       "name": "Choose Fighting Style",
       "refSlug": "formation-style",
       "count": 1,
-      "choices": null,
-      "archetype": null
+      "choices": {
+        "1": 1
+      },
+      "archetype": null,
+      "replacement": {
+        "1": true
+      }
     },
     {
       "classSlug": "fighter",
@@ -355,8 +388,13 @@
       "name": "Choose Fighting Style",
       "refSlug": "area-style",
       "count": 1,
-      "choices": null,
-      "archetype": null
+      "choices": {
+        "1": 1
+      },
+      "archetype": null,
+      "replacement": {
+        "1": true
+      }
     },
     {
       "classSlug": "fighter",
@@ -365,8 +403,13 @@
       "name": "Choose Fighting Style",
       "refSlug": "berserk-style",
       "count": 1,
-      "choices": null,
-      "archetype": null
+      "choices": {
+        "1": 1
+      },
+      "archetype": null,
+      "replacement": {
+        "1": true
+      }
     },
     {
       "classSlug": "engineer",
@@ -837,6 +880,48 @@
       "count": 1,
       "choices": {},
       "optionName": "Wristpad Assist"
+    },
+    {
+      "classSlug": "berserker",
+      "level": 2,
+      "kind": "option_grant",
+      "name": "Berserker Instincts",
+      "refSlug": "fyrnocks-instinct",
+      "count": 2,
+      "choices": {
+        "2": 2,
+        "7": 1,
+        "13": 1,
+        "17": 1
+      },
+      "replacement": {
+        "2": false,
+        "7": false,
+        "13": false,
+        "17": false
+      },
+      "archetype": null
+    },
+    {
+      "classSlug": "berserker",
+      "level": 2,
+      "kind": "option_grant",
+      "name": "Berserker Instincts",
+      "refSlug": "loth-cats-instinct",
+      "count": 2,
+      "choices": {
+        "2": 2,
+        "7": 1,
+        "13": 1,
+        "17": 1
+      },
+      "replacement": {
+        "2": false,
+        "7": false,
+        "13": false,
+        "17": false
+      },
+      "archetype": null
     }
   ]
 }
