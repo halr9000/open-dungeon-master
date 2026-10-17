@@ -1,0 +1,282 @@
+{
+  "name": "Maurice",
+  "race": "Gungan",
+  "class": "engineer",
+  "subclass": "Armormech Engineering",
+  "background": "insurgent",
+  "alignment": "",
+  "gender": "",
+  "appearance": "",
+  "abilities": {
+    "str": 15,
+    "dex": 13,
+    "con": 16,
+    "int": 17,
+    "wis": 11,
+    "cha": 11
+  },
+  "maxHp": 75,
+  "ac": 10,
+  "acOverride": false,
+  "speed": 30,
+  "hitDice": {
+    "die": "d8",
+    "total": 9,
+    "spent": 0
+  },
+  "classes": [],
+  "hitDicePools": null,
+  "proficiencies": {
+    "saves": [
+      "con",
+      "int"
+    ],
+    "skills": [
+      "ins",
+      "med",
+      "lor",
+      "nature"
+    ],
+    "expertise": [],
+    "languages": [
+      "Galactic Basic",
+      "Gungan"
+    ],
+    "tools": [
+      "One type of artisan's implements, disguise kit, or forgery kit"
+    ],
+    "armor": [
+      "Light armor"
+    ],
+    "weapons": [
+      "Simple blasters",
+      "Simple vibroweapons"
+    ]
+  },
+  "equipment": [
+    {
+      "name": "Flute",
+      "qty": 1
+    },
+    {
+      "name": "Hand cannon",
+      "qty": 1
+    },
+    {
+      "name": "Armormech's implements",
+      "qty": 1
+    },
+    {
+      "name": "Slug Cartridge (Average)",
+      "qty": 1
+    },
+    {
+      "name": "Power Cell (Average)",
+      "qty": 1
+    },
+    {
+      "name": "Morkk's BBQ Arm",
+      "qty": 1
+    },
+    {
+      "name": "Repair Kit Mk II",
+      "qty": 1
+    },
+    {
+      "name": "Medpac",
+      "qty": 1
+    }
+  ],
+  "gold": 1000,
+  "copper": 0,
+  "feats": [
+    "Techie",
+    "Naturalist"
+  ],
+  "features": [
+    {
+      "name": "Techcasting",
+      "source": "class",
+      "level": 1,
+      "classId": "engineer"
+    },
+    {
+      "name": "Potent Aptitude",
+      "source": "class",
+      "level": 1,
+      "classId": "engineer"
+    },
+    {
+      "name": "Infuse Item",
+      "source": "class",
+      "level": 2,
+      "classId": "engineer"
+    },
+    {
+      "name": "Tool Expertise",
+      "source": "class",
+      "level": 2,
+      "classId": "engineer"
+    },
+    {
+      "name": "Engineering Discipline",
+      "source": "class",
+      "level": 3,
+      "classId": "engineer"
+    },
+    {
+      "name": "Engineering Disciplines",
+      "source": "class",
+      "level": 3,
+      "classId": "engineer"
+    },
+    {
+      "name": "Ability Score Increase",
+      "source": "story"
+    },
+    {
+      "name": "Age",
+      "source": "story"
+    },
+    {
+      "name": "Alignment",
+      "source": "story"
+    },
+    {
+      "name": "Size",
+      "source": "story"
+    },
+    {
+      "name": "Speed",
+      "source": "story"
+    },
+    {
+      "name": "Amphibious",
+      "source": "story"
+    },
+    {
+      "name": "Darkvision",
+      "source": "story"
+    },
+    {
+      "name": "Flexible",
+      "source": "story"
+    },
+    {
+      "name": "Heat Sensitivity",
+      "source": "story"
+    },
+    {
+      "name": "Martial Proficiency",
+      "source": "story"
+    },
+    {
+      "name": "Strong-Legged",
+      "source": "story"
+    },
+    {
+      "name": "Swim",
+      "source": "story"
+    },
+    {
+      "name": "Languages",
+      "source": "story"
+    },
+    {
+      "name": "Bonus Proficiencies",
+      "source": "story"
+    },
+    {
+      "name": "Modified Armor",
+      "source": "story"
+    },
+    {
+      "name": "Damage Absorption",
+      "source": "story"
+    },
+    {
+      "name": "Absorption Shield",
+      "source": "story"
+    },
+    {
+      "name": "Grappling Harpoon",
+      "source": "story"
+    },
+    {
+      "name": "Sentient Armor",
+      "source": "story"
+    },
+    {
+      "name": "Tech Blast",
+      "source": "story"
+    },
+    {
+      "name": "Power Fist",
+      "source": "story"
+    },
+    {
+      "name": "Flight",
+      "source": "story"
+    },
+    {
+      "name": "Techcasting (powers: Tracer Bolt, Spectrum Ray, Detonator, Explosion, Element of",
+      "source": "feat"
+    },
+    {
+      "name": "Strong Legged",
+      "source": "race"
+    },
+    {
+      "name": "Rebel Kinship (Insurgent)",
+      "source": "background"
+    },
+    {
+      "name": "Ability Score Improvements taken: 2",
+      "source": "story"
+    }
+  ],
+  "asiChoices": [
+    {
+      "mode": "feat",
+      "feat": "Techie"
+    },
+    {
+      "mode": "feat",
+      "feat": "Naturalist"
+    }
+  ],
+  "featChoices": {
+    "Naturalist": {
+      "skills": [
+        "Nature"
+      ]
+    },
+    "Techie": {
+      "skills": [
+        "Technology"
+      ]
+    }
+  },
+  "spellcasting": {
+    "ability": "int",
+    "slots": {},
+    "prepared": [],
+    "known": [],
+    "cantrips": []
+  },
+  "portrait": {
+    "id": "6c0bda8c-7fcb-483a-86a0-55ab20c60fff",
+    "name": "ChatGPT_Image_Sep_14_2025_07_37_39_PM.png",
+    "type": "image/png",
+    "url": "/uploads/6c0bda8c-7fcb-483a-86a0-55ab20c60fff.png"
+  },
+  "notes": "",
+  "backstory": "",
+  "racialChoices": {
+    "asi": [],
+    "skills": [],
+    "cantrip": "",
+    "tool": "",
+    "ancestry": ""
+  }
+}

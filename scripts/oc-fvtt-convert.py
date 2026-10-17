@@ -439,6 +439,7 @@ def main():
     # POC finding 13: story-sourced features whose names are mechanical in
     # the 5e engines (Fighting Style, Extra Attack, Expertise, …) are refused
     # even on the import door. The refusal names them; drop and retry.
+    res: dict = {}
     for _ in range(3):
         status, res = odm.try_call("/api/characters/import", "POST", bundle)
         if status in (200, 201):
@@ -450,6 +451,25 @@ def main():
         sheet["features"] = [f for f in sheet["features"] if f["name"] not in refused]
         print(f"  retry: dropped refused features {refused}")
     print("created:", json.dumps(res.get("character", res))[:200])
+    # Stage 1 of the reconciliation policy (docs/reconciliation-policy.md):
+    # the created character runs through the deterministic reconcile —
+    # legacy spellings canonicalized, provable grants applied — before the
+    # converter exits. Its log is what the Stage 2 agent (in conversation)
+    # reads; a partial or failure result is reported, never hidden.
+    character_id = ""
+    if isinstance(res, dict):
+        created = res.get("character")
+        if isinstance(created, dict):
+            character_id = created.get("id") or ""
+    if character_id:
+        import subprocess
+        proc = subprocess.run(
+            ["node", "scripts/reconcile-sheet.mjs", "--character", character_id, "--apply"],
+            capture_output=True, text=True, timeout=120,
+        )
+        print(proc.stderr.strip())
+        if proc.returncode != 0:
+            print(f"  reconcile result: {proc.stdout.strip()} (exit {proc.returncode}) — see the log for the flags")
 
 
 if __name__ == "__main__":
