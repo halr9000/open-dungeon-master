@@ -20,6 +20,7 @@ import type {
   AbilityScores,
   AsiChoice,
   CharacterSheet,
+  ClassEntry,
   FullPatchSheetInput,
   PatchSheetInput,
   Proficiencies,
@@ -63,6 +64,12 @@ import { isThirdCaster } from "@/lib/srd/third-caster";
 import { featureHitPoints, holdsFeature, withPrimalChampion } from "@/lib/srd/trait-rules";
 import { isChoiceFeature, unmetPrerequisite } from "@/lib/srd/legality/features";
 import { castingClassesOf } from "@/lib/srd/legality/spells";
+import {
+  grantKeyFor,
+  packOptionBySlug,
+  packOptionGrantsForClasses,
+  packOptionPoolFor,
+} from "@/lib/content/option-grants";
 import {
   ABILITY_NAMES,
   lower,
@@ -479,6 +486,19 @@ export function buildLevelUp(
     proficiencies = { ...proficiencies, expertise: [...held, ...picks] };
   }
 
+  // ---- the content pack's option picks ----
+  // The grants the character's classes open (base class and the archetypes
+  // the subclasses name), re-derived at the new levels, so a subclass taken
+  // this level offers what it opens and the budget of the class taking the
+  // level is the one checked. The request states, per grant key, the grant's
+  // FULL final pick list in option slugs; the server holds the list to the
+  // grant's pool, its earned budget and the no-double-pick rule, and reads a
+  // pick dropped from the stored list as a replacement under the grant's own
+  // replacement right (src/lib/content/option-grants.ts).
+  const optionPicks = applyOptionPicks(sheet, classes, leveled, request);
+  if ("error" in optionPicks) {
+    return refuse(optionPicks.error);
+  }
 
   // ---- features ----
   // The sheet's own features, and of the request's only the picks a class
@@ -607,8 +627,92 @@ export function buildLevelUp(
     ...(asked.choices.length || primalChampion ? { abilities, feats } : {}),
     ...(spellcasting !== sheet.spellcasting ? { spellcasting } : {}),
     ...(multiclass ? { classes } : { level: target, subclass: classes[0].subclass }),
+    ...(optionPicks.picks ? { options: { picks: optionPicks.picks } } : {}),
   };
   return { patch, hpGained, ...(rolls ? { rolled: { hp: face } } : {}) };
+}
+
+type OptionPicksResult = { picks?: Record<string, string[]> } | { error: string };
+
+// The content pack's option picks, held to what the grants allow. Pure: the
+// grants come from the registered pack rows (src/lib/content/option-grants.ts)
+// and the stored picks from the sheet's own derived options section, so
+// scripts/test-sheet-legality.mjs drives this without a database.
+function applyOptionPicks(
+  sheet: CharacterSheet,
+  classes: ClassEntry[],
+  leveled: ClassEntry,
+  request: LevelUpRequest,
+): OptionPicksResult {
+  const sent = request.levelUpOptions ?? {};
+  const keys = Object.keys(sent);
+  if (!keys.length) {
+    return {};
+  }
+  const stored = sheet.options?.picks ?? {};
+  // The grants at the new levels: a subclass taken this level opens its
+  // grants now, and the archetype's grants ride it (packOptionGrantsForClasses).
+  const grants = packOptionGrantsForClasses(classes);
+  const next: Record<string, string[]> = { ...stored };
+  for (const key of keys) {
+    const wanted = key.trim().toLowerCase();
+    const grant = grants.find((entry) => grantKeyFor(entry.classId, entry.name) === wanted);
+    if (!grant || grant.classId.toLowerCase() !== leveled.id.toLowerCase()) {
+      return {
+        error: `"${key}" is not an option grant the class taking this level opens; a grant's picks come with that class's level.`,
+      };
+    }
+    // A slug from the grant's pool stands as sent; an option's name resolves
+    // to its slug, so either address names the same option.
+    const pool = packOptionPoolFor(leveled.id, grant.name);
+    const resolve = (sent: string): string | null => {
+      const wanted = sent.trim().toLowerCase();
+      if (pool.includes(wanted)) {
+        return wanted;
+      }
+      return pool.find((slug) => (packOptionBySlug(slug)?.name ?? "").toLowerCase() === wanted) ?? null;
+    };
+    const picks: string[] = [];
+    for (const entry of sent[key]) {
+      const slug = resolve(entry);
+      if (!slug) {
+        return {
+          error: `"${entry}" is not one of the options "${grant.name}" offers; pick from that grant's list.`,
+        };
+      }
+      if (picks.includes(slug)) {
+        return {
+          error: `${packOptionBySlug(slug)?.name ?? slug} is picked twice for ${grant.name}; an option is taken once.`,
+        };
+      }
+      picks.push(slug);
+    }
+    // The budget the grant has earned by the level being taken.
+    const earned = Object.entries(grant.picks)
+      .filter(([level]) => Number(level) <= leveled.level)
+      .reduce((sum, [, count]) => sum + count, 0);
+    // A pick the stored list held and the sent list drops is a replacement,
+    // and rides the grant's replacement right: any step at or below the
+    // level being taken that carries the flag. Without it the picks are
+    // permanent — a new level adds, never swaps.
+    const held = stored[wanted] ?? [];
+    const dropped = held.filter((slug) => !picks.includes(slug));
+    if (
+      dropped.length &&
+      !Object.entries(grant.replacement ?? {}).some(([level, flag]) => flag && Number(level) <= leveled.level)
+    ) {
+      return {
+        error: `The picks of ${grant.name} are permanent: held picks stay and a new level adds to them rather than swapping. Dropped from the list: ${dropped.join(", ")}.`,
+      };
+    }
+    if (picks.length > earned) {
+      return {
+        error: `${grant.name} has earned ${earned} pick${earned === 1 ? "" : "s"} by level ${leveled.level}; the list holds ${picks.length}.`,
+      };
+    }
+    next[wanted] = picks;
+  }
+  return { picks: next };
 }
 
 function emptyStyle(classId: string): CasterView["style"] {

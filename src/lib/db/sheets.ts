@@ -10,7 +10,7 @@ import { normalizeSpellcasting } from "@/lib/srd/spell-lists";
 import { settleAttunement, type Wearer } from "@/lib/srd/magic-items";
 import { itemWeightByName, repairedWeight } from "@/lib/content";
 import { getContentDb } from "@/lib/content/db";
-import { packOptionGrantsForClasses } from "@/lib/content/option-grants";
+import { packOptionActionsFor, packOptionGrantsForClasses } from "@/lib/content/option-grants";
 import { homebrewRaceLabel, hydrateHomebrewGear } from "@/lib/db/homebrew";
 import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { storedGender } from "@/lib/gender";
@@ -73,6 +73,9 @@ type SheetRow = {
   portrait_json: string | null;
   notes: string;
   backstory: string | null;
+  // The content-pack option picks the level-up settled, keyed by grant key
+  // (options.picks on the read view); NULL = none.
+  options_picks_json?: string | null;
   is_companion: number | null;
   companion_kind: string | null;
   personality: string | null;
@@ -94,12 +97,29 @@ const EMPTY_PROFICIENCIES = {
 // The content-pack option grants the character's classes open
 // (src/lib/content/option-grants.ts), derived on read like the armor
 // class: nothing is stored, so a pack update re-prices every sheet at once
-// and a sheet of a class no pack describes carries none.
+// and a sheet of a class no pack describes carries none. The PICKS are the
+// player's own record (the level-up settles them into options_picks_json)
+// and read back inside the same section, priced into actions: a picked
+// option whose pack row carries an action economy is an action on the
+// sheet.
 function withPackOptions(
   classes: Array<{ id: string; subclass?: string; level: number }>,
+  storedPicks: Record<string, string[]>,
 ): Pick<CharacterSheet, "options"> {
-  const grants = getContentDb() ? packOptionGrantsForClasses(classes) : [];
-  return grants.length ? { options: { grants } } : {};
+  const packed = getContentDb() !== null;
+  const grants = packed ? packOptionGrantsForClasses(classes) : [];
+  const actions = packed ? packOptionActionsFor(classes, storedPicks) : [];
+  const pickEntries = Object.entries(storedPicks).filter(([, slugs]) => slugs?.length);
+  if (!grants.length && !pickEntries.length) {
+    return {};
+  }
+  return {
+    options: {
+      grants,
+      ...(pickEntries.length ? { picks: Object.fromEntries(pickEntries) } : {}),
+      ...(actions.length ? { actions } : {}),
+    },
+  };
 }
 
 function mapSheet(row: SheetRow): CharacterSheet {
@@ -160,6 +180,7 @@ function mapSheet(row: SheetRow): CharacterSheet {
     resources: parseJson<CharacterSheet["resources"]>(row.resources_json, {}),
     ...withPackOptions(
       classList.length ? classList : [{ id: row.class, subclass: row.subclass ?? "", level: row.level }],
+      parseJson<Record<string, string[]>>(row.options_picks_json ?? null, {}),
     ),
     wildShape: parseJson<CharacterSheet["wildShape"]>(row.wild_shape_json, null),
     pets: parseJson<CharacterSheet["pets"]>(row.pets_json, []),
@@ -207,7 +228,7 @@ const SHEET_COLUMNS = `
   classes_json, hit_dice_pools_json,
   proficiencies_json, equipment_json, gold, copper, feats_json, features_json,
   spellcasting_json, conditions_json, condition_meta_json, resources_json, wild_shape_json, pets_json, summon_json, exhaustion, death_saves_json, concentrating_on, concentration_rounds,
-  portrait_json, notes, backstory, is_companion, companion_kind, personality, hand_layout_json, created_at, updated_at
+  portrait_json, notes, backstory, options_picks_json, is_companion, companion_kind, personality, hand_layout_json, created_at, updated_at
 `;
 
 // Flags a freshly created sheet as an AI companion. Kept out of the main
@@ -647,6 +668,11 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
 
   const next = {
     name: patch.name ?? existing.name,
+    // The content-pack option picks: the level-up's settled record, stored
+    // while the grants themselves stay derived on read. A patch that
+    // carries none keeps the ones on the sheet.
+    optionsPicks:
+      patch.options?.picks !== undefined ? patch.options.picks : (existing.options?.picks ?? {}),
     race: patch.race ?? existing.race,
     class: usingClasses ? classes[0].id : (patch.class ?? existing.class),
     classes,
@@ -837,6 +863,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
           spellcasting_json = ?, wild_shape_json = ?, pets_json = ?, exhaustion = ?, death_saves_json = ?, concentrating_on = ?, concentration_rounds = ?,
           feats_json = ?, features_json = ?, subclass = ?,
           classes_json = ?, hit_dice_pools_json = ?,
+          options_picks_json = ?,
           portrait_json = ?, notes = ?, backstory = ?, updated_at = ?
         WHERE id = ?
       `,
@@ -878,6 +905,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
       next.subclass,
       next.classes.length ? JSON.stringify(next.classes) : null,
       next.hitDicePools?.length ? JSON.stringify(next.hitDicePools) : null,
+      Object.keys(next.optionsPicks).length ? JSON.stringify(next.optionsPicks) : null,
       next.portrait ? JSON.stringify(next.portrait) : null,
       next.notes,
       next.backstory,

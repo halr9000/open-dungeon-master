@@ -12,7 +12,7 @@ import {
   spellNameMatches,
 } from "@/lib/content";
 import { getContentDb } from "@/lib/content/db";
-import { packOptionNamesFor } from "@/lib/content/option-grants";
+import { packOptionNamesFor, pickedOptionNamesFor } from "@/lib/content/option-grants";
 import { packRaceOptions, srdRaceFor } from "@/lib/content/race-options";
 import {
   mergedBackgroundOptions,
@@ -324,8 +324,19 @@ export function legalityContextFor(input: ContextInput): LegalityContext {
     // rows): the write-time allowlist's provenance. Pack-wins when a pack
     // class shares a slug with a bundled one (the SW5e fighter): the
     // bundled tables carry no option grants, so the pack's answer is the
-    // only one there is.
-    packDeclaredOptions: (classId) => (getContentDb() ? packOptionNamesFor(classId) : []),
+    // only one there is. On top of the pools, picks-provenance: the names
+    // the sheet itself has picked (options.picks) ride the same allowance,
+    // so a pack update that shrinks a pool under a stored sheet does not
+    // turn the level-up's settled picks into refusals.
+    packDeclaredOptions: (classId) => {
+      const id = String(classId).trim().toLowerCase();
+      return [
+        ...new Set([
+          ...(getContentDb() ? packOptionNamesFor(id) : []),
+          ...pickedOptionNamesFor(input.sheet, id),
+        ]),
+      ];
+    },
     rollDie: defaultRng,
   };
 }

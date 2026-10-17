@@ -87,6 +87,9 @@ const SAMPLE = {
   levelUpSkill: "athletics",
   levelUpSpells: ["Shield"],
   levelUpForget: "Shield",
+  // The content-pack option picks this level earns, keyed by grant key; the
+  // level-up validates pool, budget and replacement (src/lib/srd/level-up.ts).
+  levelUpOptions: { "fighter|choose fighting style": ["area-style"] },
   asiChoices: [{ mode: "plus2", ability: "str" }],
   // The picks a feat taken this level leaves open: a level-up's, like the
   // improvement it comes with (issue #125).
@@ -138,6 +141,9 @@ await test("the cosmetic fields keep their bounds", async () => {
 // Each is a value fullPatchSheetSchema would accept from a DM.
 const ENGINE_OWNED = {
   deathSaves: { successes: 3, failures: 0, stable: true, dead: false },
+  // The content-pack option picks the level-up settled; validated there
+  // (src/lib/srd/level-up.ts), stored by patchSheet.
+  options: { picks: { "fighter|choose fighting style": ["area-style"] } },
   concentratingOn: "Haste",
   conditionMeta: { invisible: { rounds: 100 } },
   resources: { second_wind: { max: 9, used: 0 }, rage: { max: 9, used: 0 } },

@@ -348,6 +348,18 @@ const ROWS = {
       assert.equal(after().maxHp, before.maxHp + gain);
     },
   },
+  levelUpOptions: {
+    rule: "A pack option pick names a grant the class taking the level opens; with no pack mounted nothing is pickable.",
+    severity: "medium",
+    note: "the picks land in options.picks, held to pool, budget and replacement (src/lib/srd/level-up.ts).",
+    attempt: async () => {
+      const { send, after } = await earned();
+      const refused = await send({ levelUpOptions: { "fighter|choose fighting style": ["area-style"] } });
+      assert.equal(refused.status, 400, JSON.stringify(refused.json));
+      assert.equal(after().options, undefined);
+      assert.equal(after().level, 1);
+    },
+  },
   levelUpSpells: {
     rule: "A first wizard level writes six spells of 1st level in the spellbook.",
     severity: "high",
