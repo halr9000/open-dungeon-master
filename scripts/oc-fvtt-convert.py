@@ -27,6 +27,17 @@ SKILL_NAMES = {
     "prf": "Performance", "prc": "Persuasion", "pil": "Piloting",
     "slc": "Sleight of Hand", "ste": "Stealth", "sur": "Survival",
     "tec": "Technology",
+    # SW5e-only skill the pack's skills table carries (resolved upstream
+    # 2026-10: skillsInText now reads the active pack skill set).
+    "lor": "Lore",
+}
+# Skill pools the pack's background rows offer (skillChoice.from), for the
+# distribution pass: the converter reconstructs which proficient skills came
+# from the background vs the class vs feat picks. Sources: pack rows
+# (jensaarai) and the FVTT background's own list (scoundrel, POC finding 8b).
+BG_SKILL_OFFERS = {
+    "jensaarai": {"Insight", "Intimidation", "Lore", "Perception"},
+    "scoundrel": {"Deception", "Insight", "Performance", "Sleight of Hand"},
 }
 # SW5e weaponProf codes -> readable strings for ODM's free-text list
 WEAPON_PROFS = {
@@ -94,36 +105,45 @@ def convert(actor):
     saves = [k for k, v in s["abilities"].items() if v.get("proficient")]
 
     skills, expertise = [], []
-    # POC finding 8: ODM knows exactly 5e's 18 skills. SW5e's Technology and
-    # Piloting have no equivalent and are dropped (fidelity note, not an
-    # error); the legality engine also caps trainable skills at background
-    # 2 + class 2 + species grants, so over-trained FVTT sheets are trimmed
-    # to what the offers allow.
+    # POC finding 8 (updated): ODM resolves SW5e's full skill set through the
+    # mounted pack's skills table (Lore, Piloting, Technology included), so
+    # nothing is dropped for vocabulary any more. The legality engine still
+    # caps trained skills at background 2 + class 2 + feat choices + species
+    # grants, so a flat list of every proficient FVTT skill is refused; the
+    # converter must DISTRIBUTE them across sources.
     SW5E_ONLY_SKILLS = {"tec", "pil"}
+    trained = []
     for code, v in s.get("skills", {}).items():
         name = SKILL_NAMES.get(code)
         if not name or code in SW5E_ONLY_SKILLS:
             continue
         val = v.get("value") or 0
         if val >= 1:
-            skills.append(name)
+            trained.append((name, val, code))
 
-    # POC finding 8b: the engine allows exactly background 2 + class 2 (+ any
-    # species grants) trained skills. FVTT sheets often carry more; trim to
-    # 2 from the background's own offer list first, then 2 more from the
-    # class's (which offers all 18). Offer lists come from the pack rows.
-    OFFER_CAPS = {
-        "scoundrel": ["Deception", "Insight", "Performance", "Sleight of Hand"],
-    }
-    cap = 2 + 2
-    bg_offers = OFFER_CAPS.get((bg or "").lower())
-    if len(skills) > cap:
-        trained = [(n, int(s["skills"][code].get("value") or 0))
-                   for code, v in s.get("skills", {}).items()
-                   for n in [SKILL_NAMES.get(code)]
-                   if n and code not in SW5E_ONLY_SKILLS and (v.get("value") or 0) >= 1]
-        ranked = [n for n, val in sorted(trained, key=lambda t: (-t[1], not (bg_offers and t[0] in bg_offers)))]
-        skills = ranked[:cap]
+    # POC finding 8b (updated): FVTT sheets carry no per-skill provenance, so
+    # the split is reconstructed: 2 from the background's own offer list
+    # first (background pools are the narrowest), then 2 for the class (a
+    # class offers all 18), and the remainder go to feats that pick skills
+    # ("pick two skills or tools" feats), recorded under the feat's name via
+    # sheet.featChoices so the import door admits them.
+    feat_choices = {}
+    if trained:
+        # The flat list carries EVERY trained skill; legality subtracts the
+        # feat picks before judging the background/class offers and re-applies
+        # them through applyFeatGrants (sheet-legality issue #147).
+        skills = [n for n, val, code in trained]
+        bg_offers = BG_SKILL_OFFERS.get((bg or "").lower())
+        if bg_offers:
+            bg_picked = {n for n, val, code in trained if n in bg_offers}
+        else:
+            bg_picked = {n for n, val, code in sorted(trained, key=lambda t: -t[1])[:2]}
+        rest = [(n, val, code) for n, val, code in trained if n not in bg_picked]
+        leftover = rest[2:]  # first two are the class's picks
+        if leftover:
+            feat_choices["Practiced"] = {"skills": [n for n, val, code in leftover]}
+    else:
+        skills = []
 
     wp = s["traits"].get("weaponProf", {}).get("value") or []
     ap = s["traits"].get("armorProf", {}).get("value") or []
@@ -273,6 +293,7 @@ def convert(actor):
         "equipment": equipment[:60],
         "gold": gold,
         "feats": feats_sheet,
+        "featChoices": feat_choices,
         "asiChoices": asi_choices,
         "features": features[:80],
         "backstory": backstory,
