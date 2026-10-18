@@ -13,6 +13,7 @@ import horrorJson from "@/lib/bestiary/horror.json";
 import mysteryJson from "@/lib/bestiary/mystery.json";
 import postApocalypticJson from "@/lib/bestiary/post-apocalyptic.json";
 import steampunkJson from "@/lib/bestiary/steampunk.json";
+import spaceOperaJson from "@/lib/bestiary/space-opera.json";
 
 // Curated per-genre enemy catalogs: real Open5e stat blocks under
 // genre-appropriate names, so every setting fights with honest mechanics.
@@ -43,6 +44,7 @@ const CATALOGS: Partial<Record<Genre, CatalogFile>> = {
   mystery: mysteryJson,
   post_apocalyptic: postApocalypticJson,
   steampunk: steampunkJson,
+  space_opera: spaceOperaJson,
 };
 
 export function bestiaryForGenre(genre: Genre): BestiaryEntry[] {

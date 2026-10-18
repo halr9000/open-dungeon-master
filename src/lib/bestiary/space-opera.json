@@ -1,0 +1,411 @@
+{
+  "_note": "Curated Open5e reskins for space opera. Pulp-hope renames over real stat blocks; cr and type denormalized and verified by scripts/test-bestiary.mjs.",
+  "entries": [
+    {
+      "slug": "bandit",
+      "name": "Lane Toll Thief",
+      "cr": 0.125,
+      "type": "humanoid",
+      "blurb": "robs slow barges under the docking lights"
+    },
+    {
+      "slug": "cultist",
+      "name": "Fallen Initiate",
+      "cr": 0.125,
+      "type": "humanoid",
+      "blurb": "a burned student of the Resonance, hungry for revenge"
+    },
+    {
+      "slug": "giant-rat",
+      "name": "Hold Vermin",
+      "cr": 0.125,
+      "type": "beast",
+      "blurb": "nesting vermin out of the freight holds"
+    },
+    {
+      "slug": "guard",
+      "name": "Charter Deputy",
+      "cr": 0.125,
+      "type": "humanoid",
+      "blurb": "night-shift law on a company world"
+    },
+    {
+      "slug": "acolyte",
+      "name": "Resonance Adept",
+      "cr": 0.25,
+      "type": "humanoid",
+      "blurb": "young mystic learning to hear the field's quiet voice"
+    },
+    {
+      "slug": "giant-centipede",
+      "name": "Duct Crawler",
+      "cr": 0.25,
+      "type": "beast",
+      "blurb": "venomous crawler clogged in the maintenance runs"
+    },
+    {
+      "slug": "giant-lizard",
+      "name": "Dune Skink",
+      "cr": 0.25,
+      "type": "beast",
+      "blurb": "low-slung grazer with a mean streak around camps"
+    },
+    {
+      "slug": "goblin",
+      "name": "Hangar Scamp",
+      "cr": 0.25,
+      "type": "humanoid",
+      "blurb": "quick-fingered thief of the shipyard gantries"
+    },
+    {
+      "slug": "skeleton",
+      "name": "Stripped Combat Droid",
+      "cr": 0.25,
+      "type": "undead",
+      "blurb": "decades-old war frame still executing its last order"
+    },
+    {
+      "slug": "swarm-of-rats",
+      "name": "Vent Swarm",
+      "cr": 0.25,
+      "type": "beast",
+      "blurb": "a chittering tide nesting in the freight vents"
+    },
+    {
+      "slug": "wolf",
+      "name": "Crater Wolf",
+      "cr": 0.25,
+      "type": "beast",
+      "blurb": "pack predator of the dry moon wastes"
+    },
+    {
+      "slug": "zombie",
+      "name": "Vacuum Husk",
+      "cr": 0.25,
+      "type": "undead",
+      "blurb": "airlock-killed spacer that keeps walking"
+    },
+    {
+      "slug": "crocodile",
+      "name": "Sump Lurker",
+      "cr": 0.5,
+      "type": "beast",
+      "blurb": "pressure-sealed predator under the platform grates"
+    },
+    {
+      "slug": "hobgoblin",
+      "name": "Occupation Trooper",
+      "cr": 0.5,
+      "type": "humanoid",
+      "blurb": "armored regular of the Ascendancy's ground legions"
+    },
+    {
+      "slug": "scout",
+      "name": "Frontier Surveyor",
+      "cr": 0.5,
+      "type": "humanoid",
+      "blurb": "maps the rim for whoever pays in fuel"
+    },
+    {
+      "slug": "shadow",
+      "name": "Hull Shade",
+      "cr": 0.5,
+      "type": "undead",
+      "blurb": "something cold living between the decks, feeding on sleepers"
+    },
+    {
+      "slug": "thug",
+      "name": "Cantina Muscle",
+      "cr": 0.5,
+      "type": "humanoid",
+      "blurb": "hired bruiser with a stun baton and no questions"
+    },
+    {
+      "slug": "animated-armor",
+      "name": "Prototype Warbot",
+      "cr": 1,
+      "type": "construct",
+      "blurb": "an early war chassis still walking its parade ground"
+    },
+    {
+      "slug": "bugbear",
+      "name": "Debt Enforcer",
+      "cr": 1,
+      "type": "humanoid",
+      "blurb": "collects for the guilds with a shock maul and a list"
+    },
+    {
+      "slug": "death-dog",
+      "name": "Twinfang Hound",
+      "cr": 1.0,
+      "type": "monstrosity",
+      "blurb": "two-headed scavenger whose bite rots aboard ship"
+    },
+    {
+      "slug": "dire-wolf",
+      "name": "Nexus Mastiff",
+      "cr": 1,
+      "type": "beast",
+      "blurb": "void-fauna pack leader of the outer plains"
+    },
+    {
+      "slug": "ghoul",
+      "name": "Wreck Diver",
+      "cr": 1,
+      "type": "undead",
+      "blurb": "paralytic scavenger stripping the dead in the wreck fields"
+    },
+    {
+      "slug": "giant-spider",
+      "name": "Vent Skitterer",
+      "cr": 1,
+      "type": "beast",
+      "blurb": "eight-legged fauna nesting in the cooling shafts"
+    },
+    {
+      "slug": "hippogriff",
+      "name": "Sky Courier",
+      "cr": 1.0,
+      "type": "monstrosity",
+      "blurb": "winged steed the rim couriers ride between relay towers"
+    },
+    {
+      "slug": "specter",
+      "name": "Static Revenant",
+      "cr": 1.0,
+      "type": "undead",
+      "blurb": "the crackling residue of the dead, hating all who still live"
+    },
+    {
+      "slug": "spy",
+      "name": "Dead-Drop Courier",
+      "cr": 1.0,
+      "type": "humanoid",
+      "blurb": "passes sealed intelligence through a hundred gloved hands"
+    },
+    {
+      "slug": "ankheg",
+      "name": "Tunnel Wyrm",
+      "cr": 2.0,
+      "type": "monstrosity",
+      "blurb": "burrowing larva that caves the mining district's streets"
+    },
+    {
+      "slug": "azer",
+      "name": "Forge Stoker",
+      "cr": 2.0,
+      "type": "elemental",
+      "blurb": "brass-skinned smith bound to the great engine fires"
+    },
+    {
+      "slug": "bandit-captain",
+      "name": "Smuggler Captain",
+      "cr": 2,
+      "type": "humanoid",
+      "blurb": "runs the embargo lanes in a modified freighter"
+    },
+    {
+      "slug": "berserker",
+      "name": "Arena Mauler",
+      "cr": 2.0,
+      "type": "humanoid",
+      "blurb": "pit champion of the orbital fight cages, leased by the season"
+    },
+    {
+      "slug": "cult-fanatic",
+      "name": "Hollow Cantor",
+      "cr": 2,
+      "type": "humanoid",
+      "blurb": "fallen mystic who sings the Resonance into fury"
+    },
+    {
+      "slug": "druid",
+      "name": "Terraform Warden",
+      "cr": 2.0,
+      "type": "humanoid",
+      "blurb": "speaks for the regrown veldt of a half-terraformed moon"
+    },
+    {
+      "slug": "gargoyle",
+      "name": "Spire Watcher",
+      "cr": 2.0,
+      "type": "elemental",
+      "blurb": "statuary sentry squatting on the lower city's spires"
+    },
+    {
+      "slug": "ogre",
+      "name": "Shock Brute",
+      "cr": 2,
+      "type": "giant",
+      "blurb": "gene-bulked line-breaker in half-ton plate"
+    },
+    {
+      "slug": "priest",
+      "name": "Order Proctor",
+      "cr": 2.0,
+      "type": "humanoid",
+      "blurb": "keeper of the mystic order's litany in a backwater shrine"
+    },
+    {
+      "slug": "sea-hag",
+      "name": "Bilge Crone",
+      "cr": 2.0,
+      "type": "fey",
+      "blurb": "hag of the drowned districts, trading false visions for breath"
+    },
+    {
+      "slug": "will-o-wisp",
+      "name": "Void-Light Lure",
+      "cr": 2,
+      "type": "undead",
+      "blurb": "drifting discharge that draws ships off the safe lanes"
+    },
+    {
+      "slug": "basilisk",
+      "name": "Gorgon Lizard",
+      "cr": 3.0,
+      "type": "monstrosity",
+      "blurb": "its stare hardens trespassers into a collector's statue garden"
+    },
+    {
+      "slug": "doppelganger",
+      "name": "Face Thief",
+      "cr": 3,
+      "type": "monstrosity",
+      "blurb": "infiltrator who wears a rebel cell's trust"
+    },
+    {
+      "slug": "knight",
+      "name": "Ascendancy Honor Guard",
+      "cr": 3,
+      "type": "humanoid",
+      "blurb": "ceremonial champion in powered plate, deadly for show"
+    },
+    {
+      "slug": "mummy",
+      "name": "Relic Custodian",
+      "cr": 3.0,
+      "type": "undead",
+      "blurb": "an entombed explorer-king's guardian, bound to its archive vault"
+    },
+    {
+      "slug": "veteran",
+      "name": "Cell Veteran",
+      "cr": 3,
+      "type": "humanoid",
+      "blurb": "grizzled rebel with more scars than causes"
+    },
+    {
+      "slug": "wight",
+      "name": "Dead Corsair",
+      "cr": 3.0,
+      "type": "undead",
+      "blurb": "raider corpse still flying its last boarding order"
+    },
+    {
+      "slug": "couatl",
+      "name": "Resonance Guardian",
+      "cr": 4,
+      "type": "celestial",
+      "blurb": "ancient winged spirit sworn to the field's oldest temple"
+    },
+    {
+      "slug": "ghost",
+      "name": "Lost Navigator",
+      "cr": 4,
+      "type": "undead",
+      "blurb": "a jump pilot's echo, still charting courses between the stars"
+    },
+    {
+      "slug": "lamia",
+      "name": "The Glimmer Queen",
+      "cr": 4,
+      "type": "monstrosity",
+      "blurb": "cantina magnate who keeps her customers dreaming"
+    },
+    {
+      "slug": "air-elemental",
+      "name": "Freefall Squall",
+      "cr": 5.0,
+      "type": "elemental",
+      "blurb": "a living gust loose in a decompressed cargo hold"
+    },
+    {
+      "slug": "fire-elemental",
+      "name": "Drive-Core Flare",
+      "cr": 5,
+      "type": "elemental",
+      "blurb": "living plasma loose from a cracked starship drive"
+    },
+    {
+      "slug": "gladiator",
+      "name": "Pit Duelist",
+      "cr": 5.0,
+      "type": "humanoid",
+      "blurb": "champion of the arena circuits, bought for a season at a time"
+    },
+    {
+      "slug": "troll",
+      "name": "Regrowth Brute",
+      "cr": 5,
+      "type": "giant",
+      "blurb": "bio-engineered heavy that shrugs off wounds"
+    },
+    {
+      "slug": "vampire-spawn",
+      "name": "Blood Broker",
+      "cr": 5.0,
+      "type": "undead",
+      "blurb": "feeds on the crews it lures into unforgivable debts"
+    },
+    {
+      "slug": "wraith",
+      "name": "Phase Wraith",
+      "cr": 5.0,
+      "type": "undead",
+      "blurb": "hull-walking terror that drains warmth through bulkheads"
+    },
+    {
+      "slug": "chimera",
+      "name": "Graft Horror",
+      "cr": 6.0,
+      "type": "monstrosity",
+      "blurb": "gene-splice that broke loose wearing three wrong heads"
+    },
+    {
+      "slug": "mage",
+      "name": "Ascendancy War-Sage",
+      "cr": 6,
+      "type": "humanoid",
+      "blurb": "empire arcanist hurling the Resonance like a weapon"
+    },
+    {
+      "slug": "wyvern",
+      "name": "Gas-Giant Manta",
+      "cr": 6,
+      "type": "dragon",
+      "blurb": "colossal sky-beast that mistakes fighters for prey"
+    },
+    {
+      "slug": "assassin",
+      "name": "The Quiet Contract",
+      "cr": 8,
+      "type": "humanoid",
+      "blurb": "deniable killer on retainer to the Ascendancy"
+    },
+    {
+      "slug": "stone-golem",
+      "name": "Monument Sentinel",
+      "cr": 10.0,
+      "type": "construct",
+      "blurb": "a dead world's greeting colossus, waking for intruders"
+    },
+    {
+      "slug": "archmage",
+      "name": "First Arcanist",
+      "cr": 12.0,
+      "type": "humanoid",
+      "blurb": "the empire's supreme caster, bending battles with a word"
+    }
+  ]
+}
