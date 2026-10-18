@@ -19,6 +19,8 @@ import postApocalypticJson from "@/lib/classes/post-apocalyptic.json";
 import postApocalypticFeaturesJson from "@/lib/classes/post-apocalyptic-features.json";
 import steampunkJson from "@/lib/classes/steampunk.json";
 import steampunkFeaturesJson from "@/lib/classes/steampunk-features.json";
+import spaceOperaJson from "@/lib/classes/space-opera.json";
+import spaceOperaFeaturesJson from "@/lib/classes/space-opera-features.json";
 
 export type CustomClass = SrdClass & {
   // Genres that surface this class in the picker's recommended group.
@@ -60,6 +62,7 @@ const DEFINITION_FILES = [
   mysteryJson,
   postApocalypticJson,
   steampunkJson,
+  spaceOperaJson,
 ] as unknown as DefinitionsFile[];
 const FEATURE_FILES = [
   cyberpunkFeaturesJson,
@@ -68,6 +71,7 @@ const FEATURE_FILES = [
   mysteryFeaturesJson,
   postApocalypticFeaturesJson,
   steampunkFeaturesJson,
+  spaceOperaFeaturesJson,
 ] as unknown as FeaturesFile[];
 
 export const CUSTOM_CLASSES: CustomClass[] = DEFINITION_FILES.flatMap(
@@ -139,10 +143,10 @@ export const SRD_GENRE_TAGS: Record<string, Genre[]> = {
   bard: ["mystery"],
   cleric: ["horror"],
   druid: ["post_apocalyptic"],
-  fighter: ["steampunk"],
+  fighter: ["steampunk", "space_opera"],
   paladin: ["dark_fantasy"],
   ranger: ["post_apocalyptic"],
-  rogue: ["mystery", "cyberpunk"],
+  rogue: ["mystery", "cyberpunk", "space_opera"],
   warlock: ["dark_fantasy", "horror"],
   wizard: ["steampunk"],
 };

@@ -240,12 +240,16 @@ const CHARGED_ELSEWHERE = {
   horror_the_rite_remembers: "the cantrip's cast is the cost",
   post_apocalyptic_surge_of_change: "the cantrip's cast is the cost",
   steampunk_surge_casting: "the cantrip's cast is the cost",
+  space_opera_battle_cadence: "the cantrip's cast is the cost",
   dark_fantasy_the_crown_descends: "the reactions named are the enemies'",
   steampunk_arc_coil: "the reactions named are the target's",
   horror_last_one_out: "the reactions named are the allies'",
   mystery_general_strike: "the reactions named are the party's attacks",
   horror_adrenaline_surge: "take_action's bonus route charges the bonus action and spends the use",
   mystery_vanish: "take_action's bonus route charges the bonus action and spends the use",
+  // The guns fire INSTEAD of the holder using their bonus action; nothing is
+  // spent beyond the use.
+  space_opera_flagship: "no cost beyond the use — the guns fire without the holder's bonus action",
   // The bonus attack is pc_attack's to charge, and it spends the use
   // (src/lib/dm/feature-bonus-attacks.ts).
   sub_war_priest: "the bonus attack, not the use, costs the bonus action",

@@ -1,0 +1,268 @@
+{
+  "_note": "Original setting-specific classes for Open Dungeon Master. Not SRD-derived content.",
+  "classes": [
+    {
+      "id": "mystic",
+      "name": "Mystic",
+      "hitDie": 6,
+      "saves": [
+        "wis",
+        "cha"
+      ],
+      "casterType": "full",
+      "spellAbility": "cha",
+      "armor": [],
+      "weapons": [
+        "simple"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "from": [
+          "arcana",
+          "insight",
+          "intimidation",
+          "perception",
+          "persuasion",
+          "survival"
+        ]
+      },
+      "genres": [
+        "space_opera"
+      ],
+      "blurb": "A channel of the Bright Current, the ancient field that binds every star; mind, blade, and miracle move at a gesture.",
+      "roles": [
+        "Control",
+        "DPS"
+      ],
+      "playsLike": "Sorcerer",
+      "spellListFrom": "sorcerer",
+      "knownCaster": true,
+      "castingLabel": "Powers",
+      "tools": []
+    },
+    {
+      "id": "starwright",
+      "name": "Starwright",
+      "hitDie": 8,
+      "saves": [
+        "int",
+        "con"
+      ],
+      "casterType": "half",
+      "spellAbility": "int",
+      "armor": [
+        "light"
+      ],
+      "weapons": [
+        "simple",
+        "sidearms"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "from": [
+          "arcana",
+          "athletics",
+          "investigation",
+          "perception",
+          "sleight_of_hand",
+          "survival"
+        ]
+      },
+      "genres": [
+        "space_opera"
+      ],
+      "blurb": "Pilot, mechanic, and spark-caster in one grease-stained coat; their Protocols keep the ship flying and the crew alive.",
+      "roles": [
+        "Support",
+        "Utility"
+      ],
+      "playsLike": "Artificer",
+      "spellListFrom": "wizard",
+      "knownCaster": false,
+      "castingLabel": "Protocols",
+      "tools": [
+        "mechanic's tools",
+        "navigator's tools",
+        "vehicles (space)"
+      ]
+    },
+    {
+      "id": "scoundrel",
+      "name": "Scoundrel",
+      "hitDie": 8,
+      "saves": [
+        "dex",
+        "cha"
+      ],
+      "casterType": "none",
+      "spellAbility": null,
+      "armor": [
+        "light"
+      ],
+      "weapons": [
+        "simple",
+        "sidearms"
+      ],
+      "skillChoices": {
+        "count": 4,
+        "from": [
+          "deception",
+          "insight",
+          "intimidation",
+          "investigation",
+          "perception",
+          "persuasion",
+          "sleight_of_hand",
+          "stealth"
+        ]
+      },
+      "genres": [
+        "space_opera"
+      ],
+      "blurb": "Fast ships, faster talk: a gambler with a forged transponder, a winning smile, and always one escape route left.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
+      "spellListFrom": null,
+      "knownCaster": false,
+      "castingLabel": null,
+      "tools": [
+        "forgery kit",
+        "gaming set"
+      ]
+    },
+    {
+      "id": "medic",
+      "name": "Ship's Medic",
+      "hitDie": 8,
+      "saves": [
+        "wis",
+        "int"
+      ],
+      "casterType": "half",
+      "spellAbility": "wis",
+      "armor": [
+        "light"
+      ],
+      "weapons": [
+        "simple",
+        "sidearms"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "from": [
+          "insight",
+          "investigation",
+          "medicine",
+          "perception",
+          "persuasion",
+          "sleight_of_hand"
+        ]
+      },
+      "genres": [
+        "space_opera"
+      ],
+      "blurb": "Field medic of the free fleets, stitching crews back together with stims and stubborn hope under incoming fire.",
+      "roles": [
+        "Healer"
+      ],
+      "playsLike": "Cleric",
+      "spellListFrom": "cleric",
+      "knownCaster": false,
+      "castingLabel": "Stims",
+      "tools": [
+        "medic's kit",
+        "chemist's supplies"
+      ]
+    },
+    {
+      "id": "vanguard",
+      "name": "Vanguard",
+      "hitDie": 10,
+      "saves": [
+        "str",
+        "con"
+      ],
+      "casterType": "none",
+      "spellAbility": null,
+      "armor": [
+        "light",
+        "medium",
+        "heavy",
+        "shields"
+      ],
+      "weapons": [
+        "simple",
+        "martial",
+        "firearms"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "from": [
+          "athletics",
+          "insight",
+          "intimidation",
+          "perception",
+          "persuasion",
+          "survival"
+        ]
+      },
+      "genres": [
+        "space_opera"
+      ],
+      "blurb": "Armored line-breaker of the resistance, planting the banner where the guns are thickest and refusing to fall.",
+      "roles": [
+        "Tank"
+      ],
+      "playsLike": "Fighter",
+      "spellListFrom": null,
+      "knownCaster": false,
+      "castingLabel": null,
+      "tools": [
+        "vehicles (land)"
+      ]
+    },
+    {
+      "id": "starweaver",
+      "name": "Starweaver",
+      "hitDie": 6,
+      "saves": [
+        "int",
+        "wis"
+      ],
+      "casterType": "full",
+      "spellAbility": "int",
+      "armor": [],
+      "weapons": [
+        "simple"
+      ],
+      "skillChoices": {
+        "count": 2,
+        "from": [
+          "arcana",
+          "history",
+          "insight",
+          "investigation",
+          "perception",
+          "survival"
+        ]
+      },
+      "genres": [
+        "space_opera"
+      ],
+      "blurb": "A navigator who charts the luminous Lattice between stars, folding space itself to bring the crew home.",
+      "roles": [
+        "Control"
+      ],
+      "playsLike": "Wizard",
+      "spellListFrom": "wizard",
+      "knownCaster": false,
+      "castingLabel": "Star Charts",
+      "tools": [
+        "navigator's tools",
+        "astrolabe"
+      ]
+    }
+  ]
+}

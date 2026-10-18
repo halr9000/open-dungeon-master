@@ -3132,6 +3132,588 @@
       "guidance": "1/long rest, when you drop to 0 HP, keep fighting: you remain conscious at 0 for 1 minute, then fall."
     },
     {
+      "id": "space_opera_barrage",
+      "displayName": "Barrage",
+      "match": [
+        "barrage"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "1/short rest, a vehicle you pilot makes one additional weapon attack immediately."
+    },
+    {
+      "id": "space_opera_battle_cadence",
+      "displayName": "Battle Cadence",
+      "match": [
+        "battle cadence"
+      ],
+      "classes": [
+        "mystic"
+      ],
+      "uses": 2,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "2/rest, cast a cantrip as a bonus action after casting a leveled Power."
+    },
+    {
+      "id": "space_opera_breaching_charge",
+      "displayName": "Breaching Charge",
+      "match": [
+        "breaching charge"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, hurl a demolition charge: creatures in a 10-ft radius make a DEX save or take 3d6 fire damage, half on a success.",
+      "fx": {
+        "kind": "aoe",
+        "dice": "3d6",
+        "save": "dex"
+      }
+    },
+    {
+      "id": "space_opera_code_zero",
+      "displayName": "Code Zero",
+      "match": [
+        "code zero"
+      ],
+      "classes": [
+        "medic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, an ally at 0 HP within 30 ft instantly regains 3d6 + WIS HP.",
+      "fx": {
+        "kind": "heal_target",
+        "dice": "3d6+wis"
+      }
+    },
+    {
+      "id": "space_opera_deep_current",
+      "displayName": "Deep Current",
+      "match": [
+        "deep current"
+      ],
+      "classes": [
+        "mystic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, regain expended slot levels equal to your CHA modifier."
+    },
+    {
+      "id": "space_opera_draw_fire",
+      "displayName": "Draw Fire",
+      "match": [
+        "draw fire"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 2,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "2/long rest, bonus action: a creature within 30 ft must attack you on its next turn (WIS save negates).",
+      "action": "bonus"
+    },
+    {
+      "id": "space_opera_flagship",
+      "displayName": "Flagship",
+      "match": [
+        "flagship"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, for 1 minute a vehicle you pilot gains +2 AC and +50 ft speed, and its guns fire without your bonus action."
+    },
+    {
+      "id": "space_opera_fold_space",
+      "displayName": "Fold Space",
+      "match": [
+        "fold space"
+      ],
+      "classes": [
+        "starweaver"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, teleport yourself and up to five willing creatures to a point you have charted within 1 mile."
+    },
+    {
+      "id": "space_opera_full_cover",
+      "displayName": "Full Cover",
+      "match": [
+        "full cover"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 3,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "Reaction: +3 AC against one ranged attack you can see, 3/long rest.",
+      "action": "reaction"
+    },
+    {
+      "id": "space_opera_ghost_hull",
+      "displayName": "Ghost Hull",
+      "match": [
+        "ghost hull"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, a vehicle you pilot gains advantage on checks to hide or evade pursuit for 1 hour."
+    },
+    {
+      "id": "space_opera_lady_luck_s_favor",
+      "displayName": "Lady Luck's Favor",
+      "match": [
+        "lady luck's favor"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, turn one failed gamble, deal, or CHA check into a partial success."
+    },
+    {
+      "id": "space_opera_last_bulwark",
+      "displayName": "Last Bulwark",
+      "match": [
+        "last bulwark"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest while below half HP, bonus action to regain 10 + level HP.",
+      "fx": {
+        "kind": "heal_target",
+        "dice": "10+level"
+      },
+      "action": "bonus"
+    },
+    {
+      "id": "space_opera_legendary_rep",
+      "displayName": "Legendary Rep",
+      "match": [
+        "legendary rep"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 3,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "Quick Con has 3 uses per long rest, and favors arrive in half the usual time."
+    },
+    {
+      "id": "space_opera_living_current",
+      "displayName": "Living Current",
+      "match": [
+        "living current"
+      ],
+      "classes": [
+        "mystic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, cast a Power of 5th level or lower without spending a slot; choose two targets."
+    },
+    {
+      "id": "space_opera_one_more_hand",
+      "displayName": "One More Hand",
+      "match": [
+        "one more hand"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, reroll any failed attack roll, ability check, or saving throw."
+    },
+    {
+      "id": "space_opera_one_more_sunrise",
+      "displayName": "One More Sunrise",
+      "match": [
+        "one more sunrise"
+      ],
+      "classes": [
+        "medic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, an ally within 30 ft that would drop to 0 HP drops to 1 instead."
+    },
+    {
+      "id": "space_opera_patch_job",
+      "displayName": "Patch Job",
+      "match": [
+        "patch job"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 2,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "2/long rest, 10 minutes of work repairs a broken device, weapon, or vehicle."
+    },
+    {
+      "id": "space_opera_plague_cutter",
+      "displayName": "Plague Cutter",
+      "match": [
+        "plague cutter"
+      ],
+      "classes": [
+        "medic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "1/short rest, touch cures any disease, poison, blindness, deafness, or paralysis."
+    },
+    {
+      "id": "space_opera_pocket_dreadnought",
+      "displayName": "Pocket Dreadnought",
+      "match": [
+        "pocket dreadnought"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, for 1 minute your vehicle's weapon attacks deal +1d6 damage and ignore cover."
+    },
+    {
+      "id": "space_opera_quick_con",
+      "displayName": "Quick Con",
+      "match": [
+        "quick con"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, a short con secures a small favor, forged document, or entry somewhere (DM adjudicates scope)."
+    },
+    {
+      "id": "space_opera_read_the_mark",
+      "displayName": "Read the Mark",
+      "match": [
+        "read the mark"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, the DM tells you what a person you converse with most wants."
+    },
+    {
+      "id": "space_opera_remote_diagnostics",
+      "displayName": "Remote Diagnostics",
+      "match": [
+        "remote diagnostics"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "1/rest, sense the cargo, crew, and damage of any craft you can see within 300 ft."
+    },
+    {
+      "id": "space_opera_reserve_kit",
+      "displayName": "Reserve Kit",
+      "match": [
+        "reserve kit"
+      ],
+      "classes": [
+        "medic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/day, regain one expended spell slot of 3rd level or lower on a short rest."
+    },
+    {
+      "id": "space_opera_silver_repertoire",
+      "displayName": "Silver Repertoire",
+      "match": [
+        "silver repertoire"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 2,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "Quick Con has 2 uses per long rest."
+    },
+    {
+      "id": "space_opera_slipstep",
+      "displayName": "Slipstep",
+      "match": [
+        "slipstep"
+      ],
+      "classes": [
+        "starweaver"
+      ],
+      "uses": 2,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "Reaction, 2/rest: swap places with a willing ally within 30 ft.",
+      "action": "reaction"
+    },
+    {
+      "id": "space_opera_steadfast",
+      "displayName": "Steadfast",
+      "match": [
+        "steadfast"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, reroll a failed saving throw."
+    },
+    {
+      "id": "space_opera_storm_of_blades",
+      "displayName": "Storm of Blades",
+      "match": [
+        "storm of blades"
+      ],
+      "classes": [
+        "mystic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, for 1 minute make one additional plasma blade attack on each of your turns."
+    },
+    {
+      "id": "space_opera_suppressive_barrage",
+      "displayName": "Suppressive Barrage",
+      "match": [
+        "suppressive barrage"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "1/short rest, spray a 10-ft cube within 60 ft: creatures inside make a DEX save or take 2d8 fire damage, half on a success.",
+      "fx": {
+        "kind": "enemy_save",
+        "save": "dex",
+        "dice": "2d8"
+      }
+    },
+    {
+      "id": "space_opera_surge_cascade",
+      "displayName": "Surge Cascade",
+      "match": [
+        "surge cascade"
+      ],
+      "classes": [
+        "mystic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, your next damaging Power deals maximum damage."
+    },
+    {
+      "id": "space_opera_system_purge",
+      "displayName": "System Purge",
+      "match": [
+        "system purge"
+      ],
+      "classes": [
+        "starwright"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "1/short rest, end one condition affecting a vehicle you pilot or one ally aboard it."
+    },
+    {
+      "id": "space_opera_the_house_always_wins",
+      "displayName": "The House Always Wins",
+      "match": [
+        "the house always wins"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, one reasonable social or gambling outcome simply succeeds (DM adjudicates scope)."
+    },
+    {
+      "id": "space_opera_the_lattice_answers",
+      "displayName": "The Lattice Answers",
+      "match": [
+        "the lattice answers"
+      ],
+      "classes": [
+        "starweaver"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/day, regain 4 expended spell slot levels on a short rest."
+    },
+    {
+      "id": "space_opera_twin_comets",
+      "displayName": "Twin Comets",
+      "match": [
+        "twin comets"
+      ],
+      "classes": [
+        "starweaver"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, split one single-target damaging Star Chart among up to three targets."
+    },
+    {
+      "id": "space_opera_walking_fortress",
+      "displayName": "Walking Fortress",
+      "match": [
+        "walking fortress"
+      ],
+      "classes": [
+        "vanguard"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, for 1 minute gain +2 AC and resistance to bludgeoning, piercing, and slashing damage."
+    },
+    {
+      "id": "space_opera_waypoint",
+      "displayName": "Waypoint",
+      "match": [
+        "waypoint"
+      ],
+      "classes": [
+        "starweaver"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [],
+      "guidance": "1/rest, chart a point you can see; for 8 hours you know its exact distance and direction."
+    },
+    {
+      "id": "space_opera_weightless_step",
+      "displayName": "Weightless Step",
+      "match": [
+        "weightless step"
+      ],
+      "classes": [
+        "mystic"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "long",
+      "upgrades": [],
+      "guidance": "1/long rest, fly 30 ft for 10 minutes."
+    },
+    {
+      "id": "space_opera_winner_s_luck",
+      "displayName": "Winner's Luck",
+      "match": [
+        "winner's luck"
+      ],
+      "classes": [
+        "scoundrel"
+      ],
+      "uses": 1,
+      "ability": null,
+      "recharge": "short",
+      "upgrades": [
+        {
+          "match": "winner's luck (3 uses)",
+          "uses": 3
+        }
+      ],
+      "guidance": "1/short rest, reroll a failed CHA-based check."
+    },
+    {
       "id": "steampunk_aether_capacitor",
       "displayName": "Aether Capacitor",
       "match": [

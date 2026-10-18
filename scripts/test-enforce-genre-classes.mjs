@@ -1,4 +1,4 @@
-// The thirty-six setting classes (src/lib/classes/*.json), held to the
+// The forty-two setting classes (src/lib/classes/*.json), held to the
 // structure the SRD's twelve have, through the engine that builds a sheet.
 //
 // scripts/test-class-catalog.mjs already checks the definition files as
@@ -71,9 +71,9 @@ const PACT = {
 };
 const asTable = (row) => Object.fromEntries(row.map((count, index) => [String(index + 1), count]));
 
-await test("there are thirty-six setting classes, six to a genre file", () => {
-  assert.equal(CUSTOM_CLASSES.length, 36);
-  assert.equal(new Set(CUSTOM_CLASSES.map((klass) => klass.id)).size, 36);
+await test("there are forty-two setting classes, six to a genre file", () => {
+  assert.equal(CUSTOM_CLASSES.length, 42);
+  assert.equal(new Set(CUSTOM_CLASSES.map((klass) => klass.id)).size, 42);
   for (const klass of CUSTOM_CLASSES) {
     assert.ok(CUSTOM_CLASS_FEATURES[klass.id], `${klass.id} has no feature table`);
   }

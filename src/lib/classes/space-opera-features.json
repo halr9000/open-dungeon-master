@@ -1,0 +1,217 @@
+{
+  "_note": "Feature tables for the space opera classes. n = feature name, d = one-line rules text the DM treats as authoritative.",
+  "classes": {
+    "mystic": {
+      "subclassLevel": 1,
+      "levels": {
+        "1": [
+          { "n": "Channel the Current", "d": "Casts sorcerer-list spells as Powers using CHA; needs no material focus." },
+          { "n": "Current Sense", "d": "Advantage on Insight and Perception checks against creatures within 30 ft; you sense strong emotions." }
+        ],
+        "2": [{ "n": "Current Font", "d": "Regain one expended 1st-level slot on a short rest." }],
+        "3": [{ "n": "Telekinetic Grasp", "d": "An invisible telekinetic hand within 30 ft lifts or manipulates objects up to 10 lb." }],
+        "5": [{ "n": "Battle Cadence", "d": "2/rest, cast a cantrip as a bonus action after casting a leveled Power." }],
+        "7": [{ "n": "Current Cushion", "d": "You take no damage from falls; 1/turn, shove a creature 10 ft when a Power damages it." }],
+        "9": [{ "n": "Sealed Mind", "d": "Your thoughts cannot be read; you gain +2 to WIS saving throws." }],
+        "11": [{ "n": "Weightless Step", "d": "1/long rest, fly 30 ft for 10 minutes." }],
+        "13": [{ "n": "Still Waters", "d": "You have advantage on saving throws to maintain concentration." }],
+        "15": [{ "n": "Deep Current", "d": "1/long rest, regain expended slot levels equal to your CHA modifier." }],
+        "17": [{ "n": "Surge Cascade", "d": "1/long rest, your next damaging Power deals maximum damage." }],
+        "18": [{ "n": "Ascendant Mind", "d": "You are immune to psychic damage and to having your thoughts read." }],
+        "20": [{ "n": "Living Current", "d": "1/long rest, cast a Power of 5th level or lower without spending a slot; choose two targets." }]
+      },
+      "subclass": {
+        "name": "Current Blade",
+        "levels": {
+          "1": [
+            { "n": "Summoned Blade", "d": "Bonus action: summon or dismiss a plasma blade, a sword dealing 1d8 radiant damage on hit, for 1 minute." },
+            { "n": "Blade Current", "d": "1/turn, add your CHA modifier as radiant damage to a plasma blade hit." }
+          ],
+          "6": [{ "n": "Mirror Riposte", "d": "When a creature misses you with a melee attack, make one plasma blade attack against it as a reaction." }],
+          "10": [{ "n": "Guarding Edge", "d": "While your plasma blade is summoned you gain +1 AC, and it counts as a magical weapon." }],
+          "14": [{ "n": "Storm of Blades", "d": "1/long rest, for 1 minute make one additional plasma blade attack on each of your turns." }]
+        }
+      }
+    },
+    "starwright": {
+      "subclassLevel": 3,
+      "levels": {
+        "1": [
+          { "n": "Ship Sense", "d": "Add your INT modifier to checks made to pilot, repair, or sabotage vehicles and craft." },
+          { "n": "Patch Job", "d": "2/long rest, 10 minutes of work repairs a broken device, weapon, or vehicle." }
+        ],
+        "2": [
+          { "n": "Protocol Deck", "d": "Casts wizard-list spells as Protocols using INT; a handheld deck is the focus." },
+          { "n": "Remote Diagnostics", "d": "1/rest, sense the cargo, crew, and damage of any craft you can see within 300 ft." }
+        ],
+        "3": [{ "n": "Flight Specialization", "d": "Chooses a flight specialization (subclass)." }],
+        "5": [{ "n": "Co-Pilot Link", "d": "Once per turn as a bonus action, a vehicle you pilot makes one weapon attack or moves up to half its speed." }],
+        "6": [{ "n": "Void Sight", "d": "You have advantage on checks to navigate, chart courses, or track sensor signatures." }],
+        "7": [{ "n": "Shield Harmonics", "d": "While aboard a craft you pilot, allies within 10 ft of you gain +1 AC." }],
+        "9": [{ "n": "Trial by Fire", "d": "While piloting, you have advantage on DEX saving throws against area effects." }],
+        "10": [{ "n": "System Purge", "d": "1/short rest, end one condition affecting a vehicle you pilot or one ally aboard it." }],
+        "11": [{ "n": "Wingman Drone", "d": "A small drone obeys you: AC 13, HP 10 + your level, flies 30 ft, attacks for 1d6 + INT on your command." }],
+        "13": [{ "n": "Master Mechanic", "d": "Patch Job has 4 uses and can repair magical or alien technology." }],
+        "14": [{ "n": "Upgraded Wingman", "d": "Your drone improves to AC 16 and HP 20 + twice your level, and adds your INT modifier to its damage." }],
+        "15": [{ "n": "Ghost Hull", "d": "1/long rest, a vehicle you pilot gains advantage on checks to hide or evade pursuit for 1 hour." }],
+        "17": [{ "n": "Ace Command", "d": "You can command your drone as a bonus action, and use Co-Pilot Link twice per turn." }],
+        "18": [{ "n": "Hardened Cockpit", "d": "While piloting, you have advantage on INT and WIS saving throws against spells." }],
+        "20": [{ "n": "Flagship", "d": "1/long rest, for 1 minute a vehicle you pilot gains +2 AC and +50 ft speed, and its guns fire without your bonus action." }]
+      },
+      "subclass": {
+        "name": "Ace Pilot",
+        "levels": {
+          "3": [
+            { "n": "Gunner's Eye", "d": "Vehicle weapon attacks you make add your INT modifier to damage." },
+            { "n": "Barrage", "d": "1/short rest, a vehicle you pilot makes one additional weapon attack immediately." }
+          ],
+          "7": [{ "n": "Evasive Flying", "d": "Vehicles you pilot take half damage from area effects, none on a successful save." }],
+          "11": [{ "n": "Double Tap", "d": "Co-Pilot Link grants two weapon attacks instead of one." }],
+          "15": [{ "n": "Pocket Dreadnought", "d": "1/long rest, for 1 minute your vehicle's weapon attacks deal +1d6 damage and ignore cover." }]
+        }
+      }
+    },
+    "scoundrel": {
+      "subclassLevel": 3,
+      "levels": {
+        "1": [
+          { "n": "Quick Con", "d": "1/long rest, a short con secures a small favor, forged document, or entry somewhere (DM adjudicates scope)." },
+          { "n": "Winner's Luck", "d": "1/short rest, reroll a failed CHA-based check." }
+        ],
+        "2": [
+          { "n": "Expertise", "d": "Double your proficiency bonus in two skills you are proficient with." },
+          { "n": "Slip Away", "d": "Disengage or Hide as a bonus action." }
+        ],
+        "3": [{ "n": "The Grift", "d": "Chooses a grift (subclass)." }],
+        "5": [{ "n": "Silver Repertoire", "d": "Quick Con has 2 uses per long rest." }],
+        "6": [{ "n": "House Money", "d": "You always know when a wager or deal is rigged, and can always find a game or a buyer." }],
+        "7": [{ "n": "Vanishing Act", "d": "When you roll initiative, move up to half your speed without provoking opportunity attacks." }],
+        "9": [{ "n": "Read the Mark", "d": "1/long rest, the DM tells you what a person you converse with most wants." }],
+        "10": [{ "n": "Expertise (2 more skills)", "d": "Double your proficiency bonus in two more proficient skills." }],
+        "11": [{ "n": "The Long Con", "d": "1/week, an elaborate con secures something genuinely valuable or dangerous (DM adjudicates scope)." }],
+        "13": [{ "n": "Truce Terms", "d": "A creature that accepts your parley cannot attack you until the start of your next turn." }],
+        "14": [{ "n": "Winner's Luck (3 uses)", "d": "Winner's Luck recharges to 3 uses per short rest." }],
+        "15": [{ "n": "Legendary Rep", "d": "Quick Con has 3 uses per long rest, and favors arrive in half the usual time." }],
+        "17": [{ "n": "One More Hand", "d": "1/long rest, reroll any failed attack roll, ability check, or saving throw." }],
+        "18": [{ "n": "Crowd Pleaser", "d": "You and allies within 30 ft add +1d4 to CHA-based checks." }],
+        "20": [{ "n": "The House Always Wins", "d": "1/long rest, one reasonable social or gambling outcome simply succeeds (DM adjudicates scope)." }]
+      },
+      "subclass": {
+        "name": "Card Sharp",
+        "levels": {
+          "3": [
+            { "n": "Counting Cards", "d": "After 1 minute observing a creature or game, learn one habit, tell, or weakness of it." },
+            { "n": "Fool's Gold", "d": "Advantage on Deception checks made for money, wagers, or favors." }
+          ],
+          "7": [{ "n": "Marked Deck", "d": "Advantage on CHA checks against anyone who has lost a wager or deal to you." }],
+          "11": [{ "n": "House Rules", "d": "You always learn when someone nearby is cheating, lying, or asking about you." }],
+          "15": [{ "n": "Lady Luck's Favor", "d": "1/long rest, turn one failed gamble, deal, or CHA check into a partial success." }]
+        }
+      }
+    },
+    "medic": {
+      "subclassLevel": 3,
+      "levels": {
+        "1": [
+          { "n": "Stim Gun", "d": "Bonus action touch: an ally regains 1d6 + WIS HP. Uses per long rest equal to your WIS modifier." },
+          { "n": "Triage Scan", "d": "A handheld scanner reveals a creature's rough HP, conditions, and diseases." }
+        ],
+        "2": [{ "n": "Nanodoc Suite", "d": "Casts cleric-list spells as stims using WIS." }],
+        "3": [{ "n": "Rescue Specialty", "d": "Chooses a rescue specialty (subclass)." }],
+        "5": [{ "n": "Field Stabilize", "d": "Stabilize a dying creature as a bonus action; creatures you stabilize wake with 1 HP after 1 minute." }],
+        "6": [{ "n": "Double Dose", "d": "Stim Gun heals 2d6 + WIS." }],
+        "7": [{ "n": "Sterile Field", "d": "You and allies within 5 ft have advantage on saves against poison and disease." }],
+        "9": [{ "n": "Back on Your Feet", "d": "An ally you stim can also stand and move half its speed for free." }],
+        "10": [{ "n": "Code Zero", "d": "1/long rest, an ally at 0 HP within 30 ft instantly regains 3d6 + WIS HP." }],
+        "11": [{ "n": "Ranged Stims", "d": "Stim Gun heals 3d6 + WIS and can be fired as a dart at a range of 30 ft." }],
+        "13": [{ "n": "Reserve Kit", "d": "1/day, regain one expended spell slot of 3rd level or lower on a short rest." }],
+        "14": [{ "n": "Calming Presence", "d": "You and allies within 10 ft have advantage on saves against being frightened." }],
+        "15": [{ "n": "Auto-Doc Harness", "d": "While below half HP, regain HP equal to your WIS modifier at the start of your turn (5 rounds per long rest)." }],
+        "17": [{ "n": "Perfected Doses", "d": "Your healing dice each count as at least half their maximum." }],
+        "18": [{ "n": "Plague Cutter", "d": "1/short rest, touch cures any disease, poison, blindness, deafness, or paralysis." }],
+        "20": [{ "n": "Not Today", "d": "1/week, restore a creature dead less than 1 minute to life at half HP." }]
+      },
+      "subclass": {
+        "name": "Search and Rescue",
+        "levels": {
+          "3": [
+            { "n": "Under Fire", "d": "Dash or Disengage as a bonus action when moving toward a downed ally." },
+            { "n": "Shield the Fallen", "d": "While adjacent to a downed ally, attacks against you have disadvantage." }
+          ],
+          "7": [{ "n": "Drag and Go", "d": "Carry or drag allies at full speed; allies you heal gain 1d6 temporary HP." }],
+          "11": [{ "n": "Covering Dose", "d": "An ally you heal gains +2 AC until the start of your next turn." }],
+          "15": [{ "n": "One More Sunrise", "d": "1/long rest, an ally within 30 ft that would drop to 0 HP drops to 1 instead." }]
+        }
+      }
+    },
+    "vanguard": {
+      "subclassLevel": 3,
+      "levels": {
+        "1": [
+          { "n": "Siege Frame", "d": "You have +1 AC while wearing medium or heavy armor." },
+          { "n": "Covering Fire", "d": "1/turn, when you hit with a ranged weapon attack, the target has disadvantage on its next attack roll." }
+        ],
+        "2": [{ "n": "Brace", "d": "Bonus action: gain +2 AC against the next attack that hits you before your next turn." }],
+        "3": [{ "n": "War Doctrine", "d": "Chooses a war doctrine (subclass)." }],
+        "5": [{ "n": "Extra Attack", "d": "Attack twice when taking the Attack action." }],
+        "6": [{ "n": "Reinforced Plating", "d": "Your Siege Frame AC bonus improves to +2 while wearing medium or heavy armor." }],
+        "7": [{ "n": "Breaching Charge", "d": "1/long rest, hurl a demolition charge: creatures in a 10-ft radius make a DEX save or take 3d6 fire damage, half on a success." }],
+        "9": [{ "n": "Steadfast", "d": "1/long rest, reroll a failed saving throw." }],
+        "10": [{ "n": "Draw Fire", "d": "2/long rest, bonus action: a creature within 30 ft must attack you on its next turn (WIS save negates)." }],
+        "11": [{ "n": "Extra Attack (2)", "d": "Attack three times when taking the Attack action." }],
+        "13": [{ "n": "Full Cover", "d": "Reaction: +3 AC against one ranged attack you can see, 3/long rest." }],
+        "14": [{ "n": "Rooted", "d": "Advantage on saves against being knocked prone or pushed." }],
+        "15": [{ "n": "Battle-Hardened", "d": "Advantage on CON saves and resistance to poison damage." }],
+        "17": [{ "n": "Kill Zone", "d": "Your weapon attacks score a critical hit on a roll of 19-20." }],
+        "18": [{ "n": "Last Bulwark", "d": "1/long rest while below half HP, bonus action to regain 10 + level HP." }],
+        "20": [{ "n": "Wall of the Free", "d": "1/turn, dropping a foe to 0 HP lets an ally within 30 ft immediately make one weapon attack." }]
+      },
+      "subclass": {
+        "name": "Siege Bearer",
+        "levels": {
+          "3": [
+            { "n": "Heavy Discipline", "d": "Heavy ranged weapons lose the loading and two-handed properties for you." },
+            { "n": "Momentum Shot", "d": "Once per turn, when you miss with a heavy ranged attack, deal half the damage to the target." }
+          ],
+          "7": [{ "n": "Suppressive Barrage", "d": "1/short rest, spray a 10-ft cube within 60 ft: creatures inside make a DEX save or take 2d8 fire damage, half on a success." }],
+          "11": [{ "n": "Shock and Awe", "d": "A creature damaged by your heavy weapon attack cannot take reactions until the start of its next turn." }],
+          "15": [{ "n": "Walking Fortress", "d": "1/long rest, for 1 minute gain +2 AC and resistance to bludgeoning, piercing, and slashing damage." }]
+        }
+      }
+    },
+    "starweaver": {
+      "subclassLevel": 2,
+      "levels": {
+        "1": [
+          { "n": "Starchart Interface", "d": "Casts wizard-list spells as Star Charts using INT; a starchart or orrery is the focus." },
+          { "n": "Ritual Starlight", "d": "May run any known Star Chart with the ritual tag over 10 minutes without spending a slot." }
+        ],
+        "2": [
+          { "n": "Lattice Order", "d": "Chooses a lattice order (subclass)." },
+          { "n": "Waypoint", "d": "1/rest, chart a point you can see; for 8 hours you know its exact distance and direction." }
+        ],
+        "3": [{ "n": "Star Gaze", "d": "Advantage on checks to navigate, read stars, or interpret the Lattice." }],
+        "5": [{ "n": "Chart Cache", "d": "Stores one Star Chart of level 1-3; cast it once without a slot per long rest." }],
+        "6": [{ "n": "Slipstep", "d": "Reaction, 2/rest: swap places with a willing ally within 30 ft." }],
+        "9": [{ "n": "Deep Chart", "d": "Project your senses to any point you have charted within 1 mile for 10 minutes." }],
+        "11": [{ "n": "Chart Cache (2 charts)", "d": "Your cache holds two charts of level 1-5." }],
+        "13": [{ "n": "Borrowed Constellations", "d": "Learn two Star Charts from any spell list; they count as wizard-list for you." }],
+        "15": [{ "n": "Lattice Shield", "d": "Advantage on INT, WIS, and CHA saving throws against spells and psionics." }],
+        "18": [{ "n": "Fold Space", "d": "1/long rest, teleport yourself and up to five willing creatures to a point you have charted within 1 mile." }],
+        "20": [{ "n": "The Lattice Answers", "d": "1/day, regain 4 expended spell slot levels on a short rest." }]
+      },
+      "subclass": {
+        "name": "Lattice Walker",
+        "levels": {
+          "2": [
+            { "n": "Skim Step", "d": "When a creature you can see attacks you, reaction: move 10 ft without provoking; melee attacks then miss if you leave their reach." },
+            { "n": "Star Bolt", "d": "1/turn, a damaging Star Chart deals +1d8 radiant damage to one target." }
+          ],
+          "6": [{ "n": "Pulled Thread", "d": "When you succeed on a saving throw against a spell, deal 2d8 force damage to the caster." }],
+          "10": [{ "n": "Critical Constellation", "d": "Your Star Charts score a critical hit on 19-20 against spellcasters and constructs." }],
+          "14": [{ "n": "Twin Comets", "d": "1/long rest, split one single-target damaging Star Chart among up to three targets." }]
+        }
+      }
+    }
+  }
+}
