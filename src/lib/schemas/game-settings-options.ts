@@ -12,6 +12,7 @@ export const GENRES = [
   "cyberpunk",
   "steampunk",
   "post_apocalyptic",
+  "space_opera",
   "custom",
 ] as const;
 export type Genre = (typeof GENRES)[number];

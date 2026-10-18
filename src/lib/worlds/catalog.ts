@@ -123,4 +123,5 @@ export const GENRE_OPTIONS: CatalogOption[] = [
   { value: "cyberpunk", label: "Cyberpunk" },
   { value: "steampunk", label: "Steampunk" },
   { value: "post_apocalyptic", label: "Post-apocalyptic" },
+  { value: "space_opera", label: "Space opera" },
 ];

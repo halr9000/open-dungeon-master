@@ -283,6 +283,8 @@ export function climateForGenre(genre: string | undefined | null): Climate {
       return "boreal";
     case "post_apocalyptic":
       return "blighted";
+    case "space_opera":
+      return "arid";
     default:
       return "temperate";
   }

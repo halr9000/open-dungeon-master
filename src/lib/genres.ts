@@ -138,6 +138,25 @@ export const GENRE_PRESETS: GenrePreset[] = [
     defaultTheme: "A shattered world generations after the Fall, where ruins hold both treasure and death",
   },
   {
+    id: "space_opera",
+    climate: "arid",
+    name: "Space opera",
+    blurb: "Blaster fights, mystic orders, and rebellion among the stars.",
+    dmFlavor:
+      "Tone: space opera. Reskin 5e fiction: two kinds of power share the world — ancient mystic orders channel a luminous field that disciplined minds and rare bloodlines can touch, while tech casters shape calibrated devices that do the same work. Spells are powers or protocols; gold is credits; deities are the great institutions, orders, and old codes people swear by; dungeons are derelict starships, buried vaults, and occupied stations. Keep all 5e mechanics unchanged, only the skin differs.",
+    mapStyle:
+      "top-down technical deck plan, crisp schematic linework over a deep-space field, cool blue palette with amber highlights",
+    portraitStyle:
+      "pulp space opera portrait, worn travel clothes and a holstered pistol, dramatic rim lighting",
+    companionRaces: [],
+    raceHint:
+      "Humans are the common stock; a nonhuman is an alien — describe what makes them alien (scaled skin, horns, four arms) in the personality brief instead of a fantasy species.",
+    nameHints:
+      "Planetary, ship and order names with a pulp ring (Vexhold Station, the Meridian Expanse, Ashfall Reach).",
+    defaultTheme:
+      "A restless frontier where an iron-fisted empire squeezes free worlds and old orders stir",
+  },
+  {
     id: "custom",
     climate: "temperate",
     name: "Custom",
