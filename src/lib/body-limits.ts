@@ -49,6 +49,7 @@ export const BODY_LIMIT_RULES: Rule[] = [
     why: "a 16 MB world pack manifest",
   },
   { pattern: /^\/api\/stt\/?$/, limit: 9 * MIB, why: "an 8 MB recording as a form" },
+  { pattern: /^\/api\/admin\/addons\/upload\/?$/, limit: 64 * MIB, why: "an addon archive an admin picked" },
   {
     pattern: new RegExp(`^/api/campaigns/${SEGMENT}/voice/transcript/?$`),
     limit: 7 * MIB,

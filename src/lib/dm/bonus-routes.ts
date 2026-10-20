@@ -8,6 +8,8 @@
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { classLevelFor } from "@/lib/srd/multiclass";
 import { authoredBonusRoute } from "@/lib/srd/authored-economy";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type MoveAction = "dodge" | "dash" | "disengage" | "hide";
 
@@ -22,9 +24,9 @@ const VANISH_COUNTER = "mystery_vanish";
 const ADRENALINE_SURGE = "horror_adrenaline_surge";
 
 export function holdsFeature(sheet: Pick<CharacterSheet, "features" | "feats">, name: string): boolean {
-  const wanted = name.toLowerCase();
+  const wanted = textKey(name);
   return [...sheet.features.map((feature) => feature.name), ...(sheet.feats ?? [])].some((entry) =>
-    entry.toLowerCase().includes(wanted),
+    textKey(entry).includes(wanted),
   );
 }
 
@@ -92,7 +94,7 @@ export function holdsThiefsReflexes(sheet: CharacterSheet): boolean {
 }
 
 // The sentence a refused bonus-action move carries.
-export function noBonusRoute(sheet: CharacterSheet, action: MoveAction): string {
+export function noBonusRoute(sheet: CharacterSheet, action: MoveAction): ToolError {
   const which =
     action === "dodge"
       ? "Patient Defense (a monk's ki)"
@@ -101,5 +103,5 @@ export function noBonusRoute(sheet: CharacterSheet, action: MoveAction): string 
         : action === "dash"
           ? "Cunning Action, Step of the Wind or Expeditious Retreat"
           : "Cunning Action or Step of the Wind";
-  return `${sheet.name} has no feature that makes ${action === "dodge" ? "a Dodge" : `a ${action[0].toUpperCase()}${action.slice(1)}`} a bonus action (that takes ${which}). They can take it with their action instead.`;
+  return { error: `${sheet.name} has no feature that makes ${action === "dodge" ? "a Dodge" : `a ${action[0].toUpperCase()}${action.slice(1)}`} a bonus action (that takes ${which}). They can take it with their action instead.`, refused: "rules" };
 }

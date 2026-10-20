@@ -12,6 +12,7 @@ import type { Campaign } from "@/lib/db/campaigns";
 import { weatherBedCue } from "@/lib/srd/weather";
 import type { Weather } from "@/lib/scene/state";
 import { publishEphemeral, publishPersisted } from "@/lib/events";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Sound at the table: the engine rim around src/lib/ambience/logic.ts.
 //
@@ -124,27 +125,27 @@ function layerArg(value: string | undefined): string | null | undefined {
 export function handleSetAmbience(
   campaign: Campaign,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   if (!enabled(campaign)) {
-    return { error: "This table has the sound library switched off." };
+    return { error: "This table has the sound library switched off.", retry: true };
   }
   let args: z.infer<typeof setSchema>;
   try {
     args = setSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: set_ambience takes a bed, a music cue, or both." };
+    return { error: "Invalid arguments: set_ambience takes a bed, a music cue, or both.", retry: true };
   }
   const bed = layerArg(args.bed);
   const music = layerArg(args.music);
   if (bed === undefined && music === undefined) {
-    return { error: "set_ambience needs a bed or a music cue to change." };
+    return { error: "set_ambience needs a bed or a music cue to change.", retry: true };
   }
   for (const [layer, value] of [
     ["bed", bed],
     ["music", music],
   ] as const) {
     if (typeof value === "string" && cueById(value)?.layer !== layer) {
-      return { error: `"${value}" is not a ${layer} cue. Use one from the list.` };
+      return { error: `"${value}" is not a ${layer} cue. Use one from the list.`, retry: true };
     }
   }
 
@@ -174,19 +175,19 @@ export function handleSetAmbience(
 export function handlePlaySting(
   campaign: Campaign,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   if (!enabled(campaign)) {
-    return { error: "This table has the sound library switched off." };
+    return { error: "This table has the sound library switched off.", retry: true };
   }
   let args: z.infer<typeof stingSchema>;
   try {
     args = stingSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: play_sting needs a cue." };
+    return { error: "Invalid arguments: play_sting needs a cue.", retry: true };
   }
   const cue = cueById(args.cue);
   if (!cue || cue.layer !== "sting") {
-    return { error: `"${args.cue}" is not a sting. Use one from the list.` };
+    return { error: `"${args.cue}" is not a sting. Use one from the list.`, retry: true };
   }
   // Ephemeral by nature: a sting is only true while it is happening, so a
   // client that reconnects a minute later must not be made to jump.

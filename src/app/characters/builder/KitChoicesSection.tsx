@@ -1,6 +1,7 @@
 "use client";
 
 import { Shield } from "lucide-react";
+import { useId } from "react";
 import { contentSlug } from "@/lib/help";
 import {
   kitSlotsByLine,
@@ -44,6 +45,7 @@ export default function KitChoicesSection({
   onPick: (slot: number, name: string) => void;
 }) {
   const slotLines = kitSlotsByLine(kit, choices.options);
+  const captionId = useId();
   return (
     <div className="mb-3 space-y-2.5">
       <p className="text-xs text-stone-500">
@@ -79,8 +81,9 @@ export default function KitChoicesSection({
               <div key={`${lineIndex}-${chosen}`} className="reveal grid gap-1.5 sm:grid-cols-2">
                 {slots.map((slot, at) => (
                   <div key={at}>
-                    <span className="mb-1 block text-[11px] text-stone-400">{capital(describeSlot(slot))}</span>
+                    <span id={`${captionId}-${start + at}`} className="mb-1 block text-[11px] text-stone-400">{capital(describeSlot(slot))}</span>
                     <OptionPicker
+                      labelledBy={`${captionId}-${start + at}`}
                       value={choices.picks[start + at] ?? slot.default}
                       onChange={(name) => onPick(start + at, name)}
                       className={inputClass}

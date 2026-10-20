@@ -265,7 +265,7 @@ export function sharedHomesFor(userId: string, bundle: WorkshopBundle): SharedHo
 // are, and is kept beside it under the bundle's name otherwise, with the new
 // workshop pointed at it (src/lib/db/workshop-bundle-shelf.ts), so neither
 // the importer's old adventures nor this one change under them.
-export function writeBundleShelf(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfArrival {
+export function writeBundleShelf(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfArrival & { entryFor: (kind: string, name: string) => string | null } {
   const arrival = writeShelfArrivals(userId, workshopId, bundle);
   let copied = arrival.copied;
 
@@ -286,5 +286,6 @@ export function writeBundleShelf(userId: string, workshopId: string, bundle: Wor
     );
     copied += 1;
   }
-  return { copied, reused: arrival.reused, renamed: arrival.renamed };
+  // Where each monster and entry landed, for the World entries' links.
+  return { copied, reused: arrival.reused, renamed: arrival.renamed, entryFor: arrival.entryFor };
 }

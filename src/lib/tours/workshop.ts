@@ -52,8 +52,14 @@ export const HUB_TOUR: TourStep[] = [
   {
     id: "welcome",
     title: "Inside a workshop",
-    body: "Thirteen tools, one card each, wearing a live count so you can see what is built and what is still empty. This tour shows the frame; each tool opens with a short tour of its own the first time.",
+    body: "One card per tool, each wearing a live count of what it holds. A workshop holds only what your game needs: nothing here has to be filled in before you play. This tour shows the frame; each tool opens with a short tour of its own the first time.",
     anchors: [],
+  },
+  {
+    id: "create",
+    title: "Start from what you want",
+    body: "Create asks what you want to end up with (a fight, a battle map, an NPC, a monster, an item or a whole world outline), says where it will live, and opens the tool that makes it.",
+    anchors: ["workshop-create"],
   },
   {
     id: "party",
@@ -64,7 +70,7 @@ export const HUB_TOUR: TourStep[] = [
   {
     id: "systems",
     title: "The tools",
-    body: "Storyboard plans the arc. Party, Battle maps, Region, Encounters, Cast, Bestiary, Homebrew, Lore and Tables each build one kind of material. Rules holds the house and variant rules. Plugin builds a world pack other servers can install. Share packs it all up.",
+    body: "WorldForge is the world's wiki: it reads and writes the same people, places, factions and lore that Cast, Region, Factions and Lore edit, so a change in one shows in the other. Storyboard plans the arc. Party, Battle maps, Encounters, Bestiary, Homebrew and Tables each build one kind of material. Rules holds the house and variant rules. Plugin turns a workshop into a world pack other servers can install. Share packs it all up as a bundle.",
     anchors: ["hub-systems"],
   },
   {

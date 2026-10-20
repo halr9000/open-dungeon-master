@@ -287,6 +287,19 @@ await test("Horde Breaker: once a turn, an extra weapon attack on a different cr
   assert.equal(again.ok, false, "a second Horde Breaker attack in one turn");
 });
 
+await test("Horde Breaker at a creature away from the one attacked first names the ones beside it.", async () => {
+  const [a, b, c] = await stage(ranger, { count: 3 });
+  kit.place(ranger.id, 5, 5);
+  kit.place(a.id, 6, 5);
+  kit.place(b.id, 7, 5);
+  kit.place(c.id, 4, 5);
+  world.patch(ranger.id, { features: [...base.get(ranger.id).features, { name: "Hunter's Prey: Horde Breaker", source: "choice" }] });
+  assert.equal((await kit.swing(ranger.id, a.id, [15, 4], { weapon: "Longsword" })).ok, true);
+  const away = await kit.swing(ranger.id, c.id, [15, 4], { weapon: "Longsword", hordeBreaker: true });
+  assert.equal(away.ok, false, "Horde Breaker struck a creature away from the first");
+  assert.match(away.error, new RegExp(`within 5 feet of the creature attacked first: ${b.displayName}\\. Ask the player which`));
+});
+
 // ---- crit range and Ki-Empowered Strikes ----
 
 await test("Improved Critical widens the critical range of weapon attacks only; a spell attack on a 19 is no critical hit.", async () => {
@@ -371,11 +384,19 @@ await test("The AI's advantage on a player's attack needs a named circumstance t
   assert.equal(bare.out.ok, true, bare.out.error);
   assert.equal(bare.roll.advantage, "none");
   kit.freshTurn();
-  const claimed = await aiSwing(fighter.id, enemy.id, [15, 4, 4], { weapon: "Longsword", advantage: "advantage", advantageReason: "the goblin is prone" });
+  const claimed = await aiSwing(fighter.id, enemy.id, [15, 4, 4], { weapon: "Longsword", advantage: "advantage", advantageSource: "condition", advantageReason: "the goblin is prone" });
   assert.equal(claimed.roll.advantage, "none", "prone is the engine's to decide");
   kit.freshTurn();
-  const ruled = await aiSwing(fighter.id, enemy.id, [15, 4, 4], { weapon: "Longsword", advantage: "advantage", advantageReason: "the goblin slips on the wet deck" });
+  const ruled = await aiSwing(fighter.id, enemy.id, [15, 4, 4], { weapon: "Longsword", advantage: "advantage", advantageSource: "other", advantageReason: "the goblin slips on the wet deck" });
   assert.equal(ruled.roll.advantage, "advantage");
+  // The source decides, not the reason's words: a claim in Italian stands or
+  // falls the same way.
+  kit.freshTurn();
+  const prone = await aiSwing(fighter.id, enemy.id, [15, 4, 4], { weapon: "Longsword", advantage: "advantage", advantageSource: "condition", advantageReason: "il goblin è a terra" });
+  assert.equal(prone.roll.advantage, "none");
+  kit.freshTurn();
+  const slipped = await aiSwing(fighter.id, enemy.id, [15, 4, 4], { weapon: "Longsword", advantage: "advantage", advantageSource: "other", advantageReason: "il goblin scivola sul ponte bagnato" });
+  assert.equal(slipped.roll.advantage, "advantage");
 });
 
 await test("the human DM's advantage still stands as a ruling", async () => {

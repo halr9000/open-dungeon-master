@@ -1,6 +1,10 @@
 // Pure clamp math for DM-driven sheet mutations. No imports so the node
 // test runner (scripts/test-mutations.mjs) can import it directly as TS.
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "../language/text-logic.ts";
+import type { ItemTag } from "@/lib/schemas/item-tags";
+
 export type SlotState = { max: number; used: number };
 export type EquipmentRow = {
   name: string;
@@ -9,6 +13,11 @@ export type EquipmentRow = {
   // False while the party does not know what this is. Absent reads as true,
   // so every row written before the flag existed stays identified.
   identified?: boolean;
+  // A spell scroll's spell: two scrolls of different spells never merge.
+  spell?: string;
+  // The row it is, when its name is the table's: two potions of different
+  // rows never merge.
+  srdName?: string;
 };
 
 // Absent means known: an unidentified item is the exception, and the default
@@ -28,23 +37,23 @@ export function sheetBuffViolation(
   sheet: { name: string; level: number; maxHp: number; gold: number },
   patch: { level?: number; maxHp?: number; gold?: number; abilities?: Record<string, number> },
   xpTargetLevel?: number,
-): string | null {
+): ToolError | null {
   if (typeof patch.level === "number" && patch.level > sheet.level + 1) {
-    return `A character gains at most one level at a time, and a level-up is applied through the player's own choices in the app. ${sheet.name} stays at level ${sheet.level}.`;
+    return { error: `A character gains at most one level at a time, and a level-up is applied through the player's own choices in the app. ${sheet.name} stays at level ${sheet.level}.`, retry: true };
   }
   if (typeof xpTargetLevel === "number" && xpTargetLevel > sheet.level + 1) {
-    return `Experience is earned through play with award_xp, not set by hand; ${sheet.name}'s XP is unchanged.`;
+    return { error: `Experience is earned through play with award_xp, not set by hand; ${sheet.name}'s XP is unchanged.`, retry: true };
   }
   if (typeof patch.maxHp === "number" && patch.maxHp > sheet.maxHp + 12 * Math.max(1, sheet.level)) {
-    return `${sheet.name}'s maximum HP cannot jump that far from a single change; larger gains come from leveling up in the app.`;
+    return { error: `${sheet.name}'s maximum HP cannot jump that far from a single change; larger gains come from leveling up in the app.`, retry: true };
   }
   if (typeof patch.gold === "number" && patch.gold - sheet.gold > 1000) {
-    return `Coin moves through purchases, loot, and roll_treasure, not a direct sheet edit; ${sheet.name}'s gold is unchanged.`;
+    return { error: `Coin moves through purchases, loot, and roll_treasure, not a direct sheet edit; ${sheet.name}'s gold is unchanged.`, retry: true };
   }
   if (patch.abilities) {
     for (const [ability, score] of Object.entries(patch.abilities)) {
       if (typeof score === "number" && score > 20) {
-        return `Ability scores cap at 20 here; leave ${sheet.name}'s ${ability.toUpperCase()} at 20 or lower.`;
+        return { error: `Ability scores cap at 20 here; leave ${sheet.name}'s ${ability.toUpperCase()} at 20 or lower.`, retry: true };
       }
     }
   }
@@ -110,9 +119,9 @@ export function spendSlotMath(slot: SlotState | undefined | null): SlotState | n
 
 // Remove qty of an item; partial removal adjusts, zero removes the row.
 // Returns null when the item is absent.
-export function removeItemMath(equipment: EquipmentRow[], name: string, qty: number) {
+export function removeItemMath<Row extends EquipmentRow>(equipment: Row[], name: string, qty: number) {
   const index = equipment.findIndex(
-    (item) => item.name.toLowerCase() === name.toLowerCase(),
+    (item) => textKey(item.name) === textKey(name),
   );
   if (index < 0) {
     return null;
@@ -125,7 +134,20 @@ export function removeItemMath(equipment: EquipmentRow[], name: string, qty: num
   } else {
     next[index] = { ...item, qty: item.qty - removed };
   }
-  return { equipment: next, removed };
+  return { equipment: next, removed, item };
+}
+
+// What a tool says an item is, beyond its name: its tags, its worth, a
+// scroll's spell.
+export type ItemFacts = { srdName?: string; tags?: ItemTag[]; worth?: number; spell?: string };
+
+function itemFacts(facts: ItemFacts): ItemFacts {
+  return {
+    ...(facts.srdName ? { srdName: facts.srdName } : {}),
+    ...(facts.tags?.length ? { tags: facts.tags } : {}),
+    ...(facts.worth ? { worth: facts.worth } : {}),
+    ...(facts.spell ? { spell: facts.spell } : {}),
+  };
 }
 
 // Add qty of an item, merging with an existing row by name.
@@ -138,18 +160,25 @@ export function grantItemMath(
   equipment: EquipmentRow[],
   name: string,
   qty: number,
-  options: { identified?: boolean } = {},
+  // What the item is, when no English row says it (src/lib/srd/item-tags.ts),
+  // what one is worth, when the pack does not price it, and a scroll's
+  // spell; never written on an unidentified one, whose secret stays off the
+  // sheet.
+  options: { identified?: boolean } & ItemFacts = {},
 ) {
   const amount = Math.max(1, Math.floor(qty));
   const known = options.identified !== false;
+  const facts = known ? itemFacts(options) : {};
+  // Two scrolls of different spells, or two potions of different rows, are
+  // two things, whatever they are called.
   const index = equipment.findIndex(
-    (item) => item.name.toLowerCase() === name.toLowerCase() && isIdentified(item) === known,
+    (item) => textKey(item.name) === textKey(name) && isIdentified(item) === known && item.spell === facts.spell && item.srdName === facts.srdName,
   );
   if (index < 0) {
     return {
       equipment: [
         ...equipment,
-        known ? { name, qty: amount } : { name, qty: amount, identified: false },
+        known ? { name, qty: amount, ...facts } : { name, qty: amount, identified: false },
       ],
     };
   }
@@ -169,9 +198,10 @@ export function revealItemMath(
   equipment: EquipmentRow[],
   name: string,
   revealedName?: string,
+  facts: ItemFacts = {},
 ): { equipment: EquipmentRow[]; from: string; to: string } | null {
   const index = equipment.findIndex(
-    (item) => item.name.toLowerCase() === name.toLowerCase() && !isIdentified(item),
+    (item) => textKey(item.name) === textKey(name) && !isIdentified(item),
   );
   if (index < 0) {
     return null;
@@ -183,7 +213,7 @@ export function revealItemMath(
   // and one representation for "identified" is one fewer thing to disagree.
   const rest = { ...next[index] };
   delete rest.identified;
-  next[index] = { ...rest, name: to };
+  next[index] = { ...rest, name: to, ...itemFacts(facts) };
   return { equipment: next, from, to };
 }
 
@@ -199,12 +229,12 @@ export const GOLD_PURSE_MAX = 1000000;
 export const COPPER_PURSE_MAX = GOLD_PURSE_MAX * 100;
 
 // Why a quantity cannot be used, or null when it can. Absent means one.
-export function quantityProblem(qty: number | undefined, what: string): string | null {
+export function quantityProblem(qty: number | undefined, what: string): ToolError | null {
   if (qty === undefined) {
     return null;
   }
   if (!Number.isInteger(qty) || qty < 1 || qty > ITEM_QTY_PER_CALL) {
-    return `${what} takes a quantity from 1 to ${ITEM_QTY_PER_CALL}; ${qty} is outside it. Nothing changed.`;
+    return { error: `${what} takes a quantity from 1 to ${ITEM_QTY_PER_CALL}; ${qty} is outside it. Nothing changed.`, retry: true };
   }
   return null;
 }
@@ -215,21 +245,21 @@ export function grantProblem(
   before: EquipmentRow[],
   after: EquipmentRow[],
   name: string,
-): string | null {
+): ToolError | null {
   if (after.length > before.length && after.length > EQUIPMENT_ROWS_MAX) {
-    return `${owner}'s pack already holds ${EQUIPMENT_ROWS_MAX} different items, the most a sheet keeps. Remove something first, then grant ${name}.`;
+    return { error: `${owner}'s pack already holds ${EQUIPMENT_ROWS_MAX} different items, the most a sheet keeps; something goes first, then grant ${name}. Ask the player what.`, retry: true };
   }
   const over = after.find((item) => item.qty > ITEM_ROW_MAX);
   if (over) {
-    return `${owner} cannot hold more than ${ITEM_ROW_MAX} of ${over.name}; grant fewer.`;
+    return { error: `${owner} cannot hold more than ${ITEM_ROW_MAX} of ${over.name}; grant fewer.`, retry: true };
   }
   return null;
 }
 
 // Why a sum of gold cannot move in one call, or null when it can.
-export function goldProblem(gold: number, what: string): string | null {
+export function goldProblem(gold: number, what: string): ToolError | null {
   if (!Number.isFinite(gold) || Math.abs(gold) > GOLD_PER_CALL) {
-    return `${what} moves at most ${GOLD_PER_CALL} gp in one call; ${gold} gp is more than that. Nothing changed.`;
+    return { error: `${what} moves at most ${GOLD_PER_CALL} gp in one call; ${gold} gp is more than that. Nothing changed.`, retry: true };
   }
   return null;
 }

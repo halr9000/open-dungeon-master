@@ -230,9 +230,11 @@ button.pk-tap.pk-display {
 .kit-select.pk-w-28 { width: 7rem; flex: none; }
 .kit-slider.pk-w-28 { width: 7rem; flex: none; }
 
-/* A Game settings row another panel pointed at (the Party panel's "Open
-   Game settings", issue 209): a gold ring that breathes out once. */
-[data-settings-row][data-flash] {
+/* A table settings row another panel pointed at (the Party panel's "Open
+   table settings", issue 209), or the Help section a search or a control
+   jumped to: a gold ring that breathes out once. */
+[data-settings-row][data-flash],
+section[id^="help-"][data-flash] {
   border-radius: 0.5rem;
   animation: settings-row-flash 1.8s var(--ease-settle) 1;
 }
@@ -241,7 +243,8 @@ button.pk-tap.pk-display {
   100% { box-shadow: 0 0 0 2px rgba(227, 193, 92, 0), 0 0 18px rgba(212, 171, 58, 0); background-color: transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-settings-row][data-flash] { animation: none; box-shadow: 0 0 0 2px rgba(227, 193, 92, 0.85); }
+  [data-settings-row][data-flash],
+  section[id^="help-"][data-flash] { animation: none; box-shadow: 0 0 0 2px rgba(227, 193, 92, 0.85); }
 }
 
 /* Arrange party (issue 240): each viewer's own order for the Party cards.

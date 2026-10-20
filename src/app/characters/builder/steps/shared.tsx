@@ -1,11 +1,13 @@
 "use client";
 
 import { X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { InfoButton, type ContentRef } from "@/components/ui/InfoDialog";
 import { Ribbon } from "@/components/ui/Ribbon";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
+import { owedHeadline, type OwedPick } from "../owed";
+import type { BlockerTarget } from "../submit";
 
 // What a ⓘ next to a name needs: text to show, or a pack row to read it from.
 export type InfoSource = { text?: string | null; reference?: ContentRef; meta?: string };
@@ -13,6 +15,38 @@ export type InfoSource = { text?: string | null; reference?: ContentRef; meta?: 
 // Field styling shared by every wizard step and the sub-editors that take an
 // inputClass prop (RacialChoicesSection, EquipmentSection).
 export const inputClass = ui.input;
+
+// "Two choices left on this step: Class skills · Fighting style", each name
+// a way to its block. The footer's blocker says the first; this says how
+// many there are and reaches each. Nothing shows once the step is done.
+export function OwedLine({ picks, onShow }: { picks: OwedPick[]; onShow: (target: BlockerTarget) => void }) {
+  const headline = owedHeadline(picks.length);
+  if (!headline) {
+    return null;
+  }
+  return (
+    <p key={picks.length} className="reveal flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-stone-400" data-owed={picks.length}>
+      <span className="text-amber-200/90">{headline}:</span>
+      {picks.map((pick, index) => (
+        <span key={pick.target} className="inline-flex items-center">
+          {index ? (
+            <span aria-hidden="true" className="mr-1.5 text-stone-600">
+              ·
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => onShow(pick.target)}
+            title={pick.message}
+            className="underline decoration-amber-500/40 underline-offset-2 transition-colors hover:text-amber-100"
+          >
+            {pick.label}
+          </button>
+        </span>
+      ))}
+    </p>
+  );
+}
 
 // One titled block inside a step: a Ribbon rule, an optional line of help,
 // then the fields. Ornate gets the corner flourishes of the panel recipe,
@@ -47,20 +81,30 @@ export function StepPanel({
 // are lists of buttons, and a <label> forwards any click on its caption or
 // its empty space to the first button it contains, which opened the info
 // dialog from the word "Alignment" and closed the list from a group heading.
+// The caption names the block as a group instead, so a screen reader hears
+// "Alignment" on the way in while a picker's trigger keeps announcing the
+// value it holds. A single native control can take the caption as its own
+// name: pass `captionId` and point the control's aria-labelledby at it.
 export function Field({
   label,
   anchor,
+  captionId,
   children,
   className,
 }: {
   label: ReactNode;
   anchor?: string;
+  captionId?: string;
   children: ReactNode;
   className?: string;
 }) {
+  const ownId = useId();
+  const id = captionId ?? ownId;
   return (
-    <div className={cn("block", className)} data-builder-target={anchor}>
-      <span className="mb-1 block text-xs text-stone-400">{label}</span>
+    <div role="group" aria-labelledby={id} className={cn("block", className)} data-builder-target={anchor}>
+      <span id={id} className="mb-1 block text-xs text-stone-400">
+        {label}
+      </span>
       {children}
     </div>
   );
@@ -99,7 +143,9 @@ export function Chip({
         <button
           type="button"
           onClick={onRemove}
-          className="text-stone-500 hover:text-red-400"
+          // A 12 px cross with a 44 px reach: the ring past the edge takes
+          // the tap without making the chip any taller.
+          className="relative text-stone-500 after:absolute after:-inset-4 after:rounded-full after:content-[''] hover:text-red-400"
           aria-label={`Remove ${label}`}
         >
           <X className="size-3" />

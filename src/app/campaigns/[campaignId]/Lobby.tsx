@@ -21,6 +21,7 @@ import { VoicePanel } from "@/app/campaigns/[campaignId]/VoicePanel";
 import { useVoiceSpeaking } from "@/app/campaigns/[campaignId]/liveStore";
 import { resolveCompanionMode } from "@/lib/schemas/game-settings";
 import { isPrimaryDm, lobbyBlocker, partySlotCount, viewerCaps } from "@/lib/dm/viewer";
+import { lobbyNext } from "@/lib/dm/lobby-next";
 import {
   ContentImportPicker,
   EMPTY_SELECTION,
@@ -249,6 +250,23 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
       hasSheet: sheets.some((sheet) => sheet.userId === member.userId),
     })),
   );
+
+  // The one line above the actions that says what happens next for this
+  // viewer, from the same seats the Begin button reads.
+  const others = members.filter((member) => member.userId !== me.id && !isDmSeatOf(member.userId));
+  const next = lobbyNext({
+    solo: isSolo,
+    isDm,
+    hasSheet: Boolean(mySheet),
+    ready: Boolean(myMember?.ready),
+    canStart: isOwner || isPrimaryDm(seats, me.id),
+    blocker: startBlocker,
+    needHero: others.filter((member) => !sheets.some((sheet) => sheet.userId === member.userId)).map((member) => member.username),
+    notReady: others.filter((member) => !member.ready).map((member) => member.username),
+  });
+  function isDmSeatOf(userId: string) {
+    return userId === campaign!.dmUserId || userId === campaign!.assistantDmUserId;
+  }
 
   // Returns whether the server took it, so the solo flow can stop before
   // trying to start a game whose only player is not ready.
@@ -492,6 +510,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
               />
             ) : null}
             <LobbyActions
+              next={next}
               campaign={campaign}
               myMember={myMember}
               mySheet={mySheet}
@@ -620,6 +639,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
               campaignId={campaign.id}
               settings={campaign.gameSettings}
               steersStory={steersStory}
+              heading={false}
             />
           </div>
         </div>

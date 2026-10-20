@@ -1,5 +1,5 @@
 import { getDatabase, parseJson } from "@/lib/db/core";
-import { byName } from "@/lib/language/text-logic";
+import { byName, textKey } from "@/lib/language/text-logic";
 import { resolveMonster } from "@/lib/bestiary";
 import { tableAuthors } from "@/lib/db/homebrew";
 import { rosterMonsters } from "@/lib/db/workshop-bundle-shelf";
@@ -26,15 +26,20 @@ import {
   type RowKind,
 } from "@/lib/db/content-copy";
 import { getCommonWorkshop } from "@/lib/db/workshop-common";
-import { hasWorldDoc } from "@/lib/db/world-forge";
+import { getWorldDoc, hasWorldDoc } from "@/lib/db/world-forge";
+import { boundRefsOf, bringItems, bringMonsters, foreignItems, foreignMonsters, monsterRefsOf } from "@/lib/db/import-monsters";
+import { parseRef } from "@/lib/worldforge/model";
 import { copyWorldDoc } from "@/lib/db/world-forge-io";
 import { normalizeStock } from "@/lib/db/shops";
 import {
-  IMPORT_KINDS,
   LINK_KINDS,
+  WORLD_RECORD_KINDS,
   emptyExisting,
   emptySource,
   planImport,
+  withRequired,
+  type WorldRecordFacts,
+  type WorldRecordKind,
   type AgainMode,
   type ArcMode,
   type BoardFacts,
@@ -106,6 +111,7 @@ export function readImportSource(sourceId: string): ImportSource {
   }).sort(byName);
   source.tables = (allRows(`SELECT id, name FROM roll_tables WHERE campaign_id = ?`, sourceId) as ImportSource["tables"]).sort(byName);
   source.npcs = (allRows(`SELECT id, name FROM npcs WHERE campaign_id = ?`, sourceId) as ImportSource["npcs"]).sort(byName);
+  source.factions = (allRows(`SELECT id, name FROM factions WHERE campaign_id = ?`, sourceId) as ImportSource["factions"]).sort(byName);
   source.maps = (allRows(`SELECT id, name FROM prepared_maps WHERE campaign_id = ?`, sourceId) as ImportSource["maps"]).sort(byName);
   // A shop's place and keeper ride along so the planner can say which
   // shops would arrive unplaced or unkept, and its shelf's size for the
@@ -155,6 +161,7 @@ export function readTargetExisting(campaignId: string): ImportExisting {
   existing.encounters = names(`SELECT name FROM encounter_templates WHERE campaign_id = ?`);
   existing.tables = names(`SELECT name FROM roll_tables WHERE campaign_id = ?`);
   existing.npcs = names(`SELECT name FROM npcs WHERE campaign_id = ?`);
+  existing.factions = names(`SELECT name FROM factions WHERE campaign_id = ?`);
   existing.maps = names(`SELECT name FROM prepared_maps WHERE campaign_id = ?`);
   existing.shops = names(`SELECT name FROM shops WHERE campaign_id = ?`);
   // A board is compiled rather than copied, so there is no name to collide
@@ -172,7 +179,7 @@ export function readTargetExisting(campaignId: string): ImportExisting {
   return existing;
 }
 
-const ROW_KIND_SET = new Set<string>(["maps", "locations", "lore", "tables", "encounters", "npcs", "shops"]);
+const ROW_KIND_SET = new Set<string>(["maps", "locations", "lore", "tables", "encounters", "npcs", "factions", "shops"]);
 
 // Live copies at the target of the source's rows, per import kind, for the
 // planner's "already here" (src/lib/db/content-origins.ts).
@@ -255,7 +262,30 @@ export function boardWritesArc(sourceId: string): boolean {
   return compiled.arcBeats.length > 0 && !summarizeCompile(compiled, false).arcRefusal;
 }
 
-export type ImportOptions = { again?: AgainMode; arcMode?: ArcMode };
+// `exclude`: the kinds WorldForge needs that the DM chose to leave behind
+// (audit finding WF-07, src/lib/workshop/import-kinds.ts withRequired).
+export type ImportOptions = { again?: AgainMode; arcMode?: ArcMode; exclude?: readonly ImportKind[] };
+
+// What WorldForge says about each kind of record, for an exclusion that
+// names exactly what it loses.
+function worldFactsOf(sourceId: string): Partial<Record<WorldRecordKind, WorldRecordFacts>> {
+  if (!hasWorldDoc(sourceId)) return {};
+  const doc = getWorldDoc(sourceId);
+  const kindOf: Record<string, WorldRecordKind> = { npc: "npcs", location: "locations", faction: "factions", lore: "lore" };
+  const on = (ref: string, kind: WorldRecordKind) => kindOf[parseRef(ref)?.shelf ?? ""] === kind;
+  return Object.fromEntries(
+    WORLD_RECORD_KINDS.map((kind) => [
+      kind,
+      {
+        entries: Object.keys(doc.entries).filter((ref) => on(ref, kind)).length,
+        links: doc.links.filter((link) => on(link.from, kind) || on(link.to, kind)).length,
+        pins: doc.pins.filter((pin) => pin.ref && on(pin.ref, kind)).length,
+        secrets: doc.secrets.filter((secret) => on(secret.subject, kind) || secret.knownBy.some((ref) => on(ref, kind))).length,
+        events: doc.events.filter((event) => event.refs.some((ref) => on(ref, kind))).length,
+      },
+    ]),
+  );
+}
 
 export function planContentImport(
   sourceId: string,
@@ -265,7 +295,8 @@ export function planContentImport(
 ): ImportPlan {
   const source = getCampaignById(sourceId);
   const target = getCampaignById(campaignId);
-  const hasBoard = selection.includes("storyboard") && source;
+  const chosen = withRequired(selection, options.exclude);
+  const hasBoard = chosen.includes("storyboard") && source;
   const common = source && source.kind === "workshop" ? getCommonWorkshop(source) : null;
   const commonHere = common ? alreadyHereBy(copiesFrom(campaignId, common.id)) : {};
   const arc = target?.storyArc ?? null;
@@ -280,7 +311,26 @@ export function planContentImport(
     again: options.again,
     commonHere,
     board: hasBoard ? boardFactsFor(source, compileBoard(listBeats(sourceId)), common) : null,
+    exclude: options.exclude,
+    worldFacts: chosen.includes("world") ? worldFactsOf(sourceId) : undefined,
+    // The hand-built monsters the travelling NPCs and fights name that this
+    // table's authors do not have, copied in on import (src/lib/db/import-monsters.ts).
+    foreignMonsters: foreignMonsters(sourceId, campaignId, [
+      ...monsterRefsOf(sourceId, { npcs: chosen.includes("npcs"), encounters: chosen.includes("encounters") }),
+      // And the ones a World entry links to (WF-17), when the world travels.
+      ...(chosen.includes("world") ? boundRefsOf(sourceId, "monster") : []),
+    ]).map((monster) => monster.entry.name),
+    foreignItems: chosen.includes("world") ? foreignItems(sourceId, campaignId, boundRefsOf(sourceId, "item")).map((item) => item.entry.name) : undefined,
+    worldBound: chosen.includes("world") ? placeBoundCounts(sourceId) : undefined,
   });
+}
+
+// The battle maps and encounters a world's places link to, counted once each.
+function placeBoundCounts(sourceId: string): { maps: number; encounters: number } {
+  if (!hasWorldDoc(sourceId)) return { maps: 0, encounters: 0 };
+  const bindings = Object.values(getWorldDoc(sourceId).entries).flatMap((entry) => entry.bindings);
+  const count = (kind: "map" | "encounter") => new Set(bindings.filter((binding) => binding.kind === kind).map((binding) => binding.ref)).size;
+  return { maps: count("map"), encounters: count("encounter") };
 }
 
 // Every row that travelled, as `kind:oldId` -> newId. Storyboard links, the
@@ -298,6 +348,18 @@ export type ImportOutcome = {
   unbound: number;
   // Beats the board added to the campaign's arc.
   beatsAdded: number;
+  // What both sides of a WorldForge reimport changed, kept as here (WF-03).
+  worldConflicts?: string[];
+  // Stat blocks and roster monsters nothing at this table answers to.
+  unresolved?: string[];
+  // Hand-built monsters copied into this table's bestiary for the NPCs and
+  // fights that name them, and the owner's identical ones reused (WF-07).
+  monstersBrought?: string[];
+  monstersReused?: string[];
+  // Hand-built items a World entry links to, copied into this table's
+  // Homebrew, and the owner's identical ones reused (WF-17).
+  itemsBrought?: string[];
+  itemsReused?: string[];
 };
 
 // Copies the planned rows. One transaction, so a constraint the planner
@@ -314,8 +376,12 @@ export function runContentImport(input: {
   houseRulesMode: "replace" | "append";
   again?: AgainMode;
   arcMode?: ArcMode;
+  // Kinds WorldForge needs that the DM chose to leave behind (WF-07).
+  exclude?: readonly ImportKind[];
 }): ImportOutcome | { error: string } {
-  const { sourceId, campaignId, selection, houseRulesMode } = input;
+  const { sourceId, campaignId, houseRulesMode } = input;
+  // WorldForge brings the records it describes unless the DM left one out.
+  const selection = withRequired(input.selection, input.exclude);
   const again = input.again ?? "skip";
   const source = getCampaignById(sourceId);
   const campaign = getCampaignById(campaignId);
@@ -326,7 +392,8 @@ export function runContentImport(input: {
     return { error: "Nothing can import into itself." };
   }
 
-  const plan = planContentImport(sourceId, campaignId, selection, { again, arcMode: input.arcMode });
+  // The plan is told what the DM ticked, so it can say what came with it.
+  const plan = planContentImport(sourceId, campaignId, input.selection, { again, arcMode: input.arcMode, exclude: input.exclude });
   if (plan.empty) {
     return { plan, copied: 0, idMap: new Map(), kept: plan.kept, unbound: 0, beatsAdded: 0 };
   }
@@ -350,7 +417,7 @@ export function runContentImport(input: {
     const table = { maps: "prepared_maps", locations: "locations", lore: "lore_entries", tables: "roll_tables", encounters: "encounter_templates", npcs: "npcs", shops: "shops" }[kind];
     let set = taken.get(kind);
     if (!set) {
-      set = new Set(allRows(`SELECT ${label} AS name FROM ${table} WHERE campaign_id = ?`, campaignId).map((row) => String(row.name).trim().toLowerCase()));
+      set = new Set(allRows(`SELECT ${label} AS name FROM ${table} WHERE campaign_id = ?`, campaignId).map((row) => textKey(String(row.name))));
       taken.set(kind, set);
     }
     return set;
@@ -419,10 +486,12 @@ export function runContentImport(input: {
     if (selected.has("encounters")) {
       copyKind(main, "encounters");
     }
-    if (selected.has("npcs")) {
-      // Factions ride with the cast (docs/vtt-parity-implementation-plan.md
-      // section 6), renumbered, with each member's link remapped.
+    // Factions are a choice of their own (WF-07); without it, each NPC
+    // still brings the faction it belongs to (content-copy.ts factionFor).
+    if (selected.has("factions")) {
       copyFactions(main);
+    }
+    if (selected.has("npcs")) {
       copyKind(main, "npcs");
     }
     // After the places and the cast, so a shop finds its place and keeper
@@ -474,8 +543,17 @@ export function runContentImport(input: {
     // After the records, so every ref can be rewritten to the copy that
     // travelled (or an earlier import brought).
     const kinds = { npc: "npcs", location: "locations", faction: "factions", lore: "lore" } as const;
-    const world = copyWorldDoc(sourceId, campaignId, (shelf, id) => main.resolve(kinds[shelf], id));
+    // A place's battle maps and encounters link to the copies that came
+    // with this import or an earlier one; a link to one left behind is
+    // dropped and counted with the other references that did not travel.
+    const world = copyWorldDoc(
+      sourceId,
+      campaignId,
+      (shelf, id) => main.resolve(kinds[shelf], id),
+      (kind, id) => main.resolve(kind === "map" ? "maps" : "encounters", id),
+    );
     counts.copied += world.count;
+    counts.unbound += world.unbound;
     worldConflicts = world.conflicts;
   }
 
@@ -488,6 +566,13 @@ export function runContentImport(input: {
   // A Cast member's stat block or a fight's monster that nothing at this
   // table answers to: the source table's homebrew is its authors', not this
   // table's (src/lib/content/scope.ts), so name what will not resolve here.
+  // First, the hand-built monsters the copied rows need, brought into this
+  // table's bestiary when its authors do not have them (WF-07).
+  const ids = (kind: string) => [...idMap].filter(([key]) => key.startsWith(`${kind}:`)).map(([, id]) => id);
+  const travelled = selected.has("world") && hasWorldDoc(sourceId);
+  const monsters = bringMonsters(sourceId, campaignId, { npcs: ids("npcs"), encounters: ids("encounters") }, travelled);
+  // The items a World entry links to travel the same way (WF-17).
+  const items = travelled ? bringItems(sourceId, campaignId) : { brought: [], reused: [] };
   const unresolved = unresolvedMonsters(campaignId);
   return {
     plan,
@@ -498,10 +583,12 @@ export function runContentImport(input: {
     beatsAdded,
     ...(worldConflicts.length ? { worldConflicts } : {}),
     ...(unresolved.length ? { unresolved } : {}),
+    ...(monsters.brought.length ? { monstersBrought: monsters.brought } : {}),
+    ...(monsters.reused.length ? { monstersReused: monsters.reused } : {}),
+    ...(items.brought.length ? { itemsBrought: items.brought } : {}),
+    ...(items.reused.length ? { itemsReused: items.reused } : {}),
   };
 }
-
-export { IMPORT_KINDS };
 
 // The monster names this table's Cast and prepared fights use that resolve
 // to nothing here: not a published creature, not a monster any of the

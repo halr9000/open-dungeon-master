@@ -6,6 +6,7 @@
 // routine with what this returns. Nothing is spent or stored here.
 
 import type { Campaign } from "@/lib/db/campaigns";
+import { effectOutcome } from "@/lib/dm/effect-tools";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import type { EncounterEnemy } from "@/lib/db/encounters";
 import { getSheetById } from "@/lib/db/sheets";
@@ -18,7 +19,7 @@ import { attackContext, isIncapacitated, mergeAdvantage } from "@/lib/dm/conditi
 import { enemyAllyNear } from "@/lib/dm/enemy-approach";
 import { enemyExhaustion, hasTrait } from "@/lib/dm/monster-abilities";
 import { withLiveDodge } from "@/lib/dm/opportunity";
-import { claimedAdvantage } from "@/lib/dm/pc-attack-options";
+import { claimedAdvantage, type AdvantageSource } from "@/lib/dm/pc-attack-options";
 import { CHILL_TOUCH_DREAD } from "@/lib/dm/spell-attack-riders";
 import { cursedAgainst } from "@/lib/dm/spell-retort";
 import { inDirectSunlight } from "@/lib/dm/sunlight";
@@ -40,7 +41,7 @@ export function enemySwingOdds(input: {
   // The creature as it stands after the walk in (its live conditions).
   standing: EncounterEnemy;
   target: CharacterSheet;
-  requested: { advantage?: Advantage; advantageReason?: string };
+  requested: { advantage?: Advantage; advantageSource?: AdvantageSource; advantageReason?: string };
   ranged: boolean;
   longRange: boolean;
   // Tiles between the two, null off the map.
@@ -56,8 +57,11 @@ export function enemySwingOdds(input: {
   notes: string[];
   autoCrit: boolean;
   authored: ReturnType<typeof authoredIncomingAttack>;
+  // An active effect's amount on its attack rolls (set_effect).
+  attackBonus: number;
 } {
   const { campaign, turn, encounterId, standing, target, requested, ranged, longRange, distance, underwater, riders } = input;
+  const effect = effectOutcome(campaign.id, { kind: "enemy", id: standing.id }, "attack");
   // Conditions on both sides drive advantage and auto-crits; the model's
   // situational claim merges in as one more source.
   const conditionContext = attackContext({
@@ -69,7 +73,7 @@ export function enemySwingOdds(input: {
     melee: !ranged,
     adjacent: distance === null ? !ranged : distance <= 1,
     // The AI names a circumstance the engine does not decide (pc-attack-options.ts).
-    requested: claimedAdvantage({ requested: requested.advantage, reason: requested.advantageReason, byAi: turn.actor === "ai" }).requested,
+    requested: claimedAdvantage({ requested: requested.advantage, source: requested.advantageSource, reason: requested.advantageReason, byAi: turn.actor === "ai" }).requested,
   });
   // A gale over an outdoor board: disadvantage on ranged attacks past 30
   // ft, for the monsters exactly as for the party.
@@ -113,7 +117,7 @@ export function enemySwingOdds(input: {
   // Authored subclass features (Among the Dead, Fungal Body, a guardian's mark): authored-hooks.ts.
   const authored = authoredIncomingAttack({ campaignId: campaign.id, encounterId, attacker: standing, target: liveTarget });
   const sources: Advantage[] = [
-    conditionContext.advantage,
+    ...conditionContext.sources,
     ...light.sources,
     ...(gale.disadvantage ? ["disadvantage" as const] : []),
     ...(crowded ? ["disadvantage" as const] : []),
@@ -128,9 +132,14 @@ export function enemySwingOdds(input: {
     ...(cursedAgainst(standing, target.id) ? ["disadvantage" as const] : []),
     ...riders.advantageSources,
     ...authored.sources,
+    // An active effect on its attack rolls (set_effect): its advantage, and
+    // its amount on the roll (attackBonus).
+    ...(effect.advantage ? ["advantage" as const] : []),
+    ...(effect.disadvantage ? ["disadvantage" as const] : []),
   ];
   const advantage: Advantage = mergeAdvantage(elusive ? sources.filter((source) => source !== "advantage") : sources);
   const notes = [
+    ...(effect.sources.length ? [`on its attack rolls: ${effect.sources.join("; ")}`] : []),
     ...conditionContext.notes,
     ...light.notes,
     ...(gale.note ? [gale.note] : []),
@@ -146,5 +155,5 @@ export function enemySwingOdds(input: {
     ...(input.defended ? [`Multiattack Defense: +4 AC against ${standing.displayName}'s later attacks this turn`] : []),
     ...authored.notes,
   ];
-  return { advantage, notes, autoCrit: conditionContext.autoCrit, authored };
+  return { advantage, notes, autoCrit: conditionContext.autoCrit, authored, attackBonus: effect.bonus };
 }

@@ -59,7 +59,13 @@ export function useTtsVoices(): VoiceList {
 }
 
 // The name a voice goes by in a summary line.
+// A voice as a person reads it. A campaign with no voice of its own uses the
+// server's, and says so: "Heart (warm female) · server default".
 export function voiceLabel(list: VoiceList, voice: string): string {
+  if (!voice.trim()) {
+    const fallback = list.voices.find((entry) => entry.id === list.defaultVoice)?.label ?? list.defaultVoice;
+    return fallback ? `${fallback} · server default` : "The server's default voice";
+  }
   return list.voices.find((entry) => entry.id === voice)?.label ?? voice;
 }
 

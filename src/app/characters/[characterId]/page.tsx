@@ -11,7 +11,7 @@ import { ContextMenu } from "@/components/ui/ContextMenu";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import { cn } from "@/lib/cn";
-import { downloadBlob, filenameSlug } from "@/lib/download";
+import { downloadBlob } from "@/lib/download";
 import { downloadCharacterSheetPdf } from "@/lib/pdf/download";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { CharacterPortrait, ui } from "@/lib/ui";
@@ -19,6 +19,7 @@ import { offersImages, useCapabilities } from "@/lib/use-capabilities";
 import { SheetSections, StorySoFar, type CharacterEvent } from "./SheetSections";
 import { currentQuery, navigateTo, workshopReturnPath } from "@/lib/navigation";
 import { UseInCampaignDialog } from "./UseInCampaignDialog";
+import { slugOf } from "@/lib/language/text-logic";
 
 // Where this character is playing; see src/lib/db/characters.ts.
 type CharacterAssignment = {
@@ -102,7 +103,7 @@ export default function CharacterDetailPage({
         setExportError("Export failed.");
         return;
       }
-      downloadBlob(`${filenameSlug(character.name)}.odm-character.json`, await response.blob());
+      downloadBlob(`${slugOf(character.name) || "character"}.odm-character.json`, await response.blob());
     } catch {
       setExportError("Export failed.");
     } finally {
@@ -415,8 +416,20 @@ export default function CharacterDetailPage({
             <GameIcon icon={{ kind: "glyph", key: "tab-campaigns" }} size="size-6" />{" "}
             {character.role === "companion" ? "Bring to a campaign" : "Use in a campaign"}
           </button>
+          {/* Levelling is the change made most often; it opens the build one
+              level up instead of making the player find the level field.
+              A multiclass split levels at a table, where the class is
+              chosen. */}
+          {character.level < 20 && (character.sheet?.classes ?? []).length <= 1 ? (
+            <Link
+              href={`/characters/${characterId}/edit?levelUp=1`}
+              className={cn(ui.btnSecondary, "min-w-0 flex-1 sm:flex-none")}
+            >
+              <GameIcon icon={{ kind: "glyph", key: "rest-level-up" }} size="size-6" /> Level up to {character.level + 1}
+            </Link>
+          ) : null}
           <Link href={`/characters/${characterId}/edit`} className={cn(ui.btnSecondary, "min-w-0 flex-1 sm:flex-none")}>
-            <GameIcon icon={{ kind: "glyph", key: "rest-level-up" }} size="size-6" /> Edit build
+            <GameIcon icon={{ kind: "glyph", key: "ui-edit" }} size="size-6" /> Edit build
           </Link>
           <KebabMenu
             items={actions}

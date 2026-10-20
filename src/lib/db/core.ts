@@ -13,6 +13,7 @@ import { featsAsRun, registerTableFeatReader } from "@/lib/srd/feat-effects";
 import { tableFeatsFrom } from "@/lib/db/table-feats";
 import { registerTableHazardReader } from "@/lib/srd/table-hazards";
 import { tableHazardsFrom } from "@/lib/db/table-hazards";
+import { ROW_TEXT, settleLoreTexts } from "@/lib/worldforge/account";
 
 const dbPath =
   process.env.SQLITE_DB_PATH || path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "local-roleplay.sqlite");
@@ -1602,38 +1603,6 @@ function ensureSchema(db: SqliteDatabase) {
     backfillSheetFeatures(db);
   }
 
-  // This machine's DM backend moved from Ollama to llama-server (llama.cpp)
-  // on :8001. Retarget campaigns still pointing at the old Ollama endpoint;
-  // idempotent because rewritten rows no longer match the WHERE.
-  const staleBackends = db
-    .prepare(
-      `SELECT id, settings_json FROM campaigns
-       WHERE settings_json LIKE '%127.0.0.1:11434/v1%' OR settings_json LIKE '%localhost:11434/v1%'`,
-    )
-    .all() as Array<{ id: string; settings_json: string }>;
-  for (const row of staleBackends) {
-    try {
-      const settings = JSON.parse(row.settings_json) as {
-        textProvider?: string;
-        customBaseUrl?: string;
-        customModel?: string;
-      };
-      if (settings.textProvider !== "custom" || !/:11434\/v1$/.test(settings.customBaseUrl ?? "")) {
-        continue;
-      }
-      settings.customBaseUrl = "http://127.0.0.1:8001/v1";
-      if (settings.customModel?.startsWith("qwen3.6")) {
-        settings.customModel = "qwen3.6-35b";
-      }
-      db.prepare(`UPDATE campaigns SET settings_json = ? WHERE id = ?`).run(
-        JSON.stringify(settings),
-        row.id,
-      );
-    } catch {
-      // Unparseable settings stay untouched; the campaign UI can fix them.
-    }
-  }
-
   addColumns("campaign_messages", [
     // Who a DM message is spoken as (docs/vtt-parity-implementation-plan.md
     // 8.1). NULL is the narrator.
@@ -1720,6 +1689,11 @@ function ensureSchema(db: SqliteDatabase) {
   addColumns("battle_maps", [["skin_json", `TEXT NOT NULL DEFAULT '{}'`]]);
   // Spell areas laid on a live board (src/lib/battlemap/zones.ts).
   addColumns("battle_maps", [["spell_zones_json", `TEXT NOT NULL DEFAULT '[]'`]]);
+  // What a map addon left for its board view: data and files such as a .glb
+  // model (src/lib/addons/map-view.ts). '' is none. Cosmetic like the skin,
+  // and on both tables for the same reason.
+  addColumns("prepared_maps", [["addon_view_json", `TEXT NOT NULL DEFAULT ''`]]);
+  addColumns("battle_maps", [["addon_view_json", `TEXT NOT NULL DEFAULT ''`]]);
 
   addColumns("locations", [
     // The prepared map this place stands on, so arriving offers the DM a
@@ -2251,6 +2225,21 @@ function ensureSchema(db: SqliteDatabase) {
   // such owner as the DM. Idempotent: a repaired row no longer matches.
   repairWorkshopDmSeats(db);
 
+  // Lore entries with two texts (audit finding WF-13): an import cut a long
+  // text to fit the lore row and kept the whole as a WorldForge article
+  // beside it, and the wiki showed the article over every later edit of the
+  // row. A lore entry's body is now its one account
+  // (src/lib/worldforge/account.ts). Where one text holds the other they
+  // become one body, nothing lost; where they differ both stay, and the
+  // editor asks which to keep. One pass, guarded by an app_settings marker.
+  const worldTextMarker = db.prepare(`SELECT key FROM app_settings WHERE key = 'world_text_backfill_done'`).get();
+  if (!worldTextMarker) {
+    db.transaction(() => {
+      backfillWorldTexts(db);
+      db.prepare(`INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)`).run("world_text_backfill_done", "true", new Date().toISOString());
+    })();
+  }
+
   // Connected agents (docs/archive/harness-mcp-plan.md 7): a player's own agent
   // session (Claude Code, Codex, any MCP client) acting as that player over
   // /api/mcp. Only the token's hash is kept, the same rule as sessions.
@@ -2343,6 +2332,46 @@ function ensureSchema(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_usage_events_campaign ON usage_events(campaign_id, at);
     CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(user_id, at);
 
+    -- One row per model attempt, for measuring where a turn's time and
+    -- tokens go (src/lib/usage/model-calls.ts): what the call was for, what
+    -- was planned against what the backend reported, the cache, the
+    -- reasoning, the first visible token, how it ended. No prompt or reply
+    -- text. A NULL is a figure the backend did not report. Kept 30 days
+    -- (src/lib/ops/retention.ts).
+    CREATE TABLE IF NOT EXISTS model_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at TEXT NOT NULL,
+      campaign_id TEXT,
+      task TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT '',
+      backend TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      turn_id TEXT,
+      call_index INTEGER,
+      window_tokens INTEGER,
+      planned_input_tokens INTEGER,
+      input_tokens INTEGER,
+      cached_input_tokens INTEGER,
+      cache_write_tokens INTEGER,
+      output_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      max_output_tokens INTEGER,
+      tool_count INTEGER NOT NULL DEFAULT 0,
+      tool_tokens INTEGER NOT NULL DEFAULT 0,
+      fit_dropped INTEGER NOT NULL DEFAULT 0,
+      fit_clipped INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      first_token_ms INTEGER,
+      prompt_ms INTEGER,
+      generate_ms INTEGER,
+      load_ms INTEGER,
+      finish_reason TEXT,
+      outcome TEXT NOT NULL DEFAULT 'ok',
+      fallback TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_calls_at ON model_calls(at);
+    CREATE INDEX IF NOT EXISTS idx_model_calls_turn ON model_calls(turn_id);
+
     -- Who a stored picture or document was made for (src/lib/media-access.ts):
     -- the account that uploaded or asked for it and the campaign or workshop
     -- it was made in, so it can be shown before any row names it (a portrait
@@ -2409,9 +2438,17 @@ function ensureSchema(db: SqliteDatabase) {
   // Databases that created player_webhooks before receivers could carry
   // their own Authorization value or extra headers (docs/player-webhooks.md).
   addColumns("player_webhooks", [["authorization_header", `TEXT`], ["extra_headers", `TEXT`]]);
+  // A poll link instead of a receiver (docs/player-webhooks.md): the SHA-256
+  // of the link's secret, for an agent that cannot take incoming requests
+  // and checks the link instead. Such a row has no url and gets no deliveries.
+  addColumns("player_webhooks", [["poll_token_hash", `TEXT`]]);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_player_webhooks_poll ON player_webhooks(poll_token_hash) WHERE poll_token_hash IS NOT NULL`);
   // How many calls a row stands for: one, until the retention pass merges
   // old rows into one per month (src/lib/ops/retention.ts).
   addColumns("usage_events", [["calls", `INTEGER NOT NULL DEFAULT 1`]]);
+  // What the backend served from its prompt cache and spent reasoning, where
+  // it said (src/lib/usage/parse.ts); NULL when it did not.
+  addColumns("usage_events", [["cached_input_tokens", `INTEGER`], ["reasoning_tokens", `INTEGER`]]);
 }
 
 // Widens battle_tokens.kind to accept the DM's own board furniture.
@@ -2670,6 +2707,39 @@ function backfillNpcBonds(db: SqliteDatabase) {
       );
     }
   }
+}
+
+// Folds a lore entry's two texts into one body where one holds the other
+// (see the call in ensureSchema). Returns how many became one, for the tests.
+export function backfillWorldTexts(db: SqliteDatabase): number {
+  const docs = db.prepare(`SELECT campaign_id, doc_json FROM world_forge`).all() as Array<{ campaign_id: string; doc_json: string }>;
+  const bodyOf = db.prepare(`SELECT body FROM lore_entries WHERE id = ? AND campaign_id = ?`);
+  const setBody = db.prepare(`UPDATE lore_entries SET body = ? WHERE id = ?`);
+  const setDoc = db.prepare(`UPDATE world_forge SET doc_json = ? WHERE campaign_id = ?`);
+  let settled = 0;
+  for (const row of docs) {
+    let doc: { entries?: Record<string, { article?: unknown }> };
+    try {
+      doc = JSON.parse(row.doc_json);
+    } catch {
+      continue; // Unparseable documents stay untouched.
+    }
+    let changed = false;
+    for (const [ref, entry] of Object.entries(doc.entries ?? {})) {
+      if (!ref.startsWith("lore:") || !entry || typeof entry.article !== "string" || !entry.article.trim()) continue;
+      const id = ref.slice("lore:".length);
+      const lore = bodyOf.get(id, row.campaign_id) as { body: string } | undefined;
+      if (!lore) continue;
+      const one = settleLoreTexts(lore.body ?? "", entry.article, ROW_TEXT.lore);
+      if (!one) continue;
+      if (one.body !== lore.body) setBody.run(one.body, id);
+      entry.article = "";
+      changed = true;
+      settled += 1;
+    }
+    if (changed) setDoc.run(JSON.stringify(doc), row.campaign_id);
+  }
+  return settled;
 }
 
 // Copy each linked campaign sheet's portrait into its library character when

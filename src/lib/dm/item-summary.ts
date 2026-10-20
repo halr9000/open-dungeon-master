@@ -7,10 +7,12 @@
 
 import { searchItems } from "@/lib/content";
 import { chargeMax, chargeRuleOf, chargesLeft } from "@/lib/dm/item-charges";
-import { armorOfRow } from "@/lib/srd/armor";
+import { armorOfRow, isWorn } from "@/lib/srd/armor";
+import { oneOfKind, wornButIdle } from "@/lib/srd/wear-slots";
 import { gearDefOfRow } from "@/lib/srd/magic-gear";
 import { matchMagicItem, type MagicItemEffect } from "@/lib/srd/magic-items";
 import type { EquipmentItem } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
 
 function effectWords(effect: MagicItemEffect): string {
   switch (effect.kind) {
@@ -29,9 +31,9 @@ function effectWords(effect: MagicItemEffect): string {
 
 // The pack's first sentence for a magic item the engine does not hold.
 function packSentence(name: string): string | null {
-  const wanted = name.trim().toLowerCase();
+  const wanted = textKey(name);
   const row = searchItems({ q: name.trim(), kind: "magic_item", limit: 5 }).find(
-    (item) => item.name.trim().toLowerCase() === wanted,
+    (item) => textKey(item.name) === wanted,
   );
   const desc = String(row?.data?.desc ?? "").replace(/\s+/g, " ").trim();
   if (!desc) {
@@ -42,8 +44,11 @@ function packSentence(name: string): string | null {
 }
 
 // "Flame Tongue: longsword, +2d6 fire; attuned, worn" or null for an
-// ordinary item.
-export function magicItemLine(item: EquipmentItem, equipmentWorn = true): string | null {
+// ordinary item. `equipment` is the whole pack the item is in: whether it is
+// worn is read the armor engine's way, and a worn second cloak says its magic
+// is not in effect (src/lib/srd/wear-slots.ts), so the model does not narrate
+// both.
+export function magicItemLine(item: EquipmentItem, equipment: readonly EquipmentItem[] = [item]): string | null {
   // A workshop item's own magic rides on its line (gearDefOfRow); its effects
   // are the ones magic-items.ts reads off the same line.
   const def = gearDefOfRow(item);
@@ -84,7 +89,10 @@ export function magicItemLine(item: EquipmentItem, equipmentWorn = true): string
   } else if (def?.requiresAttunement || worn?.requiresAttunement) {
     state.push("not attuned");
   }
-  if (item.equipped === true || (item.equipped === undefined && equipmentWorn)) {
+  const idle = wornButIdle(item, equipment);
+  if (idle) {
+    state.push(`worn, not in effect (${oneOfKind(idle) ?? "one of its kind"} at a time)`);
+  } else if (isWorn(item, equipment)) {
     state.push("worn");
   }
   return `${item.name}: ${parts.join(", ") || "magic"}${state.length ? `; ${state.join(", ")}` : ""}`;

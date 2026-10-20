@@ -36,6 +36,11 @@
         "dark_fantasy"
       ],
       "blurb": "Grim inquisitor with litanies on the lips and silver shot in the gun, hunting the corruption behind pious faces.",
+      "roles": [
+        "Tank",
+        "DPS"
+      ],
+      "playsLike": "Fighter + Cleric",
       "spellListFrom": "paladin",
       "knownCaster": false,
       "castingLabel": "Litanies",
@@ -76,6 +81,11 @@
         "dark_fantasy"
       ],
       "blurb": "Behind the beaked mask, a mind that reads sickness like scripture and turns remedies into weapons.",
+      "roles": [
+        "Healer",
+        "Support"
+      ],
+      "playsLike": "Cleric",
       "spellListFrom": "cleric",
       "knownCaster": false,
       "castingLabel": "Remedies",
@@ -118,6 +128,11 @@
         "dark_fantasy"
       ],
       "blurb": "Sworn to a power in the earth, they carry a blade that answers their call and an aura of the tomb.",
+      "roles": [
+        "Tank",
+        "DPS"
+      ],
+      "playsLike": "Fighter + Cleric",
       "spellListFrom": "warlock",
       "knownCaster": true,
       "castingLabel": "Oaths",
@@ -156,6 +171,10 @@
         "dark_fantasy"
       ],
       "blurb": "Every scar a prayer. They spend their own blood like coin and grow stronger the closer they walk to death.",
+      "roles": [
+        "Tank"
+      ],
+      "playsLike": "Fighter",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -194,6 +213,11 @@
         "dark_fantasy"
       ],
       "blurb": "A voice for the grieving and the graves: songs that mourn, curse, and occasionally raise what should stay down.",
+      "roles": [
+        "Support",
+        "Control"
+      ],
+      "playsLike": "Rogue + Wizard",
       "spellListFrom": "bard",
       "knownCaster": true,
       "castingLabel": "Dirges",
@@ -234,6 +258,10 @@
         "dark_fantasy"
       ],
       "blurb": "King of the gutters. The rats scout for them, the sewers are their roads, and nothing in the city moves unseen.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,

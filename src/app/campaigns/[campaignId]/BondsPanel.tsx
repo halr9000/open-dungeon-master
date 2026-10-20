@@ -155,7 +155,7 @@ export function BondsPanel({ campaignId, refreshKey }: { campaignId: string; ref
   }
   if (!enabled) {
     return (
-      <EmptyState size="sm" art="board" title="Relationship tracking is off for this campaign. The party lead can turn it on in Setup." />
+      <EmptyState size="sm" art="board" title="Relationship tracking is off for this campaign. Whoever runs the story can turn it on in Settings, under Bonds and romance." />
     );
   }
   if (!bonds.length) {

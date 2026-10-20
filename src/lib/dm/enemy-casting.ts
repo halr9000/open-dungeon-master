@@ -23,6 +23,8 @@ import {
   spendSpellUse,
   type AbilityLedger,
 } from "@/lib/dm/monster-abilities";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // An enemy's special action or spell aimed at the party (cast_at_player and
 // aoe_damage with casterEnemyId): it is the creature's action for the round
@@ -97,18 +99,18 @@ function describe(enemy: EncounterEnemy): string {
   return parts.length ? ` Its block lists ${parts.join("; ")}.` : "";
 }
 
-export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { error: string } {
+export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | ToolError {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter; casterEnemyId names an enemy in a fight." };
+    return { error: "No active encounter; casterEnemyId names an enemy in a fight.", retry: true };
   }
   const enemy = resolveEnemyRef(encounter.id, input.casterEnemyId);
   if (!enemy) {
-    return { error: "Unknown casterEnemyId; use one from GAME STATE." };
+    return { error: "Unknown casterEnemyId; use one from GAME STATE.", retry: true };
   }
   for (const targetId of input.targetIds) {
     if (charmedBy(enemy.conditions, enemy.conditionMeta, targetId)) {
-      return { error: `${enemy.displayName} is charmed by that character and cannot target them with a harmful ability. It may target someone else.` };
+      return { error: `${enemy.displayName} is charmed by that character and cannot target them with a harmful ability. It may target someone else.`, retry: true };
     }
   }
   const bought = boughtByLegendary(encounter, enemy.id);
@@ -123,10 +125,11 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
   if (spellName) {
     const casting = enemy.stats.spellcasting;
     const listed = findMonsterSpell(casting, spellName) ?? null;
-    const known = listed ?? (enemy.stats.spells ?? []).find((name) => name.toLowerCase() === spellName.toLowerCase());
+    const known = listed ?? (enemy.stats.spells ?? []).find((name) => textKey(name) === textKey(spellName));
     if (!known) {
       return {
         error: `${enemy.displayName} cannot cast ${spellName}: it is not on its stat block.${describe(enemy)} Use one of those, or its attacks.`,
+        retry: true,
       };
     }
     const authors = spellAuthorsFor(campaign);
@@ -145,13 +148,13 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
     let slot: number | null = null;
     if (listed && listed.perDay) {
       if (spellUsesLeft(ledger, listed) <= 0) {
-        return { error: `${enemy.displayName} has cast ${use.name} as many times as it can today.${describe(enemy)}` };
+        return { error: `${enemy.displayName} has cast ${use.name} as many times as it can today.${describe(enemy)}`, retry: true };
       }
       spend = (next) => spendSpellUse(next, use.name);
     } else if (level > 0 && listed && listed.level !== null && casting && Object.keys(casting.slots).length) {
       slot = slotFor(casting, ledger, level);
       if (slot === null) {
-        return { error: `${enemy.displayName} has no spell slot of level ${level} or higher left for ${use.name}. It can cast a lower-level spell, a cantrip, or attack.` };
+        return { error: `${enemy.displayName} has no spell slot of level ${level} or higher left for ${use.name}. It can cast a lower-level spell, a cantrip, or attack.`, retry: true };
       }
       const chosen = slot;
       spend = (next) => spendSlot(next, chosen);
@@ -190,7 +193,7 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
     const ability = findMonsterAbility(enemy.stats, abilityName);
     if (!ability) {
       if (hasBlock) {
-        return { error: `${enemy.displayName} has no ability called ${abilityName}.${describe(enemy)}` };
+        return { error: `${enemy.displayName} has no ability called ${abilityName}.${describe(enemy)}`, retry: true };
       }
       use.name = abilityName;
     } else {
@@ -198,13 +201,13 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
       const key = abilityKey(ability.name);
       if (ability.legendaryCost) {
         if (!bought.includes(key)) {
-          return { error: `${ability.name} is one of ${enemy.displayName}'s legendary actions: spend it with legendary_action at the end of another creature's turn first.` };
+          return { error: `${ability.name} is one of ${enemy.displayName}'s legendary actions: spend it with legendary_action at the end of another creature's turn first.`, retry: true };
         }
         legendary = key;
       }
       const refusal = abilityRefusal(enemy.displayName, ability, ledgerOf(encounter, enemy.id));
       if (refusal) {
-        return { error: refusal };
+        return refusal;
       }
       spend = (next) => spendAbility(ability, next);
       use.fromBlock = true;
@@ -225,18 +228,21 @@ export function prepareEnemyUse(campaign: Campaign, input: Input): EnemyUse | { 
   } else if (hasBlock) {
     return {
       error: `Name what ${enemy.displayName} uses: ability (a name from its block) or spell (one it knows).${describe(enemy)}`,
+      retry: true,
     };
   }
 
   // The creature's action, or the legendary action that bought this.
   const allowed = canEnemyAct({ enemy, encounter, kind: legendary ? "legendary" : "action" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   // Feeblemind, Maze, Fear's flight stop a creature's spells (spell-planes.ts).
   const unable = input.spell ? (castingHold({ name: enemy.displayName, conditions: enemy.conditions }) ?? antimagicProblem(campaign.id, enemy.id, enemy.displayName)) : null;
+  // The enemy is the DM's to play: what it cannot do is another action to
+  // pick, not a refusal to narrate.
   if (unable) {
-    return { error: unable };
+    return { error: unable.error, retry: true };
   }
   if (use.save && input.sent.save && use.save !== input.sent.save) {
     use.corrections.push(`${use.name} forces a ${use.save.toUpperCase()} save; the server rolled that one.`);

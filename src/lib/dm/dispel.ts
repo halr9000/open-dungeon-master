@@ -19,11 +19,12 @@ import { spellFactsFor, spellMechanicsFor } from "@/lib/content";
 import { MECH_OVERRIDES } from "@/lib/srd/spell-mechanics";
 import { applyDmMutation } from "@/lib/dm/mutations";
 import { instancesOf, removeConditionInstances, type ConditionMeta, type ConditionMetaMap } from "@/lib/dm/condition-logic";
-import { spellKey } from "@/lib/dm/spell-effects";
-import { spellReachProblem } from "@/lib/dm/cast-reach";
+import { castToNoEffect, spellReachProblem, spellWardOn } from "@/lib/dm/cast-reach";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import { publishEncounter } from "@/lib/dm/enemy-damage";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 const SRD_CONDITIONS = new Set([
   "blinded", "charmed", "deafened", "frightened", "grappled", "incapacitated",
@@ -57,7 +58,7 @@ type Held = { spell: string; key: string; conditions: string[] };
 // One casting's key on a condition instance: the spell and its caster.
 function castingKey(condition: string, instance: ConditionMeta): string | null {
   const spell = instance.spell ?? legacySpellOf(condition);
-  return spell ? `${spellKey(spell)}|${instance.source ?? ""}` : null;
+  return spell ? `${textKey(spell)}|${instance.source ?? ""}` : null;
 }
 
 // The spells on a creature, each casting with the conditions it holds
@@ -108,7 +109,7 @@ export function handleDispelMagic(
     endSpell?: string;
     reason?: string;
   },
-): Record<string, unknown> {
+): ToolResult {
   const { caster } = input;
   const enemy = input.target.kind === "enemy" ? getEnemy(input.target.id) : null;
   const ally = input.target.kind === "sheet" ? getSheetById(input.target.id) : null;
@@ -118,31 +119,22 @@ export function handleDispelMagic(
       ? { name: ally.name, conditions: ally.conditions, meta: ally.conditionMeta as ConditionMetaMap }
       : null;
   if (!holder) {
-    return { error: "Unknown target for Dispel Magic; use an id from GAME STATE." };
+    return { error: "Unknown target for Dispel Magic; use an id from GAME STATE.", retry: true };
   }
-  const wanted = input.endSpell ? spellKey(input.endSpell) : null;
+  const wanted = input.endSpell ? textKey(input.endSpell) : null;
   const held = spellsOn(holder.conditions, holder.meta).filter(
-    (entry) => !wanted || spellKey(entry.spell) === wanted,
+    (entry) => !wanted || textKey(entry.spell) === wanted,
   );
-  if (!held.length) {
-    return {
-      error: `${holder.name} holds no spell the server tracks${input.endSpell ? ` named ${input.endSpell}` : ""}, so ${input.spell} would end nothing. The slot was not spent.`,
-    };
-  }
   const authors = spellAuthorsFor(campaign);
   const encounter = getActiveEncounter(campaign.id);
+  let ward: string | null = null;
   if (encounter) {
-    const reach = spellReachProblem({
-      encounterId: encounter.id,
-      casterId: caster.id,
-      casterName: caster.name,
-      targetId: input.target.id,
-      targetName: holder.name,
-      facts: spellFactsFor(input.spell, authors),
-    });
+    const near = { encounterId: encounter.id, casterId: caster.id, targetId: input.target.id, targetName: holder.name, facts: spellFactsFor(input.spell, authors) };
+    const reach = spellReachProblem({ ...near, casterName: caster.name });
     if (reach) {
-      return { error: reach };
+      return reach;
     }
+    ward = spellWardOn(near);
   }
   const cast = applyDmMutation(
     campaign,
@@ -160,6 +152,11 @@ export function handleDispelMagic(
   ).result;
   if ("error" in cast) {
     return cast;
+  }
+  // A ward around the target: the spell is cast, and spent, and ends
+  // nothing on it.
+  if (ward) {
+    return { ok: true, spell: input.spell, target: holder.name, ...(cast.slot ? { slot: cast.slot } : {}), dispelled: [], ...castToNoEffect(ward) };
   }
   const slotLevel = typeof cast.slotLevel === "number" ? cast.slotLevel : 3;
   const ability = caster.spellcasting?.ability ?? "int";
@@ -220,5 +217,12 @@ export function handleDispelMagic(
     dispelled: lines,
     ...(ended.length ? { ended } : {}),
     ...(kept.length ? { stillHeld: kept } : {}),
+    // A target with no spell on it is still one the spell can be cast on:
+    // the slot is spent and nothing ends.
+    ...(held.length
+      ? {}
+      : {
+          note: `${input.spell} is cast on ${holder.name}, and no spell${input.endSpell ? ` named ${input.endSpell}` : ""} is on them: nothing the server tracks ended. Narrate exactly this.`,
+        }),
   };
 }

@@ -1,12 +1,13 @@
 "use client";
 
-import { isThievesTools, THIEVES_TOOLS } from "@/lib/srd/features";
+import { classFeaturesFor, isThievesTools, subclassCastingProfileFor, THIEVES_TOOLS } from "@/lib/srd/features";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Dices, Loader2, Sparkles, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 import { InfoButton, InfoChipList } from "@/components/ui/InfoDialog";
 import { describeFeature, describeSkill } from "@/lib/help";
+import { useClassFeatureText } from "@/lib/classes/use-feature-text";
 import {
   findOptionByFeatureName,
   openOptionSlots,
@@ -69,6 +70,7 @@ import { subclassGrants } from "@/lib/srd/subclass-training";
 import FeatChoicesFields from "@/app/characters/builder/FeatChoicesFields";
 import { useArchetypes } from "@/app/characters/builder/useBuilderOptions";
 import type { AsiChoice, CharacterSheet } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
 
 
 // Guided level-up, one level at a time. The dialog gathers the CHOICES the
@@ -158,6 +160,8 @@ export function LevelUpDialog({
   // single-class characters keep their one-click flow.
   const classList = useMemo(() => classListFor(sheet), [sheet]);
   const [classChoice, setClassChoice] = useState(classList[0].id);
+  // A genre class's feature text arrives on demand (issue 411).
+  useClassFeatureText([classChoice]);
   const [skillPick, setSkillPick] = useState("");
 
   const levelsGained = 1;
@@ -214,7 +218,10 @@ export function LevelUpDialog({
     setOptionPicks((current) =>
       current.filter((pick) => {
         const option = findOptionByFeatureName(pick);
-        return option !== null && optionSlotsFor(classChoice, name, classLevelAfter, option.k) > 0;
+        return (
+          option !== null &&
+          optionSlotsFor(classChoice, name, classLevelAfter, option.k, classFeaturesFor(classChoice, name, classLevelAfter)) > 0
+        );
       }),
     );
   }
@@ -282,7 +289,7 @@ export function LevelUpDialog({
   const stylesToPick = Math.max(0, styleSlots - currentStyles.length);
   const needsStyle = stylesToPick > 0;
   const styleOptions = FIGHTING_STYLES.filter(
-    (style) => !currentStyles.some((name) => name.toLowerCase() === style.name.toLowerCase()),
+    (style) => !currentStyles.some((name) => textKey(name) === textKey(style.name)),
   );
 
   // Pick-lists that gained slots at this level: invocations, maneuvers,
@@ -303,16 +310,23 @@ export function LevelUpDialog({
   // archetypes are prose only and fill in behind them.
   const subclassOptions = [...builtInSubclasses];
   for (const archetype of archetypes) {
-    if (!subclassOptions.some((name) => name.toLowerCase() === archetype.name.toLowerCase())) {
+    if (!subclassOptions.some((name) => textKey(name) === textKey(archetype.name))) {
       subclassOptions.push(archetype.name);
     }
   }
 
+  // What the class grants at its new level, the subclass picked here
+  // included: a workshop subclass's Combat Superiority opens its maneuvers
+  // before the sheet holds it.
+  const grantedAfter = classFeaturesFor(classChoice, subclassChoice || entrySubclass, classLevelAfter).map((feature) => ({
+    ...feature,
+    classId: classChoice,
+  }));
   const openSlots = openOptionSlots({
     classId: classChoice,
     subclass: subclassChoice || entrySubclass,
     level: classLevelAfter,
-    features: [...sheet.features, ...optionPicks.map((name) => ({ name }))],
+    features: [...sheet.features, ...grantedAfter, ...optionPicks.map((name) => ({ name }))],
     feats: [...sheet.feats, ...featsPicked],
   });
   const needsOptions = openSlots.some((slot) => slot.remaining > 0);
@@ -334,12 +348,17 @@ export function LevelUpDialog({
     (caster) => caster.classId.toLowerCase() === classChoice.toLowerCase(),
   );
   const effectiveSubclass = subclassChoice || entrySubclass;
+  const progression =
+    subclassCastingProfileFor(classChoice, effectiveSubclass) ??
+    casterEntry?.progression ??
+    (sheet.spellcasting?.casters?.length ? undefined : sheet.spellcasting?.progression);
   // The chosen class's casting at its new level, from the engine's tables:
   // an Eldritch Knight or Arcane Trickster casts from the wizard's list
   // (U:UB1), which the class row alone (no spell ability) never showed.
   const caster = casterPreview({
     classId: classChoice,
     subclass: effectiveSubclass,
+    progression,
     level: classLevelAfter,
     abilitiesAfter: after.abilities,
   });
@@ -391,14 +410,14 @@ export function LevelUpDialog({
   const lastStep = stepIndex === steps.length - 1;
 
   const newFeatureNames = useMemo(() => {
-    const current = new Set(sheet.features.map((feature) => feature.name.toLowerCase()));
+    const current = new Set(sheet.features.map((feature) => textKey(feature.name)));
     const withSubclass = nextClasses.map((entry) =>
       entry.id.toLowerCase() === classChoice.toLowerCase()
         ? { ...entry, subclass: subclassChoice || entry.subclass }
         : entry,
     );
     return populateFeaturesForClasses(sheet.features, withSubclass, sheet.race)
-      .filter((feature) => !current.has(feature.name.toLowerCase()))
+      .filter((feature) => !current.has(textKey(feature.name)))
       .map((feature) => feature.name);
   }, [sheet.features, nextClasses, classChoice, subclassChoice, sheet.race]);
 
@@ -466,7 +485,7 @@ export function LevelUpDialog({
     return sheet.spellcasting?.cantrips ?? [];
   }, [sheet.spellcasting, isMulticlassPath, casterEntry, isNewClass]);
   const alreadyKnown = useMemo(
-    () => new Set([...knownList, ...pendingList, ...cantripList].map((name) => name.toLowerCase())),
+    () => new Set([...knownList, ...pendingList, ...cantripList].map((name) => textKey(name))),
     [knownList, pendingList, cantripList],
   );
   // Read with the scores after this level's improvement (U:UB6).
@@ -476,12 +495,12 @@ export function LevelUpDialog({
     () =>
       new Set(
         subclassSpellsFor(classChoice, effectiveSubclass, classLevelAfter).map((name) =>
-          name.toLowerCase(),
+          textKey(name),
         ),
       ),
     [classChoice, effectiveSubclass, classLevelAfter],
   );
-  const heldSpells = [...new Set([...knownList, ...pendingList].map((name) => name.toLowerCase()))].filter(
+  const heldSpells = [...new Set([...knownList, ...pendingList].map((name) => textKey(name)))].filter(
     (name) => !grantedFree.has(name),
   ).length;
   const bookGain = bookStyle
@@ -518,12 +537,13 @@ export function LevelUpDialog({
     if (remainingPicks !== null && spellPicks.length >= remainingPicks) {
       return { short: "All new spells chosen", long: `That is every new spell for this level. Untick one to choose ${name}.` };
     }
-    if (!isThirdCaster(classChoice, effectiveSubclass)) {
+    if (!isThirdCaster(classChoice, effectiveSubclass, progression)) {
       return null;
     }
     const offSchool = thirdCasterPickRefusal({
       classId: classChoice,
       subclass: effectiveSubclass,
+      progression,
       level: classLevelAfter,
       known: knownList,
       picks: spellPicks,
@@ -535,14 +555,14 @@ export function LevelUpDialog({
   // What can still be learned: the class list minus what is already held,
   // cantrips only while there is a cantrip to choose.
   const levelUpTiles: SpellTile[] = spellPool
-    .filter((spell) => !alreadyKnown.has(spell.name.toLowerCase()))
+    .filter((spell) => !alreadyKnown.has(textKey(spell.name)))
     .filter((spell) => spell.level > 0 || Boolean(remainingCantrips))
     .map((spell) => {
       const picked =
         spell.level === 0 ? cantripPicks.includes(spell.name) : spellPicks.includes(spell.name);
       // Domain, oath and circle spells arrive on their own and cost nothing:
       // shown, locked, never a pick that eats the allowance.
-      const granted = grantedFree.has(spell.name.toLowerCase());
+      const granted = grantedFree.has(textKey(spell.name));
       return {
         name: spell.name,
         level: spell.level,
@@ -1029,7 +1049,7 @@ export function LevelUpDialog({
                         <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
                           {slot.options.map((option) => {
                             const picked = slot.chosen.some(
-                              (name) => name.toLowerCase() === option.n.toLowerCase(),
+                              (name) => textKey(name) === textKey(option.n),
                             );
                             const already =
                               picked &&
@@ -1123,7 +1143,7 @@ export function LevelUpDialog({
                   <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
                     {subclassOptions.map((name) => {
                       const archetype = archetypes.find(
-                        (entry) => entry.name.toLowerCase() === name.toLowerCase(),
+                        (entry) => textKey(entry.name) === textKey(name),
                       );
                       return (
                         <div
@@ -1142,7 +1162,7 @@ export function LevelUpDialog({
                           >
                             <span>{name}</span>
                             {builtInSubclasses.some(
-                              (entry) => entry.toLowerCase() === name.toLowerCase(),
+                              (entry) => textKey(entry) === textKey(name),
                             ) ? (
                               <span className="text-xs text-stone-500">full features</span>
                             ) : (
@@ -1237,7 +1257,7 @@ export function LevelUpDialog({
                       </p>
                       <div className="stagger-pop flex flex-wrap gap-1.5">
                         {knownList
-                          .filter((name) => !grantedFree.has(name.toLowerCase()))
+                          .filter((name) => !grantedFree.has(textKey(name)))
                           .map((name) => {
                             const picked = forgetPick === name;
                             return (

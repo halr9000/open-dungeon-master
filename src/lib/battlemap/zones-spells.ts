@@ -7,6 +7,8 @@
 // The rows are read at use, never copied onto a stored zone, so a corrected
 // row corrects the areas already on a board. Pure data: no DB.
 
+import { textKey } from "@/lib/language/text-logic";
+
 export type ZoneShape =
   // A burst around a point: every square within `feet` of it (a cylinder
   // on the grid is the same thing).
@@ -291,7 +293,7 @@ export const ZONE_ROWS: Record<string, ZoneRow> = {
     shape: "wall", feet: 100, level: 6, concentration: true, rounds: 10 * MINUTE,
     blocks: {}, tone: "frost",
     sections: { feet: 10, ac: 12, hp: 30, vulnerable: "fire", leaves: "frigid air" },
-    summary: "a wall of ice: nothing walks or sees through it; each 10-foot section (\"Wall of Ice section 1\" from its first end) has AC 12 and 30 hit points, double damage from fire, and breaks with damage_object, leaving frigid air",
+    summary: "a wall of ice: nothing walks or sees through it; each 10-foot section (section 1 at its first end) has AC 12 and 30 hit points, double damage from fire, and breaks with damage_object, leaving frigid air",
   },
   // What a broken section of a Wall of Ice leaves in its space (SRD 5.1):
   // laid by the engine (src/lib/dm/zone-walls.ts), never cast; it lasts as
@@ -351,9 +353,7 @@ export const ZONE_ROWS: Record<string, ZoneRow> = {
 };
 
 // Names a spell is kept under by its authors ("Evard's Black Tentacles").
-const ALIASES: Record<string, string> = {
-  "evard's black tentacles": "black tentacles",
-};
+const ALIASES = new Map([[textKey("Evard's Black Tentacles"), "black tentacles"]]);
 
 // A spell by its name, or a laid area by the spell it runs as: a table's
 // workshop copy under a name of its own ("Silkbind") lays and reads the row
@@ -363,8 +363,8 @@ export type ZoneNamed = string | { spell: string; runsAs?: string };
 
 export function zoneKey(spell: ZoneNamed): string {
   const name = typeof spell === "string" ? spell : spell.runsAs || spell.spell;
-  const key = name.trim().toLowerCase().replace(/\s+/g, " ");
-  return ALIASES[key] ?? key;
+  const key = textKey(name);
+  return ALIASES.get(key) ?? key;
 }
 
 // The spell's own name as a key, never what it runs as: what a caster's

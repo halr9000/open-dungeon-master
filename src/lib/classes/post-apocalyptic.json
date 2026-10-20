@@ -33,6 +33,10 @@
         "post_apocalyptic"
       ],
       "blurb": "The ruins provide, if you know where to look. Quick fingers, sharp eyes, and a bag of exactly the right junk.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -74,6 +78,11 @@
         "post_apocalyptic"
       ],
       "blurb": "Chrome-spiked and fearless, living fast on the dead highways where the loudest engine makes the law.",
+      "roles": [
+        "Tank",
+        "DPS"
+      ],
+      "playsLike": "Fighter",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -111,6 +120,10 @@
         "post_apocalyptic"
       ],
       "blurb": "The Fall rewrote them. Mutation is their magic, unstable and blooming, and their body never stopped adapting.",
+      "roles": [
+        "DPS"
+      ],
+      "playsLike": "Wizard",
       "spellListFrom": "sorcerer",
       "knownCaster": true,
       "castingLabel": "Mutations",
@@ -149,6 +162,11 @@
         "post_apocalyptic"
       ],
       "blurb": "They coax old-world machines back to life and wield rebuilt wonders the new world barely understands.",
+      "roles": [
+        "Control",
+        "Utility"
+      ],
+      "playsLike": "Wizard",
       "spellListFrom": "wizard",
       "knownCaster": false,
       "castingLabel": "Reclaimed Tech",
@@ -190,6 +208,10 @@
         "post_apocalyptic"
       ],
       "blurb": "A voice crying hope in the wasteland. Their sermons close wounds, steady hands, and occasionally call down judgment.",
+      "roles": [
+        "Healer"
+      ],
+      "playsLike": "Cleric",
       "spellListFrom": "cleric",
       "knownCaster": false,
       "castingLabel": "Sermons",
@@ -231,6 +253,11 @@
         "post_apocalyptic"
       ],
       "blurb": "Bonded to the wasteland's beasts, they run with a loyal companion and speak the old green tongue of survival.",
+      "roles": [
+        "DPS",
+        "Utility"
+      ],
+      "playsLike": "Fighter + Rogue",
       "spellListFrom": "druid",
       "knownCaster": true,
       "castingLabel": "Bonds",

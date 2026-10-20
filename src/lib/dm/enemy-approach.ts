@@ -18,8 +18,9 @@ import { publishEphemeral } from "@/lib/events";
 import { swingMode, type EnemyAttackProfile } from "@/lib/dm/enemy-profile";
 import { enemySpeedTiles } from "@/lib/dm/enemy-speed";
 import { endsOwedTurn, markEnemyActed } from "@/lib/dm/can-act";
-import { missileProblem, zoneStepsFor } from "@/lib/dm/zone-rules";
+import { missileDeflection, zoneStepsFor } from "@/lib/dm/zone-rules";
 import { zonesAfterMove } from "@/lib/dm/zone-triggers";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // An enemy getting to where its attack reaches, on its own turn (SRD 5.1,
 // Movement and Position): it stands up from prone for half its speed, walks
@@ -33,7 +34,9 @@ type XY = { x: number; y: number };
 
 export type Approach = {
   // The refusal, when the attack cannot be made this turn.
-  blocked?: Record<string, unknown>;
+  blocked?: ToolError & { heldGround?: string };
+  // A Wind Wall between them: why a ranged weapon swing misses.
+  deflected?: string;
   movedTo?: string;
   opportunityAttacks?: string[];
   // Squares between the two after the approach; null with no board.
@@ -142,7 +145,7 @@ export function approachTarget(
   const sightFrom = (at: XY) => {
     const to = nearestFootprintTile(target, theirs, at);
     const from = nearestFootprintTile(at, mine, to);
-    return hasLineOfSight(map.terrain, map.width, map.height, from.x, from.y, to.x, to.y);
+    return hasLineOfSight(map.terrain, map.width, from.x, from.y, to.x, to.y);
   };
   const reachesFrom = (at: XY) => {
     const distance = apart(at);
@@ -155,13 +158,16 @@ export function approachTarget(
   const startDistance = apart(origin);
 
   if (reachesFrom(origin)) {
-    return { distance: startDistance };
+    // A Wind Wall between them turns its arrows from where it stands too.
+    const deflected = swingMode(profile, startDistance)?.ranged ? missileDeflection(encounterId, enemy.id, targetRef, target.name) : null;
+    return deflected ? { distance: startDistance, deflected } : { distance: startDistance };
   }
   if (holdGround) {
     return {
       distance: startDistance,
       blocked: {
         error: `${attacker.name} is ${startDistance * 5} ft from ${target.name}, out of reach, and ${holdGround.holder} holds a readied action (${holdGround.trigger}). It does not walk in and attack in one call while someone waits on a trigger: move it with move_token, release ${holdGround.holder}'s readied action if its movement fired the trigger (or let the trigger pass), then call enemy_attack. Nothing was spent.`,
+        retry: true,
         heldGround: holdGround.holder,
       },
     };
@@ -219,9 +225,10 @@ export function approachTarget(
     ...(provoked.length ? { opportunityAttacks: provoked } : {}),
   };
   if (reachesFrom(landing) && swingMode(profile, distance)) {
-    // A Wind Wall between them turns its arrows (zone-rules.ts).
-    const blown = swingMode(profile, distance)?.ranged ? missileProblem(encounterId, enemy.id, targetRef, target.name) : null;
-    return blown ? { ...base, blocked: { error: blown } } : base;
+    // A Wind Wall between them turns its arrows (zone-rules.ts): each shot
+    // through it is made and misses.
+    const deflected = swingMode(profile, distance)?.ranged ? missileDeflection(encounterId, enemy.id, targetRef, target.name) : null;
+    return deflected ? { ...base, deflected } : base;
   }
   const why = fear
     ? `${attacker.name} is frightened and will not move closer to what it fears`
@@ -234,6 +241,7 @@ export function approachTarget(
     ...base,
     blocked: {
       error: `${why}${moved ? `; it moved to (${landing.x},${landing.y})` : ""}. Use a ranged option, a different target, or another action.`,
+      retry: true,
     },
   };
 }

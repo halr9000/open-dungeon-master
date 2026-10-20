@@ -1,0 +1,15 @@
+# Monster: Bog Hag
+AC 15, HP 52, CR 3, Size Medium, Type fey, Speed 30 ft.
+Attack: Claws +5, 2d6+3 slashing
+Trait: Mimicry. The hag can mimic animal sounds and humanoid voices.
+A gaunt figure draped in river weed, who trades favours for names.
+
+# Monster: Lantern Eel
+AC 13, HP 22, CR 1/2, Size Small, Type beast, Speed 0 ft., swim 40 ft.
+Attack: Bite +4, 1d6+2 piercing
+Trait: Glow. The eel sheds dim light in a 10-foot radius.
+It lures swimmers toward the deep water with a soft blue light.
+
+# Lore: The Drowned Mill
+The mill stopped turning the night the river ran red. Nobody in Lowford
+will say who opened the sluice, but everyone knows the hag was paid.

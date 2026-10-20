@@ -57,9 +57,12 @@ const RACE_FAMILY: Record<string, string> = {
   dragonborn: "dragonborn",
   rock_gnome: "gnome",
   forest_gnome: "gnome",
-  deep_gnome: "gnome",
+  deep_gnome: "deep-gnome",
+  gnome_deep: "deep-gnome",
+  svirfneblin: "deep-gnome",
   half_elf: "half-elf",
   half_orc: "half-orc",
+  orc: "orc",
   tiefling: "tiefling",
   aasimar: "aasimar",
   goliath: "goliath",
@@ -67,16 +70,106 @@ const RACE_FAMILY: Record<string, string> = {
   tabaxi: "tabaxi",
   kenku: "kenku",
   tortle: "tortle",
-  fire_genasi: "genasi",
-  water_genasi: "genasi",
-  air_genasi: "genasi",
-  earth_genasi: "genasi",
+  fire_genasi: "genasi-fire",
+  genasi_fire: "genasi-fire",
+  water_genasi: "genasi-water",
+  genasi_water: "genasi-water",
+  air_genasi: "genasi-air",
+  genasi_air: "genasi-air",
+  genasi: "genasi",
+  earth_genasi: "genasi-earth",
+  genasi_earth: "genasi-earth",
   changeling: "changeling",
   warforged: "warforged",
   goblin: "goblin",
   bugbear: "bugbear",
   lizardfolk: "lizardfolk",
+  // Tome of Heroes (Kobold Press) via Open5e: v1 slugs and v2 "toh_" keys.
+  alseid: "alseid",
+  toh_alseid: "alseid",
+  catfolk: "catfolk",
+  toh_catfolk: "catfolk",
+  malkin: "malkin",
+  toh_malkin: "malkin",
+  pantheran: "pantheran",
+  toh_pantheran: "pantheran",
+  derro: "derro",
+  toh_derro: "derro",
+  far_touched: "derro",
+  toh_far_touched: "derro",
+  mutated: "derro",
+  toh_mutated: "derro",
+  uncorrupted: "derro",
+  toh_uncorrupted: "derro",
+  erina: "erina",
+  toh_erina: "erina",
+  minotaur: "minotaur",
+  toh_minotaur: "minotaur",
+  bhain_kwai: "minotaur",
+  toh_bhain_kwai: "minotaur",
+  boghaid: "minotaur",
+  toh_boghaid: "minotaur",
+  mushroomfolk: "mushroomfolk",
+  toh_mushroomfolk: "mushroomfolk",
+  acid_cap: "mushroomfolk",
+  toh_acid_cap: "mushroomfolk",
+  favored: "mushroomfolk",
+  toh_favored: "mushroomfolk",
+  morel: "mushroomfolk",
+  toh_morel: "mushroomfolk",
+  satarre: "satarre",
+  toh_satarre: "satarre",
+  shade: "shade",
+  toh_shade: "shade",
+  darakhul: "darakhul-human",
+  toh_darakhul: "darakhul-human",
+  derro_heritage: "darakhul-derro",
+  toh_derro_heritage: "darakhul-derro",
+  dragonborn_heritage: "darakhul-dragonborn",
+  toh_dragonborn_heritage: "darakhul-dragonborn",
+  drow_heritage: "darakhul-drow",
+  toh_drow_heritage: "darakhul-drow",
+  dwarf_heritage: "darakhul-dwarf",
+  toh_dwarf_heritage: "darakhul-dwarf",
+  elfshadow_fey_heritage: "darakhul-elf",
+  toh_elfshadow_fey_heritage: "darakhul-elf",
+  gnome_heritage: "darakhul-gnome",
+  toh_gnome_heritage: "darakhul-gnome",
+  halfling_heritage: "darakhul-halfling",
+  toh_halfling_heritage: "darakhul-halfling",
+  humanhalf_elf_heritage: "darakhul-human",
+  toh_humanhalf_elf_heritage: "darakhul-human",
+  kobold_heritage: "darakhul-kobold",
+  toh_kobold_heritage: "darakhul-kobold",
+  tiefling_heritage: "darakhul-tiefling",
+  toh_tiefling_heritage: "darakhul-tiefling",
+  trollkin_heritage: "darakhul-trollkin",
+  toh_trollkin_heritage: "darakhul-trollkin",
+  ravenfolk: "darakhul-ravenfolk",
+  toh_ravenfolk: "darakhul-ravenfolk",
+  gearforged: "warforged",
+  toh_gearforged: "warforged",
+  dwarf_chassis: "gearforged-dwarf",
+  toh_dwarf_chassis: "gearforged-dwarf",
+  gnome_chassis: "gearforged-gnome",
+  toh_gnome_chassis: "gearforged-gnome",
+  kobold_chassis: "gearforged-kobold",
+  toh_kobold_chassis: "gearforged-kobold",
+  human_chassis: "warforged",
+  toh_human_chassis: "warforged",
+  toh_drow: "drow",
+  delver: "drow",
+  toh_delver: "drow",
+  fever_bit: "drow",
+  toh_fever_bit: "drow",
+  purified: "drow",
+  toh_purified: "drow",
 };
+
+// Every race id with a plate of its own, for the test that walks them.
+export function raceFamilyIds(): string[] {
+  return Object.keys(RACE_FAMILY);
+}
 
 export function raceFamily(raceId: string | null | undefined): string | null {
   const id = String(raceId ?? "").trim().toLowerCase().replace(/[\s-]/g, "_");
@@ -726,8 +819,12 @@ export const GENRE_ENEMY_TOKENS: Readonly<Record<string, GenreEnemyTable>> = {
   },
 };
 
-function genreNameKey(value: string | null | undefined): string {
-  return familyKey(value).replace(/^the-/, "");
+// A token's English names as a table may write them: with and without "The"
+// ("The Skittering", "Skittering", "the Burglar"), spelled on the table. The
+// name a monster has is looked up as written.
+function genreNameSpellings(name: string): string[] {
+  const bare = familyKey(name).replace(/^the-/, "");
+  return [familyKey(name), bare, `the-${bare}`];
 }
 
 const GENRE_ENEMY_LOOKUP: Record<string, { names: Map<string, string>; slugs: Record<string, string> }> =
@@ -736,7 +833,9 @@ const GENRE_ENEMY_LOOKUP: Record<string, { names: Map<string, string>; slugs: Re
       genre,
       {
         names: new Map(
-          Object.entries(table.names).flatMap(([plate, names]) => names.map((name) => [genreNameKey(name), plate] as const)),
+          Object.entries(table.names).flatMap(([plate, names]) =>
+            names.flatMap((name) => genreNameSpellings(name).map((spelling) => [spelling, plate] as const)),
+          ),
         ),
         slugs: table.slugs,
       },
@@ -750,7 +849,7 @@ function genreEnemyPlate(genre: string, slug: string | null | undefined, name: s
   if (!table) {
     return null;
   }
-  const byName = table.names.get(genreNameKey(name));
+  const byName = table.names.get(familyKey(name));
   if (byName) {
     return byName;
   }

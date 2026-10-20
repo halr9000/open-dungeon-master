@@ -6,6 +6,8 @@ The receiver checks the current table, then starts an agent turn through
 that agent's own client API. A webhook or MCP notification alone cannot
 wake an idle Codex desktop conversation, Claude chat or Grok chat.
 
+An agent nothing can send requests to can use a poll link instead (below).
+
 This implementation includes a Codex app-server receiver. It owns a
 separate persistent Codex thread on the player's computer. It does not
 inject messages into an existing desktop chat. Other agents need their own
@@ -232,6 +234,71 @@ connection on this server can then subscribe any receiver URL on that host,
 with whatever credential the player supplies. The credential is the
 player's own, so the server cannot act as anyone else there, but approve a
 shared platform's origin knowing that.
+
+## Poll links: for an agent nothing can send to
+
+Some agents cannot take incoming requests at all: a hosted assistant with no
+inbound URL whose hooks can only check a web address on a timer. For those, a
+subscription can be a **poll link** instead of a receiver. The server sends
+nothing. The agent's hook asks the link what its character may do now, and
+wakes the agent when that changes.
+
+1. **Admin:** under **Admin > Player agents**, turn on **Allow poll links**.
+   They are off by default. Turning them off deletes every link, so turning
+   them on again never brings an old one back.
+2. **Player:** in **Settings > Connected agents**, connect the agent with
+   **Read** and **Play**, limited to that campaign, then click **Make a poll
+   link** under the token. The link is shown once; **Poll link** on the
+   connection's row later makes a new one, which replaces the old. An agent
+   can also make one
+   itself with `odm_subscribe_player_webhook` and `delivery: "poll"` (no
+   `url`); it gets a `pollPath` to put the server's address in front of.
+3. **Agent:** give its hook the link to `GET` every minute or so. Wake the
+   agent when `wake` is `true` and `fingerprint` differs from the fingerprint
+   it **last woke the agent for** (not the last one it saw). The fingerprint
+   covers only the campaign's lifecycle and the opportunity IDs. While the DM
+   narrates, the list is briefly empty and then the same decision comes back
+   with the same fingerprint, so comparing with the last wake, not the last
+   check, keeps one decision to one wake.
+
+The link answers:
+
+```json
+{
+  "subscriptionId": "…",
+  "campaignId": "…",
+  "characterId": "…",
+  "lifecycle": "active",
+  "busy": false,
+  "wake": true,
+  "fingerprint": "9f2c41aa0b7d3e15",
+  "opportunities": [{ "opportunityId": "…", "type": "turn_started", "phase": "act" }]
+}
+```
+
+These are the same opportunities a pushed webhook carries (see the event
+contract below), with no story text and no names. Once woken, the agent works
+as a webhook-driven one does: it reads `odm_get_player_webhook_opportunities`
+with the `subscriptionId`, reads the table, and puts the `subscriptionId` and
+the current `opportunityId` in every `odm_take_action`, `odm_answer_roll` and
+`odm_end_turn` call.
+
+* **The link is the secret.** It needs no login, so a hook that can hold no
+  credential can use it. Only its SHA-256 is stored. Keep it in the hook's
+  settings, not in a chat, and remember that it sits in the URL: tunnel,
+  reverse-proxy and the agent platform's own request logs can record it.
+  Anyone holding it can see what the answer above shows, for that one
+  character: the campaign, character and subscription IDs, whether the
+  campaign is active, paused or ended, whether the DM is busy, and the kind of
+  decision waiting (a combat turn, a roll or a response). Never the story,
+  names, sheets or anything another player sees.
+* It stops when the subscription is removed (`odm_unsubscribe_player_webhook`)
+  or replaced by a new link, the connection is revoked or expires, the
+  character is no longer the one the player plays, or an admin turns poll
+  links off. An unknown or stopped link answers `404`.
+* One answer per link every two seconds per server process; a faster check
+  gets `429` with `Retry-After`.
+* A character has one subscription: a poll link or a receiver, not both.
 
 ## Wake a Claude Code routine
 

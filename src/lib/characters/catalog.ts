@@ -28,7 +28,7 @@ import { defaultRng } from "@/lib/dice";
 import type { GameSettings } from "@/lib/schemas/game-settings";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import authoredFeatsJson from "@/lib/srd/authored-feats.json";
-import { bundledSubclassName } from "@/lib/srd/features";
+import { bundledSubclassName, subclassNamesFor } from "@/lib/srd/features";
 import { packFeatText } from "@/lib/srd/feat-text";
 import { racialFeatCount } from "@/lib/srd/race-id";
 import { checklistSpell } from "@/lib/srd/spell-lists";
@@ -48,6 +48,7 @@ import type {
   RaceGrants,
   SpellFacts,
 } from "@/lib/srd/legality/types";
+import { textKey } from "@/lib/language/text-logic";
 
 const lower = (value: string) => value.trim().toLowerCase();
 const AUTHORED_FEATS = (authoredFeatsJson as { feats: FeatFacts[] }).feats;
@@ -150,12 +151,7 @@ export function backgroundGrantsFor(
 
 let priceIndex: Map<string, ItemPrice> | null = null;
 
-const priceKey = (name: string) =>
-  name
-    .toLowerCase()
-    .replace(/\(\s*\d+\s*\)\s*$/, " ")
-    .replace(/[^a-z0-9+]+/g, " ")
-    .trim();
+const priceKey = (name: string) => textKey(name.replace(/\(\s*\d+\s*\)\s*$/, " "));
 
 // Name to price, built once from the pack's items. A name the pack lists as
 // mundane gear is mundane, whatever else shares it (a Potion of Healing is
@@ -227,16 +223,16 @@ export function spellFactsFor(name: string, authors?: Authors): SpellFacts | nul
 }
 
 export function featFactsFor(name: string, authors?: Authors): FeatFacts | null {
-  const wanted = lower(name);
+  const wanted = textKey(name);
   if (!wanted) {
     return null;
   }
-  const authored = AUTHORED_FEATS.find((feat) => lower(feat.name) === wanted);
+  const authored = AUTHORED_FEATS.find((feat) => textKey(feat.name) === wanted);
   if (authored) {
     return { name: authored.name, prerequisite: authored.prerequisite ?? "", desc: authored.desc ?? "" };
   }
   const found = searchFeats({ q: name.trim(), limit: 50, userIds: authorIds(authors), includeArchived: true }).find(
-    (entry) => lower(entry.name) === wanted,
+    (entry) => textKey(entry.name) === wanted,
   );
   if (!found) {
     return null;
@@ -244,13 +240,6 @@ export function featFactsFor(name: string, authors?: Authors): FeatFacts | null 
   const text = packFeatText(found.data);
   const runsAs = found.source === "homebrew" && typeof found.data.runsAs === "string" ? found.data.runsAs : "";
   return { name: found.name, prerequisite: text.prerequisite, desc: text.desc, ...(runsAs ? { runsAs } : {}) };
-}
-
-// A feat's text as one string, wherever the pack keeps it (src/lib/srd/
-// feat-text.ts), so the grants in it (feat-grants.ts, feat-spells.ts) are
-// found.
-export function packFeatDesc(data: Record<string, unknown>): string {
-  return packFeatText(data).desc;
 }
 
 export function subclassIsOffered(
@@ -261,10 +250,25 @@ export function subclassIsOffered(
   if (bundledSubclassName(classId, name)) {
     return true;
   }
-  const wanted = lower(name);
+  const wanted = textKey(name);
   return listArchetypes(classId, { limit: 200, userIds: authorIds(authors), includeArchived: true }).some(
-    (entry) => lower(entry.name) === wanted || lower(entry.slug) === wanted,
+    (entry) => textKey(entry.name) === wanted || textKey(entry.slug) === wanted,
   );
+}
+
+// The subclasses a class may pick at this table, by name: the bundled ones
+// with their feature tables first, then the content pack's and the table's
+// workshop archetypes, as the level-up dialog lists them. A forgotten
+// (archived) entry still answers subclassIsOffered for a sheet that holds
+// it, but is not offered to a new pick.
+export function offeredSubclasses(classId: string, authors?: Authors): string[] {
+  const names = [...subclassNamesFor(classId)];
+  for (const entry of listArchetypes(classId, { limit: 200, userIds: authorIds(authors) })) {
+    if (!names.some((name) => textKey(name) === textKey(entry.name))) {
+      names.push(entry.name);
+    }
+  }
+  return names;
 }
 
 // ---- the context ----

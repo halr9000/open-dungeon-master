@@ -176,6 +176,15 @@ export class BridgeSession {
       this.waiter?.onDelta?.(event.text);
       return;
     }
+    if (event.type === "tool_round") {
+      // The text so far came before a tool call, so it is not the message:
+      // a draft, which stands only if nothing is written after.
+      if (this.text.trim()) {
+        this.draft = this.text;
+      }
+      this.clearText();
+      return;
+    }
     if (event.type === "turn_end") {
       this.finished = true;
       this.lastUsage = event.usage;
@@ -772,7 +781,8 @@ async function completeWithHarness(
         binary,
         system: rendered.system,
         model,
-        effort: config.effort,
+        // The bookkeeping model's own effort when the admin set one.
+        effort: context.role === "utility" ? config.utilityEffort || config.effort : config.effort,
         ...(speed ? { speed } : {}),
         mcp: null,
         cwd,

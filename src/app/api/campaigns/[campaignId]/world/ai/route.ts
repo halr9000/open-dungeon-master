@@ -5,6 +5,7 @@ import { askTheWorld, draftEntry, forgeFromNotes, paintEntry } from "@/lib/dm/wo
 import { imagesAvailable } from "@/lib/capabilities";
 import { publishEphemeral } from "@/lib/events";
 import { parseRef } from "@/lib/worldforge/model";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,6 +50,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ cam
     case "apply": {
       const result = applyForge(campaignId, body);
       publishEphemeral(campaignId, "world_updated", { at: Date.now() });
+      recordsChanged(campaignId, "npc", "lore", "location", "faction", "world");
       return Response.json(result);
     }
   }

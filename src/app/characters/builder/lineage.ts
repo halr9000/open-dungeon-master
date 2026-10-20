@@ -7,6 +7,7 @@
 import { characterPlaceholder, normalizeGender, raceFamily } from "@/lib/placeholders";
 import type { Ability } from "@/lib/schemas/sheet";
 import { canonicalRaceId, srdRaceFor } from "@/lib/content/race-options";
+import { textKey } from "@/lib/language/text-logic";
 
 const BASE = "/assets/placeholders";
 
@@ -32,10 +33,32 @@ export { canonicalRaceId, srdRaceFor };
 // name picks the plate. Order matters: "half-elf" before "elf", a gearforged
 // "dwarf chassis" is a construct before it is a dwarf.
 const FAMILY_WORDS: Array<[RegExp, string]> = [
+  // A darakhul heritage is a ghoul first: the living race's word in its name
+  // must not catch it, so these run before every living family. Ravenfolk is
+  // ToH's one heritage named without the word, and goes to the ghoul too.
+  [/heritage.*derro|derro.*heritage/, "darakhul-derro"],
+  [/heritage.*dragonborn|dragonborn.*heritage/, "darakhul-dragonborn"],
+  [/heritage.*drow|drow.*heritage/, "darakhul-drow"],
+  [/heritage.*dwarf|dwarf.*heritage/, "darakhul-dwarf"],
+  [/heritage.*(human|half[\s_-]?elf)|(human|half[\s_-]?elf).*heritage/, "darakhul-human"],
+  [/heritage.*(elf|fey)|(elf|fey).*heritage/, "darakhul-elf"],
+  [/heritage.*gnome|gnome.*heritage/, "darakhul-gnome"],
+  [/heritage.*halfling|halfling.*heritage/, "darakhul-halfling"],
+  [/heritage.*kobold|kobold.*heritage/, "darakhul-kobold"],
+  [/heritage.*ravenfolk|ravenfolk.*heritage|darakhul.*ravenfolk|ravenfolk.*darakhul/, "darakhul-ravenfolk"],
+  [/heritage.*tiefling|tiefling.*heritage/, "darakhul-tiefling"],
+  [/heritage.*trollkin|trollkin.*heritage/, "darakhul-trollkin"],
+  [/darakhul/, "darakhul-human"],
+  // A gearforged chassis is a construct before it is a dwarf.
+  [/(dwarf|dwarven).*chassis|chassis.*dwarf/, "gearforged-dwarf"],
+  [/gnome.*chassis|chassis.*gnome/, "gearforged-gnome"],
+  [/kobold.*chassis|chassis.*kobold/, "gearforged-kobold"],
   [/chassis|gearforged|warforged/, "warforged"],
-  [/drow/, "drow"],
+  [/drow|delver|fever[\s_-]?bit|purified/, "drow"],
   [/half[\s_-]?elf/, "half-elf"],
-  [/half[\s_-]?orc|(^|[\s_])orc([\s_]|$)/, "half-orc"],
+  [/half[\s_-]?orc/, "half-orc"],
+  [/(^|[\s_(])orc([\s_)]|$)/, "orc"],
+  [/deep[\s_-]?gnome|gnome[\s_(-]+deep|svirfneblin/, "deep-gnome"],
   [/dwarf/, "dwarf"],
   [/halfling|lightfoot|stout/, "halfling"],
   [/elf/, "elf"],
@@ -45,9 +68,23 @@ const FAMILY_WORDS: Array<[RegExp, string]> = [
   [/aasimar/, "aasimar"],
   [/goliath/, "goliath"],
   [/firbolg/, "firbolg"],
-  [/tabaxi|catfolk|pantheran|malkin/, "tabaxi"],
+  [/malkin/, "malkin"],
+  [/pantheran/, "pantheran"],
+  [/catfolk/, "catfolk"],
+  [/tabaxi/, "tabaxi"],
+  [/minotaur|bhain[\s_-]?kwai|boghaid/, "minotaur"],
+  [/mushroomfolk|acid[\s_-]?cap|morel/, "mushroomfolk"],
+  [/derro|far[\s_-]?touched|uncorrupted/, "derro"],
+  [/alseid/, "alseid"],
+  [/erina/, "erina"],
+  [/satarre/, "satarre"],
+  [/(^|[\s_])shade([\s_]|$)/, "shade"],
   [/kenku|ravenfolk/, "kenku"],
   [/tortle/, "tortle"],
+  [/genasi.*air|air.*genasi/, "genasi-air"],
+  [/genasi.*earth|earth.*genasi/, "genasi-earth"],
+  [/genasi.*fire|fire.*genasi/, "genasi-fire"],
+  [/genasi.*water|water.*genasi/, "genasi-water"],
   [/genasi/, "genasi"],
   [/changeling/, "changeling"],
   [/bugbear/, "bugbear"],
@@ -252,6 +289,27 @@ export function flattenGroups<T>(groups: Array<CardGroupLike<T>>): Array<FlatCar
   );
 }
 
+// What the carousel says when it lands on a lineage: its name, where it sits
+// in the walk, and the setting's seal when it has one. "3 / 40" alone told a
+// screen reader nothing about which people it had reached.
+export function slidePosition(
+  slide: { name: string; recommended?: boolean },
+  index: number,
+  total: number,
+): string {
+  return `${slide.name}, ${index + 1} of ${total}${slide.recommended ? ", recommended" : ""}`;
+}
+
+// Which way a finished touch drag pages the carousel: -1 back, 1 on, 0 for a
+// tap, a short nudge or a drag that was mostly a scroll.
+export const SWIPE_MIN_PX = 48;
+export function swipeStep(dx: number, dy: number): -1 | 0 | 1 {
+  if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 1.5) {
+    return 0;
+  }
+  return dx < 0 ? 1 : -1;
+}
+
 export function wrapIndex(index: number, delta: number, length: number): number {
   if (length <= 0) {
     return 0;
@@ -259,13 +317,14 @@ export function wrapIndex(index: number, delta: number, length: number): number 
   return (((index + delta) % length) + length) % length;
 }
 
-// The grid's search box: every word typed must appear in the name or in the
-// canonical name behind a reskin. Groups left empty drop out.
-export function filterGroups<T extends { name: string; meta?: string }>(
+// The grid's search box: every word typed must appear somewhere the card
+// prints it: the name, the canonical name behind a reskin, the tagline ("Like
+// Fighter + Cleric") or a chip ("Tank", "DEX +2"). Groups left empty drop out.
+export function filterGroups<T extends { name: string; meta?: string; tagline?: string; chips?: string[] }>(
   groups: Array<CardGroupLike<T>>,
   query: string,
 ): Array<CardGroupLike<T>> {
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const words = textKey(query).split(" ").filter(Boolean);
   if (!words.length) {
     return groups;
   }
@@ -273,7 +332,10 @@ export function filterGroups<T extends { name: string; meta?: string }>(
     .map((group) => ({
       ...group,
       options: group.options.filter((option) => {
-        const haystack = `${option.name} ${option.meta ?? ""}`.toLowerCase();
+        const haystackText = [option.name, option.meta, option.tagline, ...(option.chips ?? [])]
+          .filter(Boolean)
+          .join(" ");
+        const haystack = textKey(haystackText);
         return words.every((word) => haystack.includes(word));
       }),
     }))

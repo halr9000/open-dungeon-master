@@ -46,13 +46,14 @@ export function magicImmunityLevel(stats: Traits): number | null {
   return level ? Number(level[1]) : 6;
 }
 
-// Why a spell of this level cannot touch the creature, or null.
-export function magicImmunityProblem(enemy: { displayName: string; stats: Traits }, spell: string, level: number): string | null {
+// A spell of this level cast at the creature has no effect on it (the
+// spell is cast, and spent): the reason, or null.
+export function magicImmunityNote(enemy: { displayName: string; stats: Traits }, spell: string, level: number): string | null {
   const cap = magicImmunityLevel(enemy.stats);
   if (cap === null || level > cap) {
     return null;
   }
-  return `${enemy.displayName} can't be affected or detected by spells of ${ordinal(cap)} level or lower (Limited Magic Immunity), and ${spell} is cast at ${level ? `${ordinal(level)} level` : "cantrip level"}. Nothing was spent; a spell from a higher slot reaches it.`;
+  return `${enemy.displayName} can't be affected by spells of ${ordinal(cap)} level or lower (Limited Magic Immunity): ${spell}, cast at ${level ? `${ordinal(level)} level` : "cantrip level"}, has no effect on it.`;
 }
 
 const ordinal = (n: number) => `${n}${n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th"}`;

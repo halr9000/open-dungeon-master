@@ -21,6 +21,7 @@ import { speedToTiles } from "@/lib/battlemap/movement";
 import { publishEphemeral } from "@/lib/events";
 import { rollCharacterSave } from "@/lib/dm/forced-save";
 import { applyDmMutation } from "@/lib/dm/mutations";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
 
 // Getting on and off a horse, with the PHB's rules attached.
 //
@@ -122,16 +123,16 @@ export function handleMountUp(
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
   turn?: Pick<DmTurn, "actor">,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof mountSchema>;
   try {
     args = mountSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: mount_up needs a characterId and a mount." };
+    return { error: "Invalid arguments: mount_up needs a characterId and a mount.", retry: true };
   }
   const sheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const checked = args.customName
     ? checkMount({
@@ -174,7 +175,7 @@ function spendMountingMovement(
   campaign: Campaign,
   sheet: CharacterSheet,
   turn?: Pick<DmTurn, "actor">,
-): { charged: boolean } | { error: string } {
+): { charged: boolean } | ToolError {
   const encounter = getActiveEncounter(campaign.id);
   const map = encounter?.orderReady ? getBattleMapForEncounter(encounter.id) : null;
   const token = map ? getTokenByRef(map.id, sheet.id) : null;
@@ -183,7 +184,7 @@ function spendMountingMovement(
   }
   const current = encounter.order[encounter.turnIndex];
   if (turn?.actor !== "human_dm" && (current?.kind !== "pc" || current.characterId !== sheet.id)) {
-    return { error: `${sheet.name} mounts or dismounts during their own move only; it is ${current?.name ?? "another combatant"}'s turn.` };
+    return { error: `${sheet.name} mounts or dismounts during their own move only; it is ${current?.name ?? "another combatant"}'s turn. What they declared waits for their turn.`, refused: "rules" };
   }
   const half = Math.floor(speedToTiles(sheet.speed) / 2);
   const mounted = getMounts(campaign.id)[sheet.id];
@@ -191,6 +192,7 @@ function spendMountingMovement(
   if (full - token.movedThisRound < half) {
     return {
       error: `${sheet.name} has too little movement left this turn to ${mounted ? "dismount" : "mount"}: it costs half their speed (${half * 5} ft).`,
+      refused: "rules",
     };
   }
   moveToken(token.id, token.x, token.y, token.movedThisRound + half);
@@ -205,20 +207,20 @@ export function handleDismount(
   sheetsById: Map<string, CharacterSheet>,
   // The turn the thrown rider's save is rolled on.
   turn?: DmTurn,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof dismountSchema>;
   try {
     args = dismountSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: dismount needs a characterId." };
+    return { error: "Invalid arguments: dismount needs a characterId.", retry: true };
   }
   const sheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const current = getMounts(campaign.id)[sheet.id];
   if (!current) {
-    return { error: `${sheet.name} is not mounted.` };
+    return { error: `${sheet.name} is not mounted.`, refused: "rules" };
   }
   const cause = args.cause ?? "voluntary";
   if (cause === "voluntary") {

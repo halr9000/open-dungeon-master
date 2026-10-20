@@ -1,6 +1,8 @@
 import type { Finding } from "@/lib/rulesets/validate";
 import { classFeaturesFor, subclassLevelFor, subclassNamesFor } from "@/lib/srd/features";
 import { featAbilityIncreaseFrom } from "@/lib/srd/feat-effects";
+import { featGrantSpec } from "@/lib/srd/feat-grant-text";
+import { unreadResistances } from "@/lib/workshop/species-traits";
 import { backgroundMechanics, raceMechanics } from "@/lib/content/mechanics";
 
 // What the workshop's checker says about a feat, a background, a species, a
@@ -21,6 +23,17 @@ export function featFindings(name: string, data: Data): Finding[] {
     out.push({ level: "note", text: `Runs at the table as ${String(data.runsAs)}: the server applies its rules under the name ${name || "this feat"}.` });
   } else if (!desc) {
     out.push({ level: "warn", text: "No text and nothing it runs as: the table reads a feat by its words, so this one grants nothing." });
+  }
+  // What the builder hands out from the words (src/lib/srd/feat-grant-text.ts),
+  // so a homebrew feat's grants are seen before a player takes it.
+  const grants = desc ? featGrantWords(desc) : [];
+  if (grants.length) {
+    out.push({ level: "note", text: `From its words the builder grants: ${grants.join("; ")}.` });
+  } else if (desc && !data.runsAs) {
+    out.push({
+      level: "note",
+      text: "Nothing in its words is a grant the builder hands out, so the DM runs it. Written as the books write them (\"Increase your Dexterity by 1\", \"You gain proficiency in the Stealth skill\", \"You learn two languages of your choice\"), the builder grants them; or pick a published feat it runs as.",
+    });
   }
   if (/\b(?:increase|raise)s?\b[^.]*\bby 2\b/i.test(desc) && featAbilityIncreaseFrom(desc) === null) {
     out.push({ level: "warn", text: "Raises a score by 2: an SRD feat that raises a score raises it by 1 (a feat is chosen in place of the +2 of an Ability Score Improvement)." });
@@ -74,6 +87,50 @@ export function speciesFindings(data: Data): Finding[] {
   if (skills > 2) {
     out.push({ level: "note", text: `Grants ${skills} skills: the most any SRD race grants is two (the half-elf's Skill Versatility).` });
   }
+  // The table reads a resistance from a trait's name, never from its words.
+  for (const { trait, types } of unreadResistances(String(data.traits ?? ""))) {
+    out.push({
+      level: "warn",
+      text: `${trait} says it resists ${types.join(" and ")} damage, but the table reads a resistance from a trait's name: pick it under "Add a resistance", or call the trait "${types.map((type) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`).join(" and ")} Resistance".`,
+    });
+  }
+  return out;
+}
+
+const ABILITY_NAMES: Record<string, string> = {
+  str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma",
+};
+const COUNT_WORDS = ["no", "one", "two", "three", "four", "five"];
+const counted = (count: number, one: string, many = `${one}s`) => `${COUNT_WORDS[count] ?? count} ${count === 1 ? one : many}`;
+const listed = (items: string[], last: "and" | "or") =>
+  items.length > 1 ? `${items.slice(0, -1).join(", ")} ${last} ${items[items.length - 1]}` : (items[0] ?? "");
+const titled = (name: string) => name.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+// A feat's grants as the builder reads them from its words.
+export function featGrantWords(desc: string): string[] {
+  const out: string[] = [];
+  const increase = featAbilityIncreaseFrom(desc);
+  if (increase) {
+    out.push(increase.from.length >= 6 ? "+1 to an ability score of the player's choice" : `+1 to ${listed(increase.from.map((ability) => ABILITY_NAMES[ability] ?? ability), "or")}`);
+  }
+  const spec = featGrantSpec(desc);
+  if (spec.fixedSkills.length) out.push(`proficiency in ${listed(spec.fixedSkills.map(titled), "and")}`);
+  if (spec.skills) out.push(`${counted(spec.skills, "skill")} of the player's choice`);
+  if (spec.expertise || spec.fixedExpertise.length || spec.pickedExpertise) out.push("expertise");
+  if (spec.fixedTools.length) out.push(`proficiency with ${listed(spec.fixedTools, "and")}`);
+  if (spec.tools) out.push(`${counted(spec.tools, "tool")} of the player's choice`);
+  if (spec.fixedLanguages.length) out.push(listed(spec.fixedLanguages, "and"));
+  if (spec.languages) out.push(`${counted(spec.languages, "language")} of the player's choice`);
+  if (spec.armor.length) out.push(`${listed(spec.armor.map((armor) => (armor === "shields" ? "shields" : `${armor} armor`)), "and")} training`);
+  if (spec.fixedWeapons.length) out.push(spec.fixedWeapons.length > 3 ? `${spec.fixedWeapons.length} weapons` : `proficiency with ${listed(spec.fixedWeapons, "and")}`);
+  if (spec.weapons) out.push(`${counted(spec.weapons, "weapon")} of the player's choice`);
+  if (spec.any) out.push(`${COUNT_WORDS[spec.any] ?? spec.any} ${listed(spec.anyKinds, "or")} in any combination`);
+  const taught = spec.taught;
+  if (taught.fixedCantrips.length) out.push(`the ${listed(taught.fixedCantrips.map(titled), "and")} cantrip${taught.fixedCantrips.length === 1 ? "" : "s"}`);
+  if (taught.cantrips) out.push(`${counted(taught.cantrips, "cantrip")} of the player's choice`);
+  if (taught.fixedSpells.length) out.push(`the ${listed(taught.fixedSpells.map(titled), "and")} spell${taught.fixedSpells.length === 1 ? "" : "s"}`);
+  if (taught.spells) out.push(`${counted(taught.spells, `level ${taught.spellLevel} spell`)} of the player's choice`);
+  if (spec.damageTypes.length) out.push(`a choice of ${listed(spec.damageTypes, "or")} damage`);
   return out;
 }
 

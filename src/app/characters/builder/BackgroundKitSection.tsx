@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { contentSlug } from "@/lib/help";
 import type { BackgroundKit } from "@/lib/srd/gear-choices";
 import { InfoButton } from "@/components/ui/InfoDialog";
@@ -24,6 +25,7 @@ export default function BackgroundKitSection({
   backgroundName: string;
   onPick: (index: number, label: string) => void;
 }) {
+  const captionId = useId();
   if (!kit.choices.length && !kit.toolLines.length) {
     return null;
   }
@@ -58,8 +60,9 @@ export default function BackgroundKitSection({
             {taken?.options ? (
               <div key={`${index}-${choice.chosen}`} className="reveal grid gap-1.5 sm:grid-cols-2">
                 <div>
-                  <span className="mb-1 block text-[11px] text-stone-400">Which {taken.label.toLowerCase()}</span>
+                  <span id={`${captionId}-${index}`} className="mb-1 block text-[11px] text-stone-400">Which {taken.label.toLowerCase()}</span>
                   <OptionPicker
+                    labelledBy={`${captionId}-${index}`}
                     value={taken.items[0]?.name ?? ""}
                     onChange={(name) => onPick(index, name)}
                     className={inputClass}
@@ -94,7 +97,7 @@ export default function BackgroundKitSection({
               <span className="text-stone-500">from your tool proficiency</span>
             </>
           ) : (
-            <span className="text-amber-300">the tool you pick on the Calling step.</span>
+            <span className="text-amber-300">the tool you pick on the Class step.</span>
           )}
         </p>
       ))}

@@ -5,9 +5,11 @@
 // src/lib/db/enemy-form.ts.
 
 import { immutableForm } from "@/lib/dm/monster-traits";
-import { formatCr, type BeastForm } from "@/lib/srd/beast-forms";
+import { BEAST_FORMS, formatCr, formList, type BeastForm } from "@/lib/srd/beast-forms";
 import { xpForCr } from "@/lib/srd/encounter-math";
 import type { EnemyAttack, EnemySaveMods, EnemyStats, SaveAbility } from "@/lib/bestiary/statblock";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type EnemyShapeSpell = {
   spell: string;
@@ -28,7 +30,7 @@ const SPELLS: Record<string, EnemyShapeSpell> = {
 
 // The spells that may turn an enemy into a beast, by name; null for others.
 export function enemyShapeSpellFor(spell: string): EnemyShapeSpell | null {
-  return SPELLS[spell.trim().toLowerCase()] ?? null;
+  return SPELLS[textKey(spell)] ?? null;
 }
 
 // A shapechanger says so in its type ("humanoid (shapechanger)") or in its
@@ -49,24 +51,30 @@ export function enemyShapeProblem(
   rule: EnemyShapeSpell,
   form: BeastForm,
   enemy: { displayName: string; currentHp: number; cr: number; stats: EnemyStats },
-): string | null {
+): ToolError | null {
   const name = enemy.displayName;
   if (enemy.stats.polymorphedFrom) {
-    return `${name} is already a ${enemy.stats.polymorphedFrom.form} under ${enemy.stats.polymorphedFrom.spell}; it takes no second form until that one ends. Nothing was spent.`;
-  }
-  if (enemy.currentHp <= 0) {
-    return `${rule.spell} has no effect on a creature at 0 hit points, and ${name} is at 0. Nothing was spent; pick another target.`;
-  }
-  // Immutable Form (the golems): no spell alters its form.
-  if (immutableForm(enemy.stats)) {
-    return `${name} has Immutable Form: it is immune to any spell or effect that would alter its form, and ${rule.spell} is one. Nothing was spent; pick another target or another spell.`;
-  }
-  if (rule.sparesShapechangers && isShapechanger(enemy.stats)) {
-    return `${rule.spell} has no effect on a shapechanger, and ${name} is one. Nothing was spent; pick another target or another spell.`;
+    return { error: `${name} is already a ${enemy.stats.polymorphedFrom.form} under ${enemy.stats.polymorphedFrom.spell}; it takes no second form until that one ends. Nothing was spent.`, refused: "rules" };
   }
   const cap = enemyCr(enemy);
   if (form.cr > cap) {
-    return `${form.name} is CR ${formatCr(form.cr)}, above the CR ${formatCr(cap)} ${rule.spell} allows for ${name}: the beast's challenge rating may be no higher than the creature's own. Nothing was spent; offer a lesser form.`;
+    return { error: `${form.name} is CR ${formatCr(form.cr)}, above the CR ${formatCr(cap)} ${rule.spell} allows for ${name}: the beast's challenge rating may be no higher than the creature's own. Nothing was spent; offer a lesser form: ${formList(BEAST_FORMS.filter((entry) => entry.cr <= cap))}.`, retry: true };
+  }
+  return null;
+}
+
+// Why the spell, cast at this creature, has no effect on it, or null: it is
+// cast, and spent, all the same (SRD 5.1).
+export function enemyShapeNoEffect(rule: EnemyShapeSpell, enemy: { displayName: string; currentHp: number; stats: EnemyStats }): string | null {
+  if (enemy.currentHp <= 0) {
+    return `${enemy.displayName} is at 0 hit points: ${rule.spell} has no effect on it.`;
+  }
+  // Immutable Form (the golems): no spell alters its form.
+  if (immutableForm(enemy.stats)) {
+    return `${enemy.displayName} has Immutable Form, immune to any spell that would alter its form: ${rule.spell} has no effect on it.`;
+  }
+  if (rule.sparesShapechangers && isShapechanger(enemy.stats)) {
+    return `${enemy.displayName} is a shapechanger: ${rule.spell} has no effect on it.`;
   }
   return null;
 }

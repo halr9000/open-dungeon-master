@@ -10,6 +10,8 @@ import { getPackDraft, hasPackDraft } from "@/lib/db/world-pack-drafts";
 import { bundleRefOf, type OriginKind } from "@/lib/db/content-origins";
 import { getCommonWorkshop } from "@/lib/db/workshop-common";
 import { worldForBundle } from "@/lib/db/world-forge-bundle";
+import { getWorldDoc, hasWorldDoc } from "@/lib/db/world-forge";
+import type { Binding } from "@/lib/worldforge/model";
 import { normalizeStock } from "@/lib/db/shops";
 import { clampMarkup } from "@/lib/dm/shop-logic";
 import { storedSheetSchema } from "@/lib/schemas/sheet";
@@ -28,6 +30,7 @@ import {
 } from "@/lib/workshop/bundle";
 import { isWorkshop, normalizeTargetParty } from "@/lib/workshop/kind";
 import { portableSheet, portableStatBlock, shelfForBundle, type ShelfReport } from "@/lib/db/workshop-bundle-shelf";
+import { exportMapAddonView } from "@/lib/db/map-addon-view-bundle";
 
 // Reading a workshop out to a bundle. Split from src/lib/db/workshop-bundle.ts
 // (the import half, which re-exports this) to keep both under the project's
@@ -121,7 +124,7 @@ export const BUNDLE_COLUMNS: Record<string, { carried: string[]; left: Record<st
     left: { campaign_id: "the new workshop", updated_at: "now" },
   },
   prepared_maps: {
-    carried: ["name", "notes", "tags_json", "width", "height", "terrain", "ambient", "theme", "lights_json", "seed", "backdrop_path", "backdrop_transform_json", "outdoors", "drawings_json", "skin_json", "labels_json", "props_json", "doors_json", "zones_json", "overlay_path", "ambience_json"],
+    carried: ["name", "notes", "tags_json", "width", "height", "terrain", "ambient", "theme", "lights_json", "seed", "backdrop_path", "backdrop_transform_json", "outdoors", "drawings_json", "skin_json", "labels_json", "props_json", "doors_json", "zones_json", "overlay_path", "ambience_json", "addon_view_json"],
     left: { ...IDENTITY },
   },
   encounter_templates: {
@@ -280,11 +283,16 @@ export function exportWorkshopBundle(
   ).sort(rowsByName);
   const ownIds = (rows: Array<Row & { home?: string }>) => rows.map((row) => (row.home === undefined || row.home === workshopId ? str(row.id) : ""));
 
+  // What the World entries link to travels with them (src/lib/worldforge/model.ts Binding).
+  const bound = hasWorldDoc(workshopId) ? Object.values(getWorldDoc(workshopId).entries).flatMap((entry) => entry.bindings) : [];
+  const boundHomebrew = (kind: Binding["kind"]) =>
+    bound.filter((binding) => binding.kind === kind && binding.ref.startsWith("homebrew:") && !binding.ref.startsWith("homebrew:@")).map((binding) => binding.ref.slice("homebrew:".length));
   const shelf = shelfForBundle({
     ownerUserId: campaign.ownerUserId,
     setting: campaign.gameSettings,
     scope: manifest.shelf,
-    statBlocks: npcRows.map((row) => portableStatBlock(str(row.stat_block))),
+    statBlocks: [...npcRows.map((row) => portableStatBlock(str(row.stat_block))), ...boundHomebrew("monster").map((id) => `homebrew:${id}`)],
+    boundIds: boundHomebrew("item"),
     rosters: encounterRows.map((row) => parseJson<unknown[]>(str(row.enemies_json, "[]"), [])),
     sheets: pregenRows.map((row) => row.sheet),
     texts: [
@@ -416,6 +424,8 @@ export function exportWorkshopBundle(
         drawings: parseJson<unknown[]>(str(row.drawings_json, "[]"), []),
         ambience: parseJson<Record<string, unknown>>(str(row.ambience_json, "{}"), {}),
         overlay: loadImage(row.overlay_path, budget),
+        // An addon's view of the map, its model inline (map-addon-view-bundle.ts).
+        addonView: exportMapAddonView(row.addon_view_json, budget),
         ref: refFor(row.home, "maps", str(row.id)),
         shared: row.home !== workshopId,
       };
@@ -463,6 +473,23 @@ export function exportWorkshopBundle(
       workshopId,
       { npc: ownIds(npcRows), location: ownIds(locationRows), faction: ownIds(factionRows), lore: ownIds(loreRows) },
       (image) => loadImage(image, budget),
+      // A link to the author's own record travels by that record's name, and
+      // only when the record is on the shelf the bundle carries. A place's
+      // battle map or encounter travels by its place in the bundle's own
+      // list, and only when the bundle carries it.
+      (binding) => {
+        if (binding.kind === "map" || binding.kind === "encounter") {
+          const index = at(binding.kind === "map" ? mapIndex : encounterIndex, binding.ref);
+          return index === null ? null : { kind: binding.kind, ref: `@${binding.kind}:#${index}` };
+        }
+        if (!binding.ref.startsWith("homebrew:")) return binding;
+        const id = binding.ref.slice("homebrew:".length);
+        const name =
+          binding.kind === "monster"
+            ? shelf.monsters.find((monster) => monster.id === id)?.draft.name
+            : shelf.homebrew.find((entry) => entry.id === id && entry.kind === "item")?.name;
+        return name && !name.includes(":") ? { kind: binding.kind, ref: `homebrew:@${binding.kind}:${name}` } : null;
+      },
     ),
     overworld: null,
     dependsOn: common ? { name: common.title.slice(0, 80) } : null,

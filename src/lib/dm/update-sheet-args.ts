@@ -10,6 +10,8 @@
 // Pure by design: no "@/" value imports and no I/O, so the catalog and the
 // guard tests can load it.
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+
 type Ability = "str" | "dex" | "con" | "int" | "wis" | "cha";
 
 export type UpdateSheetField = {
@@ -45,33 +47,13 @@ export const UPDATE_SHEET_FIELDS: UpdateSheetField[] = [
   { name: "conditions", label: "Conditions", kind: "list" },
 ];
 
-const squash = (text: string) => text.toLowerCase().replace(/[^a-z]/g, "");
-
-// A person types "Max HP" or "hp" where the key is maxHp or currentHp.
-const SPOKEN: Record<string, string> = {
-  hp: "currentHp",
-  hitpoints: "currentHp",
-  maxhp: "maxHp",
-  maxhitpoints: "maxHp",
-  temphp: "tempHp",
-  armorclass: "ac",
-  experience: "xp",
-};
-
+// The field by its key, as the form's select sends it; a word for one in any
+// language ("max hp", "pv max") is no field.
 function fieldNamed(raw: string): UpdateSheetField | null {
-  const wanted = squash(raw);
-  if (!wanted) {
-    return null;
-  }
-  const key = SPOKEN[wanted];
-  return (
-    UPDATE_SHEET_FIELDS.find(
-      (field) => field.name === key || squash(field.name) === wanted || squash(field.label) === wanted,
-    ) ?? null
-  );
+  return UPDATE_SHEET_FIELDS.find((field) => field.name === raw) ?? null;
 }
 
-export type FoldedArgs = { args: Record<string, unknown> } | { error: string };
+export type FoldedArgs = { args: Record<string, unknown> } | ToolError;
 
 // The arguments with `field` and `value` folded into the sheet's own keys.
 // Arguments that carry no `field` pass through untouched, which is every
@@ -89,18 +71,19 @@ export function foldFieldValue(
   if (!found) {
     return {
       error: `A sheet has no field called "${String(field)}". Pick one of: ${UPDATE_SHEET_FIELDS.map((entry) => entry.name).join(", ")}.`,
+      retry: true,
     };
   }
   if (value === undefined || value === null) {
-    return { error: `Say what ${found.label.toLowerCase()} becomes.` };
+    return { error: `Say what ${found.label.toLowerCase()} becomes.`, retry: true };
   }
   if (found.kind === "list") {
     const list = Array.isArray(value)
       ? value.map(String)
       : String(value).split(/[,\n]/);
+    // Left empty, the list is cleared.
     const names = list.map((entry) => entry.trim()).filter(Boolean);
-    const cleared = names.length === 1 && /^(none|nothing|clear)$/i.test(names[0]);
-    return { args: { [found.name]: cleared ? [] : names, ...rest } };
+    return { args: { [found.name]: names, ...rest } };
   }
   if (found.kind === "text") {
     return { args: { [found.name]: String(value).trim(), ...rest } };
@@ -108,7 +91,7 @@ export function foldFieldValue(
   const text = String(value).trim().replace(/,/g, "");
   const number = Number(text);
   if (!text || !Number.isFinite(number) || !Number.isInteger(number)) {
-    return { error: `${found.label} takes a whole number, and "${String(value)}" is not one.` };
+    return { error: `${found.label} takes a whole number, and "${String(value)}" is not one.`, retry: true };
   }
   if (found.kind === "ability") {
     const current = (rest.abilities ?? abilities) as Record<Ability, number>;

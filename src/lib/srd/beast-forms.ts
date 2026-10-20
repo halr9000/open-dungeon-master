@@ -7,6 +7,9 @@
 // import it directly. Data derived from the SRD 5.1, (c) Wizards of the
 // Coast LLC, CC-BY-4.0. See docs/LICENSES.md.
 
+import { compareNames, findNamed } from "@/lib/language/text-logic";
+import { creatureSpellings } from "@/lib/srd/name-forms";
+
 export type BeastAttack = {
   name: string;
   toHit: number;
@@ -159,30 +162,19 @@ export const BEAST_FORMS: BeastForm[] = [
   },
 ];
 
-const byName = new Map(BEAST_FORMS.map((form) => [normalize(form.name), form]));
-
-function normalize(term: string) {
-  return term.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export function findBeastForm(term: string): BeastForm | null {
+  return findNamed(BEAST_FORMS, [term], (form) => creatureSpellings(form.name));
 }
 
-// Fuzzy find: exact first, then a form whose name sits inside the request
-// ("shaggy brown bear" -> Brown Bear). Longest name wins so "dire wolf"
-// never lands on "Wolf".
-export function findBeastForm(term: string): BeastForm | null {
-  const wanted = normalize(term);
-  if (!wanted) {
-    return null;
-  }
-  const exact = byName.get(wanted);
-  if (exact) {
-    return exact;
-  }
-  const candidates = BEAST_FORMS.filter((form) => {
-    const name = normalize(form.name);
-    return wanted.includes(name) || name.includes(wanted);
-  });
-  candidates.sort((a, b) => b.name.length - a.name.length);
-  return candidates[0] ?? null;
+// Creatures as a question or a refusal names them, the lowest challenge
+// rating first: "Wolf (CR 1/4), Brown Bear (CR 1)".
+export function formList(forms: Array<{ name: string; cr: number }>): string {
+  return [...forms].sort((a, b) => a.cr - b.cr || compareNames(a.name, b.name)).map((form) => `${form.name} (CR ${formatCr(form.cr)})`).join(", ");
+}
+
+// The forms Wild Shape's caps allow (wildShapeCapsFor).
+export function wildShapeForms(caps: { maxCr: number; fly: boolean; swim: boolean }): BeastForm[] {
+  return BEAST_FORMS.filter((form) => form.cr <= caps.maxCr && (caps.fly || !form.fly) && (caps.swim || !form.swim));
 }
 
 // SRD Wild Shape ceilings by druid level; Circle of the Moon raises the CR

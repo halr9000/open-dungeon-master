@@ -16,6 +16,7 @@ import { READIED, READIED_WORDS, RELEASE_TOOLS, readiedHeld, type Readiable, typ
 import { markReactionUsed } from "@/lib/dm/turn-budget";
 import { conditionBlocksReactions } from "@/lib/srd/condition-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
 
 export { READIED, readiedHeld };
 
@@ -29,7 +30,7 @@ export function readiedReleaseFor(
   sheet: CharacterSheet,
   encounter: Encounter | null,
   door: Readiable,
-): ReadiedRelease | { error: string } | null {
+): ReadiedRelease | ToolError | null {
   const held = readiedHeld(sheet);
   if (!held || !encounter || (encounter.kind ?? "fight") !== "fight" || !encounter.orderReady) {
     return null;
@@ -40,19 +41,21 @@ export function readiedReleaseFor(
   if (held.holds !== door) {
     return {
       error: `It is not ${sheet.name}'s turn, and what they readied is ${READIED_WORDS[held.holds]} (${held.trigger}), not ${READIED_WORDS[door]}: a readied action is released only as the action that was readied (SRD 5.1, Ready). Nothing was spent. ${RELEASE_TOOLS[held.holds]} releases it; unreleased, it is lost when their turn starts.`,
+      refused: "rules",
     };
   }
   const able = canAct({ sheet, encounter, kind: "reaction" });
   if (!able.ok) {
-    return { error: able.error };
+    return toolError(able);
   }
   const blocked = conditionBlocksReactions(sheet.conditions);
   if (blocked) {
-    return { error: `${sheet.name} is ${blocked} and cannot take reactions, so the readied ${READIED_WORDS[held.holds]} cannot be released. Nothing was spent.` };
+    return { error: `${sheet.name} is ${blocked} and cannot take reactions, so the readied ${READIED_WORDS[held.holds]} cannot be released. Nothing was spent.`, refused: "rules" };
   }
   if (encounter.reactionsUsed.includes(sheet.id)) {
     return {
       error: `${sheet.name} has already used their reaction, so the readied ${READIED_WORDS[held.holds]} cannot be released; it is lost when their turn starts. Nothing was spent.`,
+      refused: "rules",
     };
   }
   return {

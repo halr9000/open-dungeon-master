@@ -18,6 +18,7 @@ export type ReceiverInfo = {
   campaignId: string;
   character: { id: string; name: string } | null;
   webhooksEnabled: boolean;
+  pollLinks?: boolean;
 };
 
 type AddressCheck =
@@ -114,7 +115,7 @@ export function PlayerReceiverSetup({ receiver, mcpUrl }: { receiver: ReceiverIn
       {receiver.webhooksEnabled ? null : (
         <p className="flex items-start gap-2 text-xs text-amber-200">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> This server has not allowed any receiver address yet. Its
-          admin adds yours under Admin &gt; Player agents.
+          admin adds yours under Admin &gt; Player agents{receiver.pollLinks ? ", or use a poll link below" : ""}.
         </p>
       )}
       <div className="grid gap-2 sm:grid-cols-[1fr_8rem]">

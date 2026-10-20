@@ -65,7 +65,7 @@ const WAITING = (name) =>
 const promptText = (request) => request.messages.map((message) => message.content ?? "").join("\n\n");
 
 const REFUSAL = (name) =>
-  `${name} has not acted: their player hasn't declared an action this turn, and nothing was spent. Don't narrate an attempt; wait for them to say what ${name} does, or narrate the moment and stop.`;
+  `${name} has not acted: their player hasn't declared an action this turn. Nothing was spent. Don't narrate an attempt; wait for them to say what ${name} does, or narrate the moment and stop.`;
 
 // A fight on `who`'s turn with Brom next, the goblin beside them, and the
 // DM's last line the newest in the transcript: nobody has spoken since.

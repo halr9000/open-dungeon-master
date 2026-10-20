@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { capsFor, isErrorResponse, requireMember } from "@/lib/campaign-api";
+import { oweSkippedImprovements } from "@/lib/characters/adapt";
 import { admitSheet, refusal } from "@/lib/characters/admit";
+import { announceMidGameJoin } from "@/lib/characters/mid-game-join";
 import { createCharacter } from "@/lib/db/characters";
 import { createSheet, getSheetForUser } from "@/lib/db/sheets";
 import { seatAddedSheet } from "@/lib/character-seat";
@@ -51,11 +53,16 @@ export async function POST(
   if (!admitted.ok) {
     return refusal(admitted.problems);
   }
-  const libraryCharacter = createCharacter(context.user.id, context.campaign.startingLevel, admitted.sheet);
-  const sheet = createSheet(campaignId, context.user.id, context.campaign.startingLevel, admitted.sheet, libraryCharacter.id);
+  // Every hero is a level 1 build: at a higher table the improvements its
+  // level earned were never offered, so they are owed, not taken (backlog
+  // B6, the rule a library hero joining above its level follows).
+  const seated = oweSkippedImprovements(admitted.sheet, input, 1, context.campaign.startingLevel);
+  const libraryCharacter = createCharacter(context.user.id, context.campaign.startingLevel, seated);
+  const sheet = createSheet(campaignId, context.user.id, context.campaign.startingLevel, seated, libraryCharacter.id);
   admitted.settle();
   queueLibraryPortrait(libraryCharacter);
   seatAddedSheet(context.campaign, context.user.id, sheet.id);
   publishPersisted(campaignId, "sheet_updated", { sheet });
+  announceMidGameJoin(context, sheet);
   return Response.json({ sheet }, { status: 201 });
 }

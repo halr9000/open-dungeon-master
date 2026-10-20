@@ -6,6 +6,7 @@ import { appConfirm } from "@/components/ui/ConfirmDialog";
 import type { CampaignDifficulty, CampaignStatus } from "@/lib/campaign-types";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
+import { GameIcon } from "@/components/ui/GameIcon";
 import {
   ContentImportPicker,
   EMPTY_SELECTION,
@@ -18,7 +19,7 @@ import { GameSettingsPanel } from "@/app/campaigns/[campaignId]/GameSettingsPane
 import { RulesPanel } from "@/app/campaigns/[campaignId]/RulesPanel";
 import { StoryAiPanel } from "@/app/campaigns/[campaignId]/StoryAiPanel";
 
-// Setup tab of the session side panel. Two authorities meet here: campaign
+// Settings tab of the session side panel. Two authorities meet here: campaign
 // details belong to the lead (the PATCH /api/campaigns/[id] gate), while game
 // settings and house rules follow story authority, which a human DM takes
 // over from the lead. Everyone else sees a read-only summary.
@@ -57,10 +58,38 @@ export function SessionSettings({
   const [editing, setEditing] = useState(false);
   const [prep, setPrep] = useState<ImportSelection>(EMPTY_SELECTION);
   const ended = campaign.status === "ended";
+  // Four related but separate jobs share this tab: the campaign's own
+  // details, how the table plays, which AI it plays with, and its rules. The
+  // row at the top names them and takes you to each, so nobody reads one
+  // form looking for another.
+  const stops = [
+    { id: "ss-campaign", label: "Campaign", glyph: "tab-campaigns", shown: true },
+    { id: "ss-prep", label: "Prep", glyph: "system-lore", shown: steersStory && !ended },
+    { id: "ss-table", label: "Table settings", glyph: "tab-settings", shown: Boolean(campaign.gameSettings) },
+    { id: "ss-ai", label: "Story AI", glyph: "ui-ai", shown: Boolean(campaign.settings) },
+    { id: "ss-rules", label: "Rules", glyph: "system-rules", shown: Boolean(campaign.gameSettings) },
+    { id: "ss-end", label: "End", glyph: "quest-done", shown: canEnd },
+  ].filter((stop) => stop.shown);
 
   return (
     <div className="text-sm">
-      <div className="mb-3 rounded-lg border border-stone-800 bg-stone-950/40 p-3">
+      <nav aria-label="Settings sections" className="stagger-pop mb-3 flex flex-wrap gap-1.5">
+        {stops.map((stop) => (
+          <button
+            key={stop.id}
+            type="button"
+            onClick={() => {
+              const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+              document.getElementById(stop.id)?.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+            }}
+            className="motion-press inline-flex min-h-8 items-center gap-1.5 rounded-full border border-stone-700/70 py-0.5 pl-1 pr-2.5 text-xs text-stone-300 hover:border-amber-500/40 hover:text-amber-100"
+          >
+            <GameIcon icon={{ kind: "glyph", key: stop.glyph }} size="size-5" />
+            {stop.label}
+          </button>
+        ))}
+      </nav>
+      <div id="ss-campaign" className="mb-3 scroll-mt-2 rounded-lg border border-stone-800 bg-stone-950/40 p-3">
         <div className="mb-1.5 flex items-center justify-between">
           <p className="text-xs font-medium text-stone-400">Campaign</p>
           {isLead && !ended ? (
@@ -87,7 +116,7 @@ export function SessionSettings({
       {/* Every seat at the table reloads when this lands (the import
           route's prep_imported ping), so nothing here needs refreshing. */}
       {steersStory && !ended ? (
-        <div data-setup-prep className="reveal mb-3 rounded-lg border border-stone-800 bg-stone-950/40 p-3">
+        <div id="ss-prep" data-setup-prep className="reveal mb-3 scroll-mt-2 rounded-lg border border-stone-800 bg-stone-950/40 p-3">
           <p className="mb-1 text-xs font-medium text-stone-400">Bring in prep</p>
           <p className="mb-2 text-xs text-stone-500">
             Copy maps, NPCs, lore, encounters and more from a workshop or another campaign. The
@@ -98,23 +127,27 @@ export function SessionSettings({
       ) : null}
 
       {campaign.gameSettings ? (
-        <GameSettingsPanel
-          campaignId={campaign.id}
-          settings={campaign.gameSettings}
-          steersStory={steersStory}
-        />
+        <div id="ss-table" className="scroll-mt-2">
+          <GameSettingsPanel
+            campaignId={campaign.id}
+            settings={campaign.gameSettings}
+            steersStory={steersStory}
+          />
+        </div>
       ) : null}
 
       {campaign.settings ? (
-        <StoryAiPanel
-          campaignId={campaign.id}
-          settings={campaign.settings}
-          steersStory={steersStory}
-        />
+        <div id="ss-ai" className="scroll-mt-2">
+          <StoryAiPanel
+            campaignId={campaign.id}
+            settings={campaign.settings}
+            steersStory={steersStory}
+          />
+        </div>
       ) : null}
 
       {campaign.gameSettings ? (
-        <div className="reveal mt-3">
+        <div id="ss-rules" className="reveal mt-3 scroll-mt-2">
           <RulesPanel
             campaignId={campaign.id}
             settings={campaign.gameSettings}
@@ -124,7 +157,11 @@ export function SessionSettings({
         </div>
       ) : null}
 
-      {canEnd ? <EndCampaign campaignId={campaign.id} title={campaign.title} ended={ended} /> : null}
+      {canEnd ? (
+        <div id="ss-end" className="scroll-mt-2">
+          <EndCampaign campaignId={campaign.id} title={campaign.title} ended={ended} />
+        </div>
+      ) : null}
 
       {editing ? <EditCampaignDialog campaign={campaign} onClose={() => setEditing(false)} /> : null}
     </div>

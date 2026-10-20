@@ -22,13 +22,14 @@ import { rollEnemySave } from "@/lib/dm/forced-save";
 import { pushTokenAway } from "@/lib/dm/map-tools";
 import type { SpendContext } from "@/lib/dm/authored-spend-effects";
 import type { FullPatchSheetInput } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
-type Resolution = { error: string } | { result: Record<string, unknown> };
+type Resolution = ToolError | { result: Record<string, unknown> };
 
 export function swarmPush(ctx: SpendContext, does: Extract<SpendDoes, { kind: "swarm_push" }>): Resolution {
   const encounter = getActiveEncounter(ctx.campaign.id);
   if (!encounter) {
-    return { error: `${ctx.spend.name} moves a creature in a fight; there is no fight. Nothing was spent.` };
+    return { error: `${ctx.spend.name} moves a creature in a fight; there is no fight. Nothing was spent.`, refused: "rules" };
   }
   // The creature the ranger hit: the one named, else the last they attacked
   // this round.
@@ -36,10 +37,10 @@ export function swarmPush(ctx: SpendContext, does: Extract<SpendDoes, { kind: "s
   const ref = ctx.args.targetEnemyId ?? pairs?.[pairs.length - 1];
   const enemy = ref ? resolveEnemyRef(encounter.id, ref) : null;
   if (!enemy || enemy.status !== "alive") {
-    return { error: `${ctx.spend.name} moves the creature ${ctx.sheet.name} just hit: pass its targetEnemyId. Nothing was spent.` };
+    return { error: `${ctx.spend.name} moves the creature ${ctx.sheet.name} just hit: pass its targetEnemyId. Nothing was spent.`, retry: true };
   }
   if (!pairs?.includes(enemy.id)) {
-    return { error: `${ctx.spend.name} follows ${ctx.sheet.name}'s hit on ${enemy.displayName} this turn, and they have not attacked it this round. Nothing was spent.` };
+    return { error: `${ctx.spend.name} follows ${ctx.sheet.name}'s hit on ${enemy.displayName} this turn, and they have not attacked it this round. Nothing was spent.`, refused: "rules" };
   }
   const derived = computeSheetDerived(ctx.sheet);
   const dc = derived.spellSaveDc ?? 8 + derived.proficiencyBonus + derived.abilityMods.wis;
@@ -77,14 +78,14 @@ export function swarmPush(ctx: SpendContext, does: Extract<SpendDoes, { kind: "s
 
 // The save the character last failed, rolled again; a success lifts what
 // that failure laid on them (Fanatical Focus, as Indomitable does).
-export function rerollLastSave(ctx: SpendContext): { error: string } | { patch?: FullPatchSheetInput; result: Record<string, unknown> } {
+export function rerollLastSave(ctx: SpendContext): ToolError | { patch?: FullPatchSheetInput; result: Record<string, unknown> } {
   const { campaign, sheet } = ctx;
   const failed = listRecentRolls(campaign.id, 60).find(
     (roll) => roll.characterId === sheet.id && roll.kind === "saving_throw" && roll.dc !== null && roll.total < roll.dc,
   );
   const ability = failed ? ((/\b(str|dex|con|int|wis|cha)\b/i.exec(failed.detail)?.[1] ?? "").toLowerCase() as Ability | "") : "";
   if (!failed || !ability) {
-    return { error: `${sheet.name} has no failed saving throw to reroll; ${ctx.spend.name} was not spent.` };
+    return { error: `${sheet.name} has no failed saving throw to reroll; ${ctx.spend.name} was not spent.`, refused: "rules" };
   }
   const dc = failed.dc!;
   const against = /\bvs\.? (.+)$/i.exec(failed.detail)?.[1];

@@ -9,6 +9,7 @@ import { KitButton } from "@/app/campaigns/[campaignId]/PanelKit";
 import { LINK_LABELS, VERACITIES, VERACITY_LABELS, newId, type Veracity, type WorldDoc, type WorldLink } from "@/lib/worldforge/model";
 import type { WorldEntity } from "@/lib/db/world-forge";
 import { EntityAvatar, EntityPicker, typeOf } from "./world-ui";
+import { playFieldOf } from "@/lib/worldforge/play-fields";
 
 // One link, made or edited. The other end is picked from the world's
 // entries, the words from WorldForge's own set (the family and chain words
@@ -60,7 +61,7 @@ export function LinkEditor({
       {!target ? (
         <EntityPicker doc={doc} entities={entities} exclude={[from.ref]} label="the other end" autoFocus onPick={(entity) => setTo(entity.ref)} />
       ) : (
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 @lg:grid-cols-2">
           <div className="flex flex-col gap-1">
             <span className="eyebrow text-[10px] text-stone-500">Words</span>
             <Select
@@ -109,6 +110,11 @@ export function LinkEditor({
               <span className="eyebrow text-[10px] text-stone-500">Rank or title</span>
               <input className={cn(ui.input, "text-xs")} maxLength={60} placeholder="Second Warden" value={rank} onChange={(event) => setRank(event.target.value)} />
             </label>
+          ) : null}
+          {from.shelf === "npc" && playFieldOf(label, target.shelf) ? (
+            <p className="text-[11px] text-stone-500 @lg:col-span-2" data-testid="world-link-play-note">
+              {`Play keeps its own ${playFieldOf(label, target.shelf)} for ${from.name}. This link changes it only when you choose it under In play on this entry.`}
+            </p>
           ) : null}
           <label className="flex items-center gap-2 text-xs text-stone-400">
             <input type="checkbox" checked={oneway} onChange={(event) => setOneway(event.target.checked)} className="accent-amber-400" />

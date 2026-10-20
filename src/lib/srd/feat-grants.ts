@@ -42,7 +42,6 @@ export type FeatPicks = {
 
 export type FeatChoices = Record<string, FeatPicks>;
 
-const PICK_KINDS: PickKind[] = ["skills", "languages", "tools", "weapons", "armor"];
 const SINGULAR: Record<PickKind, string> = { skills: "skill", languages: "language", tools: "tool", weapons: "weapon", armor: "armor" };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 || word === "armor" ? "" : "s"}`;
 const named = (list: string[] | undefined) => (list ?? []).filter((entry) => entry && entry.trim());
@@ -346,5 +345,3 @@ export function withoutFeatPicks(proficiencies: Proficiencies, choices: FeatChoi
     armor: proficiencies.armor.filter((entry) => !armor.has(lower(entry))),
   };
 }
-
-export { PICK_KINDS };

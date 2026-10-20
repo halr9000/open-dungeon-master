@@ -12,33 +12,15 @@ import {
 import { parseKeepingValid } from "@/lib/schemas/parse-keeping-valid";
 
 // The option lists and their labels live in ./game-settings-options (no
-// zod) so the campaign wizard can draw them without the validator; they
-// are re-exported here because this is where everything else finds them.
+// zod) so the campaign wizard can draw them without the validator; the
+// genres and the setting types are re-exported here, where the schema's
+// readers find them.
 export {
-  CAMPAIGN_LENGTH_LABELS,
-  CAMPAIGN_LENGTHS,
-  COMPANION_LABELS,
-  COMPANION_SETTINGS,
-  DICE_POLICIES,
-  DM_MODE_HINTS,
-  DM_MODE_LABELS,
-  DM_MODES,
   GENRES,
-  HP_METHOD_LABELS,
-  HP_METHODS,
-  STARTING_WEALTH,
-  STARTING_WEALTH_LABELS,
-  TABLE_LANGUAGE_HELP,
-  TABLE_LANGUAGE_LABELS,
-  TABLE_LANGUAGE_NAMES,
-  TABLE_LANGUAGES,
   type CampaignLengthSetting,
-  type CompanionSetting,
   type DicePolicy,
   type DmModeSetting,
   type Genre,
-  type HpMethodSetting,
-  type StartingWealthSetting,
   type TableLanguage,
 } from "@/lib/schemas/game-settings-options";
 
@@ -203,6 +185,12 @@ export const gameSettingsSchema = z.object({
   // call when the prose and the engine disagree (src/lib/dm/engine-boundary.ts).
   // On by default; off costs nothing but the check.
   narrationGuard: z.boolean().default(true),
+  // How long the AI DM's narration runs, and the lead's own notes on how it
+  // should write (issue #383): the model-agnostic way to fit a table's prose
+  // to its model and its taste, where a per-model prompt would go stale.
+  // Standard and blank change nothing in the prompt.
+  narrationLength: z.enum(["short", "standard", "rich"]).default("standard"),
+  styleNotes: z.string().trim().max(500).default(""),
   // Optional 5e variant rules the server engines and DM prompt honor.
   // Rendered as one line each in the prompt by src/lib/dm/rules-logic.ts.
   // Optional turn stages (src/lib/dm/stages.ts). All default on; this exists
@@ -386,7 +374,7 @@ export type LastingCompanionBlock = {
   remedy: string;
 };
 
-const ALLIES_ROW = "Setup tab, Game settings, Allies";
+const ALLIES_ROW = "Settings tab, Table settings, Allies";
 export const MAX_COMPANIONS_CAP = 4;
 
 export function lastingCompanionBlock(

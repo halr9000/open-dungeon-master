@@ -136,9 +136,10 @@ await test("Dropped by a goblin, Kara rolls her death save as her turn comes rou
   assert.ok(!track || (track.successes === 0 && track.failures === 0), `the heal left a death save track: ${JSON.stringify(track)}`);
 
   // Bram ends his turn; the goblin misses; the turn comes back to Kara with
-  // no death save, and her move is taken.
+  // no death save, and her move is taken. Healed from 0 she is still prone,
+  // so the goblin, beside her, swings with advantage: both d20s are forced.
   assert.equal(kit.endTurn(bramUser), true);
-  world.dice(2);
+  world.dice(2, 2);
   model.script([
     reply({ calls: [call("enemy_attack", { enemyId: goblin.id, targetCharacterId: kara.id })] }),
     reply({ text: "The goblin's swing goes wide." }),

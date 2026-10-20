@@ -9,7 +9,7 @@ import { contentSlug, describeContentEntry, spellRowConcentrates, spellSummary }
 import { bundledSpellFacts } from "@/lib/srd/spell-facts";
 import { replayAnimation } from "@/lib/motion/replay";
 import { spellSupportFor, spellSupportWord } from "@/lib/srd/spell-support";
-import { compareNames } from "@/lib/language/text-logic";
+import { compareNames, textKey } from "@/lib/language/text-logic";
 
 // The spell book: one tab per spell level (cantrips first), every spell a
 // tile that says at a glance whether it is ready, waiting for a long rest,
@@ -69,6 +69,12 @@ export function tileConcentrates(tile: Pick<SpellTile, "name" | "data" | "concen
   return bundledSpellFacts(tile.name)?.concentration === true;
 }
 
+// Whether a tile's button reads as pressed: whether the spell is chosen in
+// the sense a tap toggles (see writingBook).
+export function tilePressed(state: SpellTileState, writingBook = false): boolean {
+  return state === "inBook" ? writingBook : state !== "available";
+}
+
 export type SpellCounter = { label: string; value: number; max?: number | null; extra?: string };
 
 const STATE_TEXT: Record<SpellTileState, string> = {
@@ -105,6 +111,7 @@ export function SpellBook({
   footer,
   notice,
   emptyText = "No spells yet.",
+  writingBook = false,
 }: {
   tiles: SpellTile[];
   // Tabs run from cantrips to this level even when a level is still empty,
@@ -122,12 +129,23 @@ export function SpellBook({
   // is, instead of a line pushed in above the book.
   notice?: ReactNode;
   emptyText?: string;
+  // A wizard filling the spellbook in the builder: a tap writes a spell in
+  // or takes it out, so a spell in the book reads as pressed. Everywhere
+  // else a tap prepares, and only a prepared spell does.
+  writingBook?: boolean;
 }) {
   const [filter, setFilter] = useState("");
-  const needle = filter.trim().toLowerCase();
-  // The tab strip says which tab is chosen only once mounted. The travelling
-  // pill (src/lib/motion/pill.ts) decorates every tablist that has a chosen
-  // tab as soon as the page loads, and a pill appended to server-rendered
+  // The last text note, kept to hold the note's room after it clears (see
+  // the note below). Set while rendering, React's pattern for state that
+  // follows a prop; only strings, which compare by value.
+  const [heldNotice, setHeldNotice] = useState("");
+  if (typeof notice === "string" && notice && notice !== heldNotice) {
+    setHeldNotice(notice);
+  }
+  const needle = textKey(filter);
+  // The level row says which level is chosen only once mounted. The travelling
+  // pill (src/lib/motion/pill.ts) decorates every pill group that has a chosen
+  // button as soon as the page loads, and a pill appended to server-rendered
   // markup before React hydrates it is a hydration mismatch (the builder
   // renders this book on the server, inside a hidden step).
   const mounted = useSyncExternalStore(noSubscribe, () => true, () => false);
@@ -160,7 +178,7 @@ export function SpellBook({
   const shown = needle
     ? keys.flatMap((key) =>
         (byLevel.get(key) ?? []).filter((tile) =>
-          (tile.label ?? tile.name).toLowerCase().includes(needle),
+          textKey(tile.label ?? tile.name).includes(needle),
         ),
       )
     : (byLevel.get(active) ?? []);
@@ -220,7 +238,10 @@ export function SpellBook({
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        <div role="tablist" aria-label="Spell level" className="flex flex-wrap gap-1">
+        {/* A row of toggle buttons, not tabs: a search shows every level at
+            once with none chosen, which a tab strip cannot say, and the tiles
+            below are a filtered list rather than one panel per level. */}
+        <div role="group" aria-label="Spell level" data-pill-group className="flex flex-wrap gap-1">
           {keys.map((key) => {
             const count = chosenIn(key);
             const selected = !needle && key === active;
@@ -228,8 +249,8 @@ export function SpellBook({
               <button
                 key={key}
                 type="button"
-                role="tab"
-                aria-selected={mounted && selected}
+                aria-pressed={mounted && selected}
+                data-on={mounted && selected ? "" : undefined}
                 title={levelLabel(key)}
                 onClick={() => {
                   setTab(key);
@@ -261,20 +282,23 @@ export function SpellBook({
         />
       </div>
 
-      {/* One line, always: a note that wrapped on a phone pushed the tiles
-          down under the finger, the very jump issue 66 was about. The whole
-          note is its tooltip; the full counter shakes with the tile. */}
-      <p className="mt-2 mb-1.5 flex h-4 min-w-0 items-center gap-2">
+      {/* The whole note, wrapped as far as it needs: cut to one line, its
+          count's working was only in a tooltip that touch and screen
+          readers never reach. Once a note has shown, its room stays held
+          (the last note, invisible) so a tile is not pulled out from under
+          the finger when the note clears, the jump issue 66 was about. The
+          full counter shakes with the tile. */}
+      <p className="mt-2 mb-1.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className="eyebrow shrink-0 text-[10px] leading-4 text-stone-500">
           {needle ? `Matching "${filter.trim()}"` : levelLabel(active)}
         </span>
-        {notice ? (
+        {notice || heldNotice ? (
           <span
             role="status"
-            title={typeof notice === "string" ? notice : undefined}
-            className="reveal min-w-0 truncate text-xs leading-4 text-amber-300"
+            aria-hidden={notice ? undefined : true}
+            className={cn("reveal min-w-0 text-xs leading-4", notice ? "text-amber-300" : "invisible")}
           >
-            {notice}
+            {notice || heldNotice}
           </span>
         ) : null}
       </p>
@@ -301,7 +325,7 @@ export function SpellBook({
                 <button
                   type="button"
                   disabled={!clickable}
-                  aria-pressed={tile.state !== "available" && tile.state !== "inBook"}
+                  aria-pressed={tilePressed(tile.state, writingBook)}
                   onClick={(event) => {
                     if (tile.blocked) {
                       const shake = "shake-x var(--dur-beat) var(--ease-snap) both";

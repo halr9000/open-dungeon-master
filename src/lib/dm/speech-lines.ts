@@ -12,7 +12,7 @@ import { getNpcByName } from "@/lib/db/npcs";
 import { listSheets } from "@/lib/db/sheets";
 import { guardOutcomes } from "@/lib/dm/engine-boundary";
 import { liveStateFor, readClaims, speakerRoster } from "@/lib/dm/claims";
-import { commonWords, foldName } from "@/lib/language/text-logic";
+import { commonWords, textKey } from "@/lib/language/text-logic";
 import { attributeSpeech, hasQuotedLine, linesOf, mergeLines, storedSpeaker, type Speaker, type SpokenLine } from "@/lib/dm/speech";
 
 // How many of the latest messages commonWords reads: a fixed window, so its
@@ -26,7 +26,7 @@ export function personLines(campaign: Pick<Campaign, "id" | "gameSettings">, tex
     return [];
   }
   const sheets = listSheets(campaign.id);
-  const creatures = new Map([...guardOutcomes([], liveStateFor(campaign.id)).creatures].map(([ref, fact]) => [ref, fact.display]));
+  const creatures = new Map([...guardOutcomes([], liveStateFor(campaign.id), campaign.gameSettings.tableLanguage).creatures].map(([ref, fact]) => [ref, fact.display]));
   const speakers = [...speakerRoster(campaign.id, sheets, creatures).values()];
   const recent = listRecentMessages(campaign.id, COMMON_WORDS_MESSAGES)
     .filter((message) => message.authorType === "dm")
@@ -50,7 +50,7 @@ export async function modelLines(campaign: Campaign, text: string, label: string
     label,
     text,
     kinds: ["speaker"],
-    outcomes: guardOutcomes([], liveStateFor(campaign.id)),
+    outcomes: guardOutcomes([], liveStateFor(campaign.id), campaign.gameSettings.tableLanguage),
     sheets: listSheets(campaign.id),
   });
   return modelTextLines(
@@ -78,7 +78,7 @@ export function modelTextLines(campaign: Pick<Campaign, "id" | "gameSettings">, 
     if (npc) {
       return { line, speaker: { kind: "npc", id: npc.id, name: npc.name } };
     }
-    const sheet = listSheets(campaign.id).find((entry) => foldName(entry.name) === foldName(speaker.name));
+    const sheet = listSheets(campaign.id).find((entry) => textKey(entry.name) === textKey(speaker.name));
     return { line, speaker: sheet ? { kind: "pc", id: sheet.id, name: sheet.name } : storedSpeaker(speaker) };
   });
   return mergeLines(

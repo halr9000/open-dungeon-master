@@ -8,7 +8,9 @@
 //
 // Deliberately absent, on every scope: backend URLs and API keys (the story
 // settings route), accounts and passwords, the admin panel, backup and
-// restore, and raw sheet edits. Those stay in the browser.
+// restore, and raw sheet edits. Those stay in the browser. A level-up is
+// not a raw edit: odm_level_up sends the player's choices and the server
+// builds the level from them (src/lib/srd/level-up.ts).
 
 import { listAssignmentsForCharacter } from "@/lib/db/characters";
 import { WORLD_LORE_CATEGORIES, type WorldLoreCategory } from "@/lib/dm/world-lore-logic";
@@ -16,8 +18,16 @@ import { harnessMcpUrl } from "@/lib/harness/bridge";
 import { grantSessionToken, grantUser, type AgentScope, type ConnectionGrant } from "@/lib/agents/grants";
 import type { McpToolDefinition } from "@/lib/harness/types";
 import { createHash } from "node:crypto";
-import { boundResultText, campaignForAgent, historyForAgent } from "@/lib/agents/agent-results";
-import { finishWebhookWrite, playerWebhooksEnabled, releaseWebhookWrite, reserveWebhookWrite } from "@/lib/agents/webhooks";
+import {
+  boundResultText,
+  CAMPAIGN_VIEWS,
+  campaignForAgent,
+  historyForAgent,
+  MAX_RESULT_CHARS,
+  MIN_RESULT_CHARS,
+  type CampaignView,
+} from "@/lib/agents/agent-results";
+import { finishWebhookWrite, playerSignalsEnabled, releaseWebhookWrite, reserveWebhookWrite } from "@/lib/agents/webhooks";
 import { isWebhookTool, WEBHOOK_GUARD_PROPS, webhookToolCall, webhookTools } from "@/lib/agents/webhook-tools";
 import { ASK_SCOPES, ASK_VISIBILITIES, QUESTION_MAX_CHARS } from "@/lib/dm/ask-logic";
 
@@ -43,7 +53,7 @@ type WorkbenchTool = {
   check?: (args: Args) => string | null;
   // Reshapes a successful answer for an agent, under the result cap
   // (src/lib/agents/agent-results.ts). Others are only bounded.
-  shape?: (text: string) => string;
+  shape?: (text: string, args: Args) => string;
 };
 
 const campaignIdProp = { campaignId: { type: "string", description: "The campaign's id (from odm_list_campaigns)." } };
@@ -89,12 +99,22 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
   {
     name: "odm_get_campaign",
     scope: "read",
-    description: "The live table, current to the newest message: call this first to see what is happening now and what you may do. Read one campaign as you see it at the table (secrets only if you hold the DM seat or steer the story). First the state that decides what you may do now: safety pause, DM status, floor, your caps, pending rolls, encounter, disputes; then the party, then the newest messages that fit, then recent rolls, notes and chapters. history.olderBefore pages back with odm_get_messages. Whispers the DM sent you alone are not here: odm_get_whispers reads them.",
-    properties: campaignIdProp,
+    description: "The live table, current to the newest message: call this first to see what is happening now and what you may do. Read one campaign as you see it at the table (secrets only if you hold the DM seat or steer the story). First the state that decides what you may do now: safety pause, DM status, floor, your caps, pending rolls, encounter, disputes; then the party, then the newest messages that fit, then recent rolls, notes and chapters. history.olderBefore pages back with odm_get_messages. Whispers the DM sent you alone are not here: odm_get_whispers reads them. To read less: view 'status' (may I act, and the newest message), 'recent' (status and the newest messages), 'sheet' (status and your sheets whole) or 'encounter' (status and the fight); sinceSeq returns only messages after a seq you have read (latestSeq from your last read); maxChars caps the reply. Every view keeps the state that decides whether you may act.",
+    properties: {
+      ...campaignIdProp,
+      view: { type: "string", enum: [...CAMPAIGN_VIEWS], description: "How much to read (default full)." },
+      sinceSeq: { type: "integer", minimum: 0, description: "Only messages after this seq (latestSeq from your last read)." },
+      maxChars: { type: "integer", minimum: MIN_RESULT_CHARS, maximum: MAX_RESULT_CHARS, description: "The most characters the reply may run to." },
+    },
     required: ["campaignId"],
     method: "GET",
     path: (a) => `/api/campaigns/${seg(a.campaignId)}`,
-    shape: campaignForAgent,
+    shape: (text, a) =>
+      campaignForAgent(text, MAX_RESULT_CHARS, {
+        ...(typeof a.view === "string" && (CAMPAIGN_VIEWS as readonly string[]).includes(a.view) ? { view: a.view as CampaignView } : {}),
+        ...(Number.isSafeInteger(a.sinceSeq) && (a.sinceSeq as number) >= 0 ? { sinceSeq: a.sinceSeq as number } : {}),
+        ...(Number.isSafeInteger(a.maxChars) ? { maxChars: a.maxChars as number } : {}),
+      }),
   },
   {
     name: "odm_get_messages",
@@ -119,7 +139,7 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
       }
       return `/api/campaigns/${seg(a.campaignId)}/messages${query.size ? `?${query}` : ""}`;
     },
-    shape: historyForAgent,
+    shape: (text) => historyForAgent(text),
   },
   {
     name: "odm_get_sheet",
@@ -129,6 +149,28 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     required: ["campaignId"],
     method: "GET",
     path: (a) => `/api/campaigns/${seg(a.campaignId)}/sheet`,
+  },
+  {
+    name: "odm_level_up_options",
+    scope: "read",
+    description: "What your active character's next level offers, before odm_level_up takes it: whether the experience has earned it (ready, notReady), the hit points it adds, and under choices every pick it opens with the exact names to send back: asiChoices, subclass, expertise, featurePicks (fighting styles, invocations, maneuvers), levelUpSkill, training (featChoices) and spells. owedFromEarlierLevels lists picks earlier levels left open, which the next level-up takes. Pass levelUpClass to ask about a level in another class (otherClasses lists them), and subclass to see what a subclass the level owes would open with it (a Battle Master's maneuvers, an Eldritch Knight's spells).",
+    properties: {
+      ...campaignIdProp,
+      levelUpClass: { type: "string", description: "A class id from otherClasses; leave out for the first class." },
+      subclass: { type: "string", maxLength: 80, description: "One of choices.subclass.options, to count the picks it opens." },
+    },
+    required: ["campaignId"],
+    method: "GET",
+    path: (a) => {
+      const query = new URLSearchParams();
+      if (a.levelUpClass !== undefined) {
+        query.set("class", decodeURIComponent(seg(a.levelUpClass)));
+      }
+      if (a.subclass !== undefined) {
+        query.set("subclass", String(a.subclass).slice(0, 80));
+      }
+      return `/api/campaigns/${seg(a.campaignId)}/sheet/level-up${query.size ? `?${query}` : ""}`;
+    },
   },
   {
     name: "odm_get_whispers",
@@ -272,6 +314,50 @@ export const WORKBENCH_TOOLS: WorkbenchTool[] = [
     method: "POST",
     path: (a) => `/api/campaigns/${seg(a.campaignId)}/encounter/end-turn`,
     body: () => ({}),
+  },
+  {
+    name: "odm_level_up",
+    scope: "play",
+    description: "Take your active character's next level, as the level-up dialog does: read odm_level_up_options first and send its nextLevel with the picks it lists. The server builds the level from these choices alone (hit points by the table's method, features, slots) and refuses an unearned level or an illegal pick with the reason. A pick left out stays owed for the next level-up. The answer is the new sheet with hpGained.",
+    properties: {
+      ...campaignIdProp,
+      level: { type: "integer", minimum: 2, maximum: 20, description: "The next level (nextLevel from odm_level_up_options): one level at a time." },
+      levelUpClass: { type: "string", description: "The class taking the level; leave out for the first class." },
+      hpChoice: { type: "string", enum: ["roll", "average"], description: "Only where the table rolls hit points: average takes the fixed value instead of the server's roll." },
+      asiChoices: {
+        type: "array",
+        maxItems: 7,
+        description: 'Up to choices.asiChoices.count: { mode: "plus2", ability }, { mode: "plus1x2", abilities: [a, b] } or { mode: "feat", feat, ability? }. Abilities are str, dex, con, int, wis, cha.',
+        items: { type: "object" },
+      },
+      featChoices: {
+        type: "object",
+        description: "The picks a feat taken now or a subclass's training leaves open, keyed by its lowercased name: { languages, skills, expertise, weapons, tools, armor, cantrips, spells, damageType } as the refusal or choices.training names them.",
+      },
+      subclass: { type: "string", description: "One of choices.subclass.options." },
+      expertise: { type: "array", items: { type: "string" }, maxItems: 6, description: "Skills from choices.expertise.options." },
+      featurePicks: {
+        type: "array",
+        items: { type: "string", maxLength: 80 },
+        maxItems: 20,
+        description: "Feature names from choices.featurePicks options, exactly as listed (\"Fighting Style: Defense\", \"Invocation: Agonizing Blast\").",
+      },
+      levelUpSkill: { type: "string", description: "One of choices.levelUpSkill.options (a new class's skill)." },
+      levelUpSpells: { type: "array", items: { type: "string" }, maxItems: 20, description: "New cantrips and spells by name, within choices.spells." },
+      levelUpForget: { type: "string", description: "A spell a known caster gives up for one of levelUpSpells (choices.spells.mayReplaceOne)." },
+    },
+    required: ["campaignId", "level"],
+    method: "PATCH",
+    path: (a) => `/api/campaigns/${seg(a.campaignId)}/sheet`,
+    // The level-up's fields and nothing else: the route takes a cosmetic
+    // edit on this PATCH too, which this tool does not offer.
+    body: (a) => ({
+      ...pick(a, ["level", "levelUpClass", "hpChoice", "asiChoices", "featChoices", "subclass", "expertise", "levelUpSkill", "levelUpSpells", "levelUpForget"]),
+      ...(Array.isArray(a.featurePicks) && a.featurePicks.length
+        ? { features: a.featurePicks.map((name) => ({ name: String(name), source: "choice" })) }
+        : {}),
+    }),
+    check: (a) => (Number.isSafeInteger(a.level) ? null : "Name the next level (nextLevel from odm_level_up_options)."),
   },
   // characters
   {
@@ -422,7 +508,7 @@ const WHOAMI: McpToolDefinition = {
 
 export function workbenchTools(grant: ConnectionGrant): McpToolDefinition[] {
   // The webhook guard fields only mean something where webhooks can exist.
-  const guards = playerWebhooksEnabled();
+  const guards = playerSignalsEnabled();
   return [
     WHOAMI,
     ...webhookTools(grant),
@@ -562,7 +648,7 @@ export async function workbenchCall(grant: ConnectionGrant, name: string, args: 
   }
   // Held under the agent's result cap as JSON, so a long answer still parses
   // and keeps the fields that matter (src/lib/agents/agent-results.ts).
-  text = response.ok && tool.shape ? tool.shape(text) : boundResultText(text);
+  text = response.ok && tool.shape ? tool.shape(text, args) : boundResultText(text);
   const result = !response.ok
     ? { text: `HTTP ${response.status}: ${text || response.statusText}`, isError: true, campaignId }
     : { text: text || "{}", isError: false, campaignId };

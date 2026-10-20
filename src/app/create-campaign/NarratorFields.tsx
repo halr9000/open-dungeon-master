@@ -14,7 +14,7 @@ import type { StepProps } from "@/app/create-campaign/draft";
 // Where a campaign's characters get their own voices once it has any:
 // CharacterVoices inside the Game settings panel, which the lobby shows and
 // the table's Settings tab shows again.
-export const CHARACTER_VOICES_PLACE = "Game settings, under Character voices, in the lobby or the table's Settings tab";
+export const CHARACTER_VOICES_PLACE = "the Character voices list in Table settings (Narration and character voices), in the lobby or the table's Settings tab";
 
 export const CASTING_INFO = `Two choices decide who reads a line aloud.\n\n**The narrator's voice and pace** read the story, and every speaker who has no voice of their own.\n\n**Character voices** belong to one speaker each. With *Each speaker gets a voice*, everyone who speaks (an innkeeper, a monster, a companion) is given one of this server's voices the first time they talk and keeps it from then on. With *The narrator reads them*, nobody is given one automatically, and any voice you do give a character still plays.\n\nEither way, a voice can be given or changed per character once the campaign has people in it: ${CHARACTER_VOICES_PLACE}. Each player can also choose the voice their own character speaks in there.\n\nThis is the table's spoken narration. Live voice chat between players is a separate setting.`;
 
@@ -31,7 +31,7 @@ export function NarrationFields(props: StepProps & { onFlip?: () => void }) {
       {!gates.ttsAvailable ? (
         <p className="text-xs text-stone-500">
           This server has no speech service yet, so nothing is read aloud. Ask the server owner to set one up; the
-          campaign can turn narration on from its Game settings afterwards.
+          campaign can turn narration on from its Table settings afterwards.
         </p>
       ) : null}
       {draft.ttsEnabled ? (

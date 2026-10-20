@@ -68,7 +68,10 @@ async function refused(hero, name, args, label = name) {
 // ---- known and prepared ----
 
 await test("a spell that is not on the sheet is refused by every cast tool", async () => {
-  await refused(mage, "use_spell_slot", { characterId: mage.id, level: 3, spell: "Counterspell" });
+  const counter = await refused(mage, "use_spell_slot", { characterId: mage.id, level: 3, spell: "Counterspell" });
+  // A reaction spell they lack is refused for that, not sent to use_reaction.
+  assert.match(String(counter.error), /Counterspell/);
+  assert.doesNotMatch(String(counter.error), /use_reaction/);
   await refused(mage, "cast_at_enemy", { characterId: mage.id, targetEnemyId: ogre.id, spell: "Banishment", saveAbility: "cha", level: 3, condition: "banished" });
   await refused(mage, "cast_at_enemy", { characterId: mage.id, targetEnemyId: ogre.id, spell: "Sacred Flame", saveAbility: "dex", damage: "1d8" }, "a cantrip not known");
   await refused(mage, "pc_attack", { characterId: mage.id, enemyId: ogre.id, targetEnemyId: ogre.id, spell: "Eldritch Blast", damage: "1d10" });
@@ -172,9 +175,9 @@ await test("a cast spends exactly one slot of the level named, and the last slot
 });
 
 await test("a warlock casts from the pact slot's level and has no other", async () => {
-  await refused(hexer, "use_spell_slot", { characterId: hexer.id, level: 1, spell: "Hellish Rebuke" });
+  await refused(hexer, "use_spell_slot", { characterId: hexer.id, level: 1, spell: "Hex" });
   await refused(hexer, "use_spell_slot", { characterId: hexer.id, level: 2, spell: "Hold Person" });
-  const out = await world.invoke("use_spell_slot", { characterId: hexer.id, level: 3, spell: "Hellish Rebuke" });
+  const out = await world.invoke("use_spell_slot", { characterId: hexer.id, level: 3, spell: "Hex" });
   assert.equal(out.ok, true, out.error);
   assert.deepEqual(world.sheet(hexer.id).spellcasting.slots, { 3: { max: 2, used: 1 } });
 });

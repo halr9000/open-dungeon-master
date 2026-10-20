@@ -11,8 +11,10 @@
 // challenge, the Blades progress clock and the 5e chase all at once, because
 // they are the same object.
 //
-// Pure by design: no imports at all, so scripts/test-scene-tracker.mjs can
+// Pure by design: no imports beyond types, so scripts/test-scene-tracker.mjs can
 // load it and the console can preview a clock before starting it.
+
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export const TRACKER_KINDS = ["exploration", "social", "chase", "ritual"] as const;
 export type TrackerKind = (typeof TRACKER_KINDS)[number];
@@ -90,14 +92,14 @@ export const DEFAULT_FAILURES = 3;
 
 export function checkTracker(
   input: TrackerInput,
-): { tracker: Omit<SceneTracker, "id" | "campaignId" | "createdAt"> } | { error: string } {
+): { tracker: Omit<SceneTracker, "id" | "campaignId" | "createdAt"> } | ToolError {
   const kind = String(input.kind ?? "") as TrackerKind;
   if (!TRACKER_KINDS.includes(kind)) {
-    return { error: `"${input.kind}" is not a kind of scene this tracks.` };
+    return { error: `"${input.kind}" is not a kind of scene this tracks.`, retry: true };
   }
   const title = String(input.title ?? "").trim().slice(0, TRACKER_TITLE_MAX);
   if (!title) {
-    return { error: "Name the scene." };
+    return { error: "Name the scene.", retry: true };
   }
   const successesNeeded = clampClock(input.successesNeeded, DEFAULT_SUCCESSES);
   const failuresAllowed = clampClock(input.failuresAllowed, DEFAULT_FAILURES);
@@ -140,15 +142,15 @@ export type TrackerAdvance = {
 
 // The handler calls this before rolling; recordCheck calls it again so a
 // different caller cannot move the clock with an ineligible attempt.
-export function checkSceneAttempt(tracker: SceneTracker, characterId: string): { error: string } | null {
+export function checkSceneAttempt(tracker: SceneTracker, characterId: string): ToolError | null {
   if (tracker.status !== "running") {
-    return { error: `"${tracker.title}" already finished.` };
+    return { error: `"${tracker.title}" already finished.`, retry: true };
   }
   if (tracker.characterIds.length > 0 && !tracker.characterIds.includes(characterId)) {
-    return { error: "That character is not a participant in this scene." };
+    return { error: "That character is not a participant in this scene.", retry: true };
   }
   if (tracker.log.some((entry) => entry.round === tracker.round && entry.characterId === characterId)) {
-    return { error: "That character already made a check this round." };
+    return { error: "That character already made a check this round.", refused: "rules" };
   }
   return null;
 }
@@ -156,7 +158,7 @@ export function checkSceneAttempt(tracker: SceneTracker, characterId: string): {
 export function recordCheck(
   tracker: SceneTracker,
   entry: Omit<TrackerEntry, "round">,
-): TrackerAdvance | { error: string } {
+): TrackerAdvance | ToolError {
   const invalid = checkSceneAttempt(tracker, entry.characterId);
   if (invalid) {
     return invalid;

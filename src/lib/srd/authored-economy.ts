@@ -5,6 +5,7 @@
 // and database-free, like the rest of src/lib/srd.
 
 import { activeAuthored, type AuthoredSheet } from "@/lib/srd/authored-effects";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // An arrow missed this turn ("curving-shot:<enemyId>"): Curving Shot may
 // reroll it at another creature.
@@ -21,10 +22,10 @@ export function authoredBonusRoute(sheet: AuthoredSheet, action: string): { feat
 export function authoredBonusAttackProblem(
   sheet: AuthoredSheet,
   budget: { attacksMade: number; castThisAction?: boolean; oncePerTurn?: string[] } | null,
-): { feature: string } | { refused: string } {
+): { feature: string } | { refused: ToolError } {
   const offers = activeAuthored(sheet, "bonus_attack");
   if (!offers.length) {
-    return { refused: "No feature of theirs grants a bonus-action weapon attack." };
+    return { refused: { error: "No feature of theirs grants a bonus-action weapon attack. Their attacks come from the Attack action.", refused: "rules" } };
   }
   // A spell cast with the action marks the budget (cast-rules.ts turnCharge);
   // a levelled one leaves its own mark, so a cantrip is a cast without it.
@@ -56,7 +57,7 @@ export function authoredBonusAttackProblem(
         : first.effect.after === "cantrip"
           ? "after they cast a cantrip with their action"
           : "after they cast a spell with their action";
-  return { refused: `${first.held.feature}'s bonus-action weapon attack comes ${when}, and that has not happened this turn.` };
+  return { refused: { error: `${first.held.feature}'s bonus-action weapon attack comes ${when}, and that has not happened this turn.`, retry: true } };
 }
 
 // Circle of Mortality: a healing spell this caster casts on a creature at 0

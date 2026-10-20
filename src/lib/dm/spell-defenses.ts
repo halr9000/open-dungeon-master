@@ -21,9 +21,10 @@ import { computeSheetDerived, spellSaveDcFor } from "@/lib/srd";
 import { rollEnemySave } from "@/lib/dm/forced-save";
 import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { tranquilityDc } from "@/lib/dm/srd-defenses";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // Why the enemy cannot attack this character now, or null.
-export function sanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targetId: string): string | null {
+export function sanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targetId: string): ToolError | null {
   const target = getSheetById(targetId);
   const ward = target?.conditions.find((entry) => entry.trim().toLowerCase() === "sanctuary");
   if (!target || !ward) {
@@ -37,7 +38,7 @@ export function sanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targ
   if (save.success) {
     return null;
   }
-  return `${enemy.displayName} fails its WIS save (DC ${dc}) against ${target.name}'s Sanctuary and cannot attack them: it must choose another target or lose the attack.`;
+  return { error: `${enemy.displayName} fails its WIS save (DC ${dc}) against ${target.name}'s Sanctuary and cannot attack them: it must choose another target or lose the attack.`, retry: true };
 }
 
 // The attack's fate when the target holds Mirror Image: null when it goes

@@ -13,7 +13,7 @@ import type { Speaker, SpokenLine } from "@/lib/dm/speech";
 import { closeLiveNarration, openLiveNarration, pushLiveNarration, renderSpeech } from "@/lib/tts-render";
 import { castUnvoiced, voiceRoster, type RosterEntry } from "@/lib/tts-roster";
 import { baseCreatureName, planSpeech, speechRequests, type CastVoice } from "@/lib/tts-segments";
-import { foldName } from "@/lib/language/text-logic";
+import { textKey } from "@/lib/language/text-logic";
 
 // Narration TTS on the server's speech backend (src/lib/tts-backend.ts: the
 // local Kokoro-FastAPI service on :8880 unless the admin chose another).
@@ -63,16 +63,6 @@ function castOf(roster: RosterEntry[]): CastVoice[] {
   }));
 }
 
-// The cast's own voices (docs/vtt-parity-implementation-plan.md 8.2, issue
-// 97), read when the job runs so a voice picked a moment ago is heard.
-export function castVoices(campaignId: string): CastVoice[] {
-  try {
-    return castOf(voiceRoster(campaignId)).filter((entry) => entry.voiceId);
-  } catch {
-    return [];
-  }
-}
-
 // Who speaks in this passage without a voice yet: the person it is spoken
 // as, else the speakers stored with its lines.
 export function unvoicedSpeakers(
@@ -83,8 +73,8 @@ export function unvoicedSpeakers(
   const keys = new Set<string>();
   const who = speaker && speaker.kind !== "narrator" ? [speaker] : lines.map((entry) => entry.speaker);
   for (const person of who) {
-    const wanted = [foldName(person.name), foldName(baseCreatureName(person.name))];
-    const entry = roster.find((candidate) => wanted.includes(foldName(candidate.name)));
+    const wanted = [textKey(person.name), textKey(baseCreatureName(person.name))];
+    const entry = roster.find((candidate) => wanted.includes(textKey(candidate.name)));
     if (entry && !entry.voice) {
       keys.add(entry.key);
     }

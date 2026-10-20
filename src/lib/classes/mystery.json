@@ -35,6 +35,10 @@
         "mystery"
       ],
       "blurb": "Nothing escapes them: a trained eye for detail, a memory like a case file, and a nose for lies.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -72,6 +76,11 @@
         "mystery"
       ],
       "blurb": "A doctor of the mind whose treatments border on the uncanny: reading motives, unknotting fear, opening memory.",
+      "roles": [
+        "Support",
+        "Control"
+      ],
+      "playsLike": "Wizard",
       "spellListFrom": "wizard",
       "knownCaster": false,
       "castingLabel": "Treatments",
@@ -113,6 +122,10 @@
         "mystery"
       ],
       "blurb": "Charm as a weapon, a new name in every city, and a plan that is always three lies deep.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -156,6 +169,10 @@
         "mystery"
       ],
       "blurb": "The wall between trouble and the people they protect. Big fists, bigger presence, unexpected patience.",
+      "roles": [
+        "Tank"
+      ],
+      "playsLike": "Fighter",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -196,6 +213,10 @@
         "mystery"
       ],
       "blurb": "A reporter who follows the money, kicks over rocks, and prints what powerful people pay to bury.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -237,6 +258,11 @@
         "horror"
       ],
       "blurb": "The dead talk to them, whether invited or not. Séances, warnings, and truths the living lie about.",
+      "roles": [
+        "Healer",
+        "Support"
+      ],
+      "playsLike": "Cleric",
       "spellListFrom": "cleric",
       "knownCaster": true,
       "castingLabel": "Seances",

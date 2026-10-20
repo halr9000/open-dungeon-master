@@ -94,7 +94,7 @@ const mine = (extra = {}) => ({
 
 test("a card off the character's turn is refused with canAct's own sentence, and a reaction stays open", () => {
   const cards = deriveHand(caster({ id: "s1" }), talias(), { spells: FACTS });
-  assert.match(byId(cards, "spell:fire bolt").disabled, /^It is Talia's turn, not Lys's\. Off their own turn a character can only use their reaction\.$/);
+  assert.match(byId(cards, "spell:fire bolt").disabled, /^It is Talia's turn, not Lys's\. Off their own turn a character can only use their reaction\. What they declared waits for their turn\.$/);
   assert.equal(byId(cards, "spell:shield").disabled, null);
   assert.equal(byId(cards, "spell:shield").intent.card, "reaction");
 });
@@ -103,7 +103,7 @@ test("a card off the character's turn is refused with canAct's own sentence, and
 test("a hand that is only waiting says so once, and its cards keep everything there is to read", () => {
   const lys = caster({ id: "s1" });
   const waiting = waitingHand(lys, talias());
-  assert.equal(waiting.note, "It is Talia's turn, not Lys's. Off their own turn a character can only use their reaction.");
+  assert.equal(waiting.note, "It is Talia's turn, not Lys's. Off their own turn a character can only use their reaction. What they declared waits for their turn.");
   const cards = deriveHand(lys, talias(), { spells: FACTS });
   const bolt = byId(cards, "spell:fire bolt");
   assert.ok(waiting.sentences.has(bolt.disabled), "the card is held by the wait and nothing else, which is how the hand knows it is still worth reading");

@@ -53,7 +53,7 @@ export async function POST(
   const { campaign, user } = context;
   if (!delegated(campaign.gameSettings.dmMode, campaign.gameSettings.dmAssist, "cover")) {
     return Response.json(
-      { error: "Covering is off; turn it on under Game settings." },
+      { error: "Covering is off; turn it on in Table settings, under AI storytelling and allies." },
       { status: 403 },
     );
   }

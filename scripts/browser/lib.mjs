@@ -8,6 +8,7 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -51,9 +52,14 @@ export async function startServer({ tree, dbPath, key, port, log }) {
     APP_PUBLIC_URL: `http://127.0.0.1:${port}`,
     VOICE_ENABLED: "false",
     // No model, no pictures, no speech: the scenarios look at the pages, not
-    // at a storyteller. A table whose action would call one gets the same
-    // "not configured" the UI already handles.
-    DEFAULT_TEXT_PROVIDER: "",
+    // at a storyteller. An empty provider fell back to the shipped default,
+    // the llama-server address 127.0.0.1:8001, so on a machine running one
+    // the admin pages probed it and a posted action queued a real turn there
+    // (issue 414). The storyteller is set up but on a closed port, as on CI
+    // where nothing listens: an action that would call it fails the same way.
+    // No model is named, which admin-speed reads as "Name the model first".
+    DEFAULT_TEXT_PROVIDER: "custom",
+    OPENAI_COMPAT_BASE_URL: "http://127.0.0.1:9/v1",
     OPENAI_API_KEY: "",
     // No speech-to-text either, whatever this machine runs on :8870: a
     // scenario that dictates stands in the device's own recognizer, the same
@@ -211,6 +217,23 @@ export function pageHarness({ page, base, ids, app, viewport, outDir, tag, api }
     api,
     tap: (locator) => (touch && app ? locator.tap() : locator.click()),
     shot: (name) => page.screenshot({ path: path.join(outDir, `${tag}-${name}.png`), fullPage: false }).catch(() => {}),
+    // Where the page is: the address bar on the server; in the app, whose
+    // window stays on index.html, the shell's own navigation.
+    url: async () => {
+      if (!app) return new URL(page.url());
+      const where = await page.evaluate(() => window.odmShell?.navigation?.location?.() ?? null);
+      return new URL(`${where?.pathname ?? "/"}${where?.search ?? ""}`, base);
+    },
+    // A refresh: the browser's on the server; in the app, the shell's own
+    // (reloading index.html would restart the app at its home).
+    reload: async () => {
+      if (!app) {
+        await page.reload();
+        return;
+      }
+      await page.evaluate(() => window.odmShell?.navigation?.reload?.());
+      await sleep(1_500);
+    },
     // On the server, a URL; in the app, the shell's own navigation (the
     // runner has already signed in and entered the host).
     open: async (route) => {
@@ -243,7 +266,9 @@ export async function enterApp(page, shellBase, host, ids, touch) {
   await page.locator('input[type="password"]').first().fill(ids.password);
   await tap(page.getByRole("button", { name: /^sign in$/i }).last());
   await sleep(4_000);
-  await tap(page.getByRole("button", { name: /^enter$/i }).first());
+  // A fresh sign-in reads the host's tables at once, so the home's hero is
+  // the latest table ("Enter the world") rather than the host ("Enter").
+  await tap(page.getByRole("button", { name: /^enter(?: the world)?$/i }).first());
   await page.waitForSelector(".game-root", { timeout: 60_000 });
   await sleep(2_000);
   await settle(page);
@@ -264,7 +289,20 @@ async function appNavigate(page, route, ids, touch) {
   // on the shell's router (client src/renderer/game/index.tsx ROUTES).
   const campaign = route.match(/^\/campaigns\/([^/?]+)/)?.[1];
   if (campaign) {
-    const title = ids.titles?.[campaign] ?? (campaign === ids.campaignId ? ids.title : ids.lobbyTitle);
+    // A campaign a scenario made itself is not in the seed's list: its title
+    // comes from the host, so the app opens that table and not the lobby.
+    const made = async () =>
+      page.evaluate(
+        (id) =>
+          fetch(`/api/campaigns/${id}`)
+            .then((response) => (response.ok ? response.json() : null))
+            .then((data) => data?.campaign?.title ?? null)
+            .catch(() => null),
+        campaign,
+      );
+    const title =
+      ids.titles?.[campaign] ??
+      (campaign === ids.campaignId ? ids.title : campaign === ids.lobbyId ? ids.lobbyTitle : ((await made()) ?? ids.lobbyTitle));
     // A title is matched as written: "Closing Table (desktop)" has
     // parentheses a pattern would read as a group.
     const tile = page
@@ -304,4 +342,73 @@ export async function eventually(fn, { timeoutMs = 15_000, every = 250, label = 
     await sleep(every);
   }
   throw new Error(`${label} did not hold within ${timeoutMs / 1000}s${last instanceof Error ? `: ${last.message}` : ""}`);
+}
+
+// Opens a side-panel tab the way a person would on this viewport: its rail
+// or bottom-bar cell when it has one, otherwise More and the tab's row in
+// the sheet More opens (the phone bar keeps five tabs, src/lib/dm/
+// table-tabs.ts phoneBarSplit). The sheet is portalled, so its row is
+// looked for on the whole page.
+export async function openPanelTab(t, tab, { timeoutMs = 30_000 } = {}) {
+  const { page, root } = t;
+  const direct = page.locator(`${root}[data-tour="tab-${tab}"]`).locator("visible=true").first();
+  const more = page.locator(`${root}[data-tour="tab-more"]`).locator("visible=true").first();
+  await eventually(async () => (await direct.count()) > 0 || (await more.count()) > 0, {
+    timeoutMs,
+    label: `the ${tab} tab or More`,
+  });
+  if (await direct.count()) {
+    await t.tap(direct);
+    return "direct";
+  }
+  await t.tap(more);
+  const row = page.locator(`[data-more-tab="${tab}"]`).locator("visible=true").first();
+  await eventually(() => row.count(), { label: `${tab} under More` });
+  await t.tap(row);
+  return "more";
+}
+
+// Opens one of the table settings' named groups (src/app/campaigns/
+// [campaignId]/table-settings-groups.ts) if it is closed. A closed group's
+// rows are mounted but hidden, so a check that reads or presses them opens
+// the group first, as a person would.
+export async function openSettingsGroup(t, id, { timeoutMs = 30_000 } = {}) {
+  const { page, root } = t;
+  const group = page.locator(`${root}[data-table-settings] [data-group="${id}"]`).locator("visible=true").first();
+  await eventually(() => group.count(), { timeoutMs, label: `the ${id} settings group` });
+  if ((await group.getAttribute("data-open")) === null) {
+    await t.tap(group.locator(".cc-group-toggle").first());
+  }
+  await eventually(async () => (await group.getAttribute("data-open")) !== null, { label: `the ${id} group open` });
+  return group;
+}
+
+const axeSource = fs.readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
+
+// axe-core (WCAG 2.1 A and AA rules) over one part of the page: its serious
+// and critical violations, or one saying nothing was checked.
+export async function axeViolations(page, selector) {
+  if (!(await page.evaluate(() => Boolean(window.axe)))) {
+    await page.addScriptTag({ content: axeSource });
+  }
+  return page.evaluate(async (scope) => {
+    const root = document.querySelector(scope);
+    if (!root) return [{ id: "missing-root", impact: "critical", help: `no ${scope}`, nodes: [] }];
+    const result = await window.axe.run(root, {
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+    });
+    // A run that checked nothing passes nothing either: say so, rather than
+    // pass in silence.
+    if (!result.passes.length) {
+      return [{ id: "nothing-checked", impact: "critical", help: "axe checked no rule here", nodes: [scope] }];
+    }
+    return result.violations
+      .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
+      .map((violation) => ({
+        id: violation.id,
+        impact: violation.impact,
+        help: violation.help,
+        nodes: violation.nodes.slice(0, 3).map((node) => node.target.join(" ")),
+      }));
+  }, selector);
 }

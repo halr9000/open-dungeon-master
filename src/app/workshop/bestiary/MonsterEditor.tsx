@@ -2,6 +2,9 @@
 
 import { PrintedBlockView } from "@/app/workshop/bestiary/PrintedBlockView";
 import { Loader2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { DetailGroup } from "@/app/create-campaign/fields";
+import { monsterFoldSummary, type MonsterFold } from "@/app/workshop/bestiary/monster-folds";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { Select } from "@/components/ui/Select";
@@ -44,6 +47,13 @@ const CR_OPTIONS = CR_CHOICES.map((cr) => ({ value: String(cr), label: crLabel(c
 // attack list stays under the stats rather than beside them so a phone,
 // which reads the columns top to bottom, still meets the attacks before the
 // catalogue that adds to them.
+//
+// The core block leads in both layouts: the numbers, the scores, the
+// attacks and saves, the catalogue and the defences. The specialist parts
+// (actions and specials, spellcasting, regeneration, skills and senses)
+// sit in named groups that stay closed, each saying what it holds, so a
+// goblin is not a wall of empty forms and a lich still shows its spells
+// at a glance. Closed groups keep their fields mounted.
 
 export function MonsterEditor({
   draft,
@@ -69,6 +79,47 @@ export function MonsterEditor({
   const sheet = layout === "sheet";
   const setStats = (patch: Partial<MonsterDraft["stats"]>) =>
     onDraft({ ...draft, stats: { ...draft.stats, ...patch } });
+  const [openFolds, setOpenFolds] = useState<ReadonlySet<MonsterFold>>(new Set());
+  const fold = (id: MonsterFold, title: string, glyph: string, children: ReactNode) => (
+    <DetailGroup
+      id={`monster-${id}`}
+      title={title}
+      glyph={glyph}
+      summary={monsterFoldSummary(id, draft)}
+      open={openFolds.has(id)}
+      onToggle={(open) =>
+        setOpenFolds((current) => {
+          const next = new Set(current);
+          if (open) next.add(id);
+          else next.delete(id);
+          return next;
+        })
+      }
+    >
+      {children}
+    </DetailGroup>
+  );
+  const actionsFold = fold(
+    "actions",
+    "Actions and specials",
+    "system-bestiary",
+    <>
+      <RoutineEditor draft={draft} onChange={onDraft} />
+      <AbilitiesEditor draft={draft} onChange={onDraft} />
+      <SectionedTraitEditor draft={draft} onChange={onDraft} />
+    </>,
+  );
+  const spellcastingFold = fold("spellcasting", "Spellcasting", "cue-magic-cast", <SpellcastingEditor draft={draft} onChange={onDraft} />);
+  const regenerationFold = fold("regeneration", "Regeneration", "rest-hp", <RegenerationEditor draft={draft} onChange={onDraft} />);
+  const sensesFold = fold(
+    "senses",
+    "Skills, senses and languages",
+    "sense-darkvision",
+    <>
+      <SkillsAndSenses draft={draft} onChange={onDraft} />
+      <LanguagesAndHabitat draft={draft} onChange={onDraft} />
+    </>,
+  );
 
   const coreStats = (
     <div
@@ -195,11 +246,9 @@ export function MonsterEditor({
             {coreStats}
             <AbilityScores draft={draft} onChange={onDraft} />
             <AttackEditor draft={draft} onChange={onDraft} />
-            <RoutineEditor draft={draft} onChange={onDraft} />
             <SaveEditor draft={draft} onChange={onDraft} />
-            <AbilitiesEditor draft={draft} onChange={onDraft} />
-            <SpellcastingEditor draft={draft} onChange={onDraft} />
-            <SectionedTraitEditor draft={draft} onChange={onDraft} />
+            {actionsFold}
+            {spellcastingFold}
             <PrintedBlockView draft={draft} />
           </div>
           <div className="flex flex-col gap-3">
@@ -207,9 +256,8 @@ export function MonsterEditor({
             <MonsterKitPanel draft={draft} onChange={onDraft} />
             <BorrowParts draft={draft} onChange={onDraft} />
             <SizeAndDefences draft={draft} onChange={onDraft} />
-            <RegenerationEditor draft={draft} onChange={onDraft} />
-            <SkillsAndSenses draft={draft} onChange={onDraft} />
-            <LanguagesAndHabitat draft={draft} onChange={onDraft} />
+            {regenerationFold}
+            {sensesFold}
             {extraDamage}
             {description}
           </div>
@@ -228,16 +276,13 @@ export function MonsterEditor({
       <MonsterKitPanel draft={draft} onChange={onDraft} />
       <BorrowParts draft={draft} onChange={onDraft} />
       <AttackEditor draft={draft} onChange={onDraft} />
-      <RoutineEditor draft={draft} onChange={onDraft} />
       <SaveEditor draft={draft} onChange={onDraft} />
-      <AbilitiesEditor draft={draft} onChange={onDraft} />
-      <SpellcastingEditor draft={draft} onChange={onDraft} />
-      <SectionedTraitEditor draft={draft} onChange={onDraft} />
-      <PrintedBlockView draft={draft} />
       <SizeAndDefences draft={draft} onChange={onDraft} />
-      <RegenerationEditor draft={draft} onChange={onDraft} />
-      <SkillsAndSenses draft={draft} onChange={onDraft} />
-      <LanguagesAndHabitat draft={draft} onChange={onDraft} />
+      {actionsFold}
+      {spellcastingFold}
+      {regenerationFold}
+      {sensesFold}
+      <PrintedBlockView draft={draft} />
       {extraDamage}
       {description}
       {rating}

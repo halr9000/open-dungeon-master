@@ -145,7 +145,8 @@ await test("Three rounds against two goblins: hits stay on the sheet, the dead s
     for (const [index, goblin] of attackers.entries()) {
       const result = answered.get(calls[index].id);
       if (dead.includes(goblin)) {
-        assert.equal(result?.refused, "rules", `round ${round}: ${goblin.displayName}, dead, was not refused on the rules: ${JSON.stringify(result)}`);
+        // The DM's own call with nothing to act on: dropped, never narrated.
+        assert.equal(result?.retry, true, `round ${round}: ${goblin.displayName}, dead, was not handed back to drop: ${JSON.stringify(result)}`);
         // Refused for being dead: "its turn has not come yet" would tell the
         // model the corpse acts later.
         assert.match(result.error ?? "", /is dead/, `round ${round}: ${goblin.displayName} was refused for something other than being dead`);

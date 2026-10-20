@@ -2,18 +2,17 @@ import { spendFeatureUse } from "@/lib/dm/attack-onhit";
 import { z } from "zod";
 import type { Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter, getEnemy, patchEnemyConditions, saveEncounter } from "@/lib/db/encounters";
-import { invisibilityEndedByAction, writeMarks } from "@/lib/dm/attack-marks";
+import { endInvisibilityOnCast, writeMarks } from "@/lib/dm/attack-marks";
 import { sanctuaryEndedByAttack } from "@/lib/dm/spell-defenses";
 import { publishEncounter } from "@/lib/dm/enemy-damage";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
-import { normalizeAdvantage } from "@/lib/dm/arg-coerce";
 import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { applyDmMutation } from "@/lib/dm/mutations";
 import { strikeDamage } from "@/lib/dm/pc-attack-damage";
 import { FRENZIED } from "@/lib/dm/frenzy";
-import { BONUS_ATTACKS, RECKLESS } from "@/lib/dm/pc-attack-options";
+import { ADVANTAGE_SOURCES, BONUS_ATTACKS, RECKLESS } from "@/lib/dm/pc-attack-options";
 import { parkPcAttack } from "@/lib/dm/pc-attack-parked";
 import { planPcAttack, type AttackPlan } from "@/lib/dm/pc-attack-plan";
 import { rollPcAttack, strikeToHit } from "@/lib/dm/pc-attack-resolve";
@@ -28,9 +27,10 @@ import { spendInspirationCounter } from "@/lib/dm/roll-riders";
 import { spendLuckCounter } from "@/lib/srd/class-resources";
 import { moteBurst, moteOf } from "@/lib/dm/authored-mote";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { invalidArguments, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { attacksLeft } from "@/lib/dm/action-budget";
 
-// Re-exported for the callers that learned them here.
-export { superiorityDie } from "@/lib/dm/pc-attack-riders";
+// Re-exported for the callers that learned it here.
 export { resolvePendingPcAttack } from "@/lib/dm/pc-attack-parked";
 
 // The pc_attack engine: full server resolution of player attacks. The
@@ -70,7 +70,7 @@ export const pcAttackTool: ToolDef = {
         weapon: {
           type: "string",
           description:
-            "Weapon they attack with, from their equipment. Omit to use their best carried weapon. A weapon a subclass feature makes is named here too: a raging Path of the Beast barbarian's 'bite', 'claws' or 'tail', a Soulknife's 'psychic blade' (offHand for the second blade), a Sun Soul monk's 'radiant sun bolt'.",
+            "Weapon they attack with, from their equipment, or 'unarmed strike'. Omit to use their best carried weapon. A weapon a subclass feature makes is named here too: a raging Path of the Beast barbarian's 'bite', 'claws' or 'tail', a Soulknife's 'psychic blade' (offHand for the second blade), a Sun Soul monk's 'radiant sun bolt'.",
         },
         spell: {
           type: "string",
@@ -86,7 +86,13 @@ export const pcAttackTool: ToolDef = {
           type: "string",
           enum: ["none", "advantage", "disadvantage"],
           description:
-            "Situational advantage or disadvantage from the fiction that the server cannot see. It counts only with advantageReason. The server already applies conditions (prone, invisible, hidden, restrained...), cover, light and darkness, range, Help, flanking, Reckless Attack and every feature: never claim those.",
+            "Situational advantage or disadvantage from the fiction that the server cannot see. It counts only with advantageSource 'other' and advantageReason. The server already applies conditions (prone, invisible, hidden, restrained...), cover, light and darkness, range, Help, flanking, Reckless Attack and every feature: never claim those.",
+        },
+        advantageSource: {
+          type: "string",
+          enum: [...ADVANTAGE_SOURCES],
+          description:
+            "Where the advantage or disadvantage comes from. Only 'other', a circumstance of the fiction the server cannot see (named in advantageReason), counts: the server applies conditions, cover, light, range, Help, flanking, spells, Inspiration and features itself.",
         },
         advantageReason: {
           type: "string",
@@ -215,14 +221,12 @@ const pcAttackArgsSchema = z.object({
   spell: z.string().max(80).optional(),
   damage: z.string().max(30).optional(),
   damageType: z.string().max(30).optional(),
-  advantage: z.preprocess(
-    normalizeAdvantage,
-    z.enum(["none", "advantage", "disadvantage"]).optional(),
-  ),
+  advantage: z.enum(["none", "advantage", "disadvantage"]).optional(),
   twoHanded: z.coerce.boolean().optional(),
   offHand: z.coerce.boolean().optional(),
   smite: z.coerce.number().int().min(1).max(9).optional(),
   maneuver: z.string().max(60).optional(),
+  advantageSource: z.enum(ADVANTAGE_SOURCES).optional(),
   advantageReason: z.string().max(200).optional(),
   bonusAttack: z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
@@ -268,21 +272,26 @@ export function handlePcAttack(
   sheetsById: Map<string, CharacterSheet>,
   realDiceUserIds: Set<string>,
   toolCallId: string | null,
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter. Call start_encounter first." };
+    return { error: "No active encounter. Call start_encounter first.", retry: true };
   }
-  let args: PcAttackArgs;
+  let raw: unknown;
   try {
-    args = pcAttackArgsSchema.parse(JSON.parse(rawArguments || "{}"));
+    raw = JSON.parse(rawArguments || "{}");
   } catch {
-    return { error: "Invalid arguments: pc_attack needs characterId and targetEnemyId." };
+    return { error: "Invalid arguments: pc_attack needs characterId and targetEnemyId.", retry: true };
   }
+  const parsed = pcAttackArgsSchema.safeParse(raw);
+  if (!parsed.success) {
+    return invalidArguments("Invalid arguments: pc_attack needs characterId and targetEnemyId.", parsed.error);
+  }
+  const args: PcAttackArgs = parsed.data;
   const staleSheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = staleSheet ? (getSheetById(staleSheet.id) ?? staleSheet) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
 
   // ---- refusals: everything that can stop this attack, before any spend ----
@@ -298,7 +307,24 @@ export function handlePcAttack(
   // A Creation bard's mote rides the inspiration die the roll spends
   // (src/lib/dm/authored-mote.ts); it bursts once the attack is rolled.
   const mote = moteOf(sheet, plan.attackRiders.spent);
-  spendPcAttack(plan);
+  const countered = spendPcAttack(plan);
+  // Counterspell stopped the spell after it was paid for: no roll follows,
+  // parked or digital.
+  if (countered) {
+    return countered;
+  }
+  // An attack the rules make and miss (pc-attack-plan.ts missesBecause):
+  // spent above, with no roll to make.
+  if (plan.missesBecause) {
+    return {
+      attacker: sheet.name,
+      weapon: plan.profile.weapon,
+      target: plan.enemy.displayName,
+      hit: false,
+      ...(plan.budget && attacksLeft(plan.budget) > 0 && plan.budget.attacksMade > 0 ? { attacksRemaining: attacksLeft(plan.budget) } : {}),
+      note: `${plan.missesBecause} The attack misses; narrate the miss.`,
+    };
+  }
   const strike = { ...strikeToHit(plan), ...strikeDamage(plan) };
 
   // Physical dice: park the to-hit roll for the player; the submit route
@@ -314,8 +340,9 @@ export function handlePcAttack(
 
 // What the attack costs, paid now that nothing can refuse it: the turn
 // budget, the cast or the reaction, the round from the quiver, Precision
-// Attack's die, and the conditions this roll uses up.
-function spendPcAttack(plan: AttackPlan) {
+// Attack's die, and the conditions this roll uses up. Returns the refusal of
+// a spell Counterspell stopped (spent, and nothing else follows), or null.
+function spendPcAttack(plan: AttackPlan): ToolError | null {
   const { campaign, turn, encounter, sheet, sheets, sheetsById, budget, ammo, context } = plan;
   if (budget) {
     storeBudget(encounter, budget);
@@ -334,7 +361,10 @@ function spendPcAttack(plan: AttackPlan) {
     }
   }
   if (plan.castsSpell) {
-    castAttackSpell(plan);
+    const countered = castAttackSpell(plan);
+    if (countered) {
+      return countered;
+    }
   } else if (!budget) {
     markReactionUsed(encounter, sheet.id);
     // The readied action (or the Giant Killer answer) this attack is spends
@@ -393,15 +423,13 @@ function spendPcAttack(plan: AttackPlan) {
   }
 
   // Striking from hiding spends the hiding (the attack gives them away
-  // whether it lands or not), an attack ends Invisibility (not Greater
-  // Invisibility, attack-marks.ts), and one-shot riders like True Strike and
-  // a held Help are spent by this roll: clear them all together.
+  // whether it lands or not), and one-shot riders like True Strike and a
+  // held Help are spent by this roll: clear them all together.
   // Skulker keeps the hiding through a ranged attack's roll; a hit spends it
   // (pc-attack-plan.ts hitSpent).
   const keepsHiding = plan.hitSpent.includes("hidden");
   const spentConditions = [
     ...(!keepsHiding && sheet.conditions.some((entry) => entry.toLowerCase() === "hidden") ? ["hidden"] : []),
-    ...invisibilityEndedByAction(sheet),
     // An attack ends the attacker's own Sanctuary (spell-defenses.ts).
     ...sanctuaryEndedByAttack(sheet),
     ...(plan.helped ? [plan.helped] : []),
@@ -417,6 +445,9 @@ function spendPcAttack(plan: AttackPlan) {
       publishPersisted(campaign.id, "sheet_updated", { sheet: revealed });
     }
   }
+  // An attack ends Invisibility, each source but Greater Invisibility's
+  // (attack-marks.ts); a spell attack's cast has already done it.
+  endInvisibilityOnCast(campaign.id, sheet.id);
   // A luck point spent on this roll (Lucky).
   if (plan.extras.luck) {
     const fresh = getSheetById(sheet.id) ?? sheet;
@@ -447,6 +478,7 @@ function spendPcAttack(plan: AttackPlan) {
       publishEncounter(campaign.id);
     }
   }
+  return null;
 }
 
 // What a feature option leaves on the attacker once the attack is paid for:

@@ -33,6 +33,7 @@ import { ui } from "@/lib/ui";
 // comes back to: `jumpAhead` lets a diamond ahead be tapped once every gate
 // before it passes, and `finishFromAnyStep` offers the done button on every
 // step once every gate passes (an edit of something already complete).
+// `stepNames` prints each step's short label under its diamond.
 
 export type WizardStep = {
   key: string;
@@ -50,6 +51,9 @@ export type WizardStep = {
   // a tap on the held button (or on the message) goes to the missing pick.
   blocker?: string | null;
   onBlocked?: () => void;
+  // A quieter way on from this step, beside Back ("Skip for now", "Save and
+  // finish later"): the step decides what it saves, if anything.
+  secondary?: { label: ReactNode; onClick: () => void; title?: string };
 };
 
 // Something the wizard should say above the steps until the player has seen
@@ -79,6 +83,7 @@ export function Wizard({
   notice,
   jumpAhead = false,
   finishFromAnyStep = false,
+  stepNames = false,
 }: {
   steps: WizardStep[];
   title: ReactNode;
@@ -96,6 +101,7 @@ export function Wizard({
   notice?: WizardNotice;
   jumpAhead?: boolean;
   finishFromAnyStep?: boolean;
+  stepNames?: boolean;
 }) {
   const [internalStep, setInternalStep] = useState(0);
   const controlled = controlledStep !== undefined;
@@ -201,7 +207,9 @@ export function Wizard({
             <button
               type="button"
               onClick={back}
-              className="-ml-1.5 rounded-md p-1.5 text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200"
+              // 44px to tap, drawn as before: the negative margin keeps the
+              // header where it was.
+              className="-my-2 -ml-3 flex size-11 shrink-0 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200"
               aria-label={step === 0 ? "Cancel" : "Back"}
             >
               <ChevronLeft className="size-4" />
@@ -211,11 +219,11 @@ export function Wizard({
             {title}
           </h2>
           {aside ? (
-            <span className="mx-1 hidden min-w-0 shrink truncate font-mono text-[10px] text-stone-600 sm:inline">
+            <span className="mx-1 hidden min-w-0 shrink truncate font-mono text-xs text-stone-400 sm:inline">
               {aside}
             </span>
           ) : null}
-          <span className="eyebrow shrink-0 text-[10px] text-stone-500" aria-live="polite">
+          <span className="eyebrow shrink-0 text-xs text-stone-400" aria-live="polite">
             Step {step + 1} / {total}
             {variant === "diamonds" && current ? (
               // The gold step title sits right under the header on a phone,
@@ -232,6 +240,7 @@ export function Wizard({
             current={step}
             onSelect={go}
             reachable={jumpAhead ? reachable : undefined}
+            named={stepNames}
           />
         ) : (
           <div
@@ -257,7 +266,7 @@ export function Wizard({
               <button
                 type="button"
                 onClick={showNotice}
-                className="shrink-0 whitespace-nowrap font-mono text-[10px] text-amber-300 underline-offset-2 hover:text-amber-200 hover:underline"
+                className="-my-2 min-h-11 shrink-0 whitespace-nowrap px-1 font-mono text-xs text-amber-300 underline-offset-2 hover:text-amber-200 hover:underline"
               >
                 Show me
               </button>
@@ -266,7 +275,7 @@ export function Wizard({
               type="button"
               onClick={notice.onDismiss}
               aria-label="Dismiss"
-              className="-mr-1 shrink-0 rounded p-0.5 text-stone-500 transition-colors hover:text-stone-300"
+              className="-my-2 -mr-3 flex size-11 shrink-0 items-center justify-center rounded text-stone-400 transition-colors hover:text-stone-200"
             >
               <X className="size-3.5" />
             </button>
@@ -331,13 +340,27 @@ export function Wizard({
               className="wizard-blocker reveal min-w-0 flex-1 text-left text-xs text-amber-300/90 underline-offset-2 hover:text-amber-200 hover:underline"
             >
               <span role="status">{blocker}</span>
-              <span className="ml-1 whitespace-nowrap font-mono text-[10px] text-stone-500">Show me</span>
+              <span className="ml-1 whitespace-nowrap font-mono text-xs text-stone-400">Show me</span>
             </button>
           ) : (
             <p id={blockerId} role="status" className="wizard-blocker reveal min-w-0 flex-1 text-xs text-amber-300/90">
               {blocker}
             </p>
           )
+        ) : null}
+        {current?.secondary ? (
+          <button
+            type="button"
+            onClick={current.secondary.onClick}
+            title={current.secondary.title}
+            data-wizard-secondary=""
+            className={cn(
+              "motion-press min-h-11 shrink-0 px-2 text-xs text-stone-400 underline-offset-2 transition-colors hover:text-amber-200 hover:underline",
+              !blocker && "mr-auto",
+            )}
+          >
+            {current.secondary.label}
+          </button>
         ) : null}
         {step > 0 ? (
           <button type="button" onClick={back} className={ui.btnSecondary}>

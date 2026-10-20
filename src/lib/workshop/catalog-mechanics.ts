@@ -5,6 +5,8 @@ import { checkRidersOf } from "@/lib/srd/item-check-riders";
 import { itemSpellsOf } from "@/lib/srd/item-spells";
 import { gearBaseName, gearDefFor } from "@/lib/srd/magic-gear";
 import { matchMagicItem } from "@/lib/srd/magic-items";
+import { rowSlot } from "@/lib/srd/wear-slots";
+import { isWornPlace } from "@/lib/srd/worn-places";
 import { matchWeapon, SRD_WEAPONS, type SrdWeapon } from "@/lib/srd/weapons";
 import type { SpellMech } from "@/lib/srd/spell-mech-types";
 import { subclassFeatureDescription, subclassLevelFor, subclassTableFor } from "@/lib/srd/features";
@@ -14,7 +16,10 @@ import { packFeatText } from "@/lib/srd/feat-text";
 import { mergedBackgroundOptions, srdBackgroundOptions, srdRaceOptions, type RaceOption } from "@/lib/characters/options";
 import { subclassNamesFor } from "@/lib/srd/features";
 import { bundledRaceTraitText, rulebookPageIdFor } from "@/lib/rulebook/catalog-rows";
+import { traitParagraphs } from "@/lib/workshop/species-traits";
 import type { RulebookPage } from "@/lib/rulebook/types";
+import { textKey } from "@/lib/language/text-logic";
+import { thirdCasterProfileForPackSubclass } from "@/lib/srd/third-caster";
 
 // What the engine runs for a published row, handed to the workshop's "start
 // from" pickers (src/app/workshop/homebrew/CatalogStart.tsx) beside the row
@@ -38,9 +43,9 @@ export function spellMechanicsOf(row: Row): SpellMech | null {
 }
 
 const exactWeapon = (name: string): SrdWeapon | null =>
-  SRD_WEAPONS.find((weapon) => weapon.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
+  SRD_WEAPONS.find((weapon) => textKey(weapon.name) === textKey(name)) ?? null;
 const exactArmor = (name: string): SrdArmor | null =>
-  SRD_ARMOR.find((armor) => armor.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
+  SRD_ARMOR.find((armor) => textKey(armor.name) === textKey(name)) ?? null;
 
 // The fields a homebrew item's data blob takes (src/lib/homebrew/item-data.ts)
 // for a published item, or null for one the engine reads nothing from.
@@ -114,6 +119,12 @@ export function itemMechanicsOf(row: Row): Record<string, unknown> | null {
   if (spells.length) {
     out.spells = spells;
   }
+  // Where the published item is worn, so the copy starts in its place
+  // ("Worn on" in the item form).
+  const place = !weapon && !armor ? rowSlot(name) : null;
+  if (isWornPlace(place)) {
+    out.wornOn = place;
+  }
   return out.itemKind === "gear" && !magic ? null : out;
 }
 
@@ -134,7 +145,12 @@ export function archetypeMechanicsOf(row: Row, classId: string): Record<string, 
   }
   const bundled = subclassTableFor(classId, row.name);
   if (!bundled) {
-    return Object.keys(prose).length ? { classSlug: classId, levels: prose } : null;
+    // A pack subclass that casts as a third caster (the Soulspy) keeps
+    // doing so in the copy; its prose headings alone would cast nothing.
+    const castingProfile = thirdCasterProfileForPackSubclass(row.name);
+    return Object.keys(prose).length || castingProfile
+      ? { classSlug: classId, levels: prose, ...(castingProfile ? { castingProfile } : {}) }
+      : null;
   }
   const levels: Record<string, SubclassFeatureRow[]> = {};
   for (const [level, names] of Object.entries(bundled.levels)) {
@@ -144,25 +160,6 @@ export function archetypeMechanicsOf(row: Row, classId: string): Record<string, 
     }));
   }
   return { classSlug: classId, levels, ...(bundled.spells ? { spells: bundled.spells } : {}) };
-}
-
-// A trait paragraph per name, out of a race's markdown: "**_Keen Senses._**
-// You have proficiency..." and "***Brave.*** You have advantage..." both.
-const TRAIT_LINE = /^(?:\*\*\*|\*\*_)(.+?)(?:\*\*\*|_\*\*)\s*(.*)$/;
-
-function traitParagraphs(markdown: string): Map<string, string> {
-  const out = new Map<string, string>();
-  let current: string | null = null;
-  for (const line of String(markdown ?? "").split("\n")) {
-    const head = TRAIT_LINE.exec(line.trim());
-    if (head) {
-      current = head[1].replace(/\.$/, "").trim();
-      out.set(current, head[2].trim());
-    } else if (current && line.trim()) {
-      out.set(current, `${out.get(current)} ${line.trim()}`.trim());
-    }
-  }
-  return out;
 }
 
 const ABILITY_NAME: Record<string, string> = {
@@ -254,10 +251,10 @@ export function backgroundMechanicsOf(row: Row & { slug?: string; documentSlug?:
 // their grants, for "start from": those whose name holds `q`, less any a
 // row in `results` already stands for.
 export function bundledBackgroundRows(q: string, results: Array<{ slug: string }>): Array<Record<string, unknown>> {
-  const wanted = q.trim().toLowerCase();
+  const wanted = textKey(q);
   const held = new Set(results.map((row) => row.slug.toLowerCase().replace(/-/g, "_")));
   return srdBackgroundOptions()
-    .filter((option) => !held.has(option.id) && (!wanted || option.name.toLowerCase().includes(wanted)))
+    .filter((option) => !held.has(option.id) && (!wanted || textKey(option.name).includes(wanted)))
     .slice(0, 120)
     .map((option) => ({
       slug: option.id,
@@ -287,10 +284,10 @@ export function bundledBackgroundRows(q: string, results: Array<{ slug: string }
 // (`table`), less any a row in `results` already stands for.
 export function bundledRaceRows(q: string, results: Array<{ name: string }>): Array<Record<string, unknown>> {
   // Every word, in any order: "hill dwarf" finds the builder's "Dwarf (Hill)".
-  const words = q.trim().toLowerCase().split(/[^a-z0-9-]+/).filter(Boolean);
-  const held = new Set(results.map((row) => row.name.trim().toLowerCase()));
+  const words = textKey(q).split(" ").filter(Boolean);
+  const held = new Set(results.map((row) => textKey(row.name)));
   return srdRaceOptions()
-    .filter((option) => !held.has(option.name.toLowerCase()) && words.every((word) => option.name.toLowerCase().includes(word)))
+    .filter((option) => !held.has(textKey(option.name)) && words.every((word) => textKey(option.name).includes(word)))
     .map((option) => {
       // The traits in the bundled book's words where it prints them.
       const words = bundledRaceTraitText(option.name);
@@ -311,10 +308,10 @@ export function bundledRaceRows(q: string, results: Array<{ name: string }>): Ar
 
 export function bundledArchetypeRows(classSlug: string, q: string, results: Array<{ name: string }>): Array<Record<string, unknown>> {
   const classId = classSlug.trim().toLowerCase();
-  const wanted = q.trim().toLowerCase();
-  const held = new Set(results.map((row) => row.name.trim().toLowerCase()));
+  const wanted = textKey(q);
+  const held = new Set(results.map((row) => textKey(row.name)));
   return subclassNamesFor(classId)
-    .filter((name) => !held.has(name.toLowerCase()) && (!wanted || name.toLowerCase().includes(wanted)))
+    .filter((name) => !held.has(textKey(name)) && (!wanted || textKey(name).includes(wanted)))
     .map((name) => {
       const row = { name, source: "bundled", data: { desc: "" } };
       return {

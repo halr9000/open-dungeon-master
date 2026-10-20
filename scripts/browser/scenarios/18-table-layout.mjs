@@ -4,7 +4,7 @@
 // the composer, the board and the side panel's contents carry on through
 // every move, and the server never hears of it. A phone keeps its bottom
 // bar whatever a wide window arranged.
-import { check, eventually, sleep } from "../lib.mjs";
+import { check, eventually, sleep, openPanelTab } from "../lib.mjs";
 
 const KEY = "odm:table-layout:player";
 
@@ -88,9 +88,9 @@ export default {
       check((await row.getAttribute("data-tlay")) === null, "a phone's row is never rearranged");
       check((await page.locator(`${root}.cine-row [role="separator"]`).count()) === 0, "a phone has no lines to drag");
       check((await page.locator(`${root}.tlay-slot[data-pane="tab:notes"]`).count()) === 0, "no pane of its own on a phone");
-      const notesTab = page.locator(`${root}nav.cine-bottombar [data-tour="tab-notes"]`);
-      check((await notesTab.count()) === 1, "Notes stays in the phone's bottom bar");
-      await t.tap(notesTab.first());
+      // Notes is in the phone's bar, or under More when the bar is full.
+      const how = await openPanelTab(t, "notes");
+      check(how === "direct" || how === "more", "Notes is reachable from the phone's bottom bar");
       await eventually(() => page.locator(`${root}.cine-panel`).locator("visible=true").count(), { label: "the phone's panel opening on Notes" });
       await t.shot("phone");
       await clearLayouts(page);

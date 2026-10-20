@@ -12,6 +12,9 @@
 //
 // Pure data, safe for the client. Keys are lowercased SRD names.
 
+import { textKey } from "@/lib/language/text-logic";
+import { spellNamesOf } from "@/lib/srd/spell-facts";
+
 export type SpellSupport = { kind: "partial" | "narrated"; manual: string };
 
 const PARTIAL = (manual: string): SpellSupport => ({ kind: "partial", manual });
@@ -48,9 +51,16 @@ const ROWS: Record<string, SpellSupport> = {
   "zone of truth": PARTIAL("The CHA save on entering or starting a turn there, and each creature's awareness of it, are the DM's."),
 };
 
+const ROWS_BY_KEY = new Map(Object.entries(ROWS).map(([name, row]) => [textKey(name), row]));
+
 export function spellSupportFor(name: string): SpellSupport | null {
-  const key = name.trim().toLowerCase().replace(/^[a-z]+'s\s+/, "");
-  return ROWS[key] ?? null;
+  for (const candidate of spellNamesOf(name)) {
+    const row = ROWS_BY_KEY.get(textKey(candidate));
+    if (row) {
+      return row;
+    }
+  }
+  return null;
 }
 
 // The word on a spell tile.

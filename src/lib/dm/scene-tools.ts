@@ -18,6 +18,7 @@ import {
   type SceneTracker,
 } from "@/lib/dm/scene-tracker-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Running a structured non-combat scene: the DB and dice rim around
 // scene-tracker-logic.ts.
@@ -136,17 +137,18 @@ function publish(campaignId: string, tracker: SceneTracker | null) {
 export function handleStartScene(
   campaign: Campaign,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof startSchema>;
   try {
     args = startSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: start_scene needs a kind and a title." };
+    return { error: "Invalid arguments: start_scene needs a kind and a title.", retry: true };
   }
   const running = getSceneTracker(campaign.id);
   if (running && running.status === "running") {
     return {
       error: `"${running.title}" is already running. End it before starting another.`,
+      retry: true,
     };
   }
   const checked = checkTracker(args);
@@ -174,20 +176,20 @@ export function handleSceneCheck(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof checkSchema>;
   try {
     args = checkSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: scene_check needs a characterId." };
+    return { error: "Invalid arguments: scene_check needs a characterId.", retry: true };
   }
   const tracker = getSceneTracker(campaign.id);
   if (!tracker || tracker.status !== "running") {
-    return { error: "No structured scene is running; start_scene first." };
+    return { error: "No structured scene is running; start_scene first.", retry: true };
   }
   const sheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const invalid = checkSceneAttempt(tracker, sheet.id);
   if (invalid) {
@@ -257,10 +259,10 @@ export function handleSceneCheck(
 export function handleEndScene(
   campaign: Campaign,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   const tracker = getSceneTracker(campaign.id);
   if (!tracker || tracker.status !== "running") {
-    return { error: "No structured scene is running." };
+    return { error: "No structured scene is running.", retry: true };
   }
   let reason = "";
   try {

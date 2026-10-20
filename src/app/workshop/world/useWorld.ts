@@ -6,6 +6,8 @@ import type { Slice, WorldDoc } from "@/lib/worldforge/model";
 import type { WorldEntity } from "@/lib/db/world-forge";
 import { applyRowOps, docOps, type DocOps } from "@/lib/worldforge/ops";
 import { byName } from "@/lib/language/text-logic";
+import type { Editable, EntryConflict } from "@/lib/worldforge/entry-merge";
+import type { Placement, RegionBridge } from "@/lib/db/atlas-region";
 
 // The workshop's WorldForge on the client: one load of the document and the
 // records it describes, slice saves that show at once and settle when the
@@ -20,6 +22,8 @@ import { byName } from "@/lib/language/text-logic";
 // changed is kept as the first saved it and named in `error`.
 
 export type WorldState = { doc: WorldDoc; entities: WorldEntity[] };
+export type UpdateOutcome = { entity: WorldEntity } | { conflicts: EntryConflict[]; entity: WorldEntity } | null;
+
 export type EntryInput = Partial<Omit<WorldEntity["entry"], "wfId">> & {
   name?: string;
   tagline?: string;
@@ -53,12 +57,13 @@ export function useWorld(campaignId: string) {
     readLoad<WorldState>(fetch(base), "The world").then((outcome) => {
       if (cancelled) return;
       settle(outcome);
-      if (outcome.payload) setWorld(outcome.payload);
+      // A reload while saves are still waiting keeps them laid over it.
+      if (outcome.payload) setWorld(withPending(outcome.payload));
     });
     return () => {
       cancelled = true;
     };
-  }, [base, reload, settle]);
+  }, [base, reload, settle, withPending]);
 
   const refresh = useCallback(() => setReload((value) => value + 1), []);
 
@@ -70,6 +75,9 @@ export function useWorld(campaignId: string) {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(typeof payload.error === "string" ? payload.error : "That did not save.");
+        // Another author changed the same fields: the caller gets them, and
+        // the entry as it is now, to keep its draft and show what changed.
+        if (response.status === 409 && Array.isArray(payload.conflicts)) return { ...payload, conflicted: true } as Record<string, unknown>;
         return null;
       }
       return payload as Record<string, unknown>;
@@ -83,8 +91,13 @@ export function useWorld(campaignId: string) {
 
   // Changes slices: shown at once, saved in order as the rows it changed
   // against `world`, the document the caller computed its slices from.
+  // `onRegion` hears of each Region marker a bound Atlas pin took with it
+  // (src/lib/db/atlas-region.ts followPins), with where it stood before.
   const patch = useCallback(
-    async (slices: Partial<Pick<WorldDoc, Exclude<Slice, "entries">>> & { moveFolder?: { from: string; to: string } }) => {
+    async (
+      slices: Partial<Pick<WorldDoc, Exclude<Slice, "entries">>> & { moveFolder?: { from: string; to: string } },
+      options?: { onRegion?: (moves: Placement[]) => void },
+    ) => {
       const seen = world;
       if (!seen) return false;
       const rest: Partial<Pick<WorldDoc, Exclude<Slice, "entries">>> = { ...slices };
@@ -101,9 +114,10 @@ export function useWorld(campaignId: string) {
           const payload = await send(base, { method: "PATCH", body: JSON.stringify({ ops, ...(move ? { moveFolder: move } : {}) }) });
           pending.current = pending.current.filter((other) => other !== entry);
           if (payload) {
-            const fresh = payload as unknown as WorldState & { conflicts?: string[] };
+            const fresh = payload as unknown as WorldState & { conflicts?: string[]; region?: Placement[] };
             setWorld(withPending({ doc: fresh.doc, entities: fresh.entities }));
             if (fresh.conflicts?.length) setError(fresh.conflicts.join(" "));
+            if (fresh.region?.length) options?.onRegion?.(fresh.region);
             return !fresh.conflicts?.length;
           }
           // Refused or unreachable: this save's rows go back to what the
@@ -141,12 +155,20 @@ export function useWorld(campaignId: string) {
     [base, send],
   );
 
+  // An entry's changed fields, each with the value the editor opened with.
+  // Resolves to the saved entry, to the conflicting fields (nothing saved,
+  // the entry as it is now beside them), or to null on any other failure.
   const update = useCallback(
-    async (ref: string, input: EntryInput) => {
-      const payload = await send(`${base}/entities/${encodeURIComponent(ref)}`, { method: "PATCH", body: JSON.stringify(input) });
+    async (ref: string, input: EntryInput, opened?: Partial<Editable>): Promise<UpdateOutcome> => {
+      const body = opened ? { ...input, base: opened } : input;
+      const payload = await send(`${base}/entities/${encodeURIComponent(ref)}`, { method: "PATCH", body: JSON.stringify(body) });
       const entity = payload?.entity as WorldEntity | undefined;
+      if (payload?.conflicted && entity) {
+        placeEntity(entity);
+        return { conflicts: payload.conflicts as EntryConflict[], entity };
+      }
       if (entity) placeEntity(entity);
-      return entity ?? null;
+      return entity ? { entity } : null;
     },
     [base, send],
   );
@@ -160,10 +182,12 @@ export function useWorld(campaignId: string) {
     [base, send, refresh],
   );
 
+  // A file that would not come in whole answers with what it would lose
+  // (`preview`); `accept` brings it in anyway.
   const importFile = useCallback(
-    async (text: string) => {
-      const payload = await send(`${base}/import`, { method: "POST", body: JSON.stringify({ text }) });
-      if (payload) refresh();
+    async (text: string, accept = false) => {
+      const payload = await send(`${base}/import`, { method: "POST", body: JSON.stringify({ text, accept }) });
+      if (payload && !payload.preview) refresh();
       return payload;
     },
     [base, send, refresh],
@@ -180,7 +204,79 @@ export function useWorld(campaignId: string) {
     [base, send, refresh],
   );
 
-  return { world, loaded, loadError, error, saving, refresh, patch, create, update, remove, importFile, ai, clearError: () => setError("") };
+  // "Reveal to the party" at a table: the secret marked learned and a lore
+  // entry for the players, made on the server in one step (world/secrets/
+  // [secretId]/reveal). Answers the entry made, or null with `error` said.
+  const reveal = useCallback(
+    async (secretId: string, told: { title: string; body: string; show: boolean }) => {
+      const payload = await send(`${base}/secrets/${encodeURIComponent(secretId)}/reveal`, { method: "POST", body: JSON.stringify(told) });
+      if (!payload || !payload.entry) return null;
+      const fresh = payload as unknown as WorldState;
+      setWorld(withPending({ doc: fresh.doc, entities: fresh.entities }));
+      return payload.entry as { id: string; title: string };
+    },
+    [base, send, withPending],
+  );
+
+  // The Atlas's Region steps (world/region, src/lib/db/atlas-region.ts).
+  // `readRegion` says where things stand, quietly: it is read again after
+  // every change, and a failed read shows nothing rather than an error. The
+  // steps answer with their review, or with what they did once applied, and
+  // a step that changed anything reads the world again.
+  const readRegion = useCallback(
+    () => fetch(`${base}/region`).then((response) => (response.ok ? (response.json() as Promise<RegionBridge>) : null)).catch(() => null),
+    [base],
+  );
+  const region = useCallback(
+    async (method: "POST" | "DELETE", step: "backdrop" | "places", body?: Record<string, unknown>, query = "") => {
+      const payload = await send(`${base}/region/${step}${query}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
+      if (payload && (method === "DELETE" || payload.applied)) refresh();
+      return payload;
+    },
+    [base, send, refresh],
+  );
+
+  // A place's own battle map or encounter, made and linked in one request
+  // (src/app/api/campaigns/[campaignId]/world/entities/[ref]/battle-maps).
+  // Resolves to what was made, or null with the server's reason in `error`.
+  const makeForPlace = useCallback(
+    async (ref: string, body: { make: "map" } | { make: "encounter"; monster: string; mapId?: string }): Promise<{ kind: "map" | "encounter"; id: string } | null> => {
+      const payload = await send(`${base}/entities/${encodeURIComponent(ref)}/battle-maps`, { method: "POST", body: JSON.stringify(body) });
+      const entity = payload?.entity as WorldEntity | undefined;
+      if (entity) placeEntity(entity);
+      return (payload?.made as { kind: "map" | "encounter"; id: string } | undefined) ?? null;
+    },
+    [base, send],
+  );
+
+  // The Atlas's own steps (world/atlas, src/lib/db/atlas-edit.ts): delete
+  // with an undo token, restore by it, and a map's frame. Each answers with
+  // its review, or with what it did; a delete or restore carries the world.
+  const atlasStep = useCallback(
+    async (step: "delete" | "restore" | "frame", body: Record<string, unknown>) => {
+      const payload = await send(`${base}/atlas/${step}`, { method: "POST", body: JSON.stringify(body) });
+      if (payload?.doc) {
+        const fresh = payload as unknown as WorldState;
+        setWorld(withPending({ doc: fresh.doc, entities: fresh.entities }));
+      } else if (payload?.applied) refresh();
+      return payload;
+    },
+    [base, send, refresh, withPending],
+  );
+
+  // The party's Atlas (world/atlas/party, src/lib/db/party-atlas.ts): POST
+  // reviews or shows a map, DELETE hides one; either reads the world again
+  // once it changed something.
+  const party = useCallback(
+    async (method: "POST" | "DELETE", body: Record<string, unknown>) => {
+      const payload = await send(`${base}/atlas/party`, { method, body: JSON.stringify(body) });
+      if (payload?.applied || payload?.hidden) refresh();
+      return payload;
+    },
+    [base, send, refresh],
+  );
+
+  return { campaignId, world, loaded, loadError, error, saving, refresh, patch, create, update, remove, importFile, ai, reveal, readRegion, region, makeForPlace, atlasStep, party, clearError: () => setError("") };
 }
 
 export type WorldApi = ReturnType<typeof useWorld>;

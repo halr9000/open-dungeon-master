@@ -14,7 +14,7 @@
 import type { Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { matchResource, type ResourceAction } from "@/lib/srd/class-resources";
 import { spendAction } from "@/lib/dm/action-budget";
 import { canAct } from "@/lib/dm/can-act";
@@ -27,9 +27,11 @@ import {
   prepareReaction,
   storeBudget,
 } from "@/lib/dm/turn-budget";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type ResourceCharge =
-  | { error: string }
+  | ToolError
   | {
       // Writes the charge and returns what the tool result should say of it.
       commit: () => Record<string, unknown>;
@@ -64,7 +66,7 @@ export function prepareResourceCharge(
   // Combat Wild Shape (Circle of the Moon) makes the change a bonus action.
   const action =
     def.effect.kind === "wild_shape" &&
-    sheet.features.some((feature) => feature.name.toLowerCase().includes("combat wild shape"))
+    sheet.features.some((feature) => textKey(feature.name).includes("combat wild shape"))
       ? "bonus"
       : def.action;
   if (action === "reaction") {
@@ -74,14 +76,14 @@ export function prepareResourceCharge(
   // Off their turn, a feature they readied: their reaction (readied-release.ts).
   const readied = kind === "action" ? readiedReleaseFor(sheet, encounter, "feature") : null;
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (readied) {
     return { commit: () => readied.release() };
   }
   const able = canAct({ sheet, encounter, kind });
   if (!able.ok) {
-    return { error: able.error };
+    return toolError(able);
   }
   if (def.id === "action_surge") {
     return {
@@ -98,14 +100,14 @@ export function prepareResourceCharge(
     encounter,
     sheet.id,
     attacksAllowedFor(sheet),
-    conditionExtraActions(sheet.conditions),
+    conditionTurnShape(sheet.conditions),
   );
   if (!budget) {
     return FREE;
   }
   const spent = spendAction(budget, action, def.displayName, sheet.name);
   if (!spent.ok) {
-    return { error: spent.error };
+    return toolError(spent);
   }
   return {
     commit: () => {
@@ -130,7 +132,7 @@ export function castMarkCharge(
   campaign: Campaign,
   sheet: CharacterSheet,
   defId: string | undefined,
-): { error: string } | { apply: () => Record<string, unknown> } | null {
+): ToolError | { apply: () => ToolResult } | null {
   const surge = defId ? SURGE_COUNTERS.has(defId) : false;
   const mark = defId === "sub_embodiment_of_the_law" ? EMBODIMENT_MARK : surge ? SURGE_MARK : null;
   if (!mark) {
@@ -139,10 +141,10 @@ export function castMarkCharge(
   const encounter = getActiveEncounter(campaign.id);
   const budget = encounter && (encounter.kind ?? "fight") === "fight" ? encounter.turnBudget : null;
   if (!budget || budget.ownerId !== sheet.id) {
-    return { error: `${sheet.name} uses this on their own turn in a fight, as the spell it changes is cast. Nothing was spent.` };
+    return { error: `${sheet.name} uses this on their own turn in a fight, as the spell it changes is cast. Nothing was spent.`, refused: "rules" };
   }
   if (surge && !budget.oncePerTurn.includes(LEVELLED_SPELL)) {
-    return { error: `This casts a cantrip as a bonus action after a levelled spell, and ${sheet.name} has cast none this turn. Nothing was spent.` };
+    return { error: `This casts a cantrip as a bonus action after a levelled spell, and ${sheet.name} has cast none this turn. Nothing was spent.`, refused: "rules" };
   }
   return {
     apply: () => {

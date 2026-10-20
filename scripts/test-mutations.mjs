@@ -111,26 +111,26 @@ test("buff cap: a single-level bump and a rename pass", () => {
 });
 
 test("buff cap: a multi-level jump is refused", () => {
-  assert.match(sheetBuffViolation(sheet5, { level: 10 }), /at most one level/);
+  assert.match(sheetBuffViolation(sheet5, { level: 10 })?.error, /at most one level/);
 });
 
 test("buff cap: an ability score past 20 is refused", () => {
-  assert.match(sheetBuffViolation(sheet5, { abilities: { str: 25 } }), /cap at 20/);
+  assert.match(sheetBuffViolation(sheet5, { abilities: { str: 25 } })?.error, /cap at 20/);
   assert.equal(sheetBuffViolation(sheet5, { abilities: { str: 20 } }), null);
 });
 
 test("buff cap: a 999 HP jump is refused, a level-sized bump passes", () => {
-  assert.match(sheetBuffViolation(sheet5, { maxHp: 999 }), /maximum HP/);
+  assert.match(sheetBuffViolation(sheet5, { maxHp: 999 })?.error, /maximum HP/);
   assert.equal(sheetBuffViolation(sheet5, { maxHp: 48 }), null);
 });
 
 test("buff cap: a huge direct gold grant is refused", () => {
-  assert.match(sheetBuffViolation(sheet5, { gold: 100000 }), /Coin moves through/);
+  assert.match(sheetBuffViolation(sheet5, { gold: 100000 })?.error, /Coin moves through/);
   assert.equal(sheetBuffViolation(sheet5, { gold: 200 }), null);
 });
 
 test("buff cap: hand-set XP that vaults levels is refused", () => {
-  assert.match(sheetBuffViolation(sheet5, {}, 20), /Experience is earned/);
+  assert.match(sheetBuffViolation(sheet5, {}, 20)?.error, /Experience is earned/);
   assert.equal(sheetBuffViolation(sheet5, {}, 6), null);
 });
 

@@ -25,6 +25,7 @@ import {
   type PreparedEncounter,
   type TemplateReadout,
 } from "@/app/workshop/encounters/types";
+import { useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
 
 // Prepared encounters: the roster a DM writes down before the session and
 // deploys in one action.
@@ -63,8 +64,19 @@ export function DmEncounterPrepPanel({
   layout = "list",
   targetParty,
   cue = false,
+  openOnArrival,
+  only = false,
+  onClose,
 }: {
   campaignId: string;
+  // The fight to open on arrival, by id: a World entry's "Add to a fight"
+  // (src/app/workshop/world/BoundRecords.tsx), a place's "Open encounter"
+  // (PlaceBattleMaps.tsx).
+  openOnArrival?: string | null;
+  // That one fight's form and nothing else, in a sheet that calls onClose
+  // when it shuts: the table's World tab, which has no list of its own.
+  only?: boolean;
+  onClose?: () => void;
   layout?: "list" | "rows";
   // The lead's desk at an AI-narrated table (#154): Deploy becomes a cue the
   // storyteller runs when the scene reaches the fight, and can be taken back.
@@ -134,6 +146,8 @@ export function DmEncounterPrepPanel({
     if (name === "open-encounter-editor" && rows && !editorOpen) openEditor(null);
   });
 
+  useOpenOnArrival(openOnArrival, loaded ? templates : null, openEditor);
+
   function openEditor(template: PreparedEncounter | null) {
     setError("");
     setNote("");
@@ -157,6 +171,11 @@ export function DmEncounterPrepPanel({
   // One request for both a new fight and an edit to an old one: the create
   // and update routes take the same body, so the only difference is where it
   // goes. The list layout never sets editingId and so always creates.
+  function showEditor(open: boolean) {
+    setEditorOpen(open);
+    if (!open && only) onClose?.();
+  }
+
   async function save() {
     setBusy(true);
     setError("");
@@ -182,7 +201,7 @@ export function DmEncounterPrepPanel({
       }
       setDraft(EMPTY_ENCOUNTER_DRAFT);
       setEditingId(null);
-      setEditorOpen(false);
+      showEditor(false);
       await load();
     } finally {
       setBusy(false);
@@ -288,6 +307,16 @@ export function DmEncounterPrepPanel({
     </>
   );
 
+  if (only) {
+    const editing = templates.find((template) => template.id === editingId) ?? null;
+    return (
+      <Sheet open={editorOpen} onOpenChange={showEditor} title={editing ? editing.name : "Encounter"} className="lg:w-[min(92vw,40rem)]">
+        <EncounterForm campaignId={campaignId} value={draft} onChange={setDraft} maps={maps} busy={busy} submitLabel="Save" onSubmit={() => void save()} variant="sheet" />
+        <div className="mt-2">{feedback}</div>
+      </Sheet>
+    );
+  }
+
   if (rows) {
     const thresholds = targetParty ? thresholdsForParty(targetPartyLevels(targetParty)) : null;
     const editing = templates.find((template) => template.id === editingId) ?? null;
@@ -309,7 +338,7 @@ export function DmEncounterPrepPanel({
         {feedback}
         <Sheet
           open={editorOpen}
-          onOpenChange={setEditorOpen}
+          onOpenChange={showEditor}
           title={editing ? editing.name : "New encounter"}
           className="lg:w-[min(92vw,40rem)]"
         >

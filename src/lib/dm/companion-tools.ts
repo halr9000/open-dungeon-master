@@ -52,6 +52,8 @@ import {
   type CharacterSheet,
   type CreateSheetInput,
 } from "@/lib/schemas/sheet";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // AI companion party members: sheets the DM recruits, plays, and dismisses.
 // A companion is a full character sheet owned by an unloginable bot user,
@@ -233,10 +235,10 @@ export function handleAddCompanion(
   campaign: Campaign,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   const mode = companionMode(campaign);
   if (mode === "off") {
-    return { error: "Companions are disabled for this campaign." };
+    return { error: "Companions are disabled for this campaign.", retry: true };
   }
   let args: z.infer<typeof addArgsSchema>;
   try {
@@ -245,6 +247,7 @@ export function handleAddCompanion(
     return {
       error:
         "Invalid arguments: add_companion needs name, class, gender (Female, Male, Nonbinary or Unknown), personality, and kind ('party' or 'guest').",
+      retry: true,
     };
   }
 
@@ -267,7 +270,8 @@ export function handleAddCompanion(
   if (existing.length >= cap) {
     const label = kind === "guest" ? "guest ally" : "companion";
     return {
-      error: `The party already has ${existing.length} ${label}${existing.length === 1 ? "" : "s"} (limit ${cap}). Dismiss one before adding another.`,
+      error: `The party already has ${existing.length} ${label}${existing.length === 1 ? "" : "s"} (limit ${cap}): ${existing.map((sheet) => sheet.name).join(", ")}. One is dismissed before another joins. Ask the players which.`,
+      retry: true,
     };
   }
 
@@ -276,6 +280,7 @@ export function handleAddCompanion(
   if (!klass) {
     return {
       error: `Unknown class "${args.class}". Use a class id from this world's catalog (e.g. fighter, cleric, rogue, wizard).`,
+      retry: true,
     };
   }
   // Off-genre classes are refused outright: a high-fantasy paladin walking
@@ -287,6 +292,7 @@ export function handleAddCompanion(
   if (allowedClasses.length && !allowedClasses.includes(klass.id)) {
     return {
       error: `${klass.name} does not belong in this world (${preset.name}). Call add_companion again with one of: ${allowedClasses.join(", ")}.`,
+      retry: true,
     };
   }
 
@@ -295,7 +301,7 @@ export function handleAddCompanion(
   // neon city keeps that door open.
   const race = findRace(slugify(args.race ?? "")) ?? findRace("human");
   if (!race) {
-    return { error: "No usable race found." };
+    return { error: "No usable race found.", retry: true };
   }
   const playerRaces = sheets.filter((sheet) => !sheet.isCompanion).map((sheet) => sheet.race);
   const allowedRaces = preset.companionRaces.length
@@ -385,7 +391,7 @@ export function handleAddCompanion(
     wantedSpells: args.spells ?? [],
   });
   if (!legal.ok) {
-    return { error: legal.error };
+    return toolError(legal);
   }
   notes.push(...legal.notes);
   const input = legal.sheet;
@@ -502,23 +508,23 @@ export function handleDismissCompanion(
   campaign: Campaign,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof dismissArgsSchema>;
   try {
     args = dismissArgsSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: dismiss_companion needs characterId." };
+    return { error: "Invalid arguments: dismiss_companion needs characterId.", retry: true };
   }
-  const needle = args.characterId.trim().toLowerCase();
+  const needle = textKey(args.characterId);
   const sheet =
     sheets.find((candidate) => candidate.id === args.characterId) ??
-    sheets.find((candidate) => candidate.name.toLowerCase() === needle) ??
+    sheets.find((candidate) => textKey(candidate.name) === needle) ??
     null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   if (!sheet.isCompanion) {
-    return { error: `${sheet.name} is a player's character and cannot be dismissed.` };
+    return { error: `${sheet.name} is a player's character and cannot be dismissed.`, retry: true };
   }
   removeCompanion(campaign, sheet, args.reason);
 
@@ -605,14 +611,14 @@ export function applyCompanionCall(
   toolName: string,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   if (toolName === "add_companion") {
     return handleAddCompanion(campaign, rawArguments, sheets);
   }
   if (toolName === "dismiss_companion") {
     return handleDismissCompanion(campaign, rawArguments, sheets);
   }
-  return { error: `Unknown companion tool ${toolName}.` };
+  return { error: `Unknown companion tool ${toolName}.`, retry: true };
 }
 
 // A companion's level-up lives beside the legality check it goes through

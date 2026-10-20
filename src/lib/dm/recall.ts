@@ -5,6 +5,7 @@ import { searchScenes } from "@/lib/dm/memory-index";
 import { fitChaptersToBudget } from "@/lib/dm/chapter-lod";
 import { computeBudgets } from "@/lib/dm/context-budget";
 import { storyContextTokens } from "@/lib/model-client";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // recall_story: the DM's long-term memory tool. A chapter number returns
 // that chapter's full summary. A query runs two-phase semantic recall
@@ -22,16 +23,16 @@ import { storyContextTokens } from "@/lib/model-client";
 export async function handleRecallStory(
   campaign: Campaign,
   rawArguments: string,
-): Promise<Record<string, unknown>> {
+): Promise<ToolResult> {
   let args: { chapter?: unknown; query?: unknown };
   try {
     args = JSON.parse(rawArguments || "{}");
   } catch {
-    return { error: "Invalid arguments." };
+    return { error: "Invalid arguments.", retry: true };
   }
   const closed = listChapters(campaign.id).filter((chapter) => chapter.status === "closed");
   if (!closed.length) {
-    return { error: "No closed chapters yet; the story is still in its first chapter." };
+    return { error: "No closed chapters yet; the story is still in its first chapter.", retry: true };
   }
   const budget = computeBudgets(storyContextTokens(campaign.settings)).chapters;
   const fitted = (chapters: typeof closed) =>
@@ -56,6 +57,7 @@ export async function handleRecallStory(
     }
     return {
       error: `No closed chapter ${requested}.`,
+      retry: true,
       availableChapters: closed.map((chapter) => `${chapter.index}. ${chapter.title}`),
     };
   }
@@ -63,6 +65,7 @@ export async function handleRecallStory(
   if (!query) {
     return {
       error: "Give a chapter number or a query.",
+      retry: true,
       availableChapters: closed.map((chapter) => `${chapter.index}. ${chapter.title}`),
     };
   }
@@ -97,6 +100,7 @@ export async function handleRecallStory(
   if (!scored.length) {
     return {
       error: "Nothing matched.",
+      retry: true,
       availableChapters: closed.map((chapter) => `${chapter.index}. ${chapter.title}`),
     };
   }

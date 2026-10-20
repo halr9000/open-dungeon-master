@@ -13,6 +13,8 @@
 //
 // Pure, so the refusal text is testable without a database.
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+
 // Each field the model may not write, and where that change really comes
 // from, in the words the refusal gives it.
 const ENGINE_OWNED: Record<string, string> = {
@@ -28,14 +30,12 @@ const ENGINE_OWNED: Record<string, string> = {
   subclass: "a subclass is the player's pick at level-up",
 };
 
-export const AI_SHEET_FIELDS_REFUSED = Object.keys(ENGINE_OWNED);
-
 // The refusal for the first engine-owned field a model's patch names, or
 // null when every field is the story's.
-export function aiSheetFieldRefusal(fields: readonly string[]): string | null {
+export function aiSheetFieldRefusal(fields: readonly string[]): ToolError | null {
   const owned = fields.find((field) => field in ENGINE_OWNED);
   if (!owned) {
     return null;
   }
-  return `update_sheet from the DM cannot set ${owned}: ${ENGINE_OWNED[owned]}. Send only the story fields (name, race, background, alignment, speed, abilities, feats, story features).`;
+  return { error: `update_sheet from the DM cannot set ${owned}: ${ENGINE_OWNED[owned]}. Send only the story fields (name, race, background, alignment, speed, abilities, feats, story features).`, retry: true };
 }

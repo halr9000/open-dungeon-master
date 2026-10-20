@@ -8,6 +8,8 @@
 // point after 1d4 hours (src/lib/dm/death.ts rollStableTimer).
 //
 // This module must not import mutations.ts (which imports it).
+import { catalogName } from "@/lib/srd/adventuring-gear";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import { patchSheet } from "@/lib/db/sheets";
@@ -31,7 +33,9 @@ import { resolveRollExpression } from "@/lib/dm/rolls";
 import { rollExtrasFor, spendRollCarriers } from "@/lib/dm/forced-save";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
 import { readiedReleaseFor } from "@/lib/dm/readied-release";
-import { STABILIZE_DC, SUFFOCATING, stabilizeMethod } from "@/lib/dm/vitals-logic";
+import { STABILIZE_DC, SUFFOCATING, type StabilizeMethod } from "@/lib/dm/vitals-logic";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // A healer's kit holds ten uses (SRD 5.1, Adventuring Gear). The count lives
 // on the row's `charges`; a row with none recorded is a full kit, so every
@@ -58,7 +62,7 @@ export function kitAfterUse(equipment: EquipmentItem[], row: EquipmentItem): { e
 // On a mapped fight the healer must be beside the dying creature: tending
 // them, a kit and Spare the Dying are all touch. Null when that holds or
 // there is no board to read.
-function outOfTouch(encounterId: string | undefined, healer: CharacterSheet, sheet: CharacterSheet): string | null {
+function outOfTouch(encounterId: string | undefined, healer: CharacterSheet, sheet: CharacterSheet): ToolError | null {
   const map = encounterId ? getBattleMapForEncounter(encounterId) : null;
   const from = map ? getTokenByRef(map.id, healer.id) : null;
   const to = map ? getTokenByRef(map.id, sheet.id) : null;
@@ -67,7 +71,7 @@ function outOfTouch(encounterId: string | undefined, healer: CharacterSheet, she
   }
   const feet = chebyshev(from.x, from.y, to.x, to.y) * 5;
   return feet > 5
-    ? `${healer.name} is ${feet} ft from ${sheet.name}; stabilizing needs them within 5 feet. Move ${healer.name} beside them first.`
+    ? { error: `${healer.name} is ${feet} ft from ${sheet.name}; stabilizing needs them within 5 feet. Move ${healer.name} beside them first.`, retry: true }
     : null;
 }
 
@@ -103,12 +107,12 @@ export function handleStabilize(
   turnId: string,
   sheet: CharacterSheet,
   healer: CharacterSheet | null,
-  input: { method?: string; reason?: string },
-): Record<string, unknown> {
+  input: { method?: StabilizeMethod; reason?: string },
+): ToolResult {
   const reason = (input.reason ?? "").slice(0, 200);
   const track = sheet.deathSaves;
   if (!track || track.dead || sheet.currentHp > 0) {
-    return { error: `${sheet.name} is not dying; nothing to stabilize.` };
+    return { error: `${sheet.name} is not dying; nothing to stabilize.`, refused: "rules" };
   }
   if (track.stable) {
     return { ok: true, note: `${sheet.name} is already stable.` };
@@ -116,43 +120,55 @@ export function handleStabilize(
   if (sheet.conditions.some((entry) => entry.toLowerCase() === SUFFOCATING)) {
     return {
       error: `${sheet.name} is still without air and cannot be stabilized until they can breathe. Get them to air, clear the suffocating condition, then stabilize or heal them.`,
+      refused: "rules",
     };
   }
   if (!healer) {
     return {
       error: `Stabilizing takes somebody's action: pass healerId, the character tending to ${sheet.name}. The server rolls their DC ${STABILIZE_DC} Wisdom (Medicine) check, or pass method "kit" for a healer's kit or "spell" for Spare the Dying.`,
+      retry: true,
     };
   }
   if (healer.id === sheet.id) {
-    return { error: `${sheet.name} is unconscious and cannot tend to themselves; name another character as healerId.` };
+    return { error: `${sheet.name} is unconscious and cannot tend to themselves; name another character as healerId.`, retry: true };
   }
   // The healer spends their action on it, so they must have one to spend;
   // Field Surgeon and Triage make it a bonus action (issue 233).
-  const quick = ["Field Surgeon", "Triage"].find((name) => healer.features.some((feature) => feature.name.trim().toLowerCase() === name.toLowerCase())) ?? null;
+  const quick = ["Field Surgeon", "Triage"].find((name) => healer.features.some((feature) => textKey(feature.name) === textKey(name))) ?? null;
   const encounter = getActiveEncounter(campaign.id);
   // Off their turn, a healer who readied this: their reaction (readied-release.ts).
   const readied = readiedReleaseFor(healer, encounter, "stabilize");
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (!readied) {
     const able = canAct({ sheet: healer, encounter, kind: quick ? "bonus" : "action" });
     if (!able.ok) {
-      return { error: able.error };
+      return toolError(able);
     }
   }
   const far = outOfTouch(encounter?.id, healer, sheet);
   if (far) {
-    return { error: far };
+    return far;
   }
-  const method = stabilizeMethod(input.method);
+  // The action (or bonus action) before the method: asking whether to try
+  // the check instead is moot when it cannot be paid for.
+  const budget = encounter && !readied
+    ? budgetFor(encounter, healer.id, attacksAllowedFor(healer), conditionTurnShape(healer.conditions))
+    : null;
+  const spent = budget ? spendAction(budget, quick ? "bonus" : "action", quick ? `Stabilizing a creature (${quick})` : "Stabilizing a creature", healer.name) : null;
+  if (spent && !spent.ok) {
+    return toolError(spent);
+  }
+  const method = input.method ?? "check";
   let kitPatch: FullPatchSheetInput | null = null;
   let how = "";
   if (method === "kit") {
     const kit = findCarriedItem(healer.equipment, "healer's kit");
     if (!kit || (kit.charges ?? HEALERS_KIT_USES) <= 0) {
       return {
-        error: `${healer.name} carries no healer's kit with a use left. Without one, stabilizing takes a DC ${STABILIZE_DC} Wisdom (Medicine) check: call stabilize again without a method.`,
+        error: `${healer.name} carries no healer's kit with a use left. Without one, stabilizing takes a DC ${STABILIZE_DC} Wisdom (Medicine) check. Ask the player whether to try it; if so, call stabilize again without a method.`,
+        retry: true,
       };
     }
     const used = kitAfterUse(healer.equipment, kit);
@@ -161,22 +177,16 @@ export function handleStabilize(
   } else if (method === "spell") {
     const knows = healer.spellcasting
       ? allSpellNames(healer.spellcasting).some(
-          (entry) => entry.trim().toLowerCase() === "spare the dying",
+          (entry) => textKey(entry) === "spare the dying",
         )
       : false;
     if (!knows) {
       return {
-        error: `${healer.name} does not know Spare the Dying. Without it, stabilizing takes a DC ${STABILIZE_DC} Wisdom (Medicine) check: call stabilize again without a method.`,
+        error: `${healer.name} does not know Spare the Dying. Without it, stabilizing takes a DC ${STABILIZE_DC} Wisdom (Medicine) check. Ask the player whether to try it; if so, call stabilize again without a method.`,
+        retry: true,
       };
     }
     how = `${healer.name} casts Spare the Dying`;
-  }
-  const budget = encounter && !readied
-    ? budgetFor(encounter, healer.id, attacksAllowedFor(healer))
-    : null;
-  const spent = budget ? spendAction(budget, quick ? "bonus" : "action", quick ? `Stabilizing a creature (${quick})` : "Stabilizing a creature", healer.name) : null;
-  if (spent && !spent.ok) {
-    return { error: spent.error };
   }
 
   let check: Record<string, unknown> = {};
@@ -194,10 +204,10 @@ export function handleStabilize(
       rollExtrasFor(campaign, healer, "skill_check"),
     );
     if ("error" in resolved) {
-      return { error: resolved.error };
+      return toolError(resolved);
     }
     if ("autoFail" in resolved) {
-      return { error: `${healer.name} cannot make the check: ${resolved.notes.join("; ")}.` };
+      return { error: `${healer.name} cannot make the check: ${resolved.notes.join("; ")}.`, refused: "rules" };
     }
     spendRollCarriers(campaign.id, healer.id, resolved.spendInspiration);
     // The check is made, pass or fail, so the action is spent from here on.
@@ -286,35 +296,36 @@ export function healerKitUse(
   healer: CharacterSheet,
   target: CharacterSheet,
   itemName: string,
-): { error: string } | { ok: true; amount: number; note: string } | null {
-  if (!/healer'?s kit/i.test(itemName) || !holdsFeat(healer, "Healer")) {
+): ToolError | { ok: true; amount: number; note: string } | null {
+  // The SRD's Healer's Kit, by its row (src/lib/srd/adventuring-gear.ts).
+  if (catalogName(itemName) !== "Healer's Kit" || !holdsFeat(healer, "Healer")) {
     return null;
   }
-  const kit = findCarriedItem(healer.equipment, "healer's kit");
+  const kit = findCarriedItem(healer.equipment, itemName);
   if (!kit || (kit.charges ?? HEALERS_KIT_USES) <= 0) {
-    return { error: `${healer.name} carries no healer's kit with a use left. Nothing was spent.` };
+    return { error: `${healer.name} carries no healer's kit with a use left. Nothing was spent.`, refused: "rules" };
   }
   if (target.deathSaves?.dead) {
-    return { error: `${target.name} is dead; a healer's kit cannot help them. Nothing was spent.` };
+    return { error: `${target.name} is dead; a healer's kit cannot help them. Nothing was spent.`, refused: "rules" };
   }
   if (target.conditions.some((entry) => entry.toLowerCase() === TENDED)) {
-    return { error: `${target.name} has already been tended with a healer's kit since their last rest; the Healer feat works once per creature per rest. Nothing was spent.` };
+    return { error: `${target.name} has already been tended with a healer's kit since their last rest; the Healer feat works once per creature per rest. Nothing was spent.`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
   if (encounter) {
     const able = canAct({ sheet: healer, encounter, kind: "action" });
     if (!able.ok) {
-      return { error: able.error };
+      return toolError(able);
     }
     const far = outOfTouch(encounter.id, healer, target);
     if (far && healer.id !== target.id) {
-      return { error: far };
+      return far;
     }
-    const budget = budgetFor(encounter, healer.id, attacksAllowedFor(healer));
+    const budget = budgetFor(encounter, healer.id, attacksAllowedFor(healer), conditionTurnShape(healer.conditions));
     if (budget) {
       const spent = spendAction(budget, "action", "the healer's kit", healer.name);
       if (!spent.ok) {
-        return { error: spent.error };
+        return toolError(spent);
       }
       storeBudget(encounter, spent.budget);
     }

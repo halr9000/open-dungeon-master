@@ -1,34 +1,63 @@
 "use client";
 
-import { useMemo, type Ref } from "react";
+import { Dices } from "lucide-react";
+import { useId, useMemo, type Ref } from "react";
 import OptionPicker, { type PickerGroup } from "@/app/characters/builder/OptionPicker";
 import { UnofficialPackNotice } from "@/components/UnofficialPackNotice";
 import { DM_MODE_HINTS, DM_MODE_LABELS, DM_MODES } from "@/lib/schemas/game-settings-options";
 import type { FranchiseGroup, WorldPackSummary } from "@/lib/worlds/types";
 import { FieldLabel, inputClass, ToggleCard } from "@/app/create-campaign/fields";
 import type { StepProps } from "@/app/create-campaign/draft";
+import { rollCampaignTitle } from "@/app/create-campaign/titles";
 
 const NO_PACK_INFO =
   "A pre-built world is a coat of paint over the same 5e rules. It renames the races, classes, spells and monsters to fit its setting, tells the Dungeon Master how the place sounds, and floats the peoples and callings that belong there to the top of every picker in the character builder. Nothing is locked: you can still play a wizard in a world that calls them something else.\n\nWithout one you get the plain setting your genre implies, with the whole catalog offered in its own words.";
 
 // The campaign's name. The essentials step will not go on without one, and
 // its held Continue brings the cursor back here.
+// The dice roll a title in the genre's own words for someone who would
+// rather name the campaign once they know what it is; it stays editable.
 export function TitleField({ draft, patch, inputRef }: Pick<StepProps, "draft" | "patch"> & { inputRef?: Ref<HTMLInputElement> }) {
   return (
-    <label className="block">
-      <FieldLabel>Title</FieldLabel>
-      <input
-        ref={inputRef}
-        value={draft.title}
-        onChange={(event) => patch({ title: event.target.value })}
-        required
-        maxLength={80}
-        placeholder="Curse of the Ash Kingdom"
-        className={inputClass}
-      />
-    </label>
+    <div>
+      <label htmlFor="cc-title" className="block">
+        <FieldLabel>Title</FieldLabel>
+      </label>
+      <span className="flex items-center gap-2">
+        <input
+          id="cc-title"
+          ref={inputRef}
+          value={draft.title}
+          onChange={(event) => patch({ title: event.target.value })}
+          required
+          maxLength={80}
+          placeholder="Curse of the Ash Kingdom"
+          className={inputClass}
+        />
+        <button
+          type="button"
+          onClick={() => patch({ title: rollCampaignTitle(draft.genre, draft.title) })}
+          title="Roll a title (you can change it any time)"
+          aria-label="Roll a title"
+          className="motion-press flex size-11 shrink-0 items-center justify-center rounded-lg border border-stone-700 text-amber-200 transition-colors hover:border-amber-500/50 hover:bg-amber-500/10"
+        >
+          <Dices className="size-5" aria-hidden="true" />
+        </button>
+      </span>
+      {!draft.title.trim() ? (
+        <span className="mt-1 block text-[11px] text-stone-500">Not sure yet? Roll one and rename it later.</span>
+      ) : null}
+    </div>
   );
 }
+
+// Each way to run a table, said from the seat the person creating it takes.
+const DM_MODE_ROLES: Record<(typeof DM_MODES)[number], string> = {
+  ai: "You play a hero. The AI is the Dungeon Master.",
+  steered: "You direct the AI narrator, without a hero of your own.",
+  human: "You are the Dungeon Master.",
+  assisted: "You are the Dungeon Master, and the AI helps.",
+};
 
 // Who holds the DM seat. A server that positively has no AI storyteller
 // offers only the human seat; one whose storyteller is not answering keeps
@@ -48,7 +77,12 @@ export function DmModeField({ draft, patch, gates }: StepProps) {
             active={draft.dmMode === mode}
             onClick={() => patch({ dmMode: mode })}
             label={DM_MODE_LABELS[mode]}
-            hint={DM_MODE_HINTS[mode]}
+            hint={
+              <>
+                <span className="block text-amber-200/90">{DM_MODE_ROLES[mode]}</span>
+                {DM_MODE_HINTS[mode]}
+              </>
+            }
           />
         ))}
       </div>
@@ -95,6 +129,7 @@ export function WorldPackField({
   onChoosePack: (pack: WorldPackSummary) => void;
   onClearPack: () => void;
 }) {
+  const captionId = useId();
   const packGroups = useMemo<PickerGroup[]>(
     () => [
       { label: null, options: [{ id: "", name: "No pack (plain setting)", infoText: NO_PACK_INFO }] },
@@ -114,8 +149,11 @@ export function WorldPackField({
   }
   return (
     <div>
-      <FieldLabel>Pre-built world (optional)</FieldLabel>
+      <FieldLabel>
+        <span id={captionId}>Pre-built world (optional)</span>
+      </FieldLabel>
       <OptionPicker
+        labelledBy={captionId}
         value={draft.worldPack}
         groups={packGroups}
         placeholder="No pack (plain setting)"

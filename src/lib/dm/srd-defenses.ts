@@ -19,10 +19,11 @@ import { holdsFeature } from "@/lib/srd/trait-rules";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { rollEnemySave } from "@/lib/dm/forced-save";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
 
-export function naturesSanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targetId: string): string | null {
+export function naturesSanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targetId: string): ToolError | null {
   const target = getSheetById(targetId);
   if (!target || !holdsFeature(target, "nature's sanctuary") || !/\b(beast|plant)\b/.test(lower(String(enemy.stats.type ?? "")))) {
     return null;
@@ -34,7 +35,7 @@ export function naturesSanctuaryRefusal(campaignId: string, enemy: EncounterEnem
   });
   return save.success
     ? null
-    : `${enemy.displayName} fails its WIS save (DC ${dc}) against ${target.name}'s Nature's Sanctuary and cannot attack them: it must choose another target or lose the attack.`;
+    : { error: `${enemy.displayName} fails its WIS save (DC ${dc}) against ${target.name}'s Nature's Sanctuary and cannot attack them: it must choose another target or lose the attack.`, retry: true };
 }
 
 // The DC of the Sanctuary Tranquility gives, or null for a caster whose own

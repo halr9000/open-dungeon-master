@@ -5,7 +5,7 @@ import { getActiveEncounter } from "@/lib/db/encounters";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { publishPersisted } from "@/lib/events";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { spendAction, spendAttack, type SpendResult, type TurnBudget } from "@/lib/dm/action-budget";
 import { addSheetCondition } from "@/lib/dm/action-common";
 import { bonusRouteFor, counterSpend, kiSpend, noBonusRoute, type BonusRoute, type MoveAction } from "@/lib/dm/bonus-actions";
@@ -26,6 +26,7 @@ import { DODGING } from "@/lib/dm/condition-logic";
 import { contest, help, hide } from "@/lib/dm/combat-actions";
 import { grapplingStrikeDie, payGrapplingStrike } from "@/lib/dm/maneuver-reactions";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 // The rest of a 5e turn: the actions that are not attacks or spells, plus
 // reactions. Dodge, Dash, Disengage, Hide, Help, Grapple, and Shove all had
@@ -49,12 +50,6 @@ type ToolDef = {
 };
 
 export const ACTION_TOOL_NAMES = ["take_action", "use_reaction"] as const;
-
-// A held Help works like a held Bardic Inspiration die: a condition on the
-// recipient the roll it helps consumes. Its source says which roll
-// (src/lib/dm/help-logic.ts).
-export { HELPED } from "@/lib/dm/help-logic";
-export { HIDDEN } from "@/lib/dm/combat-actions";
 
 const ACTIONS = [
   "dodge",
@@ -209,13 +204,7 @@ const takeActionSchema = z.object({
 
 // Lives in src/lib/dm/turn-budget.ts; re-exported for the callers that
 // learned it here.
-export {
-  attacksAllowedFor,
-  budgetFor,
-  currentCombatantId,
-  grantActionSurge,
-  storeBudget,
-} from "@/lib/dm/turn-budget";
+export { attacksAllowedFor } from "@/lib/dm/turn-budget";
 export { handleUseReaction } from "@/lib/dm/reaction-tools";
 
 // ---- take_action ----
@@ -256,7 +245,7 @@ function priceAction(
   action: (typeof ACTIONS)[number],
   bonus: boolean,
   context: { allyDown?: boolean } = {},
-): Price | { error: string } {
+): Price | ToolError {
   const move = MOVES.has(action) ? (action as MoveAction) : null;
   // Fast Hands (Thief 3): Use an Object with Cunning Action's bonus action.
   if (bonus && action === "use_object" && hasFastHands(sheet)) {
@@ -266,7 +255,7 @@ function priceAction(
     const spent = spendAction(budget, "bonus", "Fast Hands (use an object)", sheet.name);
     return spent.ok
       ? { budget: spent.budget, note: "Fast Hands: their bonus action", feature: "Fast Hands" }
-      : { error: spent.error };
+      : toolError(spent);
   }
   if (bonus) {
     // Help and Search as a bonus action are the authored features' (Master
@@ -281,11 +270,9 @@ function priceAction(
       (action === "grapple" && grapplingStrikeDie(sheet) ? { feature: "Grappling Strike", ki: 0 } : null) ??
       featBonusRoute(sheet, action, budget, Boolean(acBreakdownFor(sheet).shieldName));
     if (!route) {
-      return {
-        error: move
-          ? noBonusRoute(sheet, move)
-          : `${action} is not a bonus action for ${sheet.name}; it takes their action.`,
-      };
+      return move
+        ? noBonusRoute(sheet, move)
+        : { error: `${action} is not a bonus action for ${sheet.name}; it takes their action.`, refused: "rules" };
     }
     if (route.ki) {
       const covered = kiSpend(sheet, route.ki, route.feature);
@@ -315,7 +302,7 @@ function priceAction(
     const spent = spendAction(budget, "bonus", `${route.feature} (${action})`, sheet.name);
     return spent.ok
       ? { budget: spent.budget, note: `${route.feature}: their bonus action`, ki: route.ki, feature: route.feature, ...counter }
-      : { error: spent.error };
+      : toolError(spent);
   }
   if (!budget) {
     return { budget: null };
@@ -338,7 +325,7 @@ function priceAction(
       }
     }
   }
-  return spent.ok ? { budget: spent.budget, note: spent.note } : { error: spent.error };
+  return spent.ok ? { budget: spent.budget, note: spent.note } : toolError(spent);
 }
 
 const RETREAT_DASH = "expeditious-retreat:dash";
@@ -362,12 +349,12 @@ export function handleTakeAction(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof takeActionSchema>;
   try {
     args = takeActionSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: take_action needs characterId and a known action." };
+    return { error: "Invalid arguments: take_action needs characterId and a known action.", retry: true };
   }
   if (args.action === "escape" && args.enemyId && !args.characterId) {
     return enemyEscape(campaign, turn, args.enemyId);
@@ -375,19 +362,19 @@ export function handleTakeAction(
   const staleSheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = staleSheet ? (getSheetById(staleSheet.id) ?? staleSheet) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const encounter = getActiveEncounter(campaign.id);
   // Off their turn, the action they readied: released with their reaction,
   // priced by nothing else (readied-release.ts). Readying is never a release.
   const readied = args.action === "ready" ? null : readiedReleaseFor(sheet, encounter, args.action);
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (!readied) {
     const allowed = canAct({ sheet, encounter, kind: args.bonus ? "bonus" : "action" });
     if (!allowed.ok) {
-      return { error: allowed.error };
+      return toolError(allowed);
     }
   }
 
@@ -398,15 +385,15 @@ export function handleTakeAction(
     encounter,
     sheet.id,
     attacksAllowedFor(sheet),
-    conditionExtraActions(sheet.conditions),
+    conditionTurnShape(sheet.conditions),
   );
   // Under Fire's route opens while an ally lies at 0 hit points.
   const allyDown = sheets.some((entry) => entry.id !== sheet.id && (getSheetById(entry.id) ?? entry).currentHp <= 0 && !(getSheetById(entry.id) ?? entry).deathSaves?.dead);
-  const price: Price | { error: string } = readied
+  const price: Price | ToolError = readied
     ? { budget: null }
     : priceAction(sheet, budget && encounter ? budget : null, args.action, args.bonus === true, { allyDown });
   if ("error" in price) {
-    return { error: price.error };
+    return toolError(price);
   }
   const costs: Record<string, unknown> = {};
   const spend = (flags: Partial<Pick<TurnBudget, "dashed" | "disengaged">> = {}) => {

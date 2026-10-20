@@ -53,7 +53,7 @@ export async function POST(
   }
   if (!delegated(campaign.gameSettings.dmMode, campaign.gameSettings.dmAssist, "monsters")) {
     return Response.json(
-      { error: "The monsters are yours to run; turn on AI monsters under Game settings." },
+      { error: "The monsters are yours to run; turn on AI monsters in Table settings, under AI storytelling and allies." },
       { status: 403 },
     );
   }

@@ -6,6 +6,7 @@ import {
   listRunningAiTurns,
   saveDmTurn,
 } from "@/lib/db/dm-turns";
+import { failPendingLocationMaps } from "@/lib/db/locations";
 import { isAgentTurn } from "@/lib/dm/agent-turn";
 import { enqueueDmJob } from "@/lib/dm/queue";
 import { restoreXCardPauses } from "@/lib/dm/safety";
@@ -32,6 +33,9 @@ declare global {
 // What the table reads in the notice of a turn a restart cut short.
 export const RESTART_HALT = "The server restarted while the Dungeon Master was working on this turn.";
 
+// What a place's map placeholder reads when a restart dropped its render.
+export const RESTART_MAP_FAILED = "The server restarted before this map was drawn.";
+
 export type RestartRecovery = {
   // Tables whose raised X-card was raised again.
   xCards: number;
@@ -42,6 +46,8 @@ export type RestartRecovery = {
   // Parked turns with every roll in that the story has moved past, or with
   // no model to hand the rolls to, closed.
   closed: number;
+  // Map renders the last process had queued or running, now failed.
+  maps: number;
 };
 
 export function recoverDmAfterRestart(): RestartRecovery | null {
@@ -53,12 +59,16 @@ export function recoverDmAfterRestart(): RestartRecovery | null {
   const xCards = restoreXCardPauses().length;
   const halted = haltInterruptedTurns();
   const { resumed, closed } = resumeOrphanedParkedTurns();
-  const recovery = { xCards, halted, resumed, closed };
+  // The map queue was in memory too: a place still waiting on a render
+  // would chart forever under the narration that introduced it.
+  const maps = failPendingLocationMaps(RESTART_MAP_FAILED);
+  const recovery = { xCards, halted, resumed, closed, maps };
   const done = [
     xCards ? `${xCards} raised X-card(s) raised again` : "",
     halted ? `${halted} interrupted turn(s) halted for Retry` : "",
     resumed ? `${resumed} parked turn(s) resumed with the rolls already in` : "",
     closed ? `${closed} parked turn(s) the story has moved past closed` : "",
+    maps ? `${maps} interrupted map render(s) marked failed` : "",
   ].filter(Boolean);
   if (done.length) {
     console.log(`[dm] after the restart: ${done.join("; ")}`);
@@ -124,7 +134,7 @@ function resumeOrphanedParkedTurns(): { resumed: number; closed: number } {
       continue;
     }
     if (turn.conversation.length && getLatestAiTurnId(orphan.campaignId) === orphan.id) {
-      enqueueDmJob(orphan.campaignId, () => resumeDmTurn(orphan.campaignId, orphan.id));
+      enqueueDmJob(orphan.campaignId, () => resumeDmTurn(orphan.campaignId, orphan.id), { kind: "turn" });
       resumed += 1;
       continue;
     }

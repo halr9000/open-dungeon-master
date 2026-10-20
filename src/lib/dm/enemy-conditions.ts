@@ -6,6 +6,7 @@ import { publishPersisted } from "@/lib/events";
 import { clearSpellConditionsByName } from "@/lib/dm/concentration";
 import { removeConditionInstances, type ConditionMeta, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { releaseGrapplesHeldBy } from "@/lib/dm/set-condition";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // What follows from a creature being taken out of the fight, or out of
 // action (SRD 5.1): an incapacitated creature loses its concentration and
@@ -107,11 +108,11 @@ export function sanctuaryWard(
   campaignId: string,
   enemy: EncounterEnemy,
   target: { id: string; name: string },
-  save: (campaignId: string, enemy: EncounterEnemy, targetId: string) => string | null,
-): string | null {
+  save: (campaignId: string, enemy: EncounterEnemy, targetId: string) => ToolError | null,
+): ToolError | null {
   const meta = enemy.conditionMeta as ConditionMetaMap;
   if (enemy.conditions.includes(SANCTUARY_TURNED) && meta[SANCTUARY_TURNED]?.source === target.id) {
-    return `${enemy.displayName} already failed its save against ${target.name}'s Sanctuary this turn: it must choose another target.`;
+    return { error: `${enemy.displayName} already failed its save against ${target.name}'s Sanctuary this turn: it must choose another target.`, retry: true };
   }
   const refused = save(campaignId, enemy, target.id);
   if (refused) {

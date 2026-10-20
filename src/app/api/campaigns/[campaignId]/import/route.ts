@@ -33,9 +33,13 @@ const importSchema = z.object({
   // A board meeting an arc the table is playing: leave the arc alone, or
   // add the board's beats as its next act (#157).
   arc: z.enum(["leave", "append"]).default("leave"),
+  // Kinds WorldForge needs that the DM chose to leave behind (audit finding
+  // WF-07): without them a ticked WorldForge brings its people, places,
+  // factions and lore with it.
+  exclude: z.array(z.enum(IMPORT_KINDS)).max(IMPORT_KINDS.length).default([]),
 });
 
-const previewSchema = importSchema.partial({ select: true, houseRules: true, again: true, arc: true });
+const previewSchema = importSchema.partial({ select: true, houseRules: true, again: true, arc: true, exclude: true });
 
 export async function GET(
   request: Request,
@@ -52,6 +56,7 @@ export async function GET(
     select: url.searchParams.getAll("select"),
     again: url.searchParams.get("again") ?? undefined,
     arc: url.searchParams.get("arc") ?? undefined,
+    exclude: url.searchParams.getAll("exclude"),
   });
   if (!parsed.success) {
     return Response.json({ error: "Invalid preview." }, { status: 400 });
@@ -68,6 +73,7 @@ export async function GET(
     plan: planContentImport(source.id, campaignId, selection, {
       again: parsed.data.again,
       arcMode: parsed.data.arc,
+      exclude: parsed.data.exclude,
     }),
   });
 }
@@ -109,6 +115,7 @@ export async function POST(
     houseRulesMode: parsed.data.houseRules,
     again: parsed.data.again,
     arcMode: parsed.data.arc,
+    exclude: parsed.data.exclude,
   });
   if ("error" in result) {
     return Response.json({ error: result.error }, { status: 400 });
@@ -125,5 +132,14 @@ export async function POST(
     kept: result.kept,
     unbound: result.unbound,
     beatsAdded: result.beatsAdded,
+    // What the picker reports after an import: a reimport's kept edits,
+    // monsters nothing here answers to, and the hand-built monsters brought
+    // into this table's bestiary. These were computed and then dropped here.
+    ...(result.worldConflicts?.length ? { worldConflicts: result.worldConflicts } : {}),
+    ...(result.unresolved?.length ? { unresolved: result.unresolved } : {}),
+    ...(result.monstersBrought?.length ? { monstersBrought: result.monstersBrought } : {}),
+    ...(result.monstersReused?.length ? { monstersReused: result.monstersReused } : {}),
+    ...(result.itemsBrought?.length ? { itemsBrought: result.itemsBrought } : {}),
+    ...(result.itemsReused?.length ? { itemsReused: result.itemsReused } : {}),
   });
 }

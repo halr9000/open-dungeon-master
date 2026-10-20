@@ -71,3 +71,6 @@ public/generated-audio
 .wrangler/
 .dev.vars*
 /ambience-pack.zip
+
+# local audit handoff
+/docs/app-usability-audit-2026-10-16.md

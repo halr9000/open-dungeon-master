@@ -17,9 +17,11 @@ import {
 import { findDraconicAncestry, innateCantripsFor, repeatedGrants, takesDraconicAncestry } from "@/lib/srd/racial-grants";
 import { reconcilePicks } from "./reconcile";
 import { builderCasting } from "./casting";
+import { unmetFeatMessage, type FeatJudge } from "./featPrereqs";
 import type { BackgroundOption, ClassOption, RaceOption } from "./useBuilderOptions";
 import type { BuilderDerived } from "./useBuilderDerived";
 import type { BuilderState, EquipmentItem } from "./useBuilderState";
+import { textKey } from "@/lib/language/text-logic";
 
 export type BuilderResult = { level: number; sheet: CreateSheetInput };
 
@@ -29,6 +31,7 @@ export type BuilderResult = { level: number; sheet: CreateSheetInput };
 // tap (issue #117: an acolyte's two languages were nine screens down).
 export type BlockerTarget =
   | "name"
+  | "background"
   | "backgroundSkills"
   | "race"
   | "languages"
@@ -63,20 +66,36 @@ type SubmitInput = {
   background: BackgroundOption | undefined;
   // The stored sheet an edit starts from; absent when creating.
   initial?: CreateSheetInput;
+  // The feat pickers' prerequisite check, for a feat a later choice broke.
+  featJudge?: FeatJudge;
 };
 
 // Everything the wizard's per-step Continue buttons gate on, so a player
 // cannot reach the end with a hole the final check would reject. Each
 // returns the message the old single-page form showed at submit, and the
 // block on the step where the pick is made.
-export function identityBlocker(state: BuilderState, background?: BackgroundOption): StepBlock | null {
+//
+// Each step has two forms: `...Blocks` lists every pick still owed, in the
+// order the gate asks for them, for the step's "choices left" line; the
+// `...Blocker` gate is the first of them.
+export function identityBlocks(state: BuilderState, background?: BackgroundOption): StepBlock[] {
+  const owed: StepBlock[] = [];
   if (!state.name.trim()) {
-    return block("name", "Give your character a name.");
+    owed.push(block("name", "Give your character a name."));
+  }
+  // No background stands in until one is picked: the first row used to,
+  // and an Acolyte nobody chose owed two languages.
+  if (!background) {
+    owed.push(block("background", "Choose what your hero did before adventuring (background)."));
   }
   if (background?.skillChoice && state.backgroundSkills.filter(Boolean).length < background.skillChoice.count) {
-    return block("backgroundSkills", `Pick your ${background.name} skill proficiencies first.`);
+    owed.push(block("backgroundSkills", `Pick the skills your ${background.name} past trained (skill proficiencies).`));
   }
-  return null;
+  return owed;
+}
+
+export function identityBlocker(state: BuilderState, background?: BackgroundOption): StepBlock | null {
+  return identityBlocks(state, background)[0] ?? null;
 }
 
 // Languages the player chooses: the race's bonus ones plus the background's
@@ -107,53 +126,70 @@ function featPicksBlock(
   return null;
 }
 
-export function ancestryBlocker(
+export function ancestryBlocks(
   state: BuilderState,
   race: RaceOption | undefined,
   background?: BackgroundOption,
   derived?: Pick<BuilderDerived, "featSpecOf">,
-): StepBlock | null {
+  featJudge?: FeatJudge,
+): StepBlock[] {
   if (!race) {
-    return block("race", "Pick a race.");
+    return [block("race", "Choose where your hero comes from (race).")];
   }
+  const owed: StepBlock[] = [];
   const { bonusLanguages, racialAsi, racialSkills, racialTool, racialCantrip } = state;
   const languageCount = bonusLanguageCount(race, background);
   if (languageCount > 0 && bonusLanguages.filter(Boolean).length < languageCount) {
     const left = languageCount - bonusLanguages.filter(Boolean).length;
-    return block("languages", `Pick ${left} more ${left === 1 ? "language" : "languages"} first.`);
+    owed.push(block("languages", `Pick ${left} more ${left === 1 ? "language" : "languages"} your hero can speak.`));
   }
   if (race.asiChoice && racialAsi.filter(Boolean).length < race.asiChoice.count) {
-    return block("racialAsi", `Pick which abilities your ${race.name} bonus raises first.`);
+    owed.push(block("racialAsi", `Pick which abilities your ${race.name} heritage makes stronger (ability score increase).`));
   }
   if (race.skillChoice && racialSkills.filter(Boolean).length < race.skillChoice.count) {
-    return block("racialSkills", `Pick your ${race.name} skill proficiencies first.`);
+    owed.push(block("racialSkills", `Pick the skills your ${race.name} heritage trained (skill proficiencies).`));
   }
   if (race.toolChoice && !racialTool) {
-    return block("racialTool", `Pick your ${race.name} tool proficiency first.`);
+    owed.push(block("racialTool", `Pick a tool your ${race.name} knows how to use (tool proficiency).`));
   }
   if (race.cantripChoice && !racialCantrip) {
-    return block("racialCantrip", `Pick your ${race.name} cantrip first.`);
+    owed.push(block("racialCantrip", `Pick the simple spell your ${race.name} can cast at will (cantrip).`));
   }
   // The variant human's feat is a racial choice like the others, and used
   // to be the one no gate asked for (issue #124).
   const featsOwed = racialFeatCount(race.id) - (state.feats ?? []).length;
   if (featsOwed > 0) {
-    return block("racialFeat", `Pick your ${race.name} feat first.`);
+    owed.push(block("racialFeat", `Pick your ${race.name}'s special talent (feat).`));
   }
   // What the feat itself leaves open: Linguist's three languages, Skill
   // Expert's skill and expertise (issue #125).
   const featPicks = featPicksBlock((state.feats ?? []).slice(0, racialFeatCount(race.id)), state.featChoices, derived?.featSpecOf);
   if (featPicks) {
-    return block("racialFeat", featPicks);
+    owed.push(block("racialFeat", featPicks));
+  }
+  // A feat whose prerequisite a later choice broke: flagged, never dropped.
+  const racialUnmet = unmetFeatMessage(featJudge, (state.feats ?? []).slice(0, racialFeatCount(race.id)));
+  if (racialUnmet) {
+    owed.push(block("racialFeat", racialUnmet));
   }
   if (takesDraconicAncestry(race.id) && !findDraconicAncestry(state.racialAncestry ?? "")) {
-    return block("ancestry", `Pick your ${race.name}'s draconic ancestry first.`);
+    owed.push(block("ancestry", `Pick the kind of dragon your ${race.name} descends from (draconic ancestry).`));
   }
   const repeats = repeatedGrants(background?.skills, race.skills).length;
   if (repeats && (state.repeatSkills ?? []).filter(Boolean).length < repeats) {
-    return block("repeatSkills", `Your race and background both give the same skill; pick ${repeats === 1 ? "another skill" : `${repeats} other skills`} in its place.`);
+    owed.push(block("repeatSkills", `Your race and background both give the same skill; pick ${repeats === 1 ? "another skill" : `${repeats} other skills`} in its place.`));
   }
-  return null;
+  return owed;
+}
+
+export function ancestryBlocker(
+  state: BuilderState,
+  race: RaceOption | undefined,
+  background?: BackgroundOption,
+  derived?: Pick<BuilderDerived, "featSpecOf">,
+  featJudge?: FeatJudge,
+): StepBlock | null {
+  return ancestryBlocks(state, race, background, derived, featJudge)[0] ?? null;
 }
 
 // Whether the counts the SRD gives are rules for this class or only advice.
@@ -167,44 +203,46 @@ export function srdClass(klass: ClassOption): boolean {
 // one, fighting styles and expertise. Every one of these used to be a
 // suggestion a player could scroll past; a character built without them
 // then started play with holes the rules do not allow.
-export function callingBlocker(
+export function callingBlocks(
   klass: ClassOption | undefined,
   state?: BuilderState,
   derived?: BuilderDerived,
-): StepBlock | null {
+): StepBlock[] {
   if (!klass) {
-    return block("class", "Pick a class.");
+    return [block("class", "Choose how you fight or use magic (class).")];
   }
   if (!state || !derived) {
-    return null;
+    return [];
   }
+  const owed: StepBlock[] = [];
   const strict = srdClass(klass);
   const skillsLeft = klass.skillChoices.count - state.chosenSkills.length;
   if (strict && skillsLeft > 0) {
-    return block("classSkills", `Pick ${skillsLeft} more class ${skillsLeft === 1 ? "skill" : "skills"}.`);
+    owed.push(block("classSkills", `Pick ${skillsLeft} more ${skillsLeft === 1 ? "skill" : "skills"} your training taught you (class skills).`));
   }
   // An open tool grant ("three musical instruments") waits for its pick.
   const toolsOwed = derived.toolGrants.choices.findIndex((_, index) => derived.toolGrants.left[index] > 0);
   if (toolsOwed >= 0) {
     const left = derived.toolGrants.left[toolsOwed];
     const choice = derived.toolGrants.choices[toolsOwed];
-    return block("tools", `Pick ${left} more ${choice.label}${left === 1 ? "" : "s"} for your tool proficiency.`);
+    owed.push(block("tools", `Pick ${left} more ${choice.label}${left === 1 ? "" : "s"} you know how to use (tool proficiency).`));
   }
   const pickLevel = subclassLevelFor(klass.id);
   if (pickLevel !== null && derived.effectiveLevel >= pickLevel && !state.subclass.trim()) {
-    return block("subclass", `Pick a subclass: a ${klass.name.toLowerCase()} chooses one at level ${pickLevel}.`);
+    owed.push(block("subclass", `Choose your ${klass.name.toLowerCase()}'s path (subclass): a ${klass.name.toLowerCase()} chooses one at level ${pickLevel}.`));
   }
   // What the subclass's training leaves to the player: a Lore bard's three
   // skills, a Knowledge cleric's languages and skills (issue 251).
   for (const grant of derived.subclassTraining ?? []) {
-    const owed = featOwed(grant.name, grant.spec, state.featChoices?.[grant.name.trim().toLowerCase()]);
-    if (owed) {
-      return block("subclass", owed);
+    const left = featOwed(grant.name, grant.spec, state.featChoices?.[grant.name.trim().toLowerCase()]);
+    if (left) {
+      owed.push(block("subclass", left));
+      break;
     }
   }
   const stylesLeft = derived.styleSlots - state.stylePicks.slice(0, derived.styleSlots).length;
   if (stylesLeft > 0) {
-    return block("styles", `Pick ${stylesLeft === 1 ? "a fighting style" : `${stylesLeft} fighting styles`}.`);
+    owed.push(block("styles", `Pick how you like to fight (${stylesLeft === 1 ? "fighting style" : `${stylesLeft} fighting styles`}).`));
   }
   const expertiseSlots = expertiseSlotsFor(klass.id, derived.effectiveLevel);
   // Counted against the skills the character still has, the same list the
@@ -213,41 +251,49 @@ export function callingBlocker(
     expertiseSlots -
     state.expertisePicks.filter((skillId) => expertiseAllowed(skillId, derived.proficientSkills, [klass.id])).length;
   if (expertiseLeft > 0) {
-    return block("expertise", `Pick ${expertiseLeft} more expertise ${expertiseLeft === 1 ? "skill" : "skills"}.`);
+    owed.push(block("expertise", `Pick ${expertiseLeft} more ${expertiseLeft === 1 ? "skill" : "skills"} you are especially good at (expertise).`));
   }
   const slot = derived.optionSlots.find((entry) => entry.remaining > 0);
   if (slot) {
-    return block("options", `Pick ${slot.remaining} more ${slot.label.toLowerCase()}.`);
+    owed.push(block("options", `Pick ${slot.remaining} more ${slot.label.toLowerCase()}.`));
   }
-  return null;
+  return owed;
+}
+
+export function callingBlocker(
+  klass: ClassOption | undefined,
+  state?: BuilderState,
+  derived?: BuilderDerived,
+): StepBlock | null {
+  return callingBlocks(klass, state, derived)[0] ?? null;
 }
 
 // The spells step: a caster leaves with every cantrip and spell the rules
 // give them at this level. A setting class borrows an SRD class's list and
 // its counts with it, the same counts the server holds a level-up to.
-export function spellsBlocker(
-  state: BuilderState,
+export function spellsBlocks(
   derived: BuilderDerived,
   klass: ClassOption | undefined,
-): StepBlock | null {
+): StepBlock[] {
   if (!klass || !derived.casts) {
-    return null;
+    return [];
   }
+  const owed: StepBlock[] = [];
   const cantripsLeft = (derived.cantripAdvice ?? 0) - derived.chosenCantrips.length;
   if (cantripsLeft > 0) {
-    return block("spells", `Pick ${cantripsLeft} more ${cantripsLeft === 1 ? "cantrip" : "cantrips"}.`);
+    owed.push(block("spells", `Pick ${cantripsLeft} more ${cantripsLeft === 1 ? "simple spell" : "simple spells"} you can cast at will (${cantripsLeft === 1 ? "cantrip" : "cantrips"}).`));
   }
   if (derived.cantripAdvice !== null && cantripsLeft < 0) {
-    return block("spells", `Remove ${-cantripsLeft} ${cantripsLeft === -1 ? "cantrip" : "cantrips"}: a ${klass.name.toLowerCase()} knows ${derived.cantripAdvice ?? 0} at this level.`);
+    owed.push(block("spells", `Remove ${-cantripsLeft} ${cantripsLeft === -1 ? "cantrip" : "cantrips"}: a ${klass.name.toLowerCase()} knows ${derived.cantripAdvice ?? 0} at this level.`));
   }
   if (derived.spellbookAdvice !== null) {
     // A wizard fills the book first, then prepares from it.
     const bookLeft = derived.spellbookAdvice - derived.chosenSpells.length;
     if (bookLeft > 0) {
-      return block("spells", `Write ${bookLeft} more ${bookLeft === 1 ? "spell" : "spells"} in your spellbook.`);
+      owed.push(block("spells", `Write ${bookLeft} more ${bookLeft === 1 ? "spell" : "spells"} in your spellbook.`));
     }
     if (bookLeft < 0) {
-      return block("spells", `Remove ${-bookLeft} ${bookLeft === -1 ? "spell" : "spells"} from your spellbook: a level ${derived.effectiveLevel} wizard starts with ${derived.spellbookAdvice}.`);
+      owed.push(block("spells", `Remove ${-bookLeft} ${bookLeft === -1 ? "spell" : "spells"} from your spellbook: a level ${derived.effectiveLevel} wizard starts with ${derived.spellbookAdvice}.`));
     }
   }
   if (derived.spellAdvice) {
@@ -258,18 +304,25 @@ export function spellsBlocker(
         : derived.spellAdvice.count;
     const spellsLeft = target - derived.chosenPrepared.length;
     if (spellsLeft > 0) {
-      return block(
+      owed.push(block(
         "spells",
         derived.spellbookAdvice !== null
           ? `Prepare ${spellsLeft} more ${spellsLeft === 1 ? "spell" : "spells"} from your spellbook.`
           : `Pick ${spellsLeft} more ${spellsLeft === 1 ? "spell" : "spells"} (${derived.spellAdvice.label}).`,
-      );
+      ));
     }
     if (spellsLeft < 0) {
-      return block("spells", `Remove ${-spellsLeft} ${spellsLeft === -1 ? "spell" : "spells"}: the limit is ${derived.spellAdvice.count} ${derived.spellAdvice.label}.`);
+      owed.push(block("spells", `Remove ${-spellsLeft} ${spellsLeft === -1 ? "spell" : "spells"}: the limit is ${derived.spellAdvice.count} ${derived.spellAdvice.label}.`));
     }
   }
-  return null;
+  return owed;
+}
+
+export function spellsBlocker(
+  derived: BuilderDerived,
+  klass: ClassOption | undefined,
+): StepBlock | null {
+  return spellsBlocks(derived, klass)[0] ?? null;
 }
 
 const sameNumbers = (left: number[], right: number[]) =>
@@ -280,46 +333,61 @@ const sameNumbers = (left: number[], right: number[]) =>
 // asked without it; with it, each method is held to what it gives: the
 // standard array's six numbers once each, a point buy inside its range and
 // its budget, and rolled scores that are the six totals thrown.
-export function abilitiesBlocker(
+export function abilitiesBlocks(
   derived: BuilderDerived,
   state?: Pick<BuilderState, "method" | "scores"> & Partial<Pick<BuilderState, "rollPool" | "featChoices">>,
-): StepBlock | null {
+  featJudge?: FeatJudge,
+): StepBlock[] {
   if (!derived.abilities) {
-    return block("scores", "Assign all six ability scores first.");
+    return [block("scores", "Give each of the six abilities a score (ability scores).")];
   }
+  const owed: StepBlock[] = [];
   const placed = state ? Object.values(state.scores).map((score) => score ?? POINT_BUY_MIN) : [];
   if (state?.method === "standard" && !sameNumbers(placed, STANDARD_ARRAY)) {
-    return block("scores", `The standard array is ${STANDARD_ARRAY.join(", ")}, each used once. Place each number on one ability.`);
+    owed.push(block("scores", `The standard array is ${STANDARD_ARRAY.join(", ")}, each used once. Place each number on one ability.`));
   }
   if (state?.method === "pointbuy") {
     const outside = placed.find((score) => score < POINT_BUY_MIN || score > POINT_BUY_MAX);
     if (outside !== undefined) {
-      return block("scores", `A point buy score runs from ${POINT_BUY_MIN} to ${POINT_BUY_MAX}; ${outside} is outside it.`);
+      owed.push(block("scores", `A point buy score runs from ${POINT_BUY_MIN} to ${POINT_BUY_MAX}; ${outside} is outside it.`));
     }
     const over = -pointBuyRemaining(placed);
     if (over > 0) {
-      return block("scores", `Point buy is ${over} ${over === 1 ? "point" : "points"} over its ${POINT_BUY_BUDGET}. Lower a score first.`);
+      owed.push(block("scores", `Point buy is ${over} ${over === 1 ? "point" : "points"} over its ${POINT_BUY_BUDGET}. Lower a score first.`));
     }
   }
   if (state?.method === "roll") {
     const thrown = (state.rollPool ?? []).map((entry) => entry.total);
     if (!sameNumbers(placed, thrown)) {
-      return block("scores", "Rolled scores are the six totals thrown, each placed on one ability. Roll the dice, then place all six.");
+      owed.push(block("scores", "Rolled scores are the six totals thrown, each placed on one ability. Roll the dice, then place all six."));
     }
   }
   const unresolvedSlot = derived.activeAsiChoices.findIndex(
     (choice, index) => choice === null && !derived.asiTakenInPlay[index],
   );
   if (unresolvedSlot !== -1) {
-    return block("asi", `Resolve your level ${derived.asiSlotLevels[unresolvedSlot]} ability score improvement first.`);
+    owed.push(block("asi", `Choose what your hero gains at level ${derived.asiSlotLevels[unresolvedSlot]}: higher scores or a feat (ability score improvement).`));
   }
   // A feat taken with an improvement names what it leaves open (issue #125).
   const asiFeats = derived.activeAsiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : []));
   const featPicks = featPicksBlock(asiFeats, state?.featChoices, derived.featSpecOf);
   if (featPicks) {
-    return block("asi", featPicks);
+    owed.push(block("asi", featPicks));
   }
-  return null;
+  // A feat whose prerequisite a later choice broke: flagged, never dropped.
+  const asiUnmet = unmetFeatMessage(featJudge, asiFeats);
+  if (asiUnmet) {
+    owed.push(block("asi", asiUnmet));
+  }
+  return owed;
+}
+
+export function abilitiesBlocker(
+  derived: BuilderDerived,
+  state?: Pick<BuilderState, "method" | "scores"> & Partial<Pick<BuilderState, "rollPool" | "featChoices">>,
+  featJudge?: FeatJudge,
+): StepBlock | null {
+  return abilitiesBlocks(derived, state, featJudge)[0] ?? null;
 }
 
 // The pack: what it costs against the coin the character starts with.
@@ -342,10 +410,21 @@ export function gearBlocker(derived: BuilderDerived): StepBlock | null {
 // one soft rule: a caster with no spells needs a second press to confirm.
 export function validateBuilder(
   input: SubmitInput,
-): { kind: "error" | "spellWarning"; message: string } | null {
+): { kind: "error" | "spellWarning"; message: string; target?: BlockerTarget } | null {
   const { derived, race, klass, background } = input;
-  if (!derived.abilities || !derived.preview || !race || !klass || !background) {
-    return { kind: "error", message: "Assign all six ability scores first." };
+  // Each missing piece by its own name and step: this used to say "Assign
+  // all six ability scores first." whatever was missing.
+  if (!race) {
+    return { kind: "error", message: "Choose where your hero comes from (race).", target: "race" };
+  }
+  if (!klass) {
+    return { kind: "error", message: "Choose how you fight or use magic (class).", target: "class" };
+  }
+  if (!background) {
+    return { kind: "error", message: "Choose what your hero did before adventuring (background).", target: "background" };
+  }
+  if (!derived.abilities || !derived.preview) {
+    return { kind: "error", message: "Give each of the six abilities a score (ability scores).", target: "scores" };
   }
   // The gates read the picks as the sheet will carry them, not as they were
   // typed: buildBuilderResult reconciles once more, and a pick that step
@@ -358,13 +437,13 @@ export function validateBuilder(
   const state: BuilderState = { ...input.state, ...picks };
   const blocked =
     identityBlocker(state, background) ??
-    abilitiesBlocker(derived, state) ??
-    ancestryBlocker(state, race, background, derived) ??
+    abilitiesBlocker(derived, state, input.featJudge) ??
+    ancestryBlocker(state, race, background, derived, input.featJudge) ??
     callingBlocker(klass, state, derived) ??
-    spellsBlocker(state, derived, klass) ??
+    spellsBlocker(derived, klass) ??
     gearBlocker(derived);
   if (blocked) {
-    return { kind: "error", message: blocked.message };
+    return { kind: "error", message: blocked.message, target: blocked.target };
   }
   // Casters with no spells at all can still be submitted (homebrew varies),
   // but not by accident: one confirmation makes it a deliberate choice.
@@ -407,7 +486,7 @@ export function buildBuilderResult(input: SubmitInput): BuilderResult {
   // Trickster with Intelligence and a third caster's slots (./casting.ts).
   const casting = builderCasting(klass, state.subclass, effectiveLevel);
   const slots = Object.fromEntries(
-    Object.entries(spellSlotsFor(klass.id, effectiveLevel, state.subclass)).map(([slotLevel, max]) => [
+    Object.entries(spellSlotsFor(klass.id, effectiveLevel, state.subclass, casting.profile)).map(([slotLevel, max]) => [
       slotLevel,
       { max, used: 0 },
     ]),
@@ -458,7 +537,7 @@ export function buildBuilderResult(input: SubmitInput): BuilderResult {
   // Domain, circle, oath and patron spells are always prepared and free:
   // they ride onto the list on top of whatever the player picked.
   const grantedSpells = subclassSpellsFor(klass.id, picks.subclass, effectiveLevel).filter(
-    (spell) => !spells.some((entry) => entry.toLowerCase() === spell.toLowerCase()),
+    (spell) => !spells.some((entry) => textKey(entry) === textKey(spell)),
   );
   const finalSpells = casting.ability ? [...spells, ...grantedSpells] : spells;
   const racialFeatures =
@@ -568,6 +647,7 @@ export function buildBuilderResult(input: SubmitInput): BuilderResult {
       spellcasting: casting.ability
         ? {
             ability: casting.ability,
+            ...(casting.profile ? { progression: casting.profile } : {}),
             slots,
             prepared: isKnownCaster ? [] : isWizard ? picks.bookPrepared : finalSpells,
             known: isKnownCaster ? finalSpells : [],
@@ -627,19 +707,18 @@ function keepUnedited(
 // the background's feature (kept only while the background is). A feat
 // feature goes when the edit took its feat off the sheet.
 function grantedInPlay(initial: CreateSheetInput, built: CreateSheetInput) {
-  const lower = (text: string) => text.toLowerCase();
-  const builtNames = new Set(built.features.map((feature) => lower(feature.name)));
-  const keptFeats = new Set(built.feats.map(lower));
-  const droppedFeats = new Set((initial.feats ?? []).map(lower).filter((feat) => !keptFeats.has(feat)));
+  const builtNames = new Set(built.features.map((feature) => textKey(feature.name)));
+  const keptFeats = new Set(built.feats.map(textKey));
+  const droppedFeats = new Set((initial.feats ?? []).map(textKey).filter((feat) => !keptFeats.has(feat)));
   return (initial.features ?? []).filter((feature) => {
-    if (builtNames.has(lower(feature.name))) {
+    if (builtNames.has(textKey(feature.name))) {
       return false;
     }
     if (feature.source === "background") {
       return initial.background === built.background;
     }
     if (feature.source === "feat") {
-      return !droppedFeats.has(lower(feature.name));
+      return !droppedFeats.has(textKey(feature.name));
     }
     return feature.source === "story";
   });
@@ -706,7 +785,7 @@ function keptSpellcasting(
   const union = (pick: (caster: (typeof casters)[number]) => string[] | undefined) => {
     const seen = new Set<string>();
     return casters.flatMap((caster) => pick(caster) ?? []).filter((name) => {
-      const key = name.trim().toLowerCase();
+      const key = textKey(name);
       if (!key || seen.has(key)) {
         return false;
       }

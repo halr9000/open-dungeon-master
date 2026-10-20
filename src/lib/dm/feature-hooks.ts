@@ -16,6 +16,7 @@ import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
 import { removeConditions } from "@/lib/dm/condition-logic";
 import { prepareResourceCharge } from "@/lib/dm/resource-turn";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 function audit(
   campaign: Campaign,
@@ -101,18 +102,18 @@ export function chooseFiendishResilience(
   sheet: CharacterSheet,
   variant: string | undefined,
   reason: string,
-): Record<string, unknown> {
+): ToolResult {
   const index = sheet.features.findIndex((feature) => /^fiendish resilience\b/i.test(feature.name.trim()));
   if (index < 0) {
-    return { error: `${sheet.name} does not have Fiendish Resilience.` };
+    return { error: `${sheet.name} does not have Fiendish Resilience.`, refused: "rules" };
   }
   const type = (variant ?? "").trim().toLowerCase();
   if (!DAMAGE_TYPES_CHOOSABLE.includes(type)) {
-    return { error: `Fiendish Resilience takes one damage type as the variant: ${DAMAGE_TYPES_CHOOSABLE.join(", ")}.` };
+    return { error: `Fiendish Resilience takes one damage type as the variant: ${DAMAGE_TYPES_CHOOSABLE.join(", ")}. Ask the player which, unless they named one.`, retry: true };
   }
   const encounter = getActiveEncounter(campaign.id);
   if (encounter && (encounter.kind ?? "fight") === "fight") {
-    return { error: "Fiendish Resilience's type is chosen when a rest ends, not in the middle of a fight." };
+    return { error: "Fiendish Resilience's type is chosen when a rest ends, not in the middle of a fight.", refused: "rules" };
   }
   const features = sheet.features.map((feature, at) =>
     at === index ? { ...feature, name: `Fiendish Resilience (${type})` } : feature,
@@ -130,14 +131,14 @@ export function stillnessOfMind(
   turnId: string,
   stale: CharacterSheet,
   reason: string,
-): Record<string, unknown> {
+): ToolResult {
   const sheet = getSheetById(stale.id) ?? stale;
   if (!holdsFeature(sheet, "stillness of mind")) {
-    return { error: `${sheet.name} does not have Stillness of Mind.` };
+    return { error: `${sheet.name} does not have Stillness of Mind.`, refused: "rules" };
   }
   const ending = sheet.conditions.find((name) => ["charmed", "frightened"].includes(name.toLowerCase()));
   if (!ending) {
-    return { error: `${sheet.name} is neither charmed nor frightened; Stillness of Mind has nothing to end.` };
+    return { error: `${sheet.name} is neither charmed nor frightened; Stillness of Mind has nothing to end.`, refused: "rules" };
   }
   const charge = prepareResourceCharge(campaign, sheet, "stillness of mind", "action");
   if ("error" in charge) {

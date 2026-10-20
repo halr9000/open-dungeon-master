@@ -1,7 +1,7 @@
 import { normalizeHandLayout, type HandLayout } from "@/lib/battlemap/hand-layout";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import { touchCampaign } from "@/lib/db/campaigns";
-import { effectiveMaxHp, maxHpRiders, type ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { effectiveMaxHp, maxHpRiders, tempHpClaims, withoutTempHpClaims, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { populateFeaturesForClasses } from "@/lib/srd/features";
 import { populateResources } from "@/lib/srd/class-resources";
 import { XP_THRESHOLDS, deriveAc } from "@/lib/srd";
@@ -23,6 +23,7 @@ import type {
   CreateSheetInput,
   FullPatchSheetInput,
 } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
 
 // Every rule that reads a species by id reads a pack or workshop species
 // through this (src/lib/srd/race-id.ts); every sheet the engines touch
@@ -287,7 +288,7 @@ function withBackgroundFeature(
   }
   // The sheet schema holds feature names to 80 characters.
   const label = `${granted.name} (${granted.background})`.slice(0, 80);
-  if (list.some((feature) => feature.name.toLowerCase() === label.toLowerCase())) {
+  if (list.some((feature) => textKey(feature.name) === textKey(label))) {
     return list;
   }
   return [...list, { name: label, source: "background" as const }];
@@ -774,6 +775,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
         xp: next.xp,
         classes: next.classes,
         features: next.features,
+        feats: featsAsRun(next.feats, existing.campaignId),
         // A spent count the patch itself carries is the newest word on it.
         hitDice: patch.hitDice ?? existing.hitDice,
         hitDicePools: patch.hitDicePools !== undefined ? patch.hitDicePools : existing.hitDicePools,
@@ -818,12 +820,28 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
     const after = maxHpRiders(next.conditions, next.conditionMeta as ConditionMetaMap);
     const bonusDelta = after.bonus - before.bonus;
     const drainDelta = after.drain - before.drain;
+    // Exact deltas, so taking a rider away gives back what it took and no
+    // more: a drain may bring the maximum to 0 (a death), never past it on
+    // its own (src/lib/dm/enemy-hit.ts drainMaxHp caps it).
     if (bonusDelta || drainDelta) {
-      next.maxHp = Math.max(1, next.maxHp + bonusDelta - drainDelta);
+      next.maxHp = next.maxHp + bonusDelta - drainDelta;
       if (bonusDelta > 0) {
         next.currentHp = next.currentHp + bonusDelta;
       }
     }
+  }
+
+  // Temporary hit points a spell granted for its duration go when it ends
+  // (False Life, Heroism): the instance that granted them carries the claim.
+  // A new pool from anything else takes their place (they never stack) and
+  // is no spell's to take away.
+  if (patch.tempHp !== undefined && next.tempHp > existing.tempHp) {
+    next.conditionMeta = withoutTempHpClaims(next.conditionMeta as ConditionMetaMap);
+  } else if (
+    next.tempHp > 0 &&
+    tempHpClaims(next.conditions, next.conditionMeta as ConditionMetaMap) < tempHpClaims(existing.conditions, existing.conditionMeta as ConditionMetaMap)
+  ) {
+    next.tempHp = 0;
   }
 
   // The armor engine owns the AC unless a human pinned it: buying a

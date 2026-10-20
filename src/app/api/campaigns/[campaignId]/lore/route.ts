@@ -15,6 +15,7 @@ import {
   stripSecretBlocks,
 } from "@/lib/dm/world-lore-logic";
 import { isUploadedImagePath, isUploadedPdfPath } from "@/lib/uploads";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,5 +79,6 @@ export async function POST(
   if (entry.attachmentPath) {
     void ingestLoreAttachment(entry).catch((error) => console.error("[lore] pdf ingest failed", error));
   }
+  recordsChanged(campaignId, "lore", "world");
   return Response.json({ entry });
 }

@@ -36,13 +36,23 @@ test("every form is a coherent stat block", () => {
   }
 });
 
-test("form lookup is fuzzy but never wrong-species", () => {
+test("form lookup takes a name or a part of one, and is never wrong-species", () => {
   assert.equal(findBeastForm("Wolf")?.name, "Wolf");
+  assert.equal(findBeastForm("a wolf")?.name, "Wolf");
+  assert.equal(findBeastForm("brown bear form")?.name, "Brown Bear");
   assert.equal(findBeastForm("dire wolf")?.name, "Dire Wolf");
-  assert.equal(findBeastForm("a shaggy brown bear")?.name, "Brown Bear");
   assert.equal(findBeastForm("tyrannosaurus rex")?.name, "Tyrannosaurus Rex");
+  assert.equal(findBeastForm("rex")?.name, "Tyrannosaurus Rex");
   assert.equal(findBeastForm("house cat"), null);
   assert.equal(findBeastForm(""), null);
+  // A name the table does not hold is no form, never the beast inside it:
+  // the caller's refusal lists the forms there are.
+  assert.equal(findBeastForm("giant elk"), null);
+  assert.equal(findBeastForm("a winter wolf"), null);
+  assert.equal(findBeastForm("werewolf"), null);
+  assert.equal(findBeastForm("a shaggy brown bear"), null);
+  // A part of several names picks none of them.
+  assert.equal(findBeastForm("bear"), null);
 });
 
 test("Wild Shape caps follow the druid table, Moon druids scale by level", () => {

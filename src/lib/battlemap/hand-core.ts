@@ -18,8 +18,6 @@ import { conditionBlocksReactions } from "@/lib/srd/condition-effects";
 import type { HandIntentExtras } from "@/lib/battlemap/hand-intent";
 import type { HandArea } from "@/lib/battlemap/hand-area";
 
-export type { HandBonusAttack } from "@/lib/battlemap/hand-intent";
-
 export type HandCost = "action" | "bonus" | "reaction" | "rider" | "free";
 export type HandCardType = "attack" | "rider" | "spell" | "control" | "mend" | "ward" | "feature" | "basic";
 export type HandTarget = "enemy" | "ally" | "self" | "none";
@@ -225,9 +223,6 @@ export type HandOptions = {
 // The fan's seats, End turn's included (src/lib/battlemap/hand-layout.ts).
 export { HAND_FAN_CAP } from "@/lib/battlemap/hand-layout";
 
-export function spellKey(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, " ");
-}
 
 export function signed(value: number): string {
   return value >= 0 ? `+${value}` : `${value}`;
@@ -242,11 +237,6 @@ export function feet(range: string): string {
   const match = /^(\d+)\s*(feet|foot|ft)/i.exec(range.trim());
   if (match) return `${match[1]} ft`;
   return range.trim() ? range.trim().replace(/^./, (c) => c.toUpperCase()) : "";
-}
-
-export function hasFeature(sheet: CharacterSheet, fragment: string): boolean {
-  const wanted = fragment.toLowerCase();
-  return sheet.features.some((feature) => feature.name.toLowerCase().includes(wanted));
 }
 
 export function primaryClass(sheet: CharacterSheet): string {

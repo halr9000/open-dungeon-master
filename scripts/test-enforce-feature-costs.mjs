@@ -124,11 +124,11 @@ await test("a reaction feature spends the reaction, on the character's turn or o
   await refusedUnchanged(
     world,
     chronurgist.id,
-    () => world.invoke("use_spell_slot", { characterId: chronurgist.id, spell: "Shield", level: 1 }),
+    () => world.invoke("use_reaction", { characterId: chronurgist.id, feature: "Shield", level: 1 }),
     "a reaction spell after a reaction feature",
   );
-  const shield = await world.invoke("use_spell_slot", { characterId: chronurgist.id, spell: "Shield", level: 1 });
-  assert.match(shield.error, /reaction/);
+  const shield = await world.invoke("use_reaction", { characterId: chronurgist.id, feature: "Shield", level: 1 });
+  assert.match(shield.error, /already used their reaction/);
 
   // The reaction comes back when their next turn starts.
   kit.giveTurn(cleric.id);

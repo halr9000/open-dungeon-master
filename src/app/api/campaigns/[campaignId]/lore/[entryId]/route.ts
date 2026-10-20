@@ -15,6 +15,7 @@ import {
   type WorldLoreCategory,
 } from "@/lib/dm/world-lore-logic";
 import { isUploadedImagePath, isUploadedPdfPath } from "@/lib/uploads";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,6 +92,7 @@ export async function PATCH(
   if (updated && (patch.attachmentPath !== undefined || patch.tags !== undefined || patch.title !== undefined)) {
     void ingestLoreAttachment(updated).catch((error) => console.error("[lore] pdf ingest failed", error));
   }
+  recordsChanged(campaignId, "lore", "world");
   return Response.json({ entry: updated });
 }
 
@@ -105,5 +107,6 @@ export async function DELETE(
   }
   dropLoreAttachment(campaignId, entryId);
   deleteLoreEntry(entryId);
+  recordsChanged(campaignId, "lore", "world");
   return Response.json({ ok: true });
 }

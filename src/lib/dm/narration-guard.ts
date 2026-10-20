@@ -1,3 +1,4 @@
+import { noteTurnCall, turnCallOptions } from "@/lib/dm/turn-fit";
 import { buildLinePrompt } from "@/lib/dm/safety-logic";
 import { lineViolations } from "@/lib/dm/safety-lines-logic";
 import type { Campaign } from "@/lib/db/campaigns";
@@ -22,11 +23,11 @@ import { guardGate, liveStateFor, readClaims } from "@/lib/dm/claims";
 // only decides what to do about a detection, and its answer is deliberately
 // small: ask the model to fix its own prose, once.
 //
-// That one call is held in reserve outside the turn's four-call budget
-// (GUARD_RESERVED_CALLS). The turns most likely to contradict their results
-// are the busy ones (an attack, the extra attack, end_turn and the enemies),
-// and those are exactly the turns that end with the budget spent; a guard
-// that could only log there would miss the turns it exists for.
+// That one call is held in reserve outside the turn's four-call budget. The
+// turns most likely to contradict their results are the busy ones (an
+// attack, the extra attack, end_turn and the enemies), and those are exactly
+// the turns that end with the budget spent; a guard that could only log
+// there would miss the turns it exists for.
 //
 // Never touches mechanical state. The dice, the hit points, and the slots
 // already resolved through their tools before the narration existed; a
@@ -36,8 +37,6 @@ import { guardGate, liveStateFor, readClaims } from "@/lib/dm/claims";
 //
 // Its reads also say who speaks each quoted line of the narration that
 // stands, which the turn stores with the message (src/lib/dm/speech.ts).
-
-export const GUARD_RESERVED_CALLS = 1;
 
 // The claim kinds the guard rules on for this turn, from engine state alone.
 export function guardKinds(
@@ -65,7 +64,7 @@ async function readNarration(
   parts: readonly string[],
   partReads: ReadonlyMap<string, PartRead>,
 ): Promise<{ contradictions: Contradiction[]; lines: SpokenLine[] }> {
-  const outcomes = guardOutcomes(turn.conversation, liveStateFor(campaign.id));
+  const outcomes = guardOutcomes(turn.conversation, liveStateFor(campaign.id), campaign.gameSettings.tableLanguage);
   const kinds = guardKinds(campaign, outcomes, sheets);
   const wanted = (part: string): ClaimKind[] => (hasQuotedLine(part) ? [...kinds, "speaker"] : kinds);
   // A part read before this turn's outcomes gave the guard more to check (an
@@ -121,7 +120,7 @@ export async function enforceEngineBoundary(
   // narration call never pushed that assistant message into the conversation,
   // so without this the model would be asked to rewrite prose it cannot see and
   // would invent a fresh scene instead.
-  const { message, error } = await requestDmMessage(
+  const rewrite = await requestDmMessage(
     campaign.settings,
     [
       ...turn.conversation,
@@ -136,8 +135,10 @@ export async function enforceEngineBoundary(
     // No tools: this call exists to rewrite prose, and a tool call here would
     // resolve mechanics a second time. It is the reserved call, so it is
     // made whatever the turn's budget has left.
-    { tools: [], toolChoice: "none", thinking: false },
+    { tools: [], toolChoice: "none", thinking: false, ...turnCallOptions(campaign, turn, "guard_rewrite") },
   );
+  noteTurnCall(turn, "guard_rewrite", [], rewrite);
+  const { message, error } = rewrite;
   turn.callIndex += 1;
   if (error) {
     console.warn(`[engine-boundary] turn ${turn.id}: correction call failed (${summary})`);

@@ -24,7 +24,7 @@ export function hudGates(sheet: CharacterSheet, turn: HandTurn): Record<HudGateI
   return {
     attack: first(standingGate(sheet, turn, "attack"), attackGate(turn, attacksAllowed(sheet), sheet)),
     cast: spellNames(sheet).length
-      ? first(standingGate(sheet, turn, "cast"), casting ? { reason: casting, spent: false } : null)
+      ? first(standingGate(sheet, turn, "cast"), casting ? { reason: casting.error, spent: false } : null)
       : `${sheet.name} has no spells to cast.`,
     dodge: action("Dodge"),
     dash:

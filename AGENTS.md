@@ -23,3 +23,67 @@ Use a named SRD creature, an original design, or a separately licensed subject
 with recorded permission. Do not let a generic prompt such as "aberration"
 introduce a beholder or mind flayer. Inspect the rendered anatomy as well as the
 prompt, and preserve the source and edit history with each art change.
+
+## Addon framework
+
+Before changing anything under `src/lib/addons/`, the addon routes, or the
+board view bridge, read [docs/addons/framework.md](docs/addons/framework.md):
+the code map, the rules every change keeps (addons propose and the server
+disposes, no secrets in an addon's environment, sandboxed board views), and
+the steps for a new manifest field, bridge message or extension point.
+Regenerate `docs/addons/addon.schema.json` with
+`node scripts/build-addon-schema.mjs` whenever the manifest schema changes.
+
+## Settings, options and toggles
+
+Every control is paid for by everyone who meets it: a setting by every
+player who sets up a campaign, a field by every author who fills the form.
+Add one when the feature needs it, and earn its place first. Before adding a
+setting, option, toggle, picker, button or field anywhere (the campaign
+creator, a campaign's panels, the sheet, the admin console, the workshop),
+and when reviewing an issue or pull request that asks for one:
+
+1. Ship a good default first. If one default serves most tables, the feature
+   needs no setting. A default that is only "off" or "same as before" means
+   the feature is not finished.
+2. Keep it out of the campaign creator unless it must be decided before the
+   first scene and has no safe default (today: the setting, who runs the
+   story, the players, safety). Everything else starts from its default and
+   is changed later in the campaign's own settings.
+3. One control per idea. A preset picker beats several toggles; "Custom"
+   opens the detailed fields.
+4. Show a control only when it can matter: no art style while pictures are
+   off.
+5. Someone who always customizes the same way saves it once as their
+   personal defaults (`src/app/create-campaign/defaults.ts`); that is not a
+   reason for another toggle.
+6. Stop and justify it before building. Write down what goes wrong without
+   the control, why a good default or a control that already exists cannot
+   cover it, and who will use it. If that holds, build it; if it does not,
+   the feature needs no control. The pull request carries the justification
+   and a screenshot of the control where it lives, with its default (the
+   feature request and pull request templates ask for these).
+7. Make it accessible and easy to understand:
+   - a visible label in plain words that says what it does, and a short
+     hint or an ⓘ glossary where the choice or its terms are not obvious;
+   - named for screen readers (a real label, `aria-label` on an icon-only
+     button, a group or dialog role for a question it asks), reachable and
+     usable by keyboard with a visible focus ring, never only on hover;
+   - a finger-sized target on phones (at least 40px, the size of the kit's
+     own controls), readable at phone width, and legible in the day and
+     night themes;
+   - moving and placed like the controls around it, so it looks like it
+     belongs there;
+   - checked on the website and in the app shells (`--app` in the browser
+     harness), with axe where a page has a scenario for it
+     (`32-builder-a11y`).
+
+## Releases
+
+Before cutting, promoting or fixing a release of the server or the apps, read
+[docs/releases.md](docs/releases.md). Versions are plain `x.y.z`; whether a
+release is a beta or stable is only its GitHub prerelease flag. Once betas
+have started (the client repository's `PUBLISH_AS_BETA` variable is `true`),
+publish every server release with `--prerelease`, never `--latest`, and make
+a release stable only by promoting a beta that meets the doc's checks. Never
+promote a release, or set that variable, unless the maintainer asks for it.

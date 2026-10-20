@@ -2,7 +2,7 @@
 
 import { LoadFailed } from "@/app/campaigns/[campaignId]/PanelKit";
 import { readLoad, useLoadStatus } from "@/lib/load-state";
-import { Loader2, Plug, Trash2 } from "lucide-react";
+import { Link2, Loader2, Plug, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ui } from "@/lib/ui";
 import { EmptyState } from "@/components/EmptyState";
@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/Switch";
 import { AgentConnectLines } from "@/components/AgentConnectLines";
 import { AssistantLink } from "@/components/AssistantLink";
 import { PlayerReceiverSetup, type ReceiverInfo } from "@/app/settings/PlayerReceiverSetup";
+import { PlayerPollLinkSetup } from "@/app/settings/PlayerPollLinkSetup";
 
 type Grant = {
   id: string;
@@ -48,6 +49,9 @@ export function ConnectedAgentsSection() {
   const { loaded, loadError, settle } = useLoadStatus();
   const [reloads, setReloads] = useState(0);
   const [mcpUrl, setMcpUrl] = useState("");
+  const [pollLinks, setPollLinks] = useState(false);
+  // The row whose poll link box is open, to make a first link or replace one.
+  const [pollFor, setPollFor] = useState<string | null>(null);
   const [assistantUrl, setAssistantUrl] = useState("");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [creating, setCreating] = useState(false);
@@ -60,11 +64,12 @@ export function ConnectedAgentsSection() {
   const [leaving, setLeaving] = useState<string | null>(null);
 
   useEffect(() => {
-    readLoad<{ grants?: Grant[]; mcpUrl?: string; assistantUrl?: string }>(fetch("/api/profile/agents"), "The connected agents").then((outcome) => {
+    readLoad<{ grants?: Grant[]; mcpUrl?: string; assistantUrl?: string; pollLinks?: boolean }>(fetch("/api/profile/agents"), "The connected agents").then((outcome) => {
       settle(outcome);
       if (outcome.payload) {
         setGrants(outcome.payload.grants ?? []);
         setMcpUrl(outcome.payload.mcpUrl ?? "");
+        setPollLinks(outcome.payload.pollLinks === true);
         setAssistantUrl(outcome.payload.assistantUrl ?? "");
       }
     });
@@ -130,7 +135,10 @@ export function ConnectedAgentsSection() {
           </p>
           <AssistantLink base={assistantUrl} token={fresh.token} />
           <AgentConnectLines grantId={fresh.id} token={fresh.token} mcpUrl={mcpUrl} />
-          {fresh.receiver ? <PlayerReceiverSetup receiver={fresh.receiver} mcpUrl={mcpUrl} /> : null}
+          {fresh.receiver ? <PlayerReceiverSetup key={fresh.id} receiver={fresh.receiver} mcpUrl={mcpUrl} /> : null}
+          {fresh.receiver?.pollLinks && fresh.receiver.character ? (
+            <PlayerPollLinkSetup key={fresh.id} grantId={fresh.id} characterName={fresh.receiver.character.name} />
+          ) : null}
           <button type="button" className={ui.btnSmall} onClick={() => setFresh(null)}>
             I have copied it
           </button>
@@ -167,9 +175,19 @@ export function ConnectedAgentsSection() {
                   expires {when(grant.expiresAt)}
                 </span>
               </span>
+              {pollLinks && grant.campaignId && grant.scopes.includes("read") && grant.scopes.includes("play") ? (
+                <button type="button" className={ui.btnSmall} onClick={() => setPollFor(pollFor === grant.id ? null : grant.id)}>
+                  <Link2 className="size-3.5" /> Poll link
+                </button>
+              ) : null}
               <button type="button" className={ui.btnSmall} onClick={() => revoke(grant.id)}>
                 <Trash2 className="size-3.5" /> Revoke
               </button>
+              {pollFor === grant.id ? (
+                <div className="basis-full pt-2">
+                  <PlayerPollLinkSetup key={grant.id} grantId={grant.id} characterName="your character" />
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>

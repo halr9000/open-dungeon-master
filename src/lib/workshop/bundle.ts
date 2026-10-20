@@ -11,6 +11,7 @@ import {
   type WorkshopBundle,
 } from "@/lib/workshop/bundle-schema";
 import { isWorldForgeExport, readWorldForge, type WorldImport } from "@/lib/worldforge/format";
+import { unpackMedia } from "./bundle-media.ts";
 
 export * from "@/lib/workshop/bundle-schema";
 
@@ -249,6 +250,8 @@ export function bundleImageCount(bundle: WorkshopBundle): number {
     bundle.maps.filter((map) => map.backdrop !== "").length +
     bundle.maps.filter((map) => map.overlay !== "").length +
     bundle.npcs.filter((npc) => npc.portrait !== "").length +
+    Object.keys(bundle.world?.images ?? {}).length +
+    Object.keys(bundle.world?.entryImages ?? {}).length +
     (bundle.overworld?.backdrop ? 1 : 0)
   );
 }
@@ -378,16 +381,19 @@ export type BundleRead = { bundle: WorkshopBundle; worldForge?: WorldImport } | 
 // whole thing has a byte cap checked BEFORE it is parsed as JSON: a
 // four-gigabyte file must be refused by its size, not by running out of
 // memory proving it is malformed.
-export function readBundle(text: string): BundleRead {
+// `maxBytes` is raised only for a bundle an importer addon made on this
+// server (MAX_ADDON_BUNDLE_BYTES); everything else is held to the file cap.
+export function readBundle(text: string, options: { maxBytes?: number } = {}): BundleRead {
   if (typeof text !== "string" || !text.trim()) {
     return { error: "That file is empty." };
   }
+  const cap = options.maxBytes ?? MAX_BUNDLE_BYTES;
   // Byte length, not character count: a multi-byte string is bigger on the
   // wire than it looks in the editor.
   const bytes = new TextEncoder().encode(text).length;
-  if (bytes > MAX_BUNDLE_BYTES) {
+  if (bytes > cap) {
     return {
-      error: `That file is ${Math.round(bytes / 1024 / 1024)} MB. A workshop bundle caps at ${MAX_BUNDLE_BYTES / 1024 / 1024} MB.`,
+      error: `That file is ${Math.round(bytes / 1024 / 1024)} MB. A workshop bundle caps at ${cap / 1024 / 1024} MB.`,
     };
   }
   let parsed: unknown;
@@ -421,6 +427,15 @@ export function readBundle(text: string): BundleRead {
       error: `That bundle is format version ${String(record.version)}; this build reads version ${WORKSHOP_BUNDLE_VERSION}.`,
     };
   }
+  // A workshop bundle's shared picture list is laid back into the fields
+  // that name it (src/lib/workshop/bundle-media.ts), so the rest reads
+  // pictures inline. Only a workshop bundle's: a WorldForge file has a
+  // `media` of its own, read by its own importer above.
+  const unpacked = worldForge ? { value: parsed } : unpackMedia(parsed);
+  if ("error" in unpacked) {
+    return unpacked;
+  }
+  parsed = unpacked.value;
   const result = workshopBundleSchema.safeParse(parsed);
   if (!result.success) {
     const first = result.error.issues[0];

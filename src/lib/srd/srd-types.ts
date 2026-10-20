@@ -24,6 +24,10 @@ export type SrdClass = {
   // One line for the class picker, so a new player can tell a warlock from
   // a wizard before opening the full write-up.
   blurb?: string;
+  // The class's job in a fight, in words a gamer knows (src/lib/srd/class-roles.ts),
+  // and which of the core four it plays like ("Fighter + Cleric").
+  roles?: string[];
+  playsLike?: string;
 };
 export type SrdRace = {
   id: string;

@@ -89,8 +89,15 @@ async function start(options: HarnessStartOptions) {
         }
         if (kind === "tool_call" || kind === "tool_call_update") {
           // A new tool round begins; text written before it was not the
-          // narration.
+          // narration. The bridge was streamed that text already, so it is
+          // told too: Grok wrote its notes on the scene there ("Mother Hesk
+          // is already on the green, and Kara has asked her...") and they
+          // reached the table, and text before one of Grok's own tools ran
+          // into the text after it ("the village.Mother Hesk").
           turnText = "";
+          if (kind === "tool_call") {
+            options.onEvent({ type: "tool_round" });
+          }
         }
       },
       onRequest(method, params) {

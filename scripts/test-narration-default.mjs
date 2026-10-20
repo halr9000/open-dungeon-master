@@ -10,6 +10,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { openWorld } from "./lib/enforce-world.mjs";
+import { standInStoryteller } from "./lib/stand-in-storyteller.mjs";
+
+// An AI-run table through the routes needs a storyteller set up (the routes
+// refuse one otherwise, and seat a person when none is named); this one never
+// answers.
+standInStoryteller();
 
 const world = await openWorld();
 const { saveGlobalConfig } = await import("../src/lib/db/app-settings.ts");
@@ -63,7 +69,8 @@ assert.equal(createStarterCampaign(world.owner.id, { solo: true, narration: fals
 console.log("ok: where the server can read aloud, new tables start with narration on");
 
 // The lobby's row and the table's header follow the server's speech.
-const panel = read("src/app/campaigns/[campaignId]/GameSettingsPanel.tsx");
+// The panel decides; its Narration group (GameSettingsGroups.tsx) draws the row.
+const panel = read("src/app/campaigns/[campaignId]/GameSettingsPanel.tsx") + read("src/app/campaigns/[campaignId]/GameSettingsGroups.tsx");
 assert.match(panel, /const narrationOff = capabilities\?\.tts\?\.provider === "off";/);
 assert.match(panel, /const narrating = settings\.ttsEnabled && !narrationOff;/);
 assert.match(panel, /<SettingToggle label="Narration" on=\{narrating\} disabled=\{narrationOff\}/, "the switch is held while speech is off");

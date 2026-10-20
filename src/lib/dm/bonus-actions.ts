@@ -21,7 +21,7 @@
 import type { Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { classLevelFor } from "@/lib/srd/multiclass";
 import { authoredFlurryStrikes } from "@/lib/srd/authored-economy";
 import { spendAction } from "@/lib/dm/action-budget";
@@ -34,7 +34,9 @@ import { chosenOptions } from "@/lib/srd/options";
 // The pure half (which feature routes what to the bonus action) lives in
 // bonus-routes.ts, so the Hand can ask it too.
 import { holdsFeature as holds, kiLeft, usesLeft } from "@/lib/dm/bonus-routes";
-export { bonusRouteFor, kiLeft, noBonusRoute, type BonusRoute, type MoveAction } from "@/lib/dm/bonus-routes";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+export { bonusRouteFor, noBonusRoute, type BonusRoute, type MoveAction } from "@/lib/dm/bonus-routes";
 
 // The resources patch that spends `points` ki, or an error when the
 // counter cannot cover it.
@@ -42,15 +44,16 @@ export function kiSpend(
   sheet: CharacterSheet,
   points: number,
   feature: string,
-): { resources: FullPatchSheetInput["resources"] } | { error: string } {
+): { resources: FullPatchSheetInput["resources"] } | ToolError {
   const ki = sheet.resources?.ki;
   const left = kiLeft(sheet);
   if (!ki || left === null) {
-    return { error: `${sheet.name} has no ki points, so ${feature} is not theirs to use.` };
+    return { error: `${sheet.name} has no ki points, so ${feature} is not theirs to use.`, refused: "rules" };
   }
   if (left < points) {
     return {
       error: `${sheet.name} has ${left}/${ki.max} ki points left; ${feature} costs ${points}. It is not available until a rest.`,
+      refused: "rules",
     };
   }
   return { resources: { ...sheet.resources, ki: { max: ki.max, used: ki.used + points } } };
@@ -62,10 +65,10 @@ export function counterSpend(
   sheet: CharacterSheet,
   id: string,
   feature: string,
-): { resources: FullPatchSheetInput["resources"] } | { error: string } {
+): { resources: FullPatchSheetInput["resources"] } | ToolError {
   const counter = sheet.resources?.[id];
   if (!counter || !usesLeft(sheet, id)) {
-    return { error: `${sheet.name} has no use of ${feature} left; it comes back after a rest.` };
+    return { error: `${sheet.name} has no use of ${feature} left; it comes back after a rest.`, refused: "rules" };
   }
   return { resources: { ...sheet.resources, [id]: { max: counter.max, used: counter.used + 1 } } };
 }
@@ -97,34 +100,39 @@ export function spendKiTechnique(
   sheet: CharacterSheet,
   technique: KiTechnique,
   variant: string | undefined,
-): { patch: FullPatchSheetInput; result: Record<string, unknown> } | { error: string } {
+): { patch: FullPatchSheetInput; result: Record<string, unknown> } | ToolError {
   const name =
     technique === "flurry" ? "Flurry of Blows" : technique === "patient defense" ? "Patient Defense" : "Step of the Wind";
   if (classLevelFor(sheet, "monk") < 2 && !holds(sheet, name.toLowerCase())) {
-    return { error: `${name} is a monk's ki technique from 2nd level; ${sheet.name} does not have it.` };
+    return { error: `${name} is a monk's ki technique from 2nd level; ${sheet.name} does not have it.`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
   const inFight = encounter !== null && (encounter.kind ?? "fight") === "fight";
   const allowed = canAct({ sheet, encounter, kind: "bonus" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   const budget = inFight
-    ? budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions))
+    ? budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions))
     : null;
-  if (technique === "flurry") {
-    if (!budget || !encounter) {
-      return { error: `Flurry of Blows is made in a fight, right after the Attack action on ${sheet.name}'s own turn.` };
-    }
-    if (budget.attacksMade < 1 || budget.castThisAction) {
-      return {
-        error: `Flurry of Blows comes immediately after the Attack action; ${sheet.name} has not taken the Attack action this turn. Attack first, then spend the ki.`,
-      };
-    }
+  if (technique === "flurry" && (!budget || !encounter)) {
+    return { error: `Flurry of Blows is made in a fight, right after the Attack action on ${sheet.name}'s own turn.`, refused: "rules" };
   }
+  // The ki and the bonus action first: "attack first" would send the model
+  // to attack for a technique they cannot pay for.
   const spent = kiSpend(sheet, 1, name);
   if ("error" in spent) {
     return spent;
+  }
+  const price = budget ? spendAction(budget, "bonus", name, sheet.name) : null;
+  if (price && !price.ok) {
+    return toolError(price);
+  }
+  if (technique === "flurry" && budget && (budget.attacksMade < 1 || budget.castThisAction)) {
+    return {
+      error: `Flurry of Blows comes immediately after the Attack action; ${sheet.name} has not taken the Attack action this turn. Attack first, then spend the ki.`,
+      retry: true,
+    };
   }
   let flags: { dashed?: boolean; disengaged?: boolean; flurryStrikes?: number } = {};
   const dash = technique === "step of the wind" && /dash/i.test(variant ?? "");
@@ -134,11 +142,7 @@ export function spendKiTechnique(
   } else if (technique === "step of the wind") {
     flags = dash ? { dashed: true } : { disengaged: true };
   }
-  if (budget && encounter) {
-    const price = spendAction(budget, "bonus", name, sheet.name);
-    if (!price.ok) {
-      return { error: price.error };
-    }
+  if (price?.ok && encounter) {
     storeBudget(encounter, { ...price.budget, ...flags });
   }
   const patch: FullPatchSheetInput = { resources: spent.resources };
@@ -176,32 +180,30 @@ export function spendQuickenedSpell(
   campaign: Campaign,
   sheet: CharacterSheet,
   state: { max: number; used: number },
-): { patch: FullPatchSheetInput; result: Record<string, unknown> } | { error: string } {
-  const known = chosenOptions(sheet.features, "metamagic").some((name) => name.trim().toLowerCase() === "quickened spell");
+): { patch: FullPatchSheetInput; result: Record<string, unknown> } | ToolError {
+  const known = chosenOptions(sheet.features, "metamagic").some((name) => textKey(name) === "quickened spell");
   if (!known) {
-    return { error: `${sheet.name} has not learned the Quickened Spell Metamagic option. Nothing was spent.` };
+    return { error: `${sheet.name} has not learned the Quickened Spell Metamagic option. Ask the player whether to cast it without Quickened Spell. Nothing was spent.`, retry: true };
   }
   const encounter = getActiveEncounter(campaign.id);
   const inFight = encounter !== null && (encounter.kind ?? "fight") === "fight";
   const budget = inFight
-    ? budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions))
+    ? budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions))
     : null;
   if (!budget || !encounter) {
-    return {
-      error: inFight
-        ? `Quickened Spell is used as ${sheet.name} casts on their own turn, and it is not their turn. Nothing was spent.`
-        : `Quickened Spell changes a casting time inside a fight's turn; out of a fight the spell is simply cast. Nothing was spent.`,
-    };
+    return inFight
+      ? { error: `Quickened Spell is used as ${sheet.name} casts on their own turn, and it is not their turn. What they declared waits for their turn. Nothing was spent.`, refused: "rules" }
+      : { error: `Quickened Spell changes a casting time inside a fight's turn; out of a fight the spell is simply cast. Ask the player whether to cast it without Quickened Spell. Nothing was spent.`, retry: true };
   }
   if (budget.oncePerTurn.includes(QUICKENED)) {
-    return { error: `${sheet.name} has already quickened a spell this turn that has not been cast yet. Nothing more was spent.` };
+    return { error: `${sheet.name} has already quickened a spell this turn that has not been cast yet. Nothing more was spent.`, retry: true };
   }
   if (budget.bonusUsed) {
-    return { error: `${sheet.name} has already used their bonus action this turn, so a quickened spell has no bonus action to take. Nothing was spent.` };
+    return { error: `${sheet.name} has already used their bonus action this turn, so a quickened spell has no bonus action to take. Ask the player whether to cast it at its own casting time. Nothing was spent.`, retry: true };
   }
   const left = state.max - state.used;
   if (left < 2) {
-    return { error: `Quickened Spell costs 2 sorcery points and ${sheet.name} has ${left}. Nothing was spent.` };
+    return { error: `Quickened Spell costs 2 sorcery points and ${sheet.name} has ${left}. Ask the player whether to cast it without Quickened Spell. Nothing was spent.`, retry: true };
   }
   storeBudget(encounter, { ...budget, oncePerTurn: [...budget.oncePerTurn, QUICKENED] });
   return {

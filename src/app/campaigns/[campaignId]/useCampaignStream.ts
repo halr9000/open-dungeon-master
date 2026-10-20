@@ -37,9 +37,11 @@ import type { CameraEvent, HandoutShown, SceneState, TitleCard } from "@/lib/sce
 import type { MapPing } from "@/lib/dm/board-logic";
 import { capsForRole, type ViewerCaps } from "@/lib/dm/viewer";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { DmJobView } from "@/lib/dm/job-stage-logic";
 import type { VoiceRosterEntry } from "@/lib/voice/types";
 import { navigateTo } from "@/lib/navigation";
 import { registerBrowserSpecies } from "@/lib/srd/race-id";
+import { registerBrowserSubclassExtras, type SubclassExtras } from "@/lib/srd/subclass-tables";
 import { registerBrowserTableFeats } from "@/lib/srd/feat-effects";
 
 export type DmStatus =
@@ -140,8 +142,10 @@ export type CampaignLocation = {
   visited: boolean;
   isCurrent: boolean;
   mapImage: { url: string } | null;
-  // Why its last map render failed, while it has none (src/lib/db/locations.ts).
+  // Why its last map render failed, while it has none, and whether one is
+  // on its way (src/lib/db/locations.ts).
   mapFailed?: string | null;
+  mapPending?: boolean;
   // The place's ambience bed and music, which name its kind of scene.
   ambience: { bed: string; music: string } | null;
   updatedAt: string;
@@ -204,6 +208,13 @@ export type CampaignState = {
   questsVersion: number;
   // Bumped on factions_updated so the Factions panel refetches.
   factionsVersion: number;
+  // Bumped when the campaign's world or a record it describes changed
+  // (world_updated, records_changed: both reach only the seats holding the
+  // story's secrets), so the World tab reads it again.
+  worldVersion: number;
+  // Bumped on lore_updated (a secret revealed to the party, WF-10), so the
+  // lore list reads itself again for this seat.
+  loreVersion: number;
   // Bumped on shops_updated so the market refetches (11.1).
   shopsVersion: number;
   // The last coin movement, for the purse FX.
@@ -259,6 +270,9 @@ export type CampaignState = {
   latestRoll: { roll: StoredRoll; source: string; seq: number } | null;
   lastSeq: number;
   dmStatus: DmStatus;
+  // The DM's job in flight: the step it is on and since when, for the
+  // status line and the lead's Stop (issue #383).
+  dmJob: DmJobView | null;
   // Background utility work in flight (compaction, chapter seal, world tick,
   // lore check, Ask). Separate from dmStatus, which describes the TURN: these
   // run outside one, several can overlap, and each carries its own label.
@@ -342,6 +356,8 @@ const initialState: CampaignState = {
   facts: [],
   relationshipsVersion: 0,
   factionsVersion: 0,
+  worldVersion: 0,
+  loreVersion: 0,
   shopsVersion: 0,
   coins: null,
   questsVersion: 0,
@@ -366,6 +382,7 @@ const initialState: CampaignState = {
   latestRoll: null,
   lastSeq: 0,
   dmStatus: "idle",
+  dmJob: null,
   utilityCalls: [],
   directorArm: null,
   mediaStatus: {},
@@ -676,7 +693,7 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "location_map_ready":
           next.locations = state.locations.map((location) =>
             location.id === payload.locationId
-              ? { ...location, mapImage: payload.image as CampaignLocation["mapImage"], mapFailed: null }
+              ? { ...location, mapImage: payload.image as CampaignLocation["mapImage"], mapFailed: null, mapPending: false }
               : location,
           );
           next.mediaStatus = withoutKey(state.mediaStatus, String(payload.locationId ?? ""));
@@ -688,6 +705,14 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           return next;
         case "factions_updated":
           next.factionsVersion = state.factionsVersion + 1;
+          return next;
+        case "world_updated":
+        case "records_changed":
+        case "party_atlas_updated":
+          next.worldVersion = state.worldVersion + 1;
+          return next;
+        case "lore_updated":
+          next.loreVersion = state.loreVersion + 1;
           return next;
         case "calendar_updated":
           next.questsVersion = state.questsVersion + 1;
@@ -928,6 +953,9 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "dm_status":
           next.dmStatus = payload.state as DmStatus;
           return next;
+        case "dm_job":
+          next.dmJob = (payload.job as DmJobView | null) ?? null;
+          return next;
         case "utility_calls":
           // The server sends the whole in-flight set each time, so a dropped
           // event self-heals on the next one rather than leaving a stuck chip.
@@ -1050,6 +1078,7 @@ const EPHEMERAL_EVENTS = [
   "cast_updated",
   "tts_stream",
   "dm_status",
+  "dm_job",
   "utility_calls",
   "dm_delta",
   // The turn withheld text it had streamed: the draft shows what it kept.
@@ -1088,6 +1117,17 @@ const EPHEMERAL_EVENTS = [
   // Prep came in from a workshop mid-campaign. Contentless: the handler
   // reloads the snapshot, and a reconnect resyncs anyway.
   "prep_imported",
+  // The campaign's world or a record it describes changed. Contentless, and
+  // sent only to the seats holding the story's secrets: the World tab reads
+  // the world again.
+  "world_updated",
+  "records_changed",
+  // The maps shown to the party changed. Contentless, to every seat: the
+  // party's Atlas in the Map tab asks for its own view.
+  "party_atlas_updated",
+  // Lore the table reads changed (a secret revealed to the party).
+  // Contentless, to every seat: each lore list asks for its own view.
+  "lore_updated",
 ];
 const EPHEMERAL_EVENT_SET = new Set(EPHEMERAL_EVENTS);
 // Every type the stream listens for; an event outside it never reaches the
@@ -1186,6 +1226,11 @@ export function useCampaignStream(campaignId: string) {
       const data = await response.json();
       const lastSeq = data.latestSeq ?? 0;
       registerBrowserSpecies(data.species);
+      // The workshop and pack subclasses the table's sheets hold: their
+      // feature text and always-prepared spells (src/lib/srd/features.ts).
+      for (const [classId, tables] of Object.entries((data.subclasses ?? {}) as SubclassExtras)) {
+        registerBrowserSubclassExtras(classId, tables);
+      }
       // The table's whole list: a feat its DM forgot leaves with it.
       registerBrowserTableFeats(data.feats ?? {}, campaignId, { replace: true });
       dispatch({
@@ -1219,6 +1264,7 @@ export function useCampaignStream(campaignId: string) {
             ? queuedIntents(data.messages ?? [], (data.beats ?? []).map((beat: { messageId: string }) => beat.messageId))
             : [],
           dmStatus: data.dmStatus ?? "idle",
+          dmJob: data.dmJob ?? null,
           utilityCalls: sortCalls(data.utilityCalls ?? []),
           narrationAudio: data.narrationAudio ?? {},
           ambience: data.ambience ?? EMPTY_AMBIENCE,

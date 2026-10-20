@@ -23,6 +23,7 @@ const patches = await import("../src/lib/setup/patches.ts");
 const { listModels } = await import("../src/lib/setup/discovery.ts");
 const { comfyFromScan, picturesBlocker } = await import("../src/app/setup/draft.ts");
 const { getSetupState, markSetup, setupNudgeWanted } = await import("../src/lib/setup/state.ts");
+const suggest = await import("../src/lib/setup/suggest.ts");
 
 let passed = 0;
 async function test(name, fn) {
@@ -348,6 +349,41 @@ try {
     markSetup("dismissed");
     assert.ok(getSetupState().dismissedAt);
     assert.equal(setupNudgeWanted({ ...base, state: getSetupState() }), false);
+  });
+
+  // The media steps suggest what is already set up: a painting agent that
+  // narrates paints too, an OpenAI story key covers pictures and voice, and
+  // a ComfyUI or Kokoro already running here is free. "None" and "off" are
+  // never filled in for the admin, since saving them is a deliberate choice.
+  await test("the media steps suggest reusing what the storyteller already set up", () => {
+    const none = { story: "", agentId: "", storyIsOpenAi: false, comfyFound: false, kokoroFound: false };
+    const codex = suggest.suggestPictures({ ...none, story: "agent", agentId: "codex" });
+    assert.equal(codex.pick, "agent");
+    assert.match(codex.reason, /^Codex narrates your tables, and it can paint too/);
+    assert.equal(suggest.suggestPictures({ ...none, story: "agent", agentId: "grok" }).pick, "agent");
+    assert.notEqual(suggest.suggestPictures({ ...none, story: "agent", agentId: "claude" }).pick, "agent", "Claude Code has no image tool");
+    assert.equal(suggest.suggestPictures({ ...none, story: "agent", agentId: "claude", comfyFound: true }).pick, "comfyui");
+    assert.equal(suggest.suggestPictures({ ...none, story: "key", storyIsOpenAi: true, comfyFound: true }).pick, "openai", "the key beats a second service");
+    assert.equal(suggest.suggestPictures(none).pick, "none");
+    assert.equal(suggest.suggestNarration({ ...none, storyIsOpenAi: true }).pick, "openai");
+    assert.equal(suggest.suggestNarration({ ...none, kokoroFound: true }).pick, "kokoro");
+    assert.equal(suggest.suggestNarration({ ...none, story: "agent", agentId: "codex" }).pick, "off", "no agent reads aloud");
+    assert.equal(suggest.fillsStep("agent"), true);
+    assert.equal(suggest.fillsStep("none"), false);
+    assert.equal(suggest.fillsStep("off"), false);
+  });
+
+  await test("skipping or leaving a media step unanswered writes nothing over a service", () => {
+    const wizard = fs.readFileSync(new URL("../src/app/setup/SetupWizard.tsx", import.meta.url), "utf8");
+    assert.match(wizard, /if \(draft\.pictures === ""\) return null;/, "unanswered pictures save nothing");
+    assert.match(wizard, /: draft\.narration === "off"\s*\? narrationPatch\(\{ kind: "off" \}\)\s*: null;/, "only a chosen Text only saves narration off");
+    for (const key of ["pictures", "voice", "players"]) {
+      assert.match(wizard, new RegExp(`onClick: \\(\\) => skip\\("${key}"\\)`), `${key} can be skipped`);
+    }
+    assert.match(wizard, /label: "Save and finish later"/);
+    // skip() puts the step back to the saved answer and saves nothing.
+    const skipBody = wizard.slice(wizard.indexOf("function skip("), wizard.indexOf("async function finishLater"));
+    assert.doesNotMatch(skipBody, /patch\(/, "skip never PATCHes");
   });
 
   console.log(`\n${passed} setup wizard checks passed`);

@@ -14,6 +14,8 @@
 //
 // Pure: no imports beyond types.
 import type { ResourceAction } from "@/lib/srd/class-resources";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 type Cost = ResourceAction | "ritual" | "use_reaction" | "on_swing";
 
@@ -105,10 +107,10 @@ export function optionCost(
   defId: string | undefined,
   named: string,
   inFight: boolean,
-): { option: string; cost: ResourceAction } | { refused: string } | null {
+): { option: string; cost: ResourceAction } | { refused: ToolError } | null {
   const table = defId ? TABLES[defId] : undefined;
-  const text = plain(named);
-  const found = table?.find(([option]) => text.includes(option));
+  const text = textKey(named);
+  const found = table?.find(([option]) => text.includes(textKey(option)));
   if (!found) {
     return null;
   }
@@ -117,12 +119,12 @@ export function optionCost(
   switch (cost) {
     case "ritual":
       return inFight
-        ? { refused: `${shown} is an hour-long ritual, not something done in a fight. Nothing was spent.` }
+        ? { refused: { error: `${shown} is an hour-long ritual, not something done in a fight. Nothing was spent.`, refused: "rules" } }
         : { option, cost: "none" };
     case "use_reaction":
-      return { refused: `${shown} is a reaction: use_reaction with feature "${shown}" when its trigger comes. Nothing was spent.` };
+      return { refused: { error: `${shown} is a reaction: use_reaction with feature "${shown}" when its trigger comes. Nothing was spent.`, retry: true } };
     case "on_swing":
-      return { refused: `${shown} rides the weapon attack: name it in pc_attack's maneuver. Nothing was spent.` };
+      return { refused: { error: `${shown} rides the weapon attack: name it in pc_attack's maneuver. Nothing was spent.`, retry: true } };
     default:
       return { option, cost };
   }
@@ -131,7 +133,7 @@ export function optionCost(
 export type HeldOption = { name: string; cost: ResourceAction | "ritual" };
 
 const costOf = (table: Array<[string, Cost]>, name: string): ResourceAction | "ritual" => {
-  const cost = table.find(([option]) => plain(name).includes(option))?.[1] ?? "action";
+  const cost = table.find(([option]) => textKey(name).includes(textKey(option)))?.[1] ?? "action";
   return cost === "use_reaction" ? "reaction" : cost === "on_swing" ? "none" : cost;
 };
 
@@ -144,7 +146,7 @@ export function channelOptions(sheet: OptionSheet): HeldOption[] {
     .map((feature) => /^channel divinity:\s*(.+)$/i.exec(feature.name.trim())?.[1]?.trim())
     .filter((name): name is string => Boolean(name));
   const cleric = plain(sheet.class ?? "") === "cleric" || (sheet.classes ?? []).some((entry) => plain(entry.id) === "cleric");
-  const all = cleric && !named.some((name) => plain(name).includes("turn undead")) ? ["Turn Undead", ...named] : named;
+  const all = cleric && !named.some((name) => textKey(name).includes("turn undead")) ? ["Turn Undead", ...named] : named;
   return [...new Set(all)].map((name) => ({ name, cost: costOf(CHANNEL_DIVINITY, name) }));
 }
 
@@ -152,8 +154,8 @@ export function channelOptions(sheet: OptionSheet): HeldOption[] {
 export function psionicOptions(sheet: OptionSheet): HeldOption[] {
   const out: HeldOption[] = [];
   for (const feature of sheet.features) {
-    const found = PSIONIC_ENERGY.find(([option]) => plain(feature.name) === option || plain(feature.name).startsWith(`${option} `));
-    if (found && !out.some((entry) => plain(entry.name) === found[0])) {
+    const found = PSIONIC_ENERGY.find(([option]) => textKey(feature.name) === textKey(option) || textKey(feature.name).startsWith(`${textKey(option)} `));
+    if (found && !out.some((entry) => textKey(entry.name) === textKey(found[0]))) {
       out.push({ name: feature.name.trim(), cost: costOf(PSIONIC_ENERGY, found[0]) });
     }
   }

@@ -23,6 +23,8 @@ const { runContentImport } = await import("../src/lib/db/content-import.ts");
 const { worldForPrompt } = await import("../src/lib/dm/world-prompt.ts");
 const { getOverworld } = await import("../src/lib/db/overworld.ts");
 const { getDatabase } = await import("../src/lib/db/core.ts");
+const { listLoreEntries } = await import("../src/lib/db/lore.ts");
+const { loreVisibleTo } = await import("../src/lib/dm/world-lore-logic.ts");
 
 const raw = fs.readFileSync(new URL("./fixtures/worldforge-saltmarch.json", import.meta.url), "utf8");
 const world = await openWorld();
@@ -68,8 +70,11 @@ await test("Every entry is a record the table plays with: Characters are the Cas
   const [horn] = rows(`SELECT category, visibility FROM lore_entries WHERE campaign_id = ? AND title = ?`, workshopId, "The Brine Horn");
   assert.equal(horn.category, "magic");
   assert.equal(horn.visibility, "party");
-  const [lantern] = rows(`SELECT visibility FROM lore_entries WHERE campaign_id = ? AND title = ?`, workshopId, "The Grey Lantern");
-  assert.equal(lantern.visibility, "dm", "an entry that is not canon was shown to players");
+  // Not canon, so held back from players by its canon (WF-01); its audience
+  // is left as written, so publishing it later needs no second step.
+  const lantern = listLoreEntries(workshopId).find((entry) => entry.title === "The Grey Lantern");
+  assert.equal(lantern.unpublished, true, "an entry that is not canon was not held back");
+  assert.equal(loreVisibleTo([lantern], false, "player").length, 0, "an entry that is not canon was shown to players");
   assert.equal(entity("The Grey Lantern").entry.canon, "alternate");
 });
 
@@ -218,7 +223,9 @@ await test("The AI DM is told the hidden truths, ties and secrets, marked as its
   updateWorldEntity(world.campaignId, worldView(world.campaignId).entities.find((entry) => entry.name === "Ivo Brannock").ref, {});
   const doc = worldView(world.campaignId).doc;
   patchWorldDoc(world.campaignId, { secrets: doc.secrets.map((secret) => ({ ...secret, partyKnows: true })) });
-  assert.doesNotMatch(worldForPrompt(world.campaignId).block, /Ivo is the leak/, "a secret the party learned is still offered as a secret");
+  const learned = worldForPrompt(world.campaignId).block;
+  assert.doesNotMatch(learned, /Secret: Ivo is the leak/, "a secret the party learned is still offered as a secret");
+  assert.match(learned, /secrets the party has learned[^\n]*\n- Learned: Ivo is the leak/, "a secret the party learned was forgotten");
 });
 
 await test("An entry the newest messages name is in play, found by Unicode letters in any language.", () => {
@@ -246,7 +253,7 @@ await test("An oversized or malformed export is cut to the limits or refused, ne
   const { workshopId: cut } = openAsWorkshop(JSON.stringify(big));
   const { doc, entities } = worldView(cut);
   assert.ok(entities.every((entry) => entry.name.length <= 80));
-  assert.ok(entities.every((entry) => entry.entry.article.length <= 12_000));
+  assert.ok(entities.every((entry) => entry.entry.article.length <= 20_000));
   assert.ok(doc.links.every((link) => link.label.length <= 60 && ["known", "hidden", "believed"].includes(link.veracity)));
   assert.equal(entities.length, 7);
   assert.ok("error" in readBundle(JSON.stringify({ worldName: 4, entities: "x", version: 4 })));

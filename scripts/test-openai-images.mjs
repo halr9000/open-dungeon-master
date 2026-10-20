@@ -323,6 +323,60 @@ await asyncTest("a refused quality tier is dropped and the picture asked for onc
   assert.equal(qualityRequests.length, 2, "asked once with the field and once without");
 });
 
+// ---- a refusal that names nothing: one square try, remembered ----
+
+// Google behind OpenRouter, as recorded 2026-10-16 for an image model that
+// takes only a square: any other size is refused with a generic
+// INVALID_ARGUMENT that names no field and lists no sizes.
+const GENERIC_REFUSAL = { error: { message: "Request contains an invalid argument.", code: 400, metadata: { provider_name: "Google" } } };
+const genericSizes = [];
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  genericSizes.push(body.size);
+  if (body.size !== "1024x1024") {
+    return Response.json(GENERIC_REFUSAL, { status: 400 });
+  }
+  return Response.json({ data: [{ b64_json: PIXEL.toString("base64") }] });
+};
+
+await asyncTest("a refusal that names nothing is tried once at the square size, which is then asked for straight away", async () => {
+  saveGlobalConfig({ images: { openaiModel: "square-only-painter" } });
+  const map = await draw("landscape");
+  assert.deepEqual(genericSizes, ["1536x1024", "1024x1024"]);
+  assert.deepEqual([map.width, map.height], [1024, 1024], "the picture is described at the size it was made");
+  genericSizes.length = 0;
+  await draw("landscape");
+  await draw("portrait");
+  assert.deepEqual(genericSizes, ["1024x1024", "1024x1024"], "one refusal per model, not per picture");
+});
+
+await asyncTest("a square refused too reports the first refusal with the provider that made it, and nothing is learnt", async () => {
+  saveGlobalConfig({ images: { openaiModel: "refusing-painter" } });
+  genericSizes.length = 0;
+  globalThis.fetch = async (url, init) => {
+    genericSizes.push(JSON.parse(init.body).size);
+    return Response.json(GENERIC_REFUSAL, { status: 400 });
+  };
+  const named = /OpenAI image generation failed \(Google refused the request\): Request contains an invalid argument\./;
+  await assert.rejects(() => draw("landscape"), named);
+  await assert.rejects(() => draw("landscape"), named);
+  assert.deepEqual(genericSizes, ["1536x1024", "1024x1024", "1536x1024", "1024x1024"], "a square that failed was remembered");
+  genericSizes.length = 0;
+  await assert.rejects(() => draw("square"), named);
+  assert.deepEqual(genericSizes, ["1024x1024"], "a square is not asked for twice");
+});
+
+await asyncTest("a refusal that names its field is not taken for a size", async () => {
+  saveGlobalConfig({ images: { openaiModel: "prompt-strict-painter" } });
+  genericSizes.length = 0;
+  globalThis.fetch = async (url, init) => {
+    genericSizes.push(JSON.parse(init.body).size);
+    return Response.json({ error: { message: "Invalid prompt.", param: "prompt" } }, { status: 400 });
+  };
+  await assert.rejects(() => draw("landscape"), /^Error: OpenAI image generation failed: Invalid prompt\.$/);
+  assert.deepEqual(genericSizes, ["1536x1024"]);
+});
+
 globalThis.fetch = realFetch;
 await imageVariantsSettled();
 process.chdir(os.tmpdir());

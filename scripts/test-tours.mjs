@@ -10,7 +10,7 @@ const { finished, legacyKey, mergeLedgers, parseLedger, readDevice, settle, take
   "../src/lib/tours/account-logic.ts"
 );
 const { HAND_TUTORIAL_ID, TOUR_IDS, isTourId, tourVersion } = await import("../src/lib/tours/registry.ts");
-const { DM_TOUR, PLAYER_TOUR } = await import("../src/lib/tours/table.ts");
+const { DM_TOUR, FIRST_TURN_TOUR, PLAYER_TOUR } = await import("../src/lib/tours/table.ts");
 const { HUB_TOUR, SHELF_TOUR, SYSTEM_TOURS, systemTourId, workshopTourAnchors } = await import(
   "../src/lib/tours/workshop.ts"
 );
@@ -70,13 +70,24 @@ test("every step points at a known anchor or none", () => {
   const known = new Set([
     "composer-modes", "composer-input", "composer-talk", "battle-hand", "ask-dm",
     "party-rail", "initiative-ribbon", "quest-glance",
-    "tab-party", "tab-story", "tab-map", "tab-battle", "tab-chat", "tab-dm",
-    "header-dice", "header-voice", "header-help", "header-stage", "header-layout",
+    "tab-party", "tab-story", "tab-map", "tab-battle", "tab-chat", "tab-dm", "tab-settings", "tab-more",
+    "header-dice", "header-voice", "header-help", "header-menu", "header-stage", "header-layout",
     "dm-floor", "dm-beats", "dm-delegation", "dm-queue", "dm-console-tabs",
   ]);
-  for (const step of [...PLAYER_TOUR, ...DM_TOUR]) {
+  for (const step of [...PLAYER_TOUR, ...DM_TOUR, ...FIRST_TURN_TOUR]) {
     for (const anchor of step.anchors) assert.ok(known.has(anchor), `${step.id}: ${anchor}`);
   }
+});
+
+test("the first-turn tour is short: an action, a question, the character, then Help", () => {
+  assert.ok(FIRST_TURN_TOUR.length <= 5 && FIRST_TURN_TOUR.length < PLAYER_TOUR.length);
+  const present = new Set(["composer-input", "ask-dm", "tab-party", "header-menu"]);
+  const out = resolveSteps(FIRST_TURN_TOUR, (anchor) => present.has(anchor));
+  assert.deepEqual(
+    out.map((entry) => entry.anchor),
+    ["", "composer-input", "ask-dm", "tab-party", "header-menu"],
+    "a phone finds each step by its other anchor",
+  );
 });
 
 const VIEW = { width: 400, height: 800 };

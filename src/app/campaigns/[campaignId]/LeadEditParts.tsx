@@ -6,6 +6,7 @@ import { NumberStepper } from "@/components/ui/NumberStepper";
 import { KitButton } from "./PanelKit";
 import { casterViewsOf, withCasterViews } from "@/lib/srd/spell-prep";
 import type { CharacterSheet, EquipmentItem } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
 
 export {
   editedSpellSlots,
@@ -23,7 +24,7 @@ export {
 // now keeps.
 export function ItemFlags({ item }: { item: EquipmentItem }) {
   const flags = [
-    item.equipped ? "worn" : null,
+    item.equipped ? (item.layered ? "worn beside another (DM's call)" : "worn") : null,
     item.attuned ? "attuned" : item.attuning ? "attunes at the next rest" : null,
     item.identified === false ? "unidentified" : null,
     item.charges !== undefined ? `${item.charges} charges` : null,
@@ -70,16 +71,16 @@ export function syncCasterLists(
   after: NonNullable<CharacterSheet["spellcasting"]>,
   sheet: CharacterSheet,
 ): NonNullable<CharacterSheet["spellcasting"]> {
-  const lower = (list: string[] = []) => new Set(list.map((name) => name.toLowerCase()));
+  const lower = (list: string[] = []) => new Set(list.map((name) => textKey(name)));
   const keys = ["known", "prepared", "cantrips", "pending", "spellbook"] as const;
   const views = casterViewsOf(sheet);
   for (const key of keys) {
     const was = lower(before[key]);
     const now = lower(after[key]);
-    const removed = (before[key] ?? []).filter((name) => !now.has(name.toLowerCase()));
-    const added = (after[key] ?? []).filter((name) => !was.has(name.toLowerCase()));
+    const removed = (before[key] ?? []).filter((name) => !now.has(textKey(name)));
+    const added = (after[key] ?? []).filter((name) => !was.has(textKey(name)));
     for (const view of views) {
-      view[key] = view[key].filter((name) => !removed.some((gone) => gone.toLowerCase() === name.toLowerCase()));
+      view[key] = view[key].filter((name) => !removed.some((gone) => textKey(gone) === textKey(name)));
     }
     if (added.length && views.length) {
       const home =

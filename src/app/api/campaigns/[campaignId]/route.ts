@@ -1,7 +1,7 @@
 import { currentScene } from "@/lib/dm/sky";
 import { z } from "zod";
 import { capsFor, isErrorResponse, isLead, requireMember } from "@/lib/campaign-api";
-import { CAMPAIGN_DIFFICULTIES } from "@/lib/campaign-types";
+import { ADVENTURE_BEGINS_NOTE, CAMPAIGN_DIFFICULTIES } from "@/lib/campaign-types";
 import { deleteCampaignWithFiles } from "@/lib/campaign-deletion";
 import {
   allocateSeq,
@@ -32,12 +32,13 @@ import { insertCampaignMessage, listRecentMessages } from "@/lib/db/messages";
 import { listRollsVisibleTo } from "@/lib/db/rolls";
 import { getSheetForUser, listSheets } from "@/lib/db/sheets";
 import { speciesAtTable } from "@/lib/characters/species-rules";
+import { subclassExtrasAtTable } from "@/lib/db/subclass-extras";
 import { tableFeatsFrom } from "@/lib/db/table-feats";
 import { getDatabase } from "@/lib/db/core";
 import { requestDmTurn } from "@/lib/dm/loop";
 import { hasHumanDm, isPrimaryDm, lobbyBlocker, narratorIsAi } from "@/lib/dm/viewer";
 import { sheetForViewer } from "@/lib/dm/sheet-view";
-import { enqueueDmJob } from "@/lib/dm/queue";
+import { enqueueDmJob, runningDmJob } from "@/lib/dm/queue";
 import { runStorySetup } from "@/lib/dm/setup";
 import { generateStoryArc } from "@/lib/dm/arc";
 import { getDmStatus } from "@/lib/dm/status";
@@ -127,6 +128,9 @@ export async function GET(
     // The pack and workshop species at the table, read by id in the browser
     // as on the server (size, Dwarven Toughness; src/lib/srd/race-id.ts).
     species: speciesAtTable(sheets.map((sheet) => sheet.race)),
+    // The workshop and pack subclasses its sheets hold: their feature text
+    // and always-prepared spells, read in the browser as on the server.
+    subclasses: subclassExtrasAtTable(campaignId, sheets),
     // The table's workshop feats: what each runs as, and its text.
     feats: Object.fromEntries(tableFeatsFrom(getDatabase(), campaignId)),
     // The character this user is playing when they have several (11.3).
@@ -172,6 +176,8 @@ export async function GET(
     caps,
     // In-memory status so a reload mid-turn still shows the DM at work.
     dmStatus: getDmStatus(campaignId),
+    // And the step it is on, for the status line's stage and the lead's Stop.
+    dmJob: runningDmJob(campaignId),
     // Same reason, for background work: utility_calls is ephemeral, so a
     // client that reloads mid-compaction would otherwise see an empty strip.
     utilityCalls: listUtilityCalls(campaignId),
@@ -295,9 +301,9 @@ export async function PATCH(
       seq,
       authorType: "system",
       glyph: "cue-bell",
-      content: humanDm
-        ? "The party is assembled and the adventure begins. The Dungeon Master opens the scene."
-        : "The party is assembled and the adventure begins. Introduce the opening scene, set the premise, and give the party their first decision.",
+      // The AI's instruction for the opening is the prompt's, not the
+      // table's (OPENING_SCENE_CUE in src/lib/dm/prompt.ts).
+      content: humanDm ? `${ADVENTURE_BEGINS_NOTE} The Dungeon Master opens the scene.` : ADVENTURE_BEGINS_NOTE,
     });
     publishWithSeq(campaignId, seq, "message_added", { message });
     // An assisted table asked for this in the wizard ("the AI fills this in

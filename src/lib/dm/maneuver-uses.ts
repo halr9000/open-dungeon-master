@@ -19,7 +19,7 @@ import { getActiveEncounter } from "@/lib/db/encounters";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
 import { computeSheetDerived } from "@/lib/srd";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { spendAction, spendAttack } from "@/lib/dm/action-budget";
 import { canAct } from "@/lib/dm/can-act";
@@ -29,21 +29,23 @@ import type { ResourceCharge } from "@/lib/dm/resource-turn";
 import { rollCard } from "@/lib/dm/roll-card";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
 import { untilTurnEnd } from "@/lib/dm/turn-end";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
-type Resolution = { error: string } | { result: Record<string, unknown> };
+type Resolution = ToolError | { result: Record<string, unknown> };
 
 // Whether the sheet knows this maneuver ("Maneuver: Rally").
 export function knowsManeuver(sheet: CharacterSheet, name: string): boolean {
-  return sheet.features.some((feature) => /^maneuver:/i.test(feature.name) && feature.name.toLowerCase().replace(/[’`]/g, "'").includes(name));
+  return sheet.features.some((feature) => /^maneuver:/i.test(feature.name) && textKey(feature.name).includes(textKey(name)));
 }
 
-function companion(sheet: CharacterSheet, targetId: string | undefined, label: string): CharacterSheet | { error: string } {
+function companion(sheet: CharacterSheet, targetId: string | undefined, label: string): CharacterSheet | ToolError {
   const ally = targetId ? getSheetById(targetId) : null;
   if (!ally || ally.id === sheet.id || ally.campaignId !== sheet.campaignId) {
-    return { error: `${label} is for one of ${sheet.name}'s companions: pass that character's targetCharacterId. Nothing was spent.` };
+    return { error: `${label} is for one of ${sheet.name}'s companions: pass that character's targetCharacterId. Nothing was spent.`, retry: true };
   }
   if (ally.deathSaves?.dead) {
-    return { error: `${ally.name} is dead; ${label} cannot reach them. Nothing was spent.` };
+    return { error: `${ally.name} is dead; ${label} cannot reach them. Nothing was spent.`, refused: "rules" };
   }
   return ally;
 }
@@ -81,23 +83,23 @@ export function rally(campaign: Campaign, turnId: string, sheet: CharacterSheet,
 export function commandersStrikeCharge(campaign: Campaign, sheet: CharacterSheet, targetId: string | undefined): ResourceCharge {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter || (encounter.kind ?? "fight") !== "fight") {
-    return { error: "Commander's Strike is part of the Attack action in a fight. Nothing was spent." };
+    return { error: "Commander's Strike is part of the Attack action in a fight. Nothing was spent.", refused: "rules" };
   }
   const able = canAct({ sheet, encounter, kind: "action" });
   if (!able.ok) {
-    return { error: able.error };
+    return toolError(able);
   }
-  const budget = budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions));
+  const budget = budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions));
   if (!budget) {
-    return { error: `Commander's Strike is taken on ${sheet.name}'s own turn, as part of the Attack action. Nothing was spent.` };
+    return { error: `Commander's Strike is taken on ${sheet.name}'s own turn, as part of the Attack action. What they declared waits for their turn. Nothing was spent.`, refused: "rules" };
   }
   const forgone = spendAttack(budget, sheet.name);
   if (!forgone.ok) {
-    return { error: `${forgone.error} Commander's Strike forgoes one attack of the Attack action. Nothing was spent.` };
+    return { ...toolError(forgone), error: `${forgone.error} Commander's Strike forgoes one attack of the Attack action. Nothing was spent.` };
   }
   const bonus = spendAction(forgone.budget, "bonus", "Commander's Strike", sheet.name);
   if (!bonus.ok) {
-    return { error: bonus.error };
+    return toolError(bonus);
   }
   const ally = companion(sheet, targetId, "Commander's Strike");
   if ("error" in ally) {
@@ -105,10 +107,10 @@ export function commandersStrikeCharge(campaign: Campaign, sheet: CharacterSheet
   }
   const refused = reactionRefusal(campaign.id, ally, encounter, "Commander's Strike", "after");
   if (refused) {
-    return { error: `${refused} Nothing was spent.` };
+    return { ...refused, error: `${refused.error} Nothing was spent.` };
   }
   if (encounter.reactionsUsed.includes(ally.id)) {
-    return { error: `${ally.name} has already used their reaction this round, so they cannot strike. Nothing was spent.` };
+    return { error: `${ally.name} has already used their reaction this round, so they cannot strike. Nothing was spent.`, refused: "rules" };
   }
   return {
     commit: () => {

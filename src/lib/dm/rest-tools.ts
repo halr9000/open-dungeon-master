@@ -15,7 +15,6 @@ import {
   shortRestResourcePatch,
 } from "@/lib/dm/rest-logic";
 import { resolveSheetRef } from "@/lib/dm/rolls";
-import { normalizeRestKind } from "@/lib/dm/arg-coerce";
 import { tickWorldTimeskip } from "@/lib/dm/world-tick";
 import { advanceClock, getClock, openShortRestWindow, recordLongRests, setTravelPace } from "@/lib/db/clock";
 import { getDmTurn } from "@/lib/db/dm-turns";
@@ -35,12 +34,11 @@ import {
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
 import { authoredRestTempHp } from "@/lib/dm/authored-turns";
 import { tranquilityAfterLongRest } from "@/lib/dm/srd-defenses";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // The rest engine: short rests spend hit dice with real server rolls, long
 // rests restore HP, slots, and half the hit dice. Every sheet write is
 // audited (kinds rest_short / rest_long) so the party lead can undo it.
-
-export const REST_TOOL_NAMES = ["take_rest"] as const;
 
 type ToolDef = {
   type: "function";
@@ -81,7 +79,7 @@ export const takeRestTool: ToolDef = {
 export const restTools: ToolDef[] = [takeRestTool];
 
 const restArgsSchema = z.object({
-  kind: z.preprocess(normalizeRestKind, z.enum(["short", "long"])),
+  kind: z.enum(["short", "long"]),
   spend: z
     .array(z.object({ characterId: z.string(), dice: z.number().int().min(1).max(20) }))
     .optional(),
@@ -109,7 +107,7 @@ function parseRestArgs(rawArguments: string): z.infer<typeof restArgsSchema> | n
   }
   const flat = z
     .object({
-      kind: z.preprocess(normalizeRestKind, z.enum(["short", "long"])),
+      kind: z.enum(["short", "long"]),
       characterId: z.string().optional(),
       dice: z.coerce.number().int().min(1).max(20).optional(),
       reason: z.string().optional(),
@@ -172,15 +170,16 @@ export function handleTakeRest(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   if (getActiveEncounter(campaign.id)) {
-    return { error: "The party cannot rest during combat. End the encounter first." };
+    return { error: "The party cannot rest during combat. End the encounter first.", refused: "rules" };
   }
   const args = parseRestArgs(rawArguments);
   if (!args) {
     return {
       error:
         'Invalid take_rest arguments. Send {"kind":"short"} or {"kind":"long"}; a spend list is [{"characterId": "...", "dice": 1}] with whole dice of 1 or more. Nobody rested and no time passed.',
+      retry: true,
     };
   }
   const reason = (args.reason ?? `${args.kind} rest`).slice(0, 200);

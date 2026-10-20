@@ -5,6 +5,7 @@ import { insertFact } from "@/lib/db/facts";
 import { getParty, setParty } from "@/lib/db/party";
 import { publishEphemeral } from "@/lib/events";
 import { clampReputation, reputationLabel } from "@/lib/dm/faction-logic";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // The faction tools (docs/vtt-parity-implementation-plan.md section 6):
 // standing moves through adjust_reputation and nothing else; faction_note
@@ -69,16 +70,16 @@ const adjustSchema = z.object({
   reason: z.string().trim().max(200).default(""),
 });
 
-export function handleAdjustReputation(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleAdjustReputation(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof adjustSchema>;
   try {
     args = adjustSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: adjust_reputation needs faction, delta and reason." };
+    return { error: "Invalid arguments: adjust_reputation needs faction, delta and reason.", retry: true };
   }
   const faction = resolveFaction(campaign.id, args.faction);
   if (!faction) {
-    return { error: `No faction called "${args.faction}". Known: ${listFactions(campaign.id).map((entry) => entry.name).join(", ") || "none"}.` };
+    return { error: `No faction called "${args.faction}". Known: ${listFactions(campaign.id).map((entry) => entry.name).join(", ") || "none"}.`, retry: true };
   }
   const party = getParty(campaign.id);
   const before = party.reputation[faction.id] ?? 0;
@@ -105,16 +106,16 @@ const noteSchema = z.object({
   secret: z.boolean().optional(),
 });
 
-export function handleFactionNote(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleFactionNote(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof noteSchema>;
   try {
     args = noteSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: faction_note needs faction and note." };
+    return { error: "Invalid arguments: faction_note needs faction and note.", retry: true };
   }
   const faction = resolveFaction(campaign.id, args.faction);
   if (!faction) {
-    return { error: `No faction called "${args.faction}".` };
+    return { error: `No faction called "${args.faction}". Known: ${listFactions(campaign.id).map((entry) => entry.name).join(", ") || "none"}.`, retry: true };
   }
   insertFact({
     campaignId: campaign.id,

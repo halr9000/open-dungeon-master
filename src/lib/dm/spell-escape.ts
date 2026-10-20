@@ -22,6 +22,7 @@ import { rollCharacterCheck } from "@/lib/dm/contest-roll";
 import { rollCharacterSave, rollEnemySave } from "@/lib/dm/forced-save";
 import { publishEncounter } from "@/lib/dm/enemy-damage";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 type Hold = { name: string; spell: string; abilities: Array<"str" | "dex" | "int">; dc: number; save?: "wis" };
 
@@ -53,15 +54,15 @@ export function characterSpellHold(campaign: Campaign, sheet: CharacterSheet): b
 
 // An enemy's action to break a spell's hold: the better of its allowed
 // ability checks against the caster's DC.
-export function enemySpellEscape(campaign: Campaign, turn: DmTurn, enemy: EncounterEnemy): Record<string, unknown> {
+export function enemySpellEscape(campaign: Campaign, turn: DmTurn, enemy: EncounterEnemy): ToolResult {
   const hold = holdOn(enemy.conditions, enemy.conditionMeta as ConditionMetaMap, spellAuthorsFor(campaign));
   const encounter = getActiveEncounter(campaign.id);
   if (!hold || !encounter) {
-    return { error: `${enemy.displayName} is held by nothing it can break free of.` };
+    return { error: `${enemy.displayName} is held by nothing it can break free of.`, retry: true };
   }
   const allowed = canEnemyAct({ enemy, encounter, kind: "action" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   spendEnemyAction(encounter, enemy.id);
   saveEncounter(encounter);
@@ -94,14 +95,14 @@ export function characterSpellEscape(
   turn: DmTurn,
   sheet: CharacterSheet,
   spend: () => void,
-): Record<string, unknown> {
+): ToolResult {
   const hold = holdOn(sheet.conditions, sheet.conditionMeta as ConditionMetaMap, spellAuthorsFor(campaign));
   if (!hold) {
-    return { error: `${sheet.name} is held by nothing they can break free of.` };
+    return { error: `${sheet.name} is held by nothing they can break free of.`, refused: "rules" };
   }
   spend();
   if (hold.save) {
-    const save = rollCharacterSave(campaign, turn, sheet, hold.save, hold.dc, `${hold.save.toUpperCase()} save against ${hold.spell}`, "spell");
+    const save = rollCharacterSave(campaign, turn, sheet, hold.save, hold.dc, `${hold.save.toUpperCase()} save against ${hold.spell}`, { magical: true });
     if (save.success) {
       const fresh = getSheetById(sheet.id) ?? sheet;
       const cleared = removeConditions(fresh.conditions, fresh.conditionMeta, [hold.name]);

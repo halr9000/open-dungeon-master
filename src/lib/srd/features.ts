@@ -2,15 +2,18 @@ import { ancestryOf, takesDraconicAncestry } from "@/lib/srd/racial-grants";
 import classFeaturesJson from "@/lib/srd/class-features.json";
 import subclassesJson from "@/lib/srd/subclasses.json";
 import racesJson from "@/lib/srd/races.json";
-import { CUSTOM_CLASS_FEATURES } from "@/lib/classes";
+import classesJson from "@/lib/srd/classes.json";
+import { CUSTOM_CLASS_FEATURES, findCustomClass } from "@/lib/classes";
 import type { SheetFeature } from "@/lib/schemas/sheet";
 import { chosenFightingStyles, fightingStyleSlots } from "@/lib/srd/feature-effects";
-import { findOptionByFeatureName, optionSlotsFor } from "@/lib/srd/options";
+import { findOptionByFeatureName, isOptionName, optionSlotsFor } from "@/lib/srd/options";
 import { featOptionSlots } from "@/lib/srd/feat-combat";
 import { srdRaceId } from "@/lib/srd/race-id";
 import { packClassFeaturesFor } from "@/lib/content/class-progression";
 import { subclassNamedBare, subclassNamedExactly } from "@/lib/srd/subclass-name";
-import type { SubclassExtras } from "@/lib/srd/subclass-tables";
+import { browserSubclassExtras, type SubclassExtras } from "@/lib/srd/subclass-tables";
+import { thirdCasterProfileOf, type ThirdCasterProfile } from "@/lib/srd/third-caster";
+import { textKey } from "@/lib/language/text-logic";
 
 export type SubclassTable = {
   name: string;
@@ -46,8 +49,8 @@ type RawSubclass = Omit<SubclassTable, "levels"> & {
 // last domain's text for all of them.
 const SUBCLASS_FEATURE_TEXT: Record<string, string> = {};
 
-function textKey(classId: string, subclassName: string, featureName: string) {
-  return `${classId}::${subclassName.trim().toLowerCase()}::${featureName.trim().toLowerCase()}`;
+function subclassTextKey(classId: string, subclassName: string, featureName: string) {
+  return `${classId}::${textKey(subclassName)}::${textKey(featureName)}`;
 }
 
 // The SRD table carries each class's base levels and its one SRD subclass;
@@ -62,7 +65,7 @@ const AUTHORED_SUBCLASSES: Record<string, SubclassTable[]> = Object.fromEntries(
         for (const [level, features] of Object.entries(entry.levels)) {
           levels[level] = features.map((feature) => feature.n);
           for (const feature of features) {
-            SUBCLASS_FEATURE_TEXT[textKey(classId, entry.name, feature.n)] = feature.d;
+            SUBCLASS_FEATURE_TEXT[subclassTextKey(classId, entry.name, feature.n)] = feature.d;
           }
         }
         return {
@@ -80,15 +83,15 @@ const AUTHORED_SUBCLASSES: Record<string, SubclassTable[]> = Object.fromEntries(
 // dialog: the SRD table's own line or the authored entry's. Null for a
 // subclass only the content pack knows, whose row carries its own text.
 export function subclassBlurb(classId: string, subclass: string): string | null {
-  const wanted = subclass.trim().toLowerCase();
+  const wanted = textKey(subclass);
   const srd = SRD_CLASS_FEATURES[classId]?.subclasses.find(
-    (entry) => entry.name.toLowerCase() === wanted && entry.desc,
+    (entry) => textKey(entry.name) === wanted && entry.desc,
   );
   if (srd?.desc) {
     return srd.desc;
   }
   const authored = AUTHORED_SUBCLASS_ENTRIES[classId]?.find(
-    (entry) => entry.name.toLowerCase() === wanted || (entry.aliases ?? []).some((alias) => alias.toLowerCase() === wanted),
+    (entry) => textKey(entry.name) === wanted || (entry.aliases ?? []).some((alias) => textKey(alias) === wanted),
   );
   return authored?.desc ?? null;
 }
@@ -109,16 +112,16 @@ export function subclassFeatureDescription(
   if (!chosen) {
     // A workshop or pack subclass carries its features' own text.
     const extra = extraSubclassNamed(classId, subclass, extras);
-    const wanted = featureName.trim().toLowerCase();
+    const wanted = textKey(featureName);
     for (const rows of Object.values(extra?.levels ?? {})) {
-      const row = rows.find((entry) => entry.n.trim().toLowerCase() === wanted);
+      const row = rows.find((entry) => textKey(entry.n) === wanted);
       if (row?.d) {
         return row.d;
       }
     }
     return null;
   }
-  return SUBCLASS_FEATURE_TEXT[textKey(classId, chosen.name, featureName)] ?? null;
+  return SUBCLASS_FEATURE_TEXT[subclassTextKey(classId, chosen.name, featureName)] ?? null;
 }
 
 // The player-facing blurb for each authored subclass, for the pickers and
@@ -212,34 +215,53 @@ function leveledNames(levels: Record<string, string[]>, level: number): SheetFea
   return granted.sort((a, b) => (a.level ?? 0) - (b.level ?? 0));
 }
 
-const normalizeName = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
-
 // The subclass a sheet's free-text string means, or null: the exact name, an
 // alias, or either with its title stripped on both sides and compared
 // whole. A string that is merely part of a name matches nothing, so a
 // paladin whose subclass reads "Oath" is granted no oath's features.
 // (The rule is src/lib/srd/subclass-name.ts, shared with options.ts.)
-// The archetypes the builder and the level-up dialog fetched for this
-// person (src/app/characters/builder/useBuilderOptions.ts useArchetypes),
-// read when a caller passes no extras of its own. Set only in the browser,
-// from an effect, where everything fetched is this one person's to see; the
+// Without extras of its own a caller reads the browser's registered ones
+// (src/lib/srd/subclass-tables.ts registerBrowserSubclassExtras); the
 // server always passes the table's own (src/lib/db/subclass-extras.ts).
-const browserExtras: SubclassExtras = {};
-
-export function registerBrowserSubclassExtras(classId: string, tables: SubclassExtras[string]): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  browserExtras[classId] = tables;
-}
+export { registerBrowserSubclassExtras } from "@/lib/srd/subclass-tables";
 
 function extraSubclassNamed(classId: string, stored: string, extras?: SubclassExtras) {
-  const list = (extras ?? browserExtras)[classId] ?? [];
+  const list = (extras ?? browserSubclassExtras())[classId] ?? [];
   return (
     list.find((entry) => subclassNamedExactly(stored, entry.name)) ??
     list.find((entry) => subclassNamedBare(stored, entry.name)) ??
     null
   );
+}
+
+// Whether a subclass of this class may bring its own Spellcasting: the
+// classes that cast nothing themselves (barbarian, fighter, monk, rogue, and
+// a genre class without a casting ability). A cleric's or a warlock's
+// subclass adds to the class's own casting, never a second one.
+export function subclassMayCast(classId: string): boolean {
+  const custom = findCustomClass(classId);
+  if (custom) {
+    return custom.casterType === "none";
+  }
+  const srd = (classesJson as unknown as { classes: Array<{ id: string; casterType: string }> }).classes.find(
+    (entry) => entry.id === classId,
+  );
+  return srd ? srd.casterType === "none" : false;
+}
+
+// The third-caster rules a workshop or pack subclass casts by, for a class
+// that may bring its own (subclassMayCast); undefined for any other.
+export function subclassCastingProfileFor(
+  classId: string,
+  stored: string,
+  extras?: SubclassExtras,
+): ThirdCasterProfile | undefined {
+  if (!subclassMayCast(classId)) {
+    return undefined;
+  }
+  // Read through the profile names, so a table built from older data
+  // ("third-caster", the first spelling) answers with the class's own.
+  return thirdCasterProfileOf(classId, "", extraSubclassNamed(classId, stored, extras)?.castingProfile) ?? undefined;
 }
 
 // A workshop or pack subclass as the bundled tables' shape: names by level.
@@ -269,16 +291,33 @@ function findSubclass(table: ClassFeatureTable, stored: string): SubclassTable |
 // the loose match above would answer yes to half a name.
 export function bundledSubclassName(classId: string, subclass: string): string | null {
   const table = CLASS_FEATURES[classId];
-  const wanted = normalizeName(subclass);
+  const wanted = textKey(subclass);
   if (!table || !wanted) {
     return null;
   }
   const found = table.subclasses.find(
     (entry) =>
-      normalizeName(entry.name) === wanted ||
-      (entry.aliases ?? []).some((alias) => normalizeName(alias) === wanted),
+      textKey(entry.name) === wanted ||
+      (entry.aliases ?? []).some((alias) => textKey(alias) === wanted),
   );
   return found?.name ?? null;
+}
+
+// Every feature name the bundled tables grant, at any level: base classes,
+// their subclasses and the lineages' traits, plus the option picks. A name
+// here is one the rules know, whoever holds it.
+let publishedFeatureNames: Set<string> | null = null;
+const featureKey = (name: string) => textKey(name.replace(/\s*\([^)]*\)\s*$/, ""));
+
+export function isPublishedFeatureName(name: string): boolean {
+  if (!publishedFeatureNames) {
+    const names = Object.values(CLASS_FEATURES).flatMap((table) => [
+      ...Object.values(table.levels).flat(),
+      ...table.subclasses.flatMap((subclass) => Object.values(subclass.levels).flat()),
+    ]);
+    publishedFeatureNames = new Set([...names, ...RACES.flatMap((race) => race.traits)].map(featureKey));
+  }
+  return publishedFeatureNames.has(featureKey(name)) || isOptionName(name);
 }
 
 // Base-class features up to `level`, plus the features of whichever subclass
@@ -391,10 +430,10 @@ export function populateFeaturesForClasses(
   // A race the bundled data doesn't describe (a content-pack Catfolk) has its
   // trait names written by the builder; they are the only copy there is.
   const keepsRaceNames = racialTraits.length === 0;
-  const grantedNames = new Set(granted.map((feature) => feature.name.toLowerCase()));
+  const grantedNames = new Set(granted.map((feature) => textKey(feature.name)));
   const kept = pruneChoiceFeatures(
     existing.filter(
-      (feature, feats) =>
+      (feature) =>
         (feature.source === "feat" ||
           feature.source === "story" ||
           feature.source === "choice" ||
@@ -403,14 +442,15 @@ export function populateFeaturesForClasses(
           // A dragonborn's chosen ancestry is a race feature only the
           // player's pick names; the regrant keeps it.
           (feature.source === "race" && takesDraconicAncestry(raceId) && ancestryOf([feature]) !== null)) &&
-        !grantedNames.has(feature.name.toLowerCase()),
+        !grantedNames.has(textKey(feature.name)),
     ),
     classes,
     granted,
+    feats,
   );
   const seen = new Set<string>();
   return [...granted, ...kept].filter((feature) => {
-    const key = feature.name.toLowerCase();
+    const key = textKey(feature.name);
     if (seen.has(key)) {
       return false;
     }
@@ -433,7 +473,7 @@ function pruneChoiceFeatures(
   feats?: string[],
 ): SheetFeature[] {
   const styleSlots = fightingStyleSlots(granted);
-  const styles = new Set(chosenFightingStyles(features).map((name) => name.toLowerCase()));
+  const styles = new Set(chosenFightingStyles(features).map((name) => textKey(name)));
   let stylesKept = 0;
   const perKind = new Map<string, number>();
   return features.filter((feature) => {
@@ -443,7 +483,20 @@ function pruneChoiceFeatures(
     const option = findOptionByFeatureName(feature.name);
     if (option) {
       const total =
-        classes.reduce((sum, entry) => sum + optionSlotsFor(entry.id, entry.subclass, entry.level, option.k), 0) +
+        classes.reduce(
+          (sum, entry) =>
+            sum +
+            optionSlotsFor(
+              entry.id,
+              entry.subclass,
+              entry.level,
+              option.k,
+              // The features this class granted: a workshop subclass's
+              // borrowed Combat Superiority keeps its maneuvers.
+              granted.filter((held) => held.classId === entry.id),
+            ),
+          0,
+        ) +
         featOptionSlots(feats, option.k);
       const taken = perKind.get(option.k) ?? 0;
       if (taken >= total) {
@@ -453,7 +506,7 @@ function pruneChoiceFeatures(
       return true;
     }
     const bare = chosenFightingStyles([feature])[0];
-    if (bare !== undefined && styles.has(bare.toLowerCase())) {
+    if (bare !== undefined && styles.has(textKey(bare))) {
       if (stylesKept >= styleSlots) {
         return false;
       }

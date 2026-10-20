@@ -121,7 +121,7 @@ await test("Without the domain the same chain mail is still untrained armor, and
   assert.ok(!made.sheet.proficiencies.armor.includes("heavy"));
   const inMail = { ...made.sheet, equipment: [...made.sheet.equipment, { name: "Chain Mail", qty: 1, equipped: true }] };
   assert.equal(wearsUntrainedArmor(inMail), true);
-  assert.match(casterStateProblem(inMail) ?? "", /not trained in/);
+  assert.match(casterStateProblem(inMail)?.error ?? "", /not trained in/);
 });
 
 // A level 3 bard, standard array, made at the table.

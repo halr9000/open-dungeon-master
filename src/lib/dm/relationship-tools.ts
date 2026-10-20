@@ -47,6 +47,8 @@ import { resolveRollExpression, resolveSheetRef } from "@/lib/dm/rolls";
 import { rollExtrasFor, spendRollCarriers } from "@/lib/dm/forced-save";
 import type { RollArgs } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The relationship engine: how each character actually stands with each NPC
 // and AI companion, on one server-owned meter running from open hostility to
@@ -192,12 +194,13 @@ function resolveSubject(
   campaign: Campaign,
   rawName: string,
   sheets: CharacterSheet[],
-): Subject | { error: string } {
-  const needle = rawName.trim().toLowerCase();
-  const sheet = sheets.find((candidate) => candidate.name.trim().toLowerCase() === needle);
+): Subject | ToolError {
+  const needle = textKey(rawName);
+  const sheet = sheets.find((candidate) => textKey(candidate.name) === needle);
   if (sheet && !sheet.isCompanion) {
     return {
       error: `${sheet.name} is a player's character. How two player characters feel about each other belongs to those two players and is not metered here; play the scene.`,
+      retry: true,
     };
   }
   if (sheet?.isCompanion) {
@@ -216,6 +219,7 @@ function resolveSubject(
   if (!npc) {
     return {
       error: `No tracked NPC or companion named "${rawName}".${nearestNpcHint(nearestNpcName(campaign.id, rawName))} Register them with set_npc (or npc_reaction), or add_companion, before recording how they take things.`,
+      retry: true,
     };
   }
   return {
@@ -289,9 +293,9 @@ export function handleRelationshipBeat(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   if (!relationshipsEnabled(campaign)) {
-    return { error: "Relationship tracking is switched off for this campaign." };
+    return { error: "Relationship tracking is switched off for this campaign.", retry: true };
   }
   let args: z.infer<typeof beatSchema>;
   try {
@@ -299,38 +303,42 @@ export function handleRelationshipBeat(
   } catch {
     return {
       error: "Invalid arguments: relationship_beat needs characterId, subject, and beat.",
+      retry: true,
     };
   }
   const spec = beatSpec(args.beat);
   if (!spec) {
     return {
       error: `Unknown beat "${args.beat}". Use one of: ${RELATIONSHIP_BEAT_NAMES.join(", ")}.`,
+      retry: true,
     };
   }
   if (spec.track === "romantic" && !romanceEnabled(campaign)) {
-    return { error: "Romance is switched off for this campaign; only social beats apply." };
+    return { error: "Romance is switched off for this campaign; only social beats apply.", retry: true };
   }
   const sheet = resolveActor(args, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const subject = resolveSubject(campaign, args.subject, sheets);
   if ("error" in subject) {
     return subject;
   }
-  if (subject.name.trim().toLowerCase() === sheet.name.trim().toLowerCase()) {
-    return { error: "A character cannot have a relationship with themselves." };
+  if (textKey(subject.name) === textKey(sheet.name)) {
+    return { error: "A character cannot have a relationship with themselves.", retry: true };
   }
 
   const relationship = openLedger(campaign, sheet, subject);
   if (relationship.status === "ended") {
     return {
       error: `${sheet.name} and ${subject.name} are finished. Nothing changes that without the story reopening it first.`,
+      refused: "rules",
     };
   }
   if (spec.minRomance && romanceIndex(relationship.romance) < romanceIndex(spec.minRomance)) {
     return {
       error: `${args.beat} is not where they are: that belongs to ${ROMANCE_LABEL[spec.minRomance]} and they are at ${ROMANCE_LABEL[relationship.romance]}. Use romance_advance first, if the meter supports it.`,
+      retry: true,
     };
   }
 
@@ -348,9 +356,7 @@ export function handleRelationshipBeat(
       rollExtrasFor(campaign, sheet, "skill_check"),
     );
     if ("error" in resolved || "autoFail" in resolved) {
-      return {
-        error: "error" in resolved ? resolved.error : `${sheet.name} cannot make that check.`,
-      };
+      return "error" in resolved ? resolved : { error: `${sheet.name} cannot make that check.`, refused: "rules" };
     }
     spendRollCarriers(campaign.id, sheet.id, resolved.spendInspiration);
     dc = beatDc(relationship.approval);
@@ -473,9 +479,9 @@ export function handleRomanceAdvance(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   if (!romanceEnabled(campaign)) {
-    return { error: "Romance is switched off for this campaign." };
+    return { error: "Romance is switched off for this campaign.", retry: true };
   }
   let args: z.infer<typeof advanceSchema>;
   try {
@@ -484,11 +490,12 @@ export function handleRomanceAdvance(
     return {
       error:
         "Invalid arguments: romance_advance needs characterId, subject, and to (interested, courting, together, betrothed, or married).",
+      retry: true,
     };
   }
   const sheet = resolveActor(args, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const subject = resolveSubject(campaign, args.subject, sheets);
   if ("error" in subject) {
@@ -498,6 +505,7 @@ export function handleRomanceAdvance(
   if (relationship.status === "parted") {
     return {
       error: `${subject.name} is not with the party right now; bring them back into the scene before anything goes further.`,
+      refused: "rules",
     };
   }
   // One step per exchange, exactly like an NPC's attitude: no ratcheting a
@@ -505,6 +513,7 @@ export function handleRomanceAdvance(
   if (relationship.lastShiftTurn === turn.id) {
     return {
       error: `${sheet.name} and ${subject.name} already took a step this exchange. Let the scene breathe before the next one.`,
+      retry: true,
     };
   }
   const verdict = canAdvanceRomance(
@@ -516,7 +525,7 @@ export function handleRomanceAdvance(
   if (!verdict.ok) {
     const next = nextRomanceStage(relationship.romance);
     return {
-      error: verdict.reason,
+      ...toolError(verdict),
       approval: relationship.approval,
       standing: friendshipTier(relationship.approval),
       romance: relationship.romance,
@@ -651,9 +660,9 @@ export function handleRelationshipEnd(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   if (!relationshipsEnabled(campaign)) {
-    return { error: "Relationship tracking is switched off for this campaign." };
+    return { error: "Relationship tracking is switched off for this campaign.", retry: true };
   }
   let args: z.infer<typeof endSchema>;
   try {
@@ -662,11 +671,12 @@ export function handleRelationshipEnd(
     return {
       error:
         "Invalid arguments: relationship_end needs characterId, subject, and reason (falling_out, parting, breakup, betrayal, or death).",
+      retry: true,
     };
   }
   const sheet = resolveActor(args, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const subject = resolveSubject(campaign, args.subject, sheets);
   if ("error" in subject) {
@@ -674,7 +684,7 @@ export function handleRelationshipEnd(
   }
   const relationship = getRelationship(campaign.id, sheet.id, subject.name);
   if (!relationship) {
-    return { error: `No tracked relationship between ${sheet.name} and ${args.subject}.` };
+    return { error: `No tracked relationship between ${sheet.name} and ${args.subject}.`, retry: true };
   }
 
   // A parting leaves everything intact: they are still what they were, just

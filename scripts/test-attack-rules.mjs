@@ -140,7 +140,7 @@ const offHand = (weapon, overrides = {}) =>
     feats: [],
     shieldName: null,
     ...overrides,
-  });
+  })?.error ?? null;
 
 test("the off-hand attack follows an Attack action made with a light weapon", () => {
   assert.equal(offHand("Shortsword"), null);
@@ -285,7 +285,7 @@ test("a loading weapon fires once in an action", () => {
   assert.equal(loadingProblem({ who: "Asha", profile: crossbow, budget: before }), null);
   const after = withLoadingFired(before, crossbow);
   assert.deepEqual(after.loadingFired, ["heavy crossbow"]);
-  assert.match(loadingProblem({ who: "Asha", profile: crossbow, budget: after }), /once per action/);
+  assert.match(loadingProblem({ who: "Asha", profile: crossbow, budget: after })?.error, /once per action/);
   // Another weapon is free, a bow never loads, and the feat ignores it.
   assert.equal(loadingProblem({ who: "Asha", profile: profileOf("Hand Crossbow"), budget: after }), null);
   assert.equal(withLoadingFired(before, profileOf("Longbow")), before);

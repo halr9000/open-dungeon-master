@@ -2,14 +2,14 @@ import { canAct } from "@/lib/dm/can-act";
 import { hasDungeonDelver, shieldMasterSaveBonus, spellSaveAdvantageReach } from "@/lib/srd/feat-combat";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
 import { z } from "zod";
-import { globeProblemFor } from "@/lib/dm/zone-rules";
+import { castToNoEffect, spellWardOn } from "@/lib/dm/cast-reach";
 import type { Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter, recordEncounterTarget, setEnemyConcentration } from "@/lib/db/encounters";
 import { markReactionUsed } from "@/lib/dm/turn-budget";
 import { getSheetById } from "@/lib/db/sheets";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { isValidExpression } from "@/lib/dice";
-import { spellMechanicsFor } from "@/lib/content";
+import { spellFactsFor, spellMechanicsFor } from "@/lib/content";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import type { SaveAbility } from "@/lib/bestiary/statblock";
 import { planSpellFx } from "@/lib/battlemap/fx-plan";
@@ -33,6 +33,9 @@ import { applyPcDamage } from "@/lib/dm/pc-damage";
 import { sanctuaryWard } from "@/lib/dm/enemy-conditions";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { outOfReach } from "@/lib/dm/spell-planes";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { saveAgainst } from "@/lib/dm/roll-about";
 
 // cast_at_player: a save forced on ONE character, by an enemy's spell or
 // ability or by a hazard (SRD 5.1, Saving Throws). The mirror of
@@ -84,25 +87,11 @@ export function trackEnemyConcentration(
   if (!resolved?.concentration) {
     return null;
   }
-  if (enemy.concentration && enemy.concentration.toLowerCase() !== resolved.name.toLowerCase()) {
+  if (enemy.concentration && textKey(enemy.concentration) !== textKey(resolved.name)) {
     clearSpellConditionsByName(campaign, enemy.concentration, undefined, enemy.id);
   }
   setEnemyConcentration(enemy.id, resolved.name, concentrationRoundsFor(resolved.name));
   return `${enemy.displayName} is now concentrating on ${resolved.name}; damage to it forces a CON save and a break ends the effect.`;
-}
-
-// What the save is against, for the traits keyed to it: Brave against fear,
-// a dwarf against poison, Gnome Cunning against magic.
-// `spellBy` is the creature type of a spell's caster, for Holy Nimbus
-// (advantage against spells cast by fiends or undead).
-export function saveAgainst(parts: { condition?: string; damageType?: string; magical?: boolean; spellBy?: string }): string | undefined {
-  const words = [
-    parts.condition,
-    parts.damageType,
-    parts.magical ? "spell magic" : "",
-    parts.spellBy ? `spell cast by ${parts.spellBy}` : "",
-  ].filter(Boolean);
-  return words.length ? words.join(" ") : undefined;
 }
 
 // What an enemy's effect lays on a character who failed the save: tied to
@@ -123,13 +112,17 @@ export function layEnemyCondition(
 ): Record<string, unknown> {
   const fresh = getSheetById(sheet.id) ?? sheet;
   if (use?.spellCondition) {
-    return handleSetCondition(campaign, turn.id, fresh, { condition }, reason, {
-      spellEffect: spellConditionMeta(
-        use.spellCondition,
-        { spell: use.name, casterId: use.enemy.id, slotLevel: use.slotLevel },
-        { ability: save.ability, dc: save.dc },
-      ),
-    });
+    // The whole of what the spell lays, as a character's spell lays it on a
+    // monster: Hypnotic Pattern's charmed creature is incapacitated too.
+    const spellEffect = spellConditionMeta(
+      use.spellCondition,
+      { spell: use.name, casterId: use.enemy.id, slotLevel: use.slotLevel },
+      { ability: save.ability, dc: save.dc },
+    );
+    const first = handleSetCondition(campaign, turn.id, fresh, { condition }, reason, { spellEffect });
+    const also = (use.spellCondition.also ?? []).filter((name) => name.toLowerCase() !== condition.toLowerCase());
+    const landed = also.filter((name) => !("error" in handleSetCondition(campaign, turn.id, getSheetById(sheet.id) ?? fresh, { condition: name }, reason, { spellEffect })));
+    return landed.length && !("error" in first) ? { ...first, alsoApplied: landed } : first;
   }
   // The block's own words for how long it lasts (monster-abilities.ts): a
   // count, a repeat save, a long rest, or a cure. Only a condition the block
@@ -164,33 +157,37 @@ export function handleCastAtPlayer(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof castAtPlayerSchema>;
   try {
     args = castAtPlayerSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
     return {
       error: "Invalid arguments: cast_at_player needs characterId, saveAbility, and dc.",
+      retry: true,
     };
   }
   const staleSheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = staleSheet ? (getSheetById(staleSheet.id) ?? staleSheet) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is DEAD; nothing can affect them.` };
+    return { error: `${sheet.name} is DEAD; nothing can affect them. The enemy may target someone else or take another action.`, retry: true };
   }
   // Blink, Etherealness, Maze took them off the Material Plane (spell-planes.ts).
   const away = args.casterEnemyId ? outOfReach(sheet) : null;
+  // The enemy is the DM's to play: a target it cannot reach is another action
+  // to pick, not a refusal to narrate.
   if (away) {
-    return { error: `${away} Nothing was spent.` };
+    return { error: `${away.error} Nothing was spent.`, retry: true };
   }
 
   // An enemy caster acts through the enemy guard and its own block: its
   // action (or a legendary action bought for it), the ability's printed save,
   // DC and dice, its recharge, its spell list and slots.
   let use: EnemyUse | null = null;
+  let ward: string | null = null;
   if (args.casterEnemyId) {
     const prepared = prepareEnemyUse(campaign, {
       casterEnemyId: args.casterEnemyId,
@@ -207,13 +204,11 @@ export function handleCastAtPlayer(
     // caster keeps its action for another target.
     const warded = sanctuaryWard(campaign.id, prepared.enemy, sheet, sanctuaryRefusal);
     if (warded) {
-      return { error: warded };
+      return warded;
     }
-    // A Globe of Invulnerability around the target turns the spell (zone-rules.ts).
-    const globed = globeProblemFor(prepared.enemy.encounterId, prepared.enemy.id, sheet.id, sheet.name, args.spell);
-    if (globed) {
-      return { error: globed };
-    }
+    // A Globe of Invulnerability or an Antimagic Field around the target: the
+    // spell is cast, its use spent, and does nothing to them (zone-rules.ts).
+    ward = spellWardOn({ encounterId: prepared.enemy.encounterId, casterId: prepared.enemy.id, targetId: sheet.id, targetName: sheet.name, facts: args.spell ? spellFactsFor(args.spell, spellAuthorsFor(campaign)) : null });
     use = prepared;
   }
   const byBlock = Boolean(use?.fromBlock);
@@ -230,12 +225,16 @@ export function handleCastAtPlayer(
       error: use?.fromBlock
         ? `${use.name} forces no save with damage or a condition on ${use.enemy.displayName}'s block; narrate what it does, or use its attacks.`
         : "cast_at_player needs damage and/or condition; otherwise nothing happens.",
+      retry: true,
     };
   }
   if (damage && !isValidExpression(damage)) {
-    return { error: `Invalid damage expression "${damage}".` };
+    return { error: `Invalid damage expression "${damage}".`, retry: true };
   }
   use?.commit();
+  if (ward) {
+    return { ok: true, target: sheet.name, source: use ? `${use.enemy.displayName}'s ${use.name}` : args.spell, ...castToNoEffect(ward) };
+  }
 
   const source = (args.source ?? (use ? `${use.enemy.displayName}'s ${use.name}` : "the effect")).trim() || "the effect";
   // The save a requested roll would be (src/lib/dm/forced-save.ts):
@@ -390,7 +389,7 @@ export function handleCastAtPlayer(
       sheetsById,
     );
     if (!("error" in applied)) {
-      base.conditionApplied = condition;
+      base.conditionApplied = [condition, ...(Array.isArray(applied.alsoApplied) ? applied.alsoApplied : [])].join(", ");
       base.duration = rounds
         ? `${rounds} round${rounds === 1 ? "" : "s"}${saveEnds ? `, or until a successful ${ability.toUpperCase()} save (DC ${dc}) at the end of one of their turns` : ""}`
         : `until they succeed on a ${ability.toUpperCase()} save (DC ${dc}) at the end of one of their turns`;

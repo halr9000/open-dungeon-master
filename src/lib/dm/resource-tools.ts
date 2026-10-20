@@ -9,20 +9,27 @@ import { computeSheetDerived } from "@/lib/srd";
 import {
   findBeastForm,
   formatCr,
+  formList,
   hitPointCeilingForCr,
   UNLISTED_FORM_MAX_AC,
   wildShapeCapsFor,
+  wildShapeForms,
   wildShapeHours,
 } from "@/lib/srd/beast-forms";
-import { isUnlimited, matchResource, RAGING, resourceLevel } from "@/lib/srd/class-resources";
+import { isUnlimited, matchResource, RAGING, resourceLevel, type ResourceDef } from "@/lib/srd/class-resources";
 import { effectiveMaxHp, incapacitatedBy, wearsHeavyArmor } from "@/lib/dm/condition-logic";
 import { classLevelFor, classListFor } from "@/lib/srd/multiclass";
 import { conditionEffectsFor } from "@/lib/srd/condition-effects";
-import { consumableEffect, findCarriedItem } from "@/lib/dm/item-logic";
+import { consumableEffect, findCarriedItem, notCarried } from "@/lib/dm/item-logic";
 import { kiTechnique, spendKiTechnique, spendQuickenedSpell } from "@/lib/dm/bonus-actions";
 import { removeItemMath } from "@/lib/dm/mutation-math";
+import { textKey } from "@/lib/language/text-logic";
+import { optionsOfKind } from "@/lib/srd/options";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
 import { holdsMote } from "@/lib/srd/authored-effects-more";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { isTableGearName } from "@/lib/db/homebrew";
+import { spentSlotRefusal } from "@/lib/dm/cast-rules";
 
 export { computePurchase } from "@/lib/dm/purchase-math";
 
@@ -33,11 +40,9 @@ export { computePurchase } from "@/lib/dm/purchase-math";
 // the patch + result so mutations.ts only grows dispatch lines. Must not
 // import mutations.ts (the import points the other way).
 
-export { RESOURCE_TOOL_NAMES, resourceTools } from "@/lib/dm/resource-tool-defs";
-
 export type Outcome = {
   patch: FullPatchSheetInput;
-  result: Record<string, unknown>;
+  result: ToolResult;
   // Extra target-sheet patch for use_item fed to someone else.
   healTarget?: { characterId: string; amount: number };
   // Extra target-sheet patch for a feature that lands on someone else
@@ -80,16 +85,17 @@ export function computeUseItem(
   sheet: CharacterSheet,
   target: CharacterSheet,
   itemName: string,
-): Outcome | { error: string } {
+): Outcome | ToolError {
   const carried = findCarriedItem(sheet.equipment, itemName);
   if (!carried) {
-    return { error: `${sheet.name} does not carry "${itemName}".` };
+    const refusal = notCarried(sheet.name, sheet.equipment.map((item) => item.name), itemName, isTableGearName(campaign.id, itemName));
+    return { ...refusal, error: `${refusal.error} One taken in this same action is given with grant_item first, then used.` };
   }
   const removal = removeItemMath(sheet.equipment, carried.name, 1);
   if (!removal) {
-    return { error: `${sheet.name} does not carry "${itemName}".` };
+    return notCarried(sheet.name, sheet.equipment.map((item) => item.name), itemName, isTableGearName(campaign.id, itemName));
   }
-  const effect = consumableEffect(carried.name);
+  const effect = consumableEffect(carried);
   const base: Outcome = {
     patch: { equipment: removal.equipment },
     result: {
@@ -100,7 +106,7 @@ export function computeUseItem(
   };
   if (effect.kind === "healing") {
     if (target.deathSaves?.dead) {
-      return { error: `${target.name} is DEAD; a potion cannot help.` };
+      return { error: `${target.name} is DEAD; a potion cannot help.`, refused: "rules" };
     }
     const total = rollHealing(campaign, target, carried.name, effect.expression);
     base.healTarget = { characterId: target.id, amount: Math.max(1, total) };
@@ -125,47 +131,43 @@ const INSPIRATION_ROUNDS = 100;
 // created. The reverse direction refunds points equal to the slot's level.
 const FONT_SLOT_COST: Record<number, number> = { 1: 2, 2: 3, 3: 5, 4: 6, 5: 7 };
 
-// What a use_resource variant on Sorcery Points asks for, or null for a
-// plain Metamagic spend. Direction is read from word order: whichever of
-// "slot"/"point" comes later is the product ("points into a slot" creates
-// a slot; "slot into points" refunds points).
-export function parseFontOfMagic(
-  variant?: string,
-): { direction: "create_slot" | "recover_points"; level: number } | null {
-  const text = (variant ?? "").toLowerCase();
-  if (!text.includes("slot")) {
-    return null;
-  }
-  const levelMatch = /([1-9])(?:st|nd|rd|th)?[\s-]*level|level[\s-]*([1-9])/.exec(text);
-  const level = Number(levelMatch?.[1] ?? levelMatch?.[2] ?? 1);
-  const direction =
-    text.includes("point") && text.lastIndexOf("point") > text.lastIndexOf("slot")
-      ? ("recover_points" as const)
-      : ("create_slot" as const);
-  return { direction, level };
+type FontDirection = "create_slot" | "recover_points";
+
+// The two conversions by the variant the Sorcery Points guidance names (a
+// fixed choice, src/lib/srd/class-resources.ts); the slot level is the call's
+// amount, as Primeval Awareness takes it. Any other variant is a plain
+// Metamagic spend (null).
+const FONT_OF_MAGIC = new Map<string, FontDirection>([
+  ["create slot", "create_slot"],
+  ["convert slot", "recover_points"],
+]);
+
+export function fontOfMagicDirection(variant: string | undefined): FontDirection | null {
+  return FONT_OF_MAGIC.get(textKey(variant ?? "")) ?? null;
 }
 
 function computeFontOfMagic(
   sheet: CharacterSheet,
   displayName: string,
   state: { max: number; used: number },
-  conversion: { direction: "create_slot" | "recover_points"; level: number },
-): Outcome | { error: string } {
+  conversion: { direction: FontDirection; level: number },
+): Outcome | ToolError {
   const { direction, level } = conversion;
   if (!sheet.spellcasting) {
-    return { error: `${sheet.name} has no spellcasting to convert ${displayName} into.` };
+    return { error: `${sheet.name} has no spellcasting to convert ${displayName} into.`, refused: "rules" };
   }
   const slots = { ...sheet.spellcasting.slots };
   const key = String(level);
   if (direction === "create_slot") {
     const cost = FONT_SLOT_COST[level];
     if (!cost) {
-      return { error: `Font of Magic cannot create a slot above 5th level.` };
+      return { error: `Font of Magic cannot create a slot above 5th level.`, refused: "rules" };
     }
     const left = state.max - state.used;
     if (left < cost) {
       return {
         error: `Creating a level-${level} slot costs ${cost} sorcery points; ${sheet.name} has ${left}/${state.max} left.`,
+        refused: "rules",
       };
     }
     const slot = slots[key];
@@ -197,14 +199,13 @@ function computeFontOfMagic(
   // recover_points: break an unspent slot of this level into points.
   const slot = slots[key];
   if (!slot || slot.used >= slot.max) {
-    return {
-      error: `${sheet.name} has no unspent level-${level} slot to convert into ${displayName}.`,
-    };
+    return spentSlotRefusal(sheet.name, sheet.spellcasting, { level, lowest: 1, what: `converting into ${displayName}`, withPact: false });
   }
   const refund = Math.min(level, state.used);
   if (refund <= 0) {
     return {
       error: `${sheet.name} is already at full ${displayName} (${state.max - state.used}/${state.max}); breaking a slot would waste it.`,
+      refused: "rules",
     };
   }
   slots[key] = { max: slot.max, used: slot.used + 1 };
@@ -223,6 +224,34 @@ function computeFontOfMagic(
       regained: `${refund} sorcery point${refund === 1 ? "" : "s"}`,
       left: `${state.max - state.used + refund}/${state.max}`,
     },
+  };
+}
+
+type PoolState = CharacterSheet["resources"][string];
+
+// What pays for a use: the pool itself or, with no use left, a pool that
+// pays for one instead (Breath of the Dragon's 2 ki); the refusal when
+// neither can. Asked before an option is asked for too (mutations.ts).
+export function payForUse(
+  sheet: CharacterSheet,
+  def: ResourceDef,
+  state: PoolState,
+  amount: number,
+): { fallback: { id: string; amount: number; state: PoolState } | null } | ToolError {
+  const left = state.max - state.used;
+  if (left >= amount) {
+    return { fallback: null };
+  }
+  const fallback = def.fallbackPool ?? null;
+  const fallbackState = fallback ? sheet.resources[fallback.id] : undefined;
+  if (fallback && fallbackState && fallbackState.max - fallbackState.used >= fallback.amount) {
+    return { fallback: { ...fallback, state: fallbackState } };
+  }
+  return {
+    error: `${sheet.name} has ${left}/${state.max} ${def.displayName} left; they cannot spend ${amount}.${
+      fallback ? ` With none left it costs ${fallback.amount} ${fallback.id.replace(/_/g, " ")}, and they have ${fallbackState ? fallbackState.max - fallbackState.used : 0}.` : ""
+    } The feature is not available; narrate accordingly.`,
+    refused: "rules",
   };
 }
 
@@ -245,35 +274,39 @@ export function computeUseResource(
   // that dropped them (a reaction that answers it, or one taken on dropping
   // to 0): the use goes ahead at 0 hit points (issue 233).
   reacting?: { beforeDrop?: boolean },
-): Outcome | { error: string } {
+): Outcome | ToolError {
   const def = matchResource(resourceName);
   const state = def ? sheet.resources[def.id] : undefined;
   if (!def || !state) {
     const available = Object.keys(sheet.resources);
-    return {
-      error: `${sheet.name} has no tracked resource "${resourceName}".${
-        available.length ? ` Their resources: ${available.join(", ")}.` : " They have no limited-use resources."
-      }`,
-    };
+    const theirs = available.length ? ` Their resources: ${available.join(", ")}.` : " They have no limited-use resources.";
+    // A resource the rules know that the sheet lacks is the game saying no;
+    // a name nobody knows is the call's to fix, from the list.
+    return def
+      ? { error: `${sheet.name} has no tracked resource "${resourceName}".${theirs}`, refused: "rules" }
+      : { error: `No resource called "${resourceName}" is known.${theirs} Send the one meant, by the name on the sheet.`, retry: true };
   }
   if (def.passive) {
     return {
       error: `${def.displayName} is not spent by choice: ${def.guidance} Do not call use_resource for it.`,
+      retry: true,
     };
   }
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead and cannot use ${def.displayName}.` };
+    return { error: `${sheet.name} is dead and cannot use ${def.displayName}.`, refused: "rules" };
   }
   const standing = Boolean(reacting?.beforeDrop) && def.action === "reaction";
   if (sheet.currentHp <= 0 && !standing) {
     return {
       error: `${sheet.name} is at 0 HP and cannot use ${def.displayName}; they are unconscious and take no actions.`,
+      refused: "rules",
     };
   }
   const stoppedBy = standing ? null : incapacitatedBy(sheet.conditions);
   if (stoppedBy) {
     return {
       error: `${sheet.name} is ${stoppedBy} and cannot use ${def.displayName} until the condition ends.`,
+      refused: "rules",
     };
   }
 
@@ -287,17 +320,25 @@ export function computeUseResource(
     }
   }
 
-  // Font of Magic: sorcery points convert into a spell slot and back. The
-  // variant carries the direction and slot level ("create a 2nd-level slot",
-  // "convert my 3rd-level slot into points"); a plain spend (Metamagic)
-  // passes no variant and falls through to the generic path below.
+  // Font of Magic: sorcery points convert into a spell slot and back, the
+  // direction in the variant and the slot level in amount; a plain spend
+  // (Metamagic) falls through to the generic path below.
   if (def.id === "sorcery_points") {
-    if (/quicken/i.test(variant ?? "")) {
+    // The variant as its rules text lists it (class-resources.ts).
+    if (textKey(variant ?? "") === "quickened spell") {
       return spendQuickenedSpell(campaign, sheet, state);
     }
-    const conversion = parseFontOfMagic(variant);
-    if (conversion) {
-      return computeFontOfMagic(sheet, def.displayName, state, conversion);
+    const direction = fontOfMagicDirection(variant);
+    if (direction) {
+      return computeFontOfMagic(sheet, def.displayName, state, { direction, level: amount });
+    }
+    // Any other variant is a value off the list, never a spend: a plain
+    // Metamagic spend names no variant, or the option it pays for.
+    if (variant?.trim() && !optionsOfKind("metamagic").some((option) => textKey(option.n) === textKey(variant))) {
+      return {
+        error: `${def.displayName} takes variant 'create slot' or 'convert slot' (Font of Magic, the slot's level in amount), 'Quickened Spell', or a Metamagic option by its name; "${variant}" is none of them. For a Metamagic spend give the points in amount. Nothing was spent.`,
+        retry: true,
+      };
     }
   }
 
@@ -319,25 +360,19 @@ export function computeUseResource(
   if (def.requires === "below_half" && sheet.currentHp >= effectiveMaxHp(sheet) / 2) {
     return {
       error: `${def.displayName} is used when ${sheet.name} has fewer than half of their hit points left, and they have ${sheet.currentHp}/${effectiveMaxHp(sheet)}. Nothing was spent.`,
+      refused: "rules",
     };
   }
   const left = state.max - state.used;
-  // With no use left, a pool that pays for one instead (Breath of the
-  // Dragon's 2 ki).
-  const fallback = def.fallbackPool && left < amount ? def.fallbackPool : null;
-  const fallbackState = fallback ? sheet.resources[fallback.id] : undefined;
-  const paysFallback = Boolean(fallback && fallbackState && fallbackState.max - fallbackState.used >= fallback.amount);
-  if (left < amount && !paysFallback) {
-    return {
-      error: `${sheet.name} has ${left}/${state.max} ${def.displayName} left; they cannot spend ${amount}.${
-        fallback ? ` With none left it costs ${fallback.amount} ${fallback.id.replace(/_/g, " ")}, and they have ${fallbackState ? fallbackState.max - fallbackState.used : 0}.` : ""
-      } The feature is not available; narrate accordingly.`,
-    };
+  const payment = payForUse(sheet, def, state, amount);
+  if ("error" in payment) {
+    return payment;
   }
+  const paid = payment.fallback;
   // A feature with no limit is used, not counted down.
   const unlimited = isUnlimited(state);
-  const spent = paysFallback
-    ? { ...sheet.resources, [fallback!.id]: { max: fallbackState!.max, used: fallbackState!.used + fallback!.amount } }
+  const spent = paid
+    ? { ...sheet.resources, [paid.id]: { max: paid.state.max, used: paid.state.used + paid.amount } }
     : unlimited
       ? sheet.resources
       : { ...sheet.resources, [def.id]: { max: state.max, used: state.used + amount } };
@@ -346,8 +381,8 @@ export function computeUseResource(
     result: {
       ok: true,
       resource: def.displayName,
-      spent: paysFallback ? `${fallback!.amount} ${fallback!.id.replace(/_/g, " ")} (no use was left)` : amount,
-      left: unlimited ? "unlimited" : paysFallback ? `0/${state.max}` : `${left - amount}/${state.max}`,
+      spent: paid ? `${paid.amount} ${paid.id.replace(/_/g, " ")} (no use was left)` : amount,
+      left: unlimited ? "unlimited" : paid ? `0/${state.max}` : `${left - amount}/${state.max}`,
       refills: def.recharge === "short" ? "on any rest" : "on a long rest",
       effect: def.guidance,
     },
@@ -368,7 +403,7 @@ export function computeUseResource(
     }
     case "heal_pool": {
       if (target.deathSaves?.dead) {
-        return { error: `${target.name} is DEAD; ${def.displayName} cannot help.` };
+        return { error: `${target.name} is DEAD; ${def.displayName} cannot help.`, refused: "rules" };
       }
       outcome.healTarget = { characterId: target.id, amount };
       outcome.result.healed = `${amount} HP to ${target.name}`;
@@ -377,7 +412,7 @@ export function computeUseResource(
     case "heal_dice_pool": {
       // Each spent use is one die of healing to the target.
       if (target.deathSaves?.dead) {
-        return { error: `${target.name} is DEAD; ${def.displayName} cannot help.` };
+        return { error: `${target.name} is DEAD; ${def.displayName} cannot help.`, refused: "rules" };
       }
       const total = rollHealing(campaign, target, def.displayName, `${amount}${def.effect.die}`);
       outcome.healTarget = { characterId: target.id, amount: Math.max(1, total) };
@@ -387,7 +422,7 @@ export function computeUseResource(
     }
     case "heal_target": {
       if (target.deathSaves?.dead) {
-        return { error: `${target.name} is DEAD; ${def.displayName} cannot help.` };
+        return { error: `${target.name} is DEAD; ${def.displayName} cannot help.`, refused: "rules" };
       }
       const expression = def.effect.dice(fxLevel, derived.abilityMods);
       const total = rollHealing(campaign, target, def.displayName, expression);
@@ -426,7 +461,7 @@ export function computeUseResource(
           : effect.condition;
       const recipient = effect.target === "ally" ? target : sheet;
       if (recipient.conditions.some((entry) => entry.toLowerCase() === condition)) {
-        return { error: `${recipient.name} is already ${condition}; the feature is already running.` };
+        return { error: `${recipient.name} is already ${condition}; the feature is already running.`, refused: "rules" };
       }
       const conditionPatch = {
         conditions: [...recipient.conditions, condition],
@@ -501,7 +536,7 @@ export function computeUseResource(
     case "condition": {
       const condition = def.effect.condition;
       if (sheet.conditions.some((entry) => entry.toLowerCase() === condition)) {
-        return { error: `${sheet.name} is already ${condition}; the feature is already running.` };
+        return { error: `${sheet.name} is already ${condition}; the feature is already running.`, refused: "rules" };
       }
       // A rage ends any spell the barbarian was concentrating on (SRD 5.1,
       // Rage). Nothing is refused past this point, so it is ended here, and
@@ -529,12 +564,13 @@ export function computeUseResource(
       if (target.id === sheet.id) {
         return {
           error: `${def.displayName} goes to another creature, never to the bard themselves. Pass targetCharacterId.`,
+          retry: true,
         };
       }
       const die = def.effect.die(fxLevel);
       const condition = inspirationCondition(die);
       if (target.conditions.some((entry) => entry.toLowerCase() === condition)) {
-        return { error: `${target.name} already holds an unspent inspiration die.` };
+        return { error: `${target.name} already holds an unspent inspiration die.`, refused: "rules" };
       }
       outcome.patchTarget = {
         characterId: target.id,
@@ -567,34 +603,40 @@ export function computeUseResource(
     }
     case "wild_shape": {
       const name = (form?.name ?? "").trim();
-      if (!name) {
-        return {
-          error: `${def.displayName} needs the beast being assumed: pass form (e.g. 'wolf', 'brown bear').`,
-        };
-      }
-      // A known form loads its real stat block and is validated against the
-      // druid-level ceilings; Circle of the Moon raises the CR cap.
-      const known = findBeastForm(name);
       // Multiclass: the caps read the DRUID levels and the druid entry's
       // circle, not the character's summed level or primary subclass.
       const druidEntry = classListFor(sheet).find((entry) => entry.id.toLowerCase() === "druid");
       const druidLevel = classLevelFor(sheet, "druid") || sheet.level;
       const moonDruid = /moon/i.test(druidEntry?.subclass ?? sheet.subclass ?? "");
       const caps = wildShapeCapsFor(druidLevel, moonDruid);
+      // The forms they can take now, for every question and refusal below.
+      const offer = formList(wildShapeForms(caps));
+      if (!name) {
+        return {
+          error: `${def.displayName} needs the beast being assumed in form; at druid level ${druidLevel} ${sheet.name} can take: ${offer}. Ask the player which, unless they named one.`,
+          retry: true,
+        };
+      }
+      // A known form loads its real stat block and is validated against the
+      // druid-level ceilings; Circle of the Moon raises the CR cap.
+      const known = findBeastForm(name);
       if (known) {
         if (known.cr > caps.maxCr) {
           return {
-            error: `${known.name} is CR ${formatCr(known.cr)}; at level ${druidLevel}${moonDruid ? " (Circle of the Moon)" : ""} ${sheet.name} can Wild Shape into beasts of CR ${formatCr(caps.maxCr)} or lower. Offer a form within the limit.`,
+            error: `${known.name} is CR ${formatCr(known.cr)}; at level ${druidLevel}${moonDruid ? " (Circle of the Moon)" : ""} ${sheet.name} can Wild Shape into beasts of CR ${formatCr(caps.maxCr)} or lower: ${offer}. Offer a form within the limit.`,
+            retry: true,
           };
         }
         if (known.fly && !caps.fly) {
           return {
-            error: `${known.name} has a flying speed; Wild Shape allows flying forms only from druid level 8. Offer a ground form instead.`,
+            error: `${known.name} has a flying speed; Wild Shape allows flying forms only from druid level 8. Offer a ground form instead: ${offer}.`,
+            retry: true,
           };
         }
         if (known.swim && !caps.swim) {
           return {
-            error: `${known.name} has a swimming speed; Wild Shape allows swimming forms only from druid level 4. Offer a land form instead.`,
+            error: `${known.name} has a swimming speed; Wild Shape allows swimming forms only from druid level 4. Offer a land form instead: ${offer}.`,
+            retry: true,
           };
         }
         outcome.patch.wildShape = {
@@ -632,28 +674,33 @@ export function computeUseResource(
       const limits = `CR ${formatCr(caps.maxCr)} or lower${caps.fly ? "" : ", no flying forms"}${caps.swim ? "" : ", no swimming forms"}`;
       if (!form?.hp || !form?.ac || form.cr === undefined) {
         return {
-          error: `"${name}" is not in the beast-form table; pass formHp, formAc and formCr from its stat block (and formFlies or formSwims if it does). At druid level ${druidLevel} the form must be ${limits}.`,
+          error: `"${name}" is not in the beast-form table; pass formHp, formAc and formCr from its stat block (and formFlies or formSwims if it does). At druid level ${druidLevel} the form must be ${limits}; the table's forms within it: ${offer}.`,
+          retry: true,
         };
       }
       if (form.cr > caps.maxCr) {
         return {
           error: `${name} is CR ${formatCr(form.cr)}; at level ${druidLevel}${moonDruid ? " (Circle of the Moon)" : ""} ${sheet.name} can Wild Shape into beasts of ${limits}. Offer a form within the limit.`,
+          retry: true,
         };
       }
       if (form.flies && !caps.fly) {
         return {
           error: `${name} has a flying speed; Wild Shape allows flying forms only from druid level 8. Offer a ground form instead.`,
+          retry: true,
         };
       }
       if (form.swims && !caps.swim) {
         return {
           error: `${name} has a swimming speed; Wild Shape allows swimming forms only from druid level 4. Offer a land form instead.`,
+          retry: true,
         };
       }
       const hpCeiling = hitPointCeilingForCr(form.cr);
       if (form.hp > hpCeiling || form.ac > UNLISTED_FORM_MAX_AC) {
         return {
           error: `A CR ${formatCr(form.cr)} beast has at most ${hpCeiling} hit points and AC ${UNLISTED_FORM_MAX_AC}; ${form.hp} HP and AC ${form.ac} are not ${name}'s numbers at that challenge rating. Send its real stat block, or a form from the table.`,
+          retry: true,
         };
       }
       const beastHp = Math.max(1, form.hp);
@@ -676,6 +723,7 @@ export function computeUseResource(
       // slots; spending it by hand here would burn the use for nothing.
       return {
         error: `${def.displayName} happens as part of a short rest, not on its own. Call take_rest with kind=short and the server applies it.`,
+        retry: true,
       };
     }
     case "narrative":

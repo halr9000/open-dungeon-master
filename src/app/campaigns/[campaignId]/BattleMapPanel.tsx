@@ -74,6 +74,10 @@ import type { StageToken } from "@/app/campaigns/[campaignId]/BoardStage";
 import type { TokenIntent } from "@/lib/battlemap/intent";
 import { familyIconPath } from "@/lib/icons";
 import { TabletopOrder } from "@/app/campaigns/[campaignId]/CinematicParts";
+import { AddonBoardView } from "@/app/campaigns/[campaignId]/AddonBoardView";
+import { AddonViewSwitch, boardViewKey, useBoardViewChoice, useBoardViewOptions } from "@/app/campaigns/[campaignId]/AddonViewSwitch";
+import { useAddons } from "@/lib/addons/use-addons";
+import type { Anchor, BoardLook } from "@/lib/addons/board-bridge";
 
 // The tactical battle map tab.
 //
@@ -211,6 +215,24 @@ export function BattleMapPanel({
     [sheetsById, faces],
   );
   const faceOfToken = useCallback((token: StageToken) => faceOfRef(token.refId), [faceOfRef]);
+  // An addon's way of drawing the board (AddonBoardView.tsx), when this
+  // device chose one: offered for every board, or only on the maps that
+  // addon's generator made when it needs their data.
+  const { boardViews } = useAddons();
+  const offeredViews = boardViews.filter((entry) => !entry.needsViewData || view.addonView?.addonId === entry.addonId);
+  const [viewChoice, setViewChoice] = useBoardViewChoice();
+  const addonView = offeredViews.find((entry) => boardViewKey(entry) === viewChoice) ?? null;
+  const [viewOptions, setViewOption] = useBoardViewOptions();
+  // Who each token is, for a view that draws creatures by kind; and where
+  // the view drew each figure, so the plate and the action ring sit on it.
+  const looks = useMemo(() => {
+    const byRef = new Map<string, BoardLook>();
+    for (const sheet of sheets) byRef.set(sheet.id, { character: { race: sheet.race, class: sheet.class } });
+    for (const enemy of encounter?.enemies ?? []) byRef.set(enemy.id, { creature: { type: enemy.type, slug: enemy.slug ?? "", cr: enemy.cr } });
+    return byRef;
+  }, [sheets, encounter?.enemies]);
+  const [anchors, setAnchors] = useState<Record<string, Anchor>>({});
+  const anchorOf = (tokenId: string) => (addonView ? anchors[tokenId] : undefined);
   // A slot the DM added to the order has no token to borrow a face from.
   const faceOfEntry = useCallback(
     (entry: { id: string; kind: string; name: string }) => [
@@ -865,7 +887,6 @@ export function BattleMapPanel({
     // The same engine questions the Hand asks (src/lib/battlemap/hand-hud.ts),
     // so a sigil the engine would refuse says so instead of composing.
     return playerActions(
-      hudToken,
       (text) => {
         onCompose?.(text);
         setHudTokenId(null);
@@ -970,6 +991,38 @@ export function BattleMapPanel({
           onLabelClick={onOpenLabel}
         />
         <JumpArc leap={leap} width={view.width} height={view.height} />
+        {/* The addon's view lies over the grid, which still sizes the
+            frame; the plates, the ghost and the HUD stay above it, and its
+            taps arrive in handleTile and handleToken like the grid's own.
+            Drawing on the board goes back to the grid while it lasts. */}
+        {addonView && !drawActive ? (
+          <div className="absolute inset-0 z-[15] rounded-lg bg-[#0d0b1c]">
+            <AddonBoardView
+              genre={genre}
+              view={view}
+              boardView={addonView}
+              canDirect={canDirect}
+              onTile={(x, y) => {
+                if (canDirect || canMove || pointing || areaAim.active) handleTile(x, y);
+              }}
+              onToken={handleToken}
+              onHover={(x, y) => {
+                if (canMove || held || areaAim.active) setHover(x === null || y === null ? null : { x, y });
+              }}
+              faceFor={(tokenId) => {
+                const token = tokensById.get(tokenId);
+                return token ? faceOfToken(token) : [];
+              }}
+              looks={looks}
+              intents={intents}
+              fx={fx}
+              ping={ping}
+              camera={camera}
+              onAnchors={setAnchors}
+              viewOptions={viewOptions[boardViewKey(addonView)]}
+            />
+          </div>
+        ) : null}
         {tokenGhost ? (
           <div
             className="pointer-events-none absolute z-20 overflow-hidden rounded-full border-2 border-amber-300 bg-stone-950/70 shadow-glow-gold"
@@ -1006,6 +1059,7 @@ export function BattleMapPanel({
             boardWidth={view.width}
             boardHeight={view.height}
             footprint={view.tokenFootprint[hudToken.id] ?? 1}
+            anchor={anchorOf(hudToken.id)}
             actions={targeting ? [] : hudActions}
             hint={
               targeting
@@ -1026,7 +1080,7 @@ export function BattleMapPanel({
         ) : null}
         {/* What the enemies mean to do. Only while the board is quiet: an aim
             or an effect in flight already owns the same space. */}
-        {!scene && !targeting && !hudToken && fx.length === 0 ? (
+        {!scene && !targeting && !hudToken && fx.length === 0 && !addonView ? (
           <IntentLayer
             intents={intents}
             tokens={view.tokens}
@@ -1043,6 +1097,7 @@ export function BattleMapPanel({
             boardWidth={view.width}
             boardHeight={view.height}
             footprint={view.tokenFootprint[plateToken.id] ?? 1}
+            anchor={anchorOf(plateToken.id)}
             face={faceOfToken(plateToken)}
             health={view.tokenHealth[plateToken.id]}
             conditions={view.tokenConditions[plateToken.id]}
@@ -1158,6 +1213,13 @@ export function BattleMapPanel({
   // enlarged it lost the move picker and every hint (issue #189).
   const underBoard = (
     <>
+      <AddonViewSwitch
+        views={offeredViews}
+        value={addonView ? boardViewKey(addonView) : ""}
+        onChange={setViewChoice}
+        stored={viewOptions}
+        onOption={setViewOption}
+      />
       <BoardMoveHints
         moveMode={moveMode}
         moves={!canDirect && canMove && !areaAim.active ? view.moves : undefined}

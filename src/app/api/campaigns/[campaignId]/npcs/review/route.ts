@@ -17,6 +17,7 @@ import {
   planMerge,
   planRename,
 } from "@/lib/dm/entity-review-logic";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -115,7 +116,9 @@ export async function POST(
         { status: 409 },
       );
     }
-    return Response.json({ npc: renameNpc(npc.id, plan.name, plan.aliases) });
+    const renamed = renameNpc(npc.id, plan.name, plan.aliases);
+    recordsChanged(campaignId, "npc", "world");
+    return Response.json({ npc: renamed });
   }
 
   const keep = getNpcById(body.keepId);
@@ -131,5 +134,6 @@ export async function POST(
   if (!merged) {
     return Response.json({ error: "Those two could not be merged." }, { status: 409 });
   }
+  recordsChanged(campaignId, "npc", "world");
   return Response.json({ npc: merged });
 }

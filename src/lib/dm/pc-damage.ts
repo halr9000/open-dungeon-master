@@ -43,6 +43,7 @@ import { summonImmunities, summonResistances, summonVulnerabilities } from "@/li
 import { summonAfterDamage } from "@/lib/dm/summon-store";
 import { absorbByWard } from "@/lib/dm/arcane-ward";
 import { afflictionStress } from "@/lib/dm/afflictions";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 export type PcDamageInput = {
   // What was rolled or sent, before resistance.
@@ -61,8 +62,23 @@ export type PcDamageInput = {
   disintegrate?: boolean;
   // The caster's share of a Warding Bond (never shared again).
   bond?: boolean;
+  // A blow of several types (a bite's piercing and its poison), raw: each
+  // meets the creature's defenses on its own, after the ward (enemy-hit.ts
+  // blowByType). `amount` is their total.
+  parts?: Array<{ amount: number; type: string }>;
   reason?: string;
 };
+
+// What of a blow's typed parts comes through after the ward took `absorbed`
+// of it, taken off the parts in order.
+function partsPast(parts: Array<{ amount: number; type: string }>, absorbed: number) {
+  let left = absorbed;
+  return parts.map((part) => {
+    const taken = Math.min(part.amount, left);
+    left -= taken;
+    return { ...part, amount: part.amount - taken };
+  }).filter((part) => part.amount > 0);
+}
 
 function audit(
   campaign: Campaign,
@@ -99,14 +115,14 @@ export function applyPcDamage(
   turnId: string,
   sheet: CharacterSheet,
   input: PcDamageInput,
-): Record<string, unknown> {
+): ToolResult {
   const amount = Math.floor(input.amount);
   const reason = (input.reason ?? "").slice(0, 200);
   if (!(amount >= 1)) {
-    return { error: "apply_damage needs a positive amount." };
+    return { error: "apply_damage needs a positive amount.", retry: true };
   }
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is already dead.` };
+    return { error: `${sheet.name} is already dead.`, retry: true };
   }
   // An abjurer's Arcane Ward takes the blow first, as it lands: the ward has
   // none of the wizard's own resistances, immunities or vulnerabilities
@@ -120,12 +136,21 @@ export function applyPcDamage(
   // A summoned creature keeps its stat block's (summon-rules.ts).
   const resisted = [pcResistances(sheet, { magical: input.magical === true, spell: input.spell === true }), ...authoredAuraResistances(campaign.id, sheet, { spell: input.spell === true }), summonResistances(sheet), immersedResistance(campaign.id, sheet.id)].filter(Boolean).join(", ");
   // Inside Silence, thunder does nothing (zone-rules.ts).
-  const adjusted =
-    overflow > 0
-      ? damageAdjust(overflow, input.type, resisted, `${summonImmunities(sheet)}${pcImmunities(sheet)}${silencedImmunity(campaign.id, sheet.id)}`, summonVulnerabilities(sheet), {
+  const immune = `${summonImmunities(sheet)}${pcImmunities(sheet)}${silencedImmunity(campaign.id, sheet.id)}`;
+  const vulnerable = summonVulnerabilities(sheet);
+  // A blow of several types: each part meets resistance, immunity and
+  // vulnerability on its own, then the hit lands once.
+  const met = input.parts?.length
+    ? partsPast(input.parts, arcaneWard?.absorbed ?? 0).map((part) => ({ ...part, ...damageAdjust(part.amount, part.type, resisted, immune, vulnerable, { magical: input.magical === true }) }))
+    : null;
+  const adjusted = met
+    ? { amount: met.reduce((sum, part) => sum + part.amount, 0), note: met.map((part) => part.note).filter(Boolean).join("; ") || null }
+    : overflow > 0
+      ? damageAdjust(overflow, input.type, resisted, immune, vulnerable, {
           magical: input.magical === true,
         })
       : { amount: 0, note: null };
+  const byType = met ? { damageByType: met.map((part) => `${part.amount} ${part.type}${part.note ? ` (${part.note})` : ""}`) } : {};
   if (adjusted.amount <= 0) {
     return {
       ok: true,
@@ -133,11 +158,12 @@ export function applyPcDamage(
       damageApplied: 0,
       ...(adjusted.note ? { resistance: `${sheet.name} is ${adjusted.note}` } : {}),
       ...(arcaneWard ? { arcaneWard: arcaneWard.note } : {}),
+      ...byType,
       note: `${sheet.name} takes no damage from it.`,
     };
   }
   // Fire burns away the web around them (zone-cast.ts).
-  if (/\bfire\b/i.test(input.type ?? "")) {
+  if (/\bfire\b/i.test([input.type ?? "", ...(input.parts ?? []).map((part) => part.type)].join(" "))) {
     burnWebUnder(campaign, sheet.id);
   }
   // Wild Shape: the beast's hit points take the blow first. While the form
@@ -314,6 +340,7 @@ export function applyPcDamage(
     ...rageInfo,
     ...proneInfo,
     ...(adjusted.note ? { resistance: `${sheet.name} is ${adjusted.note}` } : {}),
+    ...byType,
     ...(math.absorbed ? { tempHpAbsorbed: math.absorbed } : {}),
     ...(math.dropped && !("note" in deathInfo)
       ? { dropped: true, note: `${sheet.name} falls to 0 HP.` }

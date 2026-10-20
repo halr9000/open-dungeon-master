@@ -16,6 +16,12 @@ import assert from "node:assert/strict";
 import { openWorld } from "./lib/enforce-world.mjs";
 import { suite } from "./lib/enforce-harness.mjs";
 import { fakeModel, reply, settleQueue } from "./lib/enforce-narrator.mjs";
+import { standInStoryteller } from "./lib/stand-in-storyteller.mjs";
+
+// An AI-run table through the routes needs a storyteller set up (the routes
+// refuse one otherwise, and seat a person when none is named); this one never
+// answers.
+standInStoryteller();
 
 const { test, finish } = suite("test-begin-first-turn");
 
@@ -115,6 +121,11 @@ await test("Begin is refused until the table is ready, then runs setup, the arc,
   const { kickoff, dm } = transcript(world.campaignId);
   assert.equal(kickoff.length, 1, "one kickoff note");
   assert.match(kickoff[0].content, /The party is assembled/);
+  // The table reads the note; the instruction for the opening is the
+  // model's alone (found playing Quick Start: it showed in the story log).
+  assert.doesNotMatch(kickoff[0].content, /Introduce the opening scene/, "the DM's instruction is in the table's note");
+  const opening = model.requests.find(isTurnRequest);
+  assert.match(JSON.stringify(opening?.messages ?? []), /The party is assembled and the adventure begins\. Introduce the opening scene/, "the opening turn was not asked for the opening scene");
   assert.equal(dm.length, 1, `expected one opening narration, found ${dm.length}`);
   assert.match(dm[0].content, OPENING, "the opening turn narrated nothing of its own");
   assert.ok(dm[0].seq > kickoff[0].seq, "the narration came before the kickoff");

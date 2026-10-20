@@ -58,6 +58,8 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   dm_draft_reset: TABLE,
   dm_draft_seq: TABLE,
   dm_status: TABLE,
+  // What the DM's job is doing and since when (src/lib/dm/queue.ts).
+  dm_job: TABLE,
   dm_intent_queued: TABLE,
   dm_seat_changed: TABLE,
   utility_calls: TABLE,
@@ -114,10 +116,18 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   facts_updated: TABLE,
   quests_updated: TABLE,
   lore_updated: TABLE,
+  // The party's Atlas changed (src/lib/db/party-atlas.ts): sent only when
+  // what players see did, and carrying nothing, so each seat asks for its
+  // own view.
+  party_atlas_updated: TABLE,
   factions_updated: TABLE,
   // The table's WorldForge changed (src/lib/worldforge/model.ts). The ping
   // carries nothing, but the document is the DM's, so only DM seats refetch.
   world_updated: { kind: "dm", right: "secretStory" },
+  // Which kinds of record changed (src/lib/workshop/record-events.ts), for
+  // the workshop's tools to refetch. Only the kinds travel, and only to DM
+  // seats, like world_updated.
+  records_changed: { kind: "dm", right: "secretStory" },
   pins_updated: TABLE,
   npc_updated: TABLE,
   location_updated: TABLE,

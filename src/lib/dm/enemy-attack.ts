@@ -3,6 +3,7 @@
 // encounter-tools.ts, which dispatches to it and whose auto-act fallback
 // calls it for the enemies a turn skipped. Must not import encounter-tools.
 
+import { matchWeapon } from "@/lib/srd/weapons";
 import { readiedHolder } from "@/lib/dm/readied-release";
 import { martialAdvantageDice, surpriseAttackDice } from "@/lib/dm/monster-traits";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
@@ -28,7 +29,6 @@ import { synthesizeStats } from "@/lib/bestiary/synthesize";
 import type { EnemyAttack } from "@/lib/bestiary/statblock";
 import { planAttackFx } from "@/lib/battlemap/fx-plan";
 import { acWithEffects } from "@/lib/dm/ac-effects";
-import { normalizeAdvantage } from "@/lib/dm/arg-coerce";
 import { coverFor } from "@/lib/dm/attack-spatial";
 import { canEnemyAct, markEnemyActed } from "@/lib/dm/can-act";
 import { spellAttackHold } from "@/lib/dm/spell-planes";
@@ -37,30 +37,32 @@ import { critDamageExpression } from "@/lib/dm/encounter-logic";
 import { wornArmorTurnsCrits } from "@/lib/srd/armor";
 import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
 import { approachTarget, spendEnemyAction, standUpIfProne } from "@/lib/dm/enemy-approach";
-import { blowByType, resolveOnHit } from "@/lib/dm/enemy-hit";
+import { blowByType, resolveOnHit, scaledParts } from "@/lib/dm/enemy-hit";
+import { applyPcDamage } from "@/lib/dm/pc-damage";
+import { effectOutcome } from "@/lib/dm/effect-tools";
 import { charmedBy, enemyAttackProfile, plannedSwings, swingMode, type EnemyAttackProfile } from "@/lib/dm/enemy-profile";
 import { publishFx, tokenPosition } from "@/lib/dm/fx";
 import { hasTrait } from "@/lib/dm/monster-abilities";
-import { applyDmMutation } from "@/lib/dm/mutations";
 import { enemySwingOdds, hasFeatureNamed } from "@/lib/dm/enemy-swing-odds";
 import { openLastHit } from "@/lib/dm/last-hit";
 import { authoredAfterHit } from "@/lib/dm/authored-hooks";
 import { releaseGrapplesOutOfReach } from "@/lib/dm/grapple";
 import { sanctuaryWard } from "@/lib/dm/enemy-conditions";
 import { naturesSanctuaryRefusal } from "@/lib/dm/srd-defenses";
-import { conditionRollRiders } from "@/lib/srd/condition-effects";
+import { conditionRollRiders, conditionTurnShape } from "@/lib/srd/condition-effects";
 import { isImmersed, underwaterSwing } from "@/lib/dm/underwater";
 import { swimsFrom } from "@/lib/battlemap/types";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { invalidArguments, toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { ADVANTAGE_SOURCES } from "@/lib/dm/pc-attack-options";
 
 const attackArgsSchema = z.object({
   enemyId: z.string(),
   targetCharacterId: z.string(),
   attack: z.string().optional(),
-  advantage: z.preprocess(
-    normalizeAdvantage,
-    z.enum(["none", "advantage", "disadvantage"]).optional(),
-  ),
+  advantage: z.enum(["none", "advantage", "disadvantage"]).optional(),
+  advantageSource: z.enum(ADVANTAGE_SOURCES).optional(),
   advantageReason: z.string().max(200).optional(),
 });
 
@@ -95,69 +97,76 @@ export function handleEnemyAttack(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: enemy_attack works only in a fight. Call start_encounter first.", retry: true };
   }
-  let args: z.infer<typeof attackArgsSchema>;
+  let raw: unknown;
   try {
-    args = attackArgsSchema.parse(JSON.parse(rawArguments || "{}"));
+    raw = JSON.parse(rawArguments || "{}");
   } catch {
-    return { error: "Invalid arguments: enemy_attack needs enemyId and targetCharacterId." };
+    return { error: "Invalid arguments: enemy_attack needs enemyId and targetCharacterId.", retry: true };
   }
+  const parsed = attackArgsSchema.safeParse(raw);
+  if (!parsed.success) {
+    return invalidArguments("Invalid arguments: enemy_attack needs enemyId and targetCharacterId.", parsed.error);
+  }
+  const args = parsed.data;
   const found = resolveEnemyRef(encounter.id, args.enemyId);
   if (!found) {
-    return { error: "Unknown enemyId; use one from GAME STATE." };
+    return { error: "Unknown enemyId; use one from GAME STATE.", retry: true };
   }
   // One guard for the enemy side (src/lib/dm/can-act.ts): the dead, the
   // incapacitated and the surprised do nothing, and an action is one a round.
   const allowed = canEnemyAct({ enemy: found, encounter, kind: "action" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   const staleTarget =
     sheetsById.get(args.targetCharacterId.trim()) ??
     sheets.find(
-      (sheet) => sheet.name.toLowerCase() === args.targetCharacterId.trim().toLowerCase(),
+      (sheet) => textKey(sheet.name) === textKey(args.targetCharacterId),
     );
   const target = staleTarget ? getSheetById(staleTarget.id) : null;
   if (!target) {
-    return { error: "Unknown targetCharacterId; use one from GAME STATE." };
+    return { error: "Unknown targetCharacterId; use one from GAME STATE.", retry: true };
   }
   // SRD 5.1, Charmed: a charmed creature cannot attack its charmer.
   if (charmedBy(found.conditions, found.conditionMeta, target.id)) {
     return {
       error: `${found.displayName} is charmed by ${target.name} and cannot attack them. It may attack someone else or take another action.`,
+      retry: true,
     };
   }
   // Calm Emotions, Fear's flight; a target Blink or Etherealness took away (spell-planes.ts).
   const spellHeld = spellAttackHold({ name: found.displayName, conditions: found.conditions }, target);
   if (spellHeld) {
-    return { error: spellHeld };
+    return spellHeld;
   }
   // Sanctuary turns the attacker away on a failed WIS save (spell-defenses.ts),
   // and a failure holds for the rest of its turn (enemy-conditions.ts).
   const sanctuary = sanctuaryWard(campaign.id, found, target, sanctuaryRefusal);
   if (sanctuary) {
-    return { error: sanctuary };
+    return sanctuary;
   }
   // Nature's Sanctuary turns a beast or plant away the same way (srd-defenses.ts).
   const natures = sanctuaryWard(campaign.id, found, target, naturesSanctuaryRefusal);
   if (natures) {
-    return { error: natures };
+    return natures;
   }
   const attacks = found.stats.attacks.length ? found.stats.attacks : synthesizeStats(found.cr).attacks;
   if (!attacks.length) {
-    return { error: `${found.displayName} has no usable attacks; narrate a different action.` };
+    return { error: `${found.displayName} has no usable attacks; narrate a different action.`, retry: true };
   }
-  const single = takeLegendaryStrike(campaign.id, found.id);
+  // Slow: no more than one attack on its turn, Multiattack or not (SRD 5.1).
+  const single = takeLegendaryStrike(campaign.id, found.id) || conditionTurnShape(found.conditions).slowed;
   const planned = plannedSwings(found.stats, attacks, args.attack, { single });
   const profiles = planned.map((attack) => enemyAttackProfile(attack, found.stats.traits ?? []));
   // Antilife Shell: no melee reaches through it (zone-rules.ts).
   const shell = leadProfile(profiles).melee ? reachThroughProblem(encounter.id, found.id, target.id, found.stats.type, found.displayName) : null;
   if (shell) {
-    return { error: shell };
+    return shell;
   }
 
   // A prone creature stands before it acts, for half its speed (SRD 5.1,
@@ -262,10 +271,16 @@ export function handleEnemyAttack(
     // Under the water (underwater.ts): a shot past normal range misses, and
     // weapons not made for the water swing at disadvantage.
     const underwater = attackerSubmerged
-      ? underwaterSwing({ weapon: attack.name, melee: !ranged, swims: swimsFrom(standing.stats.speed), beyondNormal: mode.longRange, spell: attack.spellAttack })
+      ? underwaterSwing({ weapon: attack.name, base: matchWeapon(attack.name)?.name, melee: !ranged, swims: swimsFrom(standing.stats.speed), beyondNormal: mode.longRange, spell: attack.spellAttack })
       : null;
     if (underwater?.misses) {
       swings.push({ attack: attack.name, skipped: underwater.note });
+      return;
+    }
+    // Arrows and bolts into a Wind Wall are deflected and miss (SRD 5.1); a
+    // spell attack is no projectile.
+    if (ranged && !attack.spellAttack && spatial.deflected) {
+      swings.push({ attack: attack.name, hit: false, missed: spatial.deflected });
       return;
     }
     lastSwing = { attack, ranged };
@@ -291,7 +306,7 @@ export function handleEnemyAttack(
         notes.push(note);
       }
     }
-    const hitOutcome = rollExpression(`${d20Expression(attack.toHit, advantage)}${riders.diceSuffix}`);
+    const hitOutcome = rollExpression(`${d20Expression(attack.toHit + odds.attackBonus, advantage)}${riders.diceSuffix}`);
     // A one-shot rider (Vicious Mockery) is spent by the roll it rode (spell-retort.ts).
     riders = spendEnemyRiders(standing, riders);
     const hitRoll = insertRoll({
@@ -354,7 +369,10 @@ export function handleEnemyAttack(
     if (bonus.martial) {
       martialSpent = true;
     }
-    const baseDamage = bonus.dice.length ? `${attack.damage}+${bonus.dice.join("+")}` : attack.damage;
+    // An active effect's amount on its damage rolls (set_effect), once.
+    const effectDamage = effectOutcome(campaign.id, { kind: "enemy", id: standing.id }, "damage").bonus;
+    const withTraits = bonus.dice.length ? `${attack.damage}+${bonus.dice.join("+")}` : attack.damage;
+    const baseDamage = effectDamage > 0 ? `${withTraits}+${effectDamage}` : effectDamage < 0 ? `${withTraits}-${-effectDamage}` : withTraits;
     const damageExpression = crit
       ? critDamageExpression(baseDamage, 0, {
           powerfulCritical: campaign.gameSettings.variantRules.powerfulCritical,
@@ -377,37 +395,31 @@ export function handleEnemyAttack(
     });
     turn.rollIds.push(damageRoll.id);
 
-    // Each damage type in the blow meets the target's resistances on its
-    // own (a red dragon's fire halves for a tiefling, its teeth do not). A
-    // penalty can bring a hit's damage to 0, never below it.
-    const blow = blowByType(attack, damageOutcome, getSheetById(target.id) ?? target, crit, hasTrait(standing.stats, "magicWeapons"));
+    // Each damage type in the blow meets the target's defenses on its own
+    // (a red dragon's fire halves for a tiefling, its teeth do not; a monk
+    // immune to poison takes none of a bite's venom). A penalty can bring a
+    // hit's damage to 0, never below it.
+    const blow = blowByType(attack, damageOutcome, crit);
     // Ray of Enfeeblement halves a Strength weapon's blow (spell-retort.ts).
     const dealt = Math.floor(enfeebledBlow(standing, attack, ranged, Math.max(0, blow.amount)) / (authored.halve ? 2 : 1));
-    // Damage lands through the standard mutation: temp HP, clamps, audit,
-    // concentration, and the live sheet_updated publish all come for free.
-    const applied: Record<string, unknown> = dealt <= 0 ? {} : applyDmMutation(
-      campaign,
-      turn.id,
-      "apply_damage",
-      JSON.stringify({
-        characterId: target.id,
-        amount: dealt,
-        ...(blow.type ? { type: blow.type } : {}),
-        // Magic Weapons: its weapon attacks are magical.
-        ...(hasTrait(standing.stats, "magicWeapons") ? { magical: true } : {}),
-        // Crits against a dying target count double death-save failures.
-        ...(crit ? { crit: true } : {}),
-        reason: `${enemy.displayName}'s ${attack.name}`,
-      }),
-      sheets,
-      sheetsById,
-    ).result;
+    // Damage lands through the damage path: the ward, each type's defenses,
+    // temp HP, clamps, audit, concentration and the sheet_updated publish.
+    const applied: Record<string, unknown> = dealt <= 0 ? {} : applyPcDamage(campaign, turn.id, getSheetById(target.id) ?? target, {
+      amount: Math.min(dealt, 200),
+      ...(blow.type ? { type: blow.type } : {}),
+      ...(blow.parts ? { parts: scaledParts(blow.parts, dealt) } : {}),
+      // Magic Weapons: its weapon attacks are magical.
+      ...(hasTrait(standing.stats, "magicWeapons") ? { magical: true } : {}),
+      // Crits against a dying target count double death-save failures.
+      ...(crit ? { crit: true } : {}),
+      reason: `${enemy.displayName}'s ${attack.name}`,
+    });
     totalDamage += dealt;
     previousHit = true;
     if (multiattackDefense) {
       defended = 4;
     }
-    hitLog.swing(hitOutcome, targetAc(), { hit: true, crit, raw: dealt, advantage, type: blow.type ?? "", ranged });
+    hitLog.swing(hitOutcome, targetAc(), { hit: true, crit, raw: dealt, advantage, type: blow.type ?? "", ...(blow.parts ? { parts: scaledParts(blow.parts, dealt) } : {}), ranged });
     for (const type of attack.type.split("/")) {
       damageTypes.add(type);
     }
@@ -435,8 +447,9 @@ export function handleEnemyAttack(
     // shove to the ground, a grapple (SRD 5.1: the rider is part of the
     // attack, so it is the engine's to resolve).
     // The necrotic part of the blow, for a drain of the target's maximum.
-    const necrotic = blow.byType
-      ? blow.byType.reduce((sum, part) => sum + (/^(\d+) necrotic\b/i.exec(part) ? Number(/^(\d+)/.exec(part)![1]) : 0), 0)
+    const byType = Array.isArray(applied.damageByType) ? (applied.damageByType as string[]) : null;
+    const necrotic = byType
+      ? byType.reduce((sum, part) => sum + (/^(\d+) necrotic\b/i.exec(part) ? Number(/^(\d+)/.exec(part)![1]) : 0), 0)
       : /necrotic/i.test(blow.type ?? attack.type) ? dealt : 0;
     const onHit = resolveOnHit(campaign, turn, standing, attack, target.id, { sheets, sheetsById, dealt: { total: dealt, necrotic } });
     // Fire Shield and Holy Aura answer the blow (spell-retort.ts).
@@ -454,7 +467,7 @@ export function handleEnemyAttack(
       hit: true,
       ...(crit ? { crit: true } : {}),
       damage: dealt,
-      ...(blow.byType ? { damageByType: blow.byType } : {}),
+      ...(byType ? { damageByType: byType } : {}),
       ...(onHit ?? {}),
       ...(retort ? { retort } : {}),
     });

@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ui } from "@/lib/ui";
 import {
   IMPORT_KINDS,
+  WORLD_RECORD_KINDS,
   IMPORT_KIND_LABELS,
   SINGULAR_KINDS,
   type ImportKind,
@@ -40,6 +41,13 @@ export type ImportSelection = {
   // the next act (#157).
   arc?: "leave" | "append";
 };
+
+// With WorldForge ticked, a record kind it needs that is not ticked is one
+// the DM leaves out on purpose (audit finding WF-07): said to the server so
+// the plan names what goes, rather than bringing it anyway.
+export function exclusionsOf(selection: Pick<ImportSelection, "select">): ImportKind[] {
+  return selection.select.includes("world") ? WORLD_RECORD_KINDS.filter((kind) => !selection.select.includes(kind)) : [];
+}
 
 export const EMPTY_SELECTION: ImportSelection = {
   sourceId: "",
@@ -138,6 +146,9 @@ export function ContentImportPicker({
     for (const kind of selection.select) {
       params.append("select", kind);
     }
+    for (const kind of exclusionsOf({ select: selection.select })) {
+      params.append("exclude", kind);
+    }
     return fetch(`/api/campaigns/${campaignId}/import?${params}`)
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => setPlan(data?.plan ?? null))
@@ -164,13 +175,14 @@ export function ContentImportPicker({
     });
   }
 
+  // Ticking WorldForge ticks what it describes too (WF-07): its links,
+  // secrets and pins point at those records. Unticking one afterwards is a
+  // deliberate exclusion, and the plan says what it loses.
   function toggle(kind: ImportKind) {
-    onChange({
-      ...selection,
-      select: selection.select.includes(kind)
-        ? selection.select.filter((entry) => entry !== kind)
-        : [...selection.select, kind],
-    });
+    const on = !selection.select.includes(kind);
+    const brought = on && kind === "world" ? WORLD_RECORD_KINDS.filter((other) => available.includes(other)) : [];
+    const select = on ? [...new Set([...selection.select, kind, ...brought])] : selection.select.filter((entry) => entry !== kind);
+    onChange({ ...selection, select: IMPORT_KINDS.filter((entry) => select.includes(entry)) });
   }
 
   async function importNow() {
@@ -183,7 +195,7 @@ export function ContentImportPicker({
       const response = await fetch(`/api/campaigns/${campaignId}/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(selection),
+        body: JSON.stringify({ ...selection, exclude: exclusionsOf(selection) }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -201,7 +213,21 @@ export function ContentImportPicker({
           Array.isArray(data.unresolved) && data.unresolved.length
             ? `No monster here answers to ${data.unresolved.join(", ")}: add them to your bestiary, or point those NPCs and fights at another.`
             : "",
-          Array.isArray(data.worldConflicts) && data.worldConflicts.length ? `Kept as you had them: ${data.worldConflicts.join(" ")}` : "",
+          Array.isArray(data.worldConflicts) && data.worldConflicts.length ? data.worldConflicts.join(" ") : "",
+          // Hand-built monsters this table's authors did not have, copied in
+          // so the NPCs and fights that name them still fight (WF-07).
+          Array.isArray(data.monstersBrought) && data.monstersBrought.length
+            ? `Copied into this table's bestiary: ${data.monstersBrought.join(", ")}.`
+            : "",
+          Array.isArray(data.monstersReused) && data.monstersReused.length
+            ? `Already in this table's bestiary: ${data.monstersReused.join(", ")}.`
+            : "",
+          Array.isArray(data.itemsBrought) && data.itemsBrought.length
+            ? `Copied into this table's Homebrew: ${data.itemsBrought.join(", ")}.`
+            : "",
+          Array.isArray(data.itemsReused) && data.itemsReused.length
+            ? `Already in this table's Homebrew: ${data.itemsReused.join(", ")}.`
+            : "",
         ]
           .filter(Boolean)
           .join(" "),
@@ -266,6 +292,11 @@ export function ContentImportPicker({
                   {SINGULAR_KINDS.has(kind) ? null : (
                     <span className="text-xs text-stone-500">({chosen.contents[kind]})</span>
                   )}
+                  {selection.select.includes("world") && (WORLD_RECORD_KINDS as readonly string[]).includes(kind) ? (
+                    <span className="text-xs text-stone-500" data-testid={`import-world-needs-${kind}`}>
+                      {selection.select.includes(kind) ? "WorldForge needs these" : "Left out on purpose"}
+                    </span>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -393,6 +424,6 @@ export async function submitContentImport(campaignId: string, selection: ImportS
   await fetch(`/api/campaigns/${campaignId}/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(selection),
+    body: JSON.stringify({ ...selection, exclude: exclusionsOf(selection) }),
   }).catch(() => undefined);
 }

@@ -123,6 +123,12 @@ export function isFloorExempt(kind: InputKind): boolean {
 // styles them as a lead note.
 export const LEAD_NOTE_PREFIX = "[Party lead direction] ";
 
+// The table note Begin posts. The table reads only this; the instruction
+// that asks the AI DM for the opening scene travels with it in the prompt
+// alone (src/lib/dm/prompt.ts), where the table never sees it.
+export const ADVENTURE_BEGINS_NOTE = "The party is assembled and the adventure begins.";
+export const OPENING_SCENE_CUE = "Introduce the opening scene, set the premise, and give the party their first decision.";
+
 // Marks the system message a halted DM turn writes. The client pairs it with
 // the message's dmTurnId to offer the lead a retry of that exact turn.
 export const DM_HALTED_PREFIX = "The DM ran into a problem: ";

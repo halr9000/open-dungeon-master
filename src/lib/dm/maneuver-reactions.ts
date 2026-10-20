@@ -39,12 +39,14 @@ import { handlePcAttack } from "@/lib/dm/pc-attack";
 import { rollCard } from "@/lib/dm/roll-card";
 import { reactionMove } from "@/lib/dm/authored-reactions-more";
 import { noHit, settle, spendReaction, type Ctx } from "@/lib/dm/reaction-tools";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 const lower = (value: string) => value.trim().toLowerCase();
 
 // Whether the sheet knows this maneuver ("Maneuver: Parry").
 function knows(sheet: CharacterSheet, name: string): boolean {
-  return sheet.features.some((feature) => /^maneuver:/i.test(feature.name) && lower(feature.name).includes(name));
+  return sheet.features.some((feature) => /^maneuver:/i.test(feature.name) && textKey(feature.name).includes(name));
 }
 
 // The sheet's own mark, by its leading name ("grappling strike (1d8)").
@@ -76,7 +78,7 @@ function payDie(
   label: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): string | null {
+): ToolError | null {
   const spent = applyDmMutation(
     campaign,
     turnId,
@@ -85,7 +87,7 @@ function payDie(
     sheets,
     sheetsById,
   ).result;
-  return "error" in spent ? `${label}: ${String(spent.error)}` : null;
+  return typeof spent.error === "string" ? { ...toolError(spent), error: `${label}: ${spent.error}` } : null;
 }
 
 // ---- use_reaction ----
@@ -108,18 +110,18 @@ export function maneuverReaction(ctx: Ctx): Record<string, unknown> | null {
   return which === "parry" ? parry(ctx) : reactionStrike(ctx, which === "riposte" ? "Riposte" : "Brace");
 }
 
-function parry(ctx: Ctx): Record<string, unknown> {
+function parry(ctx: Ctx): ToolResult {
   const { campaign, sheet } = ctx;
   const record = freshLastHit(campaign.id, sheet.id);
   const index = record && record.source === "attack" && !record.ranged && record.attacker.kind === "enemy" && !record.answered.includes("parry")
     ? heaviest(record.swings)
     : -1;
   if (!record || index < 0) {
-    return { error: noHit(sheet.name, "Parry", "damage from a melee attack") };
+    return noHit(sheet.name, "Parry", "damage from a melee attack");
   }
   const refused = payDie(campaign, ctx.turn.id, sheet, "Parry", ctx.sheets, ctx.sheetsById);
   if (refused) {
-    return { error: `${refused} Nothing was spent.` };
+    return { ...refused, error: `${refused.error} Nothing was spent.` };
   }
   spendReaction(ctx);
   const dex = computeSheetDerived(sheet).abilityMods.dex;
@@ -141,7 +143,7 @@ function heaviest(swings: SwingRecord[]): number {
 }
 
 // Riposte and Brace: one melee attack with the reaction, the die on its hit.
-function reactionStrike(ctx: Ctx, label: "Riposte" | "Brace"): Record<string, unknown> {
+function reactionStrike(ctx: Ctx, label: "Riposte" | "Brace"): ToolResult {
   const { campaign, sheet } = ctx;
   let enemyId = ctx.args.targetEnemyId ?? null;
   if (label === "Riposte") {
@@ -149,18 +151,18 @@ function reactionStrike(ctx: Ctx, label: "Riposte" | "Brace"): Record<string, un
     const missed = record && record.source === "attack" && !record.ranged && record.attacker.kind === "enemy" && record.attacker.id
       && !record.answered.includes("riposte") && record.swings.some((swing) => !swing.hit);
     if (!record || !missed) {
-      return { error: noHit(sheet.name, "Riposte", "a melee attack that missed them") };
+      return noHit(sheet.name, "Riposte", "a melee attack that missed them");
     }
     enemyId = record.attacker.id;
     writeLastHit(campaign.id, { ...record, answered: [...record.answered, "riposte"] });
   }
   if (!enemyId) {
-    return { error: "Brace answers a creature moving into the fighter's reach: pass its targetEnemyId. Nothing was spent." };
+    return { error: "Brace answers a creature moving into the fighter's reach: pass its targetEnemyId. Nothing was spent.", retry: true };
   }
   const before = getSheetById(sheet.id)?.resources;
   const refused = payDie(campaign, ctx.turn.id, sheet, label, ctx.sheets, ctx.sheetsById);
   if (refused) {
-    return { error: `${refused} Nothing was spent.` };
+    return { ...refused, error: `${refused.error} Nothing was spent.` };
   }
   const outcome = reactionAttack(ctx, sheet, enemyId, `${SUPERIORITY_STRIKE} (1${maneuverDieFor(sheet)})`, label);
   if ("error" in outcome) {
@@ -178,7 +180,7 @@ function reactionStrike(ctx: Ctx, label: "Riposte" | "Brace"): Record<string, un
 // mark lets pc_attack through and the attack spends it and the reaction.
 // `strike`: the die riding its hit, set first when the attacker is the one
 // paying (Riposte, Brace); already on the ally for Commander's Strike.
-function reactionAttack(ctx: Ctx, attacker: CharacterSheet, enemyId: string, strike: string | null, label: string): Record<string, unknown> {
+function reactionAttack(ctx: Ctx, attacker: CharacterSheet, enemyId: string, strike: string | null, label: string): ToolResult {
   const { campaign } = ctx;
   if (strike) {
     addSheetCondition(campaign, getSheetById(attacker.id) ?? attacker, strike, { untilTurnOf: attacker.id }, label);
@@ -195,17 +197,17 @@ function reactionAttack(ctx: Ctx, attacker: CharacterSheet, enemyId: string, str
   );
   // What the attack did not use goes: the readied mark, and the die on a miss.
   clearMarks(campaign, attacker.id, [READIED, SUPERIORITY_STRIKE]);
-  return "error" in result ? { error: String(result.error) } : result;
+  return typeof result.error === "string" ? toolError(result) : result;
 }
 
 // Maneuvering Attack: the ally moves with its reaction.
-function maneuveredMove(ctx: Ctx): Record<string, unknown> {
+function maneuveredMove(ctx: Ctx): ToolResult {
   const { campaign, sheet } = ctx;
   const opener = listSheets(campaign.id)
     .map((entry) => getSheetById(entry.id) ?? entry)
     .find((entry) => entry.id !== sheet.id && markOf(entry, MANEUVERED));
   if (!opener) {
-    return { error: `Maneuvering Attack moves an ally right after a Battle Master's hit with it this turn, and none has landed. Nothing was spent.` };
+    return { error: `Maneuvering Attack moves an ally right after a Battle Master's hit with it this turn, and none has landed. Nothing was spent.`, refused: "rules" };
   }
   const moved = reactionMove(ctx, "Maneuvering Attack", "opened");
   if ("error" in moved) {
@@ -225,15 +227,16 @@ function maneuveredMove(ctx: Ctx): Record<string, unknown> {
 }
 
 // Commander's Strike: the ally the fighter directed attacks.
-function commandedAttack(ctx: Ctx): Record<string, unknown> {
+function commandedAttack(ctx: Ctx): ToolResult {
   const { campaign, sheet } = ctx;
   if (!markOf(sheet, COMMANDED)) {
     return {
       error: `${sheet.name} has not been directed by a Commander's Strike this turn: the Battle Master spends it first (use_resource "Superiority Dice", variant "commander's strike", with this character as targetCharacterId). Nothing was spent.`,
+      retry: true,
     };
   }
   if (!ctx.args.targetEnemyId) {
-    return { error: "Commander's Strike is one weapon attack: pass the targetEnemyId. Nothing was spent." };
+    return { error: "Commander's Strike is one weapon attack: pass the targetEnemyId. Nothing was spent.", retry: true };
   }
   const outcome = reactionAttack(ctx, sheet, ctx.args.targetEnemyId, null, "Commander's Strike");
   if ("error" in outcome) {
@@ -260,20 +263,20 @@ export function payGrapplingStrike(
   targetEnemyId: string | undefined,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): { die: string } | { error: string } {
+): { die: string } | ToolError {
   const mark = markOf(sheet, GRAPPLING_STRIKE);
   const die = mark ? markedDie(mark) : null;
   if (!mark || !die) {
-    return { error: `${sheet.name} has no Grappling Strike hit this turn to grapple after. Nothing was spent.` };
+    return { error: `${sheet.name} has no Grappling Strike hit this turn to grapple after. Nothing was spent.`, refused: "rules" };
   }
   const struck = (sheet.conditionMeta as Record<string, { source?: string } | undefined>)[mark]?.source;
   if (struck && targetEnemyId && struck !== targetEnemyId) {
     const enemy = getEnemy(struck);
-    return { error: `Grappling Strike grapples the creature the hit landed on${enemy ? ` (${enemy.displayName})` : ""}. Nothing was spent.` };
+    return { error: `Grappling Strike grapples the creature the hit landed on${enemy ? ` (${enemy.displayName})` : ""}. Nothing was spent.`, retry: true };
   }
   const refused = payDie(campaign, turnId, sheet, "Grappling Strike", sheets, sheetsById);
   if (refused) {
-    return { error: `${refused} Nothing was spent.` };
+    return { ...refused, error: `${refused.error} Nothing was spent.` };
   }
   clearMarks(campaign, sheet.id, [GRAPPLING_STRIKE]);
   return { die };

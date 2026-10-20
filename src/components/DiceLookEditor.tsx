@@ -355,3 +355,40 @@ export function DiceLookButton({ className }: { className?: string }) {
     </>
   );
 }
+
+// The account page's dice: the set in use, named, with Customize opening the
+// whole editor in place. The editor (and its 3D preview, a WebGL context of
+// its own) mounts only when asked for, so a phone scrolling past to the
+// next setting pays nothing for it.
+export function DiceLookSummary({ className }: { className?: string }) {
+  const look = useDiceLook();
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    hydrateDiceLook();
+  }, []);
+  const preset = DICE_LOOK_PRESETS.find((entry) => sameDiceLook(entry.look, look));
+  const texture = DICE_TEXTURES.find((entry) => entry.id === look.texture)?.label ?? look.texture;
+  const material = DICE_MATERIALS.find((entry) => entry.id === look.material)?.label ?? look.material;
+  return (
+    <div className={cn("space-y-3", className)}>
+      <div className="flex flex-wrap items-center gap-3">
+        <Swatch look={look} className="size-10 shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm text-stone-100">{preset ? `${preset.label} dice` : "Your own colours"}</span>
+          <span className="block text-xs text-stone-500">
+            {texture} pattern, {material.toLowerCase()} finish
+          </span>
+        </span>
+        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className={ui.btnSecondary}>
+          <GameIcon icon={{ kind: "glyph", key: "die-d20" }} size="size-5" />
+          {open ? "Done" : "Customize"}
+        </button>
+      </div>
+      {open ? (
+        <div key="editor" className="reveal-height">
+          <DiceLookEditor />
+        </div>
+      ) : null}
+    </div>
+  );
+}

@@ -19,6 +19,7 @@ import { ContextMenu } from "@/components/ui/ContextMenu";
 import { AppHeader } from "@/components/AppHeader";
 import { DEFAULT_TARGET_PARTY } from "@/lib/workshop/kind";
 import { ImportBundleButton } from "@/app/workshop/ImportBundleButton";
+import { AddonImportButton } from "@/app/workshop/AddonImportButton";
 import { WorkshopHelpDialog } from "@/components/WorkshopHelpDialog";
 import { GuidedTour } from "@/components/ui/GuidedTour";
 import type { TourEnd } from "@/lib/tours/account-logic";
@@ -235,6 +236,8 @@ export default function WorkshopListPage() {
             <div data-tour="shelf-import">
               <ImportBundleButton />
             </div>
+            {/* Only drawn when an admin has switched an importer addon on. */}
+            <AddonImportButton />
           </div>
         )}
       </section>

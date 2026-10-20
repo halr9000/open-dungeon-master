@@ -13,8 +13,6 @@ import { registerDmWaker } from "@/lib/dm/wake";
 import { publishPersisted } from "@/lib/events";
 import { runsAiTurns } from "@/lib/workshop/kind";
 
-export { startDmTurn as runDmTurn } from "@/lib/dm/turn";
-
 declare global {
   var __odmTurnRequested: Set<string> | undefined;
 }
@@ -71,7 +69,7 @@ export function requestDmTurn(campaignId: string): boolean {
     // point is covered by this turn; later arrivals re-request.
     requested().delete(campaignId);
     await startDmTurn(campaignId);
-  });
+  }, { kind: "turn" });
   return true;
 }
 

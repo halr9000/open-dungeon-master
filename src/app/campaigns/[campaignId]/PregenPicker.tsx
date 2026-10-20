@@ -12,7 +12,17 @@ type Hero = { id: string; name: string; tagline: string; blurb: string };
 // in the player's library too, so it can be kept, edited or brought to
 // another table. Offered in every lobby, not only the starter's: a friend
 // who joined with a room code and ten minutes to spare is who it is for.
-export function PregenPicker({ campaignId }: { campaignId: string }) {
+export function PregenPicker({
+  campaignId,
+  heading = "Or take a ready-made hero",
+  onSeated,
+}: {
+  campaignId: string;
+  // The line above the heroes; null where the card around it already says.
+  heading?: string | null;
+  // Called once the hero has its seat (the join page goes back to the table).
+  onSeated?: () => void;
+}) {
   const [heroes, setHeroes] = useState<Hero[] | null>(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
@@ -36,7 +46,11 @@ export function PregenPicker({ campaignId }: { campaignId: string }) {
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         setError(data.error || "Could not seat that hero.");
+      } else {
+        onSeated?.();
       }
+    } catch {
+      setError("Could not reach the server.");
     } finally {
       setBusyId("");
     }
@@ -47,7 +61,7 @@ export function PregenPicker({ campaignId }: { campaignId: string }) {
   }
   return (
     <div className={cn(ui.card, "space-y-2 px-4 py-3")} data-tour="pregen-picker">
-      <p className="text-xs uppercase tracking-wide text-stone-500">Or take a ready-made hero</p>
+      {heading ? <p className="text-xs uppercase tracking-wide text-stone-500">{heading}</p> : null}
       <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
         {heroes.map((hero) => (
           <li key={hero.id}>

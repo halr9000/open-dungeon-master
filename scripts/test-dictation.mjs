@@ -275,7 +275,7 @@ test("transcription waits on a server that can write it down", () => {
   assert.equal(transcribesVoice({ voice: { enabled: true, mode: "auto" } }), true, "an older server's answer hid the switch");
   assert.equal(transcribesVoice({ voice: { enabled: true, mode: "auto", transcribes: false } }), false);
   assert.match(read("src/lib/capabilities.ts"), /transcribes: Boolean\(dictation\.explicitWhisperUrl && dictation\.whisperModel\)/);
-  const panel = read("src/app/campaigns/[campaignId]/GameSettingsPanel.tsx");
+  const panel = read("src/app/campaigns/[campaignId]/GameSettingsGroups.tsx");
   assert.match(panel, /on=\{settings\.voice\.transcribe && transcribes\}\s*disabled=\{!transcribes\}/);
   assert.match(read("src/app/campaigns/[campaignId]/SessionView.tsx"), /const transcribe = Boolean\(voiceSettings\?\.transcribe\) && transcribesVoice\(capabilities\);/);
   assert.match(read("src/app/campaigns/[campaignId]/Lobby.tsx"), /campaign\.gameSettings\.voice\.transcribe && transcribes \? \(/);

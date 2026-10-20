@@ -4,13 +4,15 @@ import { useMemo, useState } from "react";
 import { GameTerm } from "@/components/ui/GameTerm";
 import { InfoButton, InfoDialog } from "@/components/ui/InfoDialog";
 import { describeFeature, describeSkill } from "@/lib/help";
+import { useClassFeatureText } from "@/lib/classes/use-feature-text";
 import { firstSentence } from "@/lib/help/rules-text";
+import { CLASS_ROLES, classRoles, type ClassRole } from "@/lib/srd/class-roles";
 import { subclassBlurb } from "@/lib/srd/features";
 import { SRD_SKILLS } from "@/lib/srd";
 import { displayName, type Reskinned } from "@/lib/worlds/reskin-logic";
 import type { WorldPack } from "@/lib/worlds/types";
 import { classArt } from "../lineage";
-import { OptionCardGrid, type OptionCardGroup } from "../OptionCardGrid";
+import { OptionCardGrid, type CardFacet, type OptionCardGroup } from "../OptionCardGrid";
 import OptionPicker, { type PickerGroup } from "../OptionPicker";
 import { classInfoText } from "../usePickerGroups";
 import { grantedSkillSources, grantingTrait } from "../reconcile";
@@ -18,6 +20,8 @@ import type { ArchetypeOption, BackgroundOption, ClassOption, RaceOption } from 
 import type { BuilderActions, BuilderDerived } from "../useBuilderDerived";
 import type { BuilderState } from "../useBuilderState";
 import { ClassChoices } from "./ClassChoices";
+import { PlaystylePicker } from "../PlaystylePicker";
+import { EASY_CLASSES, fillClassSkills, type PlaystyleId } from "../playstyles";
 import FeatChoicesFields, { knownTraining } from "../FeatChoicesFields";
 import { Field, PickPill, StepPanel, inputClass } from "./shared";
 
@@ -40,6 +44,7 @@ export function CallingStep({
   offersSubclass,
   subclassLockedAt,
   chosenArchetype,
+  playstyle,
 }: {
   state: BuilderState;
   derived: BuilderDerived;
@@ -55,11 +60,17 @@ export function CallingStep({
   // The level the class picks a subclass at, while this level is below it.
   subclassLockedAt: number | null;
   chosenArchetype: ArchetypeOption | null;
+  // The answer given on the first step, so the picker opens on it.
+  playstyle?: { value: PlaystyleId | null; onChange: (style: PlaystyleId | null) => void };
 }) {
   const { subclass } = state;
   const { effectiveLevel, grantedFeatures } = derived;
   const { gender } = state;
+  // A genre class's feature text arrives on demand (issue 411).
+  useClassFeatureText([klass?.id]);
   const [detailsFor, setDetailsFor] = useState<string | null>(null);
+  // What "Suggest the rest" picked, said until the player changes a pick.
+  const [suggested, setSuggested] = useState<string[] | null>(null);
   // The skills already the character's from race or background, and the
   // source each came from: the same map the toggle refuses by, so every
   // greyed pill says why (issue #109).
@@ -74,6 +85,20 @@ export function CallingStep({
     [race, background, state.racialSkills, state.backgroundSkills],
   );
 
+  // Each class's job in a fight and which of the core four it plays like
+  // (src/lib/srd/class-roles.ts).
+  const readings = useMemo(
+    () =>
+      new Map(
+        classGroups.flatMap((group) =>
+          group.options.map((option) => [
+            option.id,
+            classRoles(classes.find((candidate) => candidate.id === option.id) ?? { id: option.id }),
+          ]),
+        ),
+      ),
+    [classGroups, classes],
+  );
   const cardGroups = useMemo<OptionCardGroup[]>(
     () =>
       classGroups.map((group) => ({
@@ -81,6 +106,7 @@ export function CallingStep({
         recommended: group.recommended,
         options: group.options.map((option) => {
           const entry = classes.find((candidate) => candidate.id === option.id);
+          const reading = readings.get(option.id);
           // Under a reskin the canonical class name leads the tagline, the
           // same fact the dropdown kept in its meta column.
           const canonical = entry?.packName ? option.meta?.split(" · ")[1] : undefined;
@@ -91,18 +117,81 @@ export function CallingStep({
             art: classArt(option.id, gender),
             // The book leads where the group heading does not say it
             // (issue #116: a Marshal looked like a Core Rules class).
-            tagline: [canonical, option.source, entry ? `Saves ${entry.saves.map((save) => save.toUpperCase()).join(" ")}` : ""]
+            // "Like Fighter + Cleric" leads: it says what the class is in words
+            // a new player and a veteran new to the setting both read, short
+            // enough to fit the narrow class card's two tagline lines.
+            tagline: [
+              canonical,
+              // One of the core four says so rather than "Wizard: like Wizard".
+              reading
+                ? reading.playsLike.toLowerCase() === option.id.toLowerCase()
+                  ? "Core class"
+                  : `Like ${reading.playsLike}${reading.suggested ? " (suggested)" : ""}`
+                : "",
+              option.source,
+              entry?.spellAbility ? `${entry.spellAbility.toUpperCase()} caster` : "",
+              // Saves are left to the chosen-class line and the "?" box: the
+              // least of what a player chooses a class by, and the card's
+              // two lines are better spent on what it plays like.
+            ]
               .filter(Boolean)
               .join(" · "),
-            chips: entry
-              ? [`d${entry.hitDie}`, ...(entry.spellAbility ? [`${entry.spellAbility.toUpperCase()} caster`] : [])]
-              : [],
+            // "Easy to learn" leads where it applies: about play, where the
+            // setting's seal on the plate is about the world.
+            chips: [
+              ...(EASY_CLASSES.has(option.id) ? ["Easy to learn"] : []),
+              ...(reading?.roles ?? []),
+              ...(entry ? [`d${entry.hitDie}`] : []),
+            ],
             icon: { kind: "family" as const, key: `class-${option.id}` },
           };
         }),
       })),
-    [classGroups, classes, gender],
+    [classGroups, classes, gender, readings],
   );
+  // The class grid's filters (OptionCardGrid): its job in a fight, how much
+  // magic it has, which of the core four it plays like, and its book or
+  // setting. Each offers only the values some class has, so a veteran can
+  // ask for the tanks among the setting's classes.
+  const classFacets = useMemo<CardFacet[]>(() => {
+    const entryOf = (id: string) => classes.find((candidate) => candidate.id === id);
+    const magicOf = (id: string) => {
+      const type = entryOf(id)?.casterType ?? "none";
+      return type === "none" ? "None" : type === "half" || type === "artificer" ? "Half caster" : "Full caster";
+    };
+    const bookOf = (id: string) => {
+      const entry = entryOf(id);
+      return entry?.genres?.length ? entry.genres.map(genreWords).join(", ") : entry?.source || "Core rules";
+    };
+    const ids = [...readings.keys()];
+    const present = (values: string[]) => [...new Set(values)].sort().map((value) => ({ value, label: value }));
+    return [
+      {
+        key: "role",
+        label: "Role",
+        options: CLASS_ROLES.filter((role) => ids.some((id) => readings.get(id)?.roles.includes(role))).map((role) => ({ value: role, label: role })),
+        test: (id, role) => Boolean(readings.get(id)?.roles.includes(role as ClassRole)),
+      },
+      {
+        key: "magic",
+        label: "Magic",
+        options: ["None", "Half caster", "Full caster"].filter((kind) => ids.some((id) => magicOf(id) === kind)).map((kind) => ({ value: kind, label: kind })),
+        test: (id, kind) => magicOf(id) === kind,
+      },
+      {
+        key: "plays",
+        label: "Plays like",
+        options: ["Fighter", "Wizard", "Cleric", "Rogue"].map((core) => ({ value: core, label: core })),
+        test: (id, core) => Boolean(readings.get(id)?.playsLike.includes(core)),
+      },
+      {
+        key: "book",
+        label: "Book",
+        options: present(ids.map(bookOf)),
+        test: (id, book) => bookOf(id) === book,
+      },
+    ];
+  }, [classes, readings]);
   const details = detailsFor
     ? classGroups.flatMap((group) => group.options).find((option) => option.id === detailsFor)
     : undefined;
@@ -110,7 +199,22 @@ export function CallingStep({
   return (
     <div className="space-y-4">
       <StepPanel title="Choose a class" ornate anchor="class">
-        <Field label="Class">
+        {/* A plain-language way in, above the full catalog it points into.
+            "Easy to learn" there and the setting's star in the grid mean
+            different things: one is about play, the other about the world. */}
+        <PlaystylePicker
+          offered={classGroups.flatMap((group) =>
+            group.options.map((option) => {
+              const reading = readings.get(option.id);
+              return { id: option.id, name: option.name, roles: reading?.roles ?? [], playsLike: reading?.playsLike ?? "" };
+            }),
+          )}
+          chosen={klass?.id ?? ""}
+          onChoose={state.changeClass}
+          style={playstyle?.value}
+          onStyle={playstyle?.onChange}
+        />
+        <Field label="Class" className="mt-4">
           {klass ? (
             <span className="mb-3 flex flex-wrap items-center gap-x-1 text-xs text-stone-500">
               <span className="text-amber-200">{klass.name}:</span>{" "}
@@ -138,6 +242,7 @@ export function CallingStep({
             onChoose={state.changeClass}
             onDetails={setDetailsFor}
             noun="class"
+            facets={classFacets}
             compact
           />
           {/* The same write-up the dropdown's info button opened: the pack's
@@ -146,7 +251,24 @@ export function CallingStep({
             open={Boolean(details)}
             onOpenChange={(open) => (open ? undefined : setDetailsFor(null))}
             title={details?.name ?? ""}
-            meta={details?.meta}
+            // The card's role and "plays like", said again where the class
+            // is read about at length.
+            meta={(() => {
+              const reading = details ? readings.get(details.id) : undefined;
+              const saves = details ? classes.find((candidate) => candidate.id === details.id)?.saves : undefined;
+              return [
+                details?.meta,
+                saves?.length ? `Saves ${saves.map((save) => save.toUpperCase()).join(" ")}` : "",
+                reading ? `Role: ${reading.roles.join(" / ")}` : "",
+                reading
+                  ? reading.playsLike.toLowerCase() === details?.id.toLowerCase()
+                    ? "One of the core four"
+                    : `Plays like ${reading.playsLike}${reading.suggested ? " (suggested)" : ""}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · ");
+            })()}
             text={details?.infoText}
             reference={details?.reference}
           />
@@ -244,6 +366,30 @@ export function CallingStep({
               {klass.skillChoices.count - state.chosenSkills.length > 0 ? (
                 <span className="text-amber-300">
                   {klass.skillChoices.count - state.chosenSkills.length} still to choose.{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const filled = fillClassSkills({
+                        classId: klass.id,
+                        from: klass.skillChoices.from,
+                        count: klass.skillChoices.count,
+                        chosen: state.chosenSkills,
+                        granted: new Set(skillSources.keys()),
+                      });
+                      setSuggested(filled.filter((id) => !state.chosenSkills.includes(id)));
+                      state.setChosenSkills(filled);
+                    }}
+                    className="underline-offset-2 hover:underline"
+                    data-suggest-skills
+                  >
+                    Suggest the rest
+                  </button>{" "}
+                </span>
+              ) : suggested?.length && suggested.every((id) => state.chosenSkills.includes(id)) ? (
+                <span key={suggested.join()} className="reveal block text-amber-200/90">
+                  Suggested for a {klass.name.toLowerCase()}:{" "}
+                  {suggested.map((id) => SRD_SKILLS.find((entry) => entry.id === id)?.name ?? id).join(", ")}. Tap any to
+                  change it.{" "}
                 </span>
               ) : null}
               A <GameTerm id="skill">skill</GameTerm> you are proficient in adds your{" "}
@@ -284,4 +430,10 @@ export function CallingStep({
       <ClassChoices state={state} derived={derived} actions={actions} klass={klass} />
     </div>
   );
+}
+
+// A genre id as the filter reads it ("dark-fantasy" is "Dark fantasy").
+function genreWords(genre: string): string {
+  const words = genre.replace(/[-_]/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

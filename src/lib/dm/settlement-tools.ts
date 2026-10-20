@@ -3,6 +3,7 @@ import type { Campaign } from "@/lib/db/campaigns";
 import { getCurrentLocation } from "@/lib/db/locations";
 import { populateSettlement } from "@/lib/dm/settlement";
 import { SETTLEMENT_SIZES, SETTLEMENT_TERRAINS } from "@/lib/overworld/settlement";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // The generate_settlement tool (docs/vtt-parity-implementation-plan.md
 // 12.1): when the party arrives somewhere the world has not written, the
@@ -35,16 +36,16 @@ export const settlementTools: ToolDef[] = [
 
 const schema = z.object({ size: z.string().optional(), terrain: z.string().optional() });
 
-export function handleGenerateSettlement(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleGenerateSettlement(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof schema>;
   try {
     args = schema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: generate_settlement takes an optional size and terrain." };
+    return { error: "Invalid arguments: generate_settlement takes an optional size and terrain.", retry: true };
   }
   const location = getCurrentLocation(campaign.id);
   if (!location) {
-    return { error: "The party is nowhere yet; call move_party first." };
+    return { error: "The party is nowhere yet; call move_party first.", retry: true };
   }
   const outcome = populateSettlement(campaign, location, { size: args.size, terrain: args.terrain });
   if ("error" in outcome) {

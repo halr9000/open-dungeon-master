@@ -6,7 +6,7 @@ import { Ribbon } from "@/components/ui/Ribbon";
 import { cn } from "@/lib/cn";
 import { formatModifier } from "@/lib/srd";
 import { ui } from "@/lib/ui";
-import { hpBreakdown } from "./abilityDice";
+import type { BuilderHp } from "./builderHp";
 
 const stagger = (index: number, ms: number) => ({ "--i": index, "--stagger": `${ms}ms` }) as CSSProperties;
 
@@ -30,7 +30,7 @@ export function HelpDot({ label, onClick, className }: { label: string; onClick:
         className,
       )}
     >
-      <span className="flex size-[18px] items-center justify-center rounded-full border border-amber-500/45 font-mono text-[10px] leading-none text-amber-300 transition-[border-color,box-shadow,color] duration-[var(--dur-quick)] group-hover:border-amber-500/90 group-hover:text-amber-100 group-hover:shadow-glow-gold group-focus-visible:border-amber-500/90">
+      <span className="flex size-[18px] items-center justify-center rounded-full border border-amber-500/45 font-mono text-[0.6875rem] leading-none text-amber-300 transition-[border-color,box-shadow,color] duration-[var(--dur-quick)] group-hover:border-amber-500/90 group-hover:text-amber-100 group-hover:shadow-glow-gold group-focus-visible:border-amber-500/90">
         ?
       </span>
     </button>
@@ -72,7 +72,7 @@ export function MethodInfoDialog({
                   {entry.label}
                 </span>
                 {isCurrent ? (
-                  <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.08em] text-amber-300">chosen</span>
+                  <span className="shrink-0 font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-amber-300">chosen</span>
                 ) : null}
               </div>
               <p className="font-serif text-[12.5px] leading-normal text-stone-300">{entry.info}</p>
@@ -89,16 +89,14 @@ export function MethodInfoDialog({
   );
 }
 
-// What the health explainer needs to show its working. The builder suggests
-// Max HP from these (suggestedStartingHp); `override` is the number typed on
-// the last step, which wins when present.
+// What the health explainer needs to show its working: the builder's own
+// hit points (builderHp.ts), the same figure the last step shows and the
+// server saves.
 export type HpExplainerInput = {
   className: string;
-  hitDie: number;
   con: number;
   level: number;
-  bonusPerLevel?: number;
-  override?: number | null;
+  hp: BuilderHp;
 };
 
 function FormulaChip({
@@ -124,7 +122,7 @@ function FormulaChip({
     >
       <span
         className={cn(
-          "text-center font-display text-[8px] font-semibold uppercase tracking-[0.16em]",
+          "text-center font-display text-[0.6875rem] font-semibold uppercase tracking-[0.16em]",
           tone === "result" ? "text-ember-300" : "text-stone-500",
         )}
       >
@@ -133,7 +131,7 @@ function FormulaChip({
       <span className={cn("font-display text-xl font-bold leading-tight", tone === "result" ? "text-ember-300" : "text-amber-100")}>
         {value}
       </span>
-      <span className="text-center font-mono text-[9px] text-stone-500">{note}</span>
+      <span className="text-center font-mono text-[0.6875rem] text-stone-500">{note}</span>
     </span>
   );
 }
@@ -153,22 +151,29 @@ export function HpExplainerDialog({
   onOpenChange: (open: boolean) => void;
   hp: HpExplainerInput;
 }) {
-  const parts = hpBreakdown(hp);
+  const { parts, method, kept, maxHp } = hp.hp;
   const klass = hp.className.toLowerCase();
   const later = hp.level > 1;
   const signed = (value: number) => `${value >= 0 ? "+" : "-"} ${Math.abs(value)}`;
+  const extra = parts.featureHp ? ` + ${parts.featureHp}` : "";
   const sum = later
-    ? `${parts.firstLevel} + ${hp.level - 1} x ${parts.perLevel} = ${parts.total}`
-    : `${parts.hitDie} ${signed(parts.conMod)}${parts.bonusPerLevel ? ` + ${parts.bonusPerLevel}` : ""} = ${parts.total}`;
+    ? `${parts.firstLevel} + ${hp.level - 1} x ${parts.perLevel}${extra} = ${parts.total}`
+    : `${parts.hitDie} ${signed(parts.conMod)}${parts.bonusPerLevel ? ` + ${parts.bonusPerLevel}` : ""}${extra} = ${parts.total}`;
+  const laterDie =
+    method === "max"
+      ? `the die's highest face (${parts.face})`
+      : method === "rolled"
+        ? `a roll of the die when you save; until then it counts the average (${parts.face})`
+        : `the die's average (${parts.face})`;
   const steps = [
     `A ${klass} rolls a d${parts.hitDie} for health. At first level you do not roll it: you take the best it can give.`,
     `Your Constitution of ${hp.con} is worth ${formatModifier(parts.conMod)}, and that applies to every level you gain.`,
     later
-      ? `Each level after the first adds the die's average (${Math.floor(parts.hitDie / 2) + 1}) plus that modifier, so ${hp.level - 1} more ${hp.level === 2 ? "level adds" : "levels add"} ${parts.laterLevels}. You begin on ${parts.total}.`
+      ? `Each level after the first adds ${laterDie} plus that modifier, so ${hp.level - 1} more ${hp.level === 2 ? "level adds" : "levels add"} ${parts.laterLevels}. You begin on ${parts.total}.`
       : `So you begin on ${parts.total}. Rest fully and you are back to it.`,
-    hp.override
-      ? `Your table set a different number: the last step has ${hp.override} typed into Max HP, so that is what the sheet will use.`
-      : "Your table can set a different number instead. The last step takes a Max HP override, and the builder stops suggesting once you type one.",
+    ...(kept
+      ? [`This character was saved with ${maxHp}, and keeps that number while its level and Constitution stay as they were.`]
+      : []),
   ];
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title="How your health is worked out" width="w-[min(94vw,26rem)]">
@@ -196,14 +201,19 @@ export function HpExplainerDialog({
           index={later ? 3 : 2}
           tone="result"
           label={later ? "Max hp" : "Starting hp"}
-          value={String(parts.total)}
-          note="full health"
+          value={String(maxHp)}
+          note={kept ? "as saved" : "full health"}
         />
       </div>
       <p className="mb-3.5 text-center font-mono text-[13px] text-amber-300">{sum}</p>
       {parts.bonusPerLevel ? (
-        <p className="mb-3 text-center font-mono text-[10.5px] text-stone-500">
-          Includes +{parts.bonusPerLevel} per level from your lineage.
+        <p className="mb-3 text-center font-mono text-[0.6875rem] text-stone-500">
+          Includes +{parts.bonusPerLevel} per level from your lineage and feats.
+        </p>
+      ) : null}
+      {parts.featureHp ? (
+        <p className="mb-3 text-center font-mono text-[0.6875rem] text-stone-500">
+          Includes +{parts.featureHp} from Draconic Resilience.
         </p>
       ) : null}
       <ol className="flex flex-col gap-[7px]">
@@ -213,7 +223,7 @@ export function HpExplainerDialog({
             style={stagger(index, 80)}
             className="creator-cascade flex items-start gap-2.5 rounded-[9px] border border-stone-700/50 bg-stone-950/60 px-2.5 py-2"
           >
-            <span className="flex size-[19px] shrink-0 items-center justify-center rounded-full border border-amber-500/40 font-mono text-[9.5px] text-amber-300">
+            <span className="flex size-[19px] shrink-0 items-center justify-center rounded-full border border-amber-500/40 font-mono text-[0.6875rem] text-amber-300">
               {index + 1}
             </span>
             <span className="font-serif text-[12.5px] leading-snug text-stone-300">{text}</span>
@@ -230,7 +240,7 @@ export function HpExplainerDialog({
 }
 
 // The labelled button under the abilities summary, and the bare "?" beside
-// the Max HP field on the last step: two doors to the same explainer.
+// the Max HP line on the last step: two doors to the same explainer.
 export function HpExplainerButton({ hp, compact = false }: { hp: HpExplainerInput; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
@@ -239,7 +249,7 @@ export function HpExplainerButton({ hp, compact = false }: { hp: HpExplainerInpu
         <HelpDot label="How your health is worked out" onClick={() => setOpen(true)} className="-my-2" />
       ) : (
         <button type="button" onClick={() => setOpen(true)} className={cn(ui.btnSmall, "text-xs")}>
-          <span className="flex size-[15px] items-center justify-center rounded-full border border-amber-500/50 font-mono text-[9px] text-amber-300">
+          <span className="flex size-[15px] items-center justify-center rounded-full border border-amber-500/50 font-mono text-[0.6875rem] text-amber-300">
             ?
           </span>
           How is my health worked out?

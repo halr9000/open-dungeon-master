@@ -15,6 +15,7 @@ import type { SummonForm } from "@/lib/srd/summon-forms";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { summonRecord } from "@/lib/dm/summon-rules";
 import { removeSummon, spawnSummons, summonsOf } from "@/lib/dm/summon-store";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export const STEEL_DEFENDER = "Steel Defender";
 
@@ -50,10 +51,10 @@ export function summonSteelDefender(
   campaign: Campaign,
   sheet: CharacterSheet,
   artificerLevel: number,
-): { error: string } | { result: Record<string, unknown> } {
+): ToolError | { result: Record<string, unknown> } {
   const encounter = getActiveEncounter(campaign.id);
   if (encounter && encounter.status === "active" && (encounter.kind ?? "fight") === "fight") {
-    return { error: `${sheet.name}'s steel defender is built at the end of a long rest, or rebuilt after the fight; it cannot be made in the middle of one. Nothing was spent.` };
+    return { error: `${sheet.name}'s steel defender is built at the end of a long rest, or rebuilt after the fight; it cannot be made in the middle of one. Nothing was spent.`, refused: "rules" };
   }
   const replaced = summonsOf(campaign.id, sheet.id, STEEL_DEFENDER);
   for (const old of replaced) {

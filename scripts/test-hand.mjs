@@ -292,7 +292,7 @@ test("a spent slot level upcasts to the next one, and no slots dims the card", (
   assert.equal(word.intent.slotLevel, 2);
   const dry = caster({ spellcasting: { ability: "int", slots: { 1: { max: 4, used: 4 } }, prepared: ["Healing Word", "Fire Bolt"], known: [] } });
   const cards = deriveHand(dry, FRESH_TURN, { spells: FACTS });
-  assert.match(byId(cards, "spell:healing word").disabled, /no free level 1 spell slot/);
+  assert.match(byId(cards, "spell:healing word").disabled, /no spell slot of level 1 or higher left for Healing Word/);
   assert.equal(byId(cards, "spell:healing word").spent, true);
   assert.equal(byId(cards, "spell:fire bolt").disabled, null);
 });
@@ -390,7 +390,7 @@ test("a condition that forbids acting stops every card but End turn", () => {
 test("it is somebody else's turn: the hand can be read, not played", () => {
   const cards = deriveHand(sheet({ equipment: [item("Longsword")] }), { ...FRESH_TURN, myTurn: false, currentName: "Talia" });
   // canAct's own sentence (src/lib/dm/can-act.ts).
-  assert.ok(cards.every((card) => /^It is Talia's turn, not Kael's\. Off their own turn a character can only use their reaction\.$/.test(card.disabled)));
+  assert.ok(cards.every((card) => /^It is Talia's turn, not Kael's\. Off their own turn a character can only use their reaction\. What they declared waits for their turn\.$/.test(card.disabled)));
 });
 
 test("a character at 0 hit points cannot act", () => {

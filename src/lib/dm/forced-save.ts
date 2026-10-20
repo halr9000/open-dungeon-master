@@ -23,6 +23,7 @@ import { allySaveAura } from "@/lib/dm/aura";
 import { mergeAdvantage, removeConditions, rollDerivation } from "@/lib/dm/condition-logic";
 import { effectOutcome, rollEffectExtras } from "@/lib/dm/effect-tools";
 import { resolveRollExpression, type RollArgs } from "@/lib/dm/rolls";
+import type { SaveAgainst } from "@/lib/dm/roll-about";
 import { INSPIRATION_SPEND, spendInspirationCounter } from "@/lib/dm/roll-riders";
 import { inDirectSunlight } from "@/lib/dm/sunlight";
 import { obscuredFor } from "@/lib/dm/zone-rules";
@@ -181,7 +182,8 @@ export function rollCharacterSave(
   ability: SaveAbility,
   dc: number,
   detail: string,
-  against?: string,
+  // What the save resists, for the traits keyed to it (src/lib/dm/roll-about.ts).
+  resists?: SaveAgainst,
   // The creature forcing the save, for the features that answer it
   // (Supernatural Defense against the Monster Slayer's prey).
   from?: EncounterEnemy | null,
@@ -196,14 +198,14 @@ export function rollCharacterSave(
   const sheet = getSheetById(stale.id) ?? stale;
   const shieldSave = single && ability === "dex" ? shieldMasterSaveBonus(sheet) : 0;
   // Diehard: advantage against what would exhaust them.
-  const diehard = diehardSaveAdvantage(sheet, `${detail} ${against ?? ""}`);
+  const diehard = diehardSaveAdvantage(sheet, resists?.against);
   const claimed = claim ?? (diehard ? { advantage: "advantage" as const, reason: "Diehard: advantage against exhaustion" } : null);
   const resolved = resolveRollExpression(
     {
       kind: "saving_throw",
       ability,
       dc,
-      ...(against ? { against } : {}),
+      ...resists,
       ...(claimed ? { advantage: claimed.advantage, advantageReason: claimed.reason } : {}),
     } as RollArgs,
     sheet,
@@ -301,7 +303,7 @@ export function rollEnemySave(
   const worn = enemyExhaustion(enemy.conditions) >= 3;
   const advantage = mergeAdvantage([
     ...(worn ? ["disadvantage" as const] : []),
-    derivation.advantage,
+    ...derivation.sources,
     ...(effect.advantage ? ["advantage" as const] : []),
     ...(effect.disadvantage ? ["disadvantage" as const] : []),
     ...(resistsMagic ? ["advantage" as const] : []),

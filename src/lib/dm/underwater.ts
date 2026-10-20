@@ -17,8 +17,11 @@ import { getActiveBoard } from "@/lib/db/encounters";
 import { TERRAIN, tileAt } from "@/lib/battlemap/types";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
 
-const MELEE_UNDERWATER = /\b(dagger|javelin|shortsword|spear|trident)s?\b/i;
-const RANGED_UNDERWATER = /\b(crossbow|net|javelin|spear|trident|dart)s?\b/i;
+// The SRD weapons each rule names, by their rows' names (src/lib/srd/
+// weapons.ts): the weapon an attack swings as, never words in the name it is
+// carried under.
+const MELEE_UNDERWATER = ["Dagger", "Javelin", "Shortsword", "Spear", "Trident"];
+const RANGED_UNDERWATER = ["Hand Crossbow", "Light Crossbow", "Heavy Crossbow", "Net", "Javelin", "Spear", "Trident", "Dart"];
 
 export type UnderwaterSwing = { disadvantage: boolean; misses: boolean; note: string | null };
 
@@ -26,7 +29,9 @@ const CLEAR: UnderwaterSwing = { disadvantage: false, misses: false, note: null 
 
 // One weapon attack made by a creature under the water. Pure.
 export function underwaterSwing(input: {
+  // The name it is carried under, for the note, and the SRD weapon it is.
   weapon: string;
+  base: string | undefined;
   // The swing is a melee one (a thrown weapon used in reach is melee).
   melee: boolean;
   // The attacker has a swimming speed (a stat block's swim, a feature's).
@@ -39,14 +44,14 @@ export function underwaterSwing(input: {
     return CLEAR;
   }
   if (input.melee) {
-    return input.swims || MELEE_UNDERWATER.test(input.weapon)
+    return input.swims || MELEE_UNDERWATER.includes(input.base ?? "")
       ? CLEAR
       : { disadvantage: true, misses: false, note: `underwater: a ${input.weapon} swung without a swimming speed is at disadvantage` };
   }
   if (input.beyondNormal) {
     return { disadvantage: false, misses: true, note: `underwater: a ranged attack past the ${input.weapon}'s normal range misses` };
   }
-  return RANGED_UNDERWATER.test(input.weapon)
+  return RANGED_UNDERWATER.includes(input.base ?? "")
     ? CLEAR
     : { disadvantage: true, misses: false, note: `underwater: a ${input.weapon} shot through water is at disadvantage` };
 }
@@ -74,9 +79,10 @@ export function resistLineFor(campaignId: string, enemy: { id: string; stats: { 
 }
 
 // A character's ranged weapon attack from under the water at a target past
-// its normal range: it would miss, so it is refused before anything is
-// spent. Null when the rule does not apply.
-export function underwaterRangeProblem(
+// its normal range "automatically misses" (SRD 5.1, Underwater Combat): the
+// attack is made, and spent, and misses. The reason, or null when the rule
+// does not apply.
+export function underwaterRangeMiss(
   campaignId: string,
   encounterId: string,
   attackerId: string,
@@ -91,5 +97,5 @@ export function underwaterRangeProblem(
   if (!ranged || apart <= profile.rangeTiles) {
     return null;
   }
-  return `Underwater, a ranged weapon attack past the weapon's normal range misses: ${target.displayName} is ${apart * 5} ft away and the ${profile.weapon}'s normal range is ${profile.rangeTiles * 5} ft. Nothing was spent; close the distance or use a melee weapon.`;
+  return `Underwater, a ranged weapon attack past the weapon's normal range misses: ${target.displayName} is ${apart * 5} ft away and the ${profile.weapon}'s normal range is ${profile.rangeTiles * 5} ft.`;
 }

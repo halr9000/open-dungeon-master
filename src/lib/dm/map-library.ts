@@ -392,6 +392,7 @@ export function captureBoardIntoLibrary(
       backdrop: map.backdrop,
       scene: { doors: map.doors, labels: map.labels, zones: map.zones, overlayPath: map.overlayPath },
       skin: map.skin,
+      addonView: map.addonView,
     }),
   };
 }
@@ -446,6 +447,7 @@ export function deployPreparedMap(campaign: Campaign, mapId: string): LibraryOut
       overlayPath: prepared.overlayPath,
     },
     skin: prepared.skin,
+    addonView: prepared.addonView,
   });
   setBattleMapBackdrop(live.id, prepared.backdrop?.path ?? "", prepared.backdrop?.transform ?? null);
   restandOnPrepared(live.id, prepared);
@@ -526,6 +528,7 @@ export function openSceneOnPreparedMap(
     },
     outdoors: prepared.outdoors,
     skin: prepared.skin,
+    addonView: prepared.addonView,
   });
   const spawns = partySpawnTiles(prepared.terrain, prepared.width, prepared.height, sheets.length);
   const fallback: XY = spawns[0] ?? { x: 1, y: 1 };

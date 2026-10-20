@@ -14,6 +14,9 @@
 
 import type { NarrationClaim } from "./claims-logic.ts";
 import { THIS_MOMENT_HEADING } from "../prompt-boundary.ts";
+import { textKey, WORD_CHAR } from "../language/text-logic.ts";
+import { withoutLeadingStopWords } from "../language/language.ts";
+import type { TableLanguage } from "../schemas/game-settings-options.ts";
 
 // ---------------------------------------------------------------------------
 // Part 1: the contract block
@@ -44,7 +47,7 @@ The server is the rules engine and you are its voice. It rolls the dice, adjudic
 - The weather and the hour. The clock and the sky in GAME STATE are what the world is doing; time passes through travel, rests and pass_time, and the sky rolls with it. Never narrate a dusk or a storm the state does not show.
 - Faction standing. The party's reputation with each faction moves only through adjust_reputation; a member's welcome and the DCs they set follow it.
 - Shop prices. What a shelf asks and pays is the server's; buy_item, sell_item and haggle move the coin and the goods. Never quote a price of your own.
-If a tool result has not come back, the thing it decides has NOT happened yet: call the tool, or write around it. If a tool refuses on the rules (refused "rules"), the attempt failed, and that failure is what you narrate; if it marks the error retry, the mistake is in your call, so fix the call and send it again instead of narrating it. If an expected number is simply absent, proceed without it and never fabricate the value. Enemy stat-block numbers exist so you can run the fight and are never spoken aloud.`;
+If a tool result has not come back, the thing it decides has NOT happened yet: call the tool, or write around it. If a tool refuses on the rules (refused "rules"), the game says no and nothing was tried: tell them plainly why and what they can do, never as a spell that fizzles or an act that fails unless the result says the attempt was made; if it marks the error retry, nothing happened and the fix is yours: send the call again fixed, or, when it says to ask the player, ask and wait, never choosing for them, or go on without the part it names and tell them that part did not apply, and never narrate the refused call. If an expected number is simply absent, proceed without it and never fabricate the value. Enemy stat-block numbers exist so you can run the fight and are never spoken aloud.`;
 
 // Appended to the contract only when the table leaves the guard on, so the
 // prompt never promises a check that is switched off.
@@ -118,6 +121,10 @@ export type ResolvedOutcomes = {
   // one (dm/claims-logic.ts checkClaims).
   spends: Array<{ characterId: string; name: string }>;
   toolResultCount: number;
+  // Every creature this turn's own results named (an attack, a spell's save,
+  // an area's damage, a refused swing), by its key: a blow the prose lands on
+  // anyone else had no tool behind it.
+  touched?: Set<string>;
 };
 
 function parseJsonObject(raw: unknown): Record<string, unknown> | null {
@@ -180,16 +187,14 @@ export function collectExchanges(conversation: readonly GuardMessage[]): ToolExc
 }
 
 // "Goblin 2" and "the Goblin" are the same creature to prose; the trailing
-// designator and any article are dropped so the matchers can look for the word
-// a narrator would actually write.
-export function normalizeCreatureName(raw: string): string {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/^the\s+/, "")
+// designator and any article (the table language's) are dropped so the
+// matchers can look for the word a narrator would actually write.
+export function normalizeCreatureName(raw: string, language: TableLanguage): string {
+  const key = textKey(raw)
     .replace(/\s+(?:#\s*\d+|\d+|[a-z])$/i, "")
     .replace(/\s+/g, " ")
     .trim();
+  return withoutLeadingStopWords(key, language);
 }
 
 // Models decorate spell names freely ("Hunter's Mark" with a curly apostrophe,
@@ -197,13 +202,7 @@ export function normalizeCreatureName(raw: string): string {
 // would read as a spell nobody paid for. Everything is folded to one shape
 // before either side is compared.
 export function normalizeSpellName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[‘’]/g, "'")
-    .replace(/\([^)]*\)/g, " ")
-    .replace(/[^a-z' ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return textKey(raw.replace(/\([^)]*\)|\d+/g, " "));
 }
 
 function hpPair(raw: unknown): { hp: number; maxHp: number } | null {
@@ -259,8 +258,9 @@ function recordCreature(
   creatures: Map<string, CreatureFact>,
   display: string,
   update: { hp?: number | null; maxHp?: number | null; dead?: boolean; downed?: boolean },
+  language: TableLanguage,
 ) {
-  const key = normalizeCreatureName(display);
+  const key = normalizeCreatureName(display, language);
   if (key.length < 3) {
     return;
   }
@@ -293,10 +293,10 @@ function recordCreature(
 
 // Creature state hides in nested payloads too (aoe_damage lists a row per
 // target), so this walks the whole result rather than the top level only.
-function walkCreatures(value: unknown, creatures: Map<string, CreatureFact>) {
+function walkCreatures(value: unknown, creatures: Map<string, CreatureFact>, language: TableLanguage) {
   if (Array.isArray(value)) {
     for (const entry of value) {
-      walkCreatures(entry, creatures);
+      walkCreatures(entry, creatures, language);
     }
     return;
   }
@@ -321,7 +321,7 @@ function walkCreatures(value: unknown, creatures: Map<string, CreatureFact>) {
       // A `dropped` flag next to a `name` belongs to that name only when no
       // separate target is named in the same payload.
       downed: downed && !target,
-    });
+    }, language);
   }
   if (target && (targetHp || downed)) {
     recordCreature(creatures, target, {
@@ -329,11 +329,11 @@ function walkCreatures(value: unknown, creatures: Map<string, CreatureFact>) {
       maxHp: targetHp?.maxHp ?? null,
       dead: dead && !name,
       downed,
-    });
+    }, language);
   }
   for (const entry of Object.values(record)) {
     if (entry && typeof entry === "object") {
-      walkCreatures(entry, creatures);
+      walkCreatures(entry, creatures, language);
     }
   }
 }
@@ -366,7 +366,8 @@ const ATTACK_TOOLS = new Set(["pc_attack", "cast_at_enemy", "pet_attack"]);
 
 export function resolveOutcomes(
   exchanges: readonly ToolExchange[],
-  live: LiveState | null = null,
+  live: LiveState | null,
+  language: TableLanguage,
 ): ResolvedOutcomes {
   const attacks = new Map<string, AttackFact>();
   const creatures = new Map<string, CreatureFact>();
@@ -408,7 +409,7 @@ export function resolveOutcomes(
       spends.push({ characterId: args.characterId, name: spent });
     }
     walkNumbers(result, numbers, damageNumbers);
-    walkCreatures(result, creatures);
+    walkCreatures(result, creatures, language);
 
     if (typeof result.hit === "boolean") {
       const display =
@@ -417,7 +418,7 @@ export function resolveOutcomes(
           : typeof result.name === "string"
             ? result.name
             : "";
-      const key = normalizeCreatureName(display);
+      const key = normalizeCreatureName(display, language);
       if (key.length >= 3) {
         // A Multiattack routine resolves several swings inside one call; when
         // they disagree, no single clause about "the blow" can be checked.
@@ -445,12 +446,14 @@ export function resolveOutcomes(
     }
   }
 
+  const touched = new Set([...creatures.keys(), ...attacks.keys()]);
+
   if (live) {
     // How many live enemies answer to each name a narrator would write: two
     // goblins make "the goblin" nobody in particular.
     const perKey = new Map<string, number>();
     for (const enemy of live.enemies) {
-      const key = normalizeCreatureName(enemy.name);
+      const key = normalizeCreatureName(enemy.name, language);
       perKey.set(key, (perKey.get(key) ?? 0) + 1);
     }
     // A refused attack landed nothing. It is a fact about the target only
@@ -458,7 +461,10 @@ export function resolveOutcomes(
     // hit is the truth then).
     for (const id of refusedTargets) {
       const enemy = live.enemies.find((entry) => entry.id === id);
-      const key = enemy ? normalizeCreatureName(enemy.name) : "";
+      const key = enemy ? normalizeCreatureName(enemy.name, language) : "";
+      if (enemy && key.length >= 3) {
+        touched.add(key);
+      }
       if (enemy && key.length >= 3 && !attacks.has(key)) {
         attacks.set(key, { display: enemy.name, hit: false, ambiguous: (perKey.get(key) ?? 0) > 1 });
       }
@@ -473,7 +479,7 @@ export function resolveOutcomes(
         hp: enemy.hp,
         maxHp: enemy.maxHp,
         dead: enemy.status === "dead",
-      });
+      }, language);
     }
   }
 
@@ -502,6 +508,7 @@ export function resolveOutcomes(
     spells,
     spends,
     toolResultCount,
+    touched,
   };
 }
 
@@ -557,7 +564,16 @@ export function ruleClaims(claims: readonly NarrationClaim[], outcomes: Resolved
       case "hit":
       case "miss": {
         const attack = outcomes.attacks.get(claim.target);
-        if (!attack || attack.ambiguous) {
+        if (!attack) {
+          // In a fight, a blow on an enemy no tool touched this turn was
+          // never rolled at all.
+          const unrolled = unrolledBlowOn(claim.target, outcomes);
+          if (unrolled) {
+            add({ kind: claim.kind, detail: `no attack on ${unrolled} was rolled this turn, but the narration resolves one`, clause: claim.quote });
+          }
+          break;
+        }
+        if (attack.ambiguous) {
           break;
         }
         if (claim.kind === "hit" && !attack.hit) {
@@ -603,7 +619,7 @@ export function ruleClaims(claims: readonly NarrationClaim[], outcomes: Resolved
       // accounted for. Enemy casters are never claims (their spells run
       // through other tools and spend nothing).
       case "cast":
-        if (!outcomes.spells.has(claim.spell)) {
+        if (!outcomes.spells.has(normalizeSpellName(claim.spell))) {
           add({
             kind: "spell",
             detail: `${claim.caster} casts ${claim.spell}, but no spell slot or resource was spent for it this turn`,
@@ -621,8 +637,8 @@ export function ruleClaims(claims: readonly NarrationClaim[], outcomes: Resolved
 
 // The ground truth the claims are ruled against: the turn's tool exchanges
 // and the encounter as it stands.
-export function guardOutcomes(conversation: readonly GuardMessage[], live: LiveState | null): ResolvedOutcomes {
-  return resolveOutcomes(collectExchanges(conversation), live);
+export function guardOutcomes(conversation: readonly GuardMessage[], live: LiveState | null, language: TableLanguage): ResolvedOutcomes {
+  return resolveOutcomes(collectExchanges(conversation), live, language);
 }
 
 // The correction the model is asked to make. Kept here so the wording is
@@ -662,8 +678,8 @@ export const FAKE_ENCOUNTER_PROMPT = `[System] Your narration announced a fight 
 // ---------------------------------------------------------------------------
 
 // A whole number standing on its own, never a piece of an id or of dice
-// notation ("2d6", "a8b1-...").
-const BARE_NUMBER = /(?<![\w.-])\d{1,3}(?![\w-])/g;
+// notation ("2d6", "a8b1-...") or of a word in any script.
+const BARE_NUMBER = new RegExp(`(?<![${WORD_CHAR}_.-])\\d{1,3}(?![${WORD_CHAR}_-])`, "gu");
 
 // The model sometimes resolves a blow it was supposed to ask for: "The
 // Resonance Weaver attacks Alden with Resonance Blast. Hit! 8 damage." with
@@ -674,8 +690,8 @@ const BARE_NUMBER = /(?<![\w.-])\d{1,3}(?![\w-])/g;
 // healing figure on a turn whose tools rolled none, that nothing the model
 // was shown carries either (a table note for a blow the server dealt itself,
 // an earlier line being recalled). Returns the claim's quote, or null.
-export function unrolledFigure(claims: readonly NarrationClaim[], conversation: readonly GuardMessage[]): string | null {
-  const outcomes = resolveOutcomes(collectExchanges(conversation));
+export function unrolledFigure(claims: readonly NarrationClaim[], conversation: readonly GuardMessage[], language: TableLanguage): string | null {
+  const outcomes = resolveOutcomes(collectExchanges(conversation), null, language);
   // The turn rolled damage: a figure that misquotes it is the rewrite's to
   // fix, and sending the model back to the tools would land the blow twice.
   if (outcomes.damageNumbers.length) {
@@ -707,6 +723,34 @@ export function unrolledFigure(claims: readonly NarrationClaim[], conversation: 
 
 // What the turn loop sends back for it. Kept beside the other correction
 // text so the wording is testable without a model call.
+// The enemy a hit or a miss names, when a fight runs and nothing this turn
+// touched it: the prose resolved an attack no tool rolled (the default local
+// model, asked to stab a bandit, wrote the stab landing and a second
+// character's blow besides). Names are keyed the way the guard keys them, so
+// Bandit 1 and Bandit 2 are both "bandit": a blow on one is unrolled only
+// when the turn touched none of them, whichever the prose meant. Null when it
+// touched one, when the creature is dead, or when no fight runs.
+function unrolledBlowOn(target: string, outcomes: ResolvedOutcomes): string | null {
+  if (!outcomes.liveFight || !outcomes.touched || outcomes.touched.has(target)) {
+    return null;
+  }
+  const creature = outcomes.creatures.get(target);
+  return creature && !creature.dead ? creature.display : null;
+}
+
+export function unrolledBlow(claims: readonly NarrationClaim[], outcomes: ResolvedOutcomes): string | null {
+  for (const claim of claims) {
+    if ((claim.kind === "hit" || claim.kind === "miss") && !outcomes.attacks.has(claim.target) && unrolledBlowOn(claim.target, outcomes)) {
+      return claim.quote;
+    }
+  }
+  return null;
+}
+
+export function unrolledBlowPrompt(clause: string): string {
+  return `[System] Your narration resolves an attack that no tool rolled this turn ("${clause}"), so it has not happened: no dice were rolled and no hit points changed. Resolve only the attack the acting player declared, with its tool, and narrate from the result: pc_attack with their characterId, the targetEnemyId and their weapon (move_token first when the target is out of reach), cast_at_enemy for a spell; an enemy acts only on its own turn, through enemy_attack. Never act for a character whose player has not declared an action. If the attack cannot happen yet (out of reach, not their turn), say so instead of resolving it.`;
+}
+
 export function unrolledDamagePrompt(clause: string): string {
   return `[System] Your narration states a damage or healing figure that no tool rolled this turn ("${clause}"), so it has not happened: no hit points changed, and the sheets the table reads do not show it. If that blow belongs in the story, resolve it now with its tool and narrate from the result: start_encounter first when no fight is running, then the attack or spell tool on the turn of whoever acts; apply_hazard or apply_damage for a trap, a fall or anything outside a fight. Otherwise write the moment again without it. Never state a hit, a miss or a figure the server did not return.`;
 }

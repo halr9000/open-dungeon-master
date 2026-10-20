@@ -23,7 +23,9 @@ const {
   lineageFamily,
   lineageTagline,
   parseTrait,
+  slidePosition,
   srdRaceFor,
+  swipeStep,
   traitLines,
   wrapIndex,
 } = await import("../src/app/characters/builder/lineage.ts");
@@ -209,16 +211,71 @@ test("every bundled race resolves to its own family plate, in all three genders"
 test("pack lineages borrow the family in their slug or name, else the adventurer", () => {
   assert.equal(lineageFamily("dwarf"), "dwarf");
   assert.equal(lineageFamily("odm-drow"), "drow");
-  assert.equal(lineageFamily("humanhalf-elf-heritage"), "half-elf");
-  assert.equal(lineageFamily("elfshadow-fey-heritage"), "elf");
-  assert.equal(lineageFamily("dwarf-chassis"), "warforged");
+  assert.equal(lineageFamily("humanhalf-elf-heritage"), "darakhul-human");
+  assert.equal(lineageFamily("elfshadow-fey-heritage"), "darakhul-elf");
+  assert.equal(lineageFamily("dwarf-chassis"), "gearforged-dwarf");
   assert.equal(lineageFamily("stoor-halfling"), "halfling");
-  assert.equal(lineageFamily("orc"), "half-orc");
-  assert.equal(lineageFamily("catfolk"), "tabaxi");
+  assert.equal(lineageFamily("orc"), "orc");
+  assert.equal(lineageFamily("x", "Orc"), "orc");
+  assert.equal(lineageFamily("half-orc"), "half-orc");
+  assert.equal(lineageFamily("x", "Half-Orc"), "half-orc");
+  assert.equal(lineageFamily("deep_gnome"), "deep-gnome");
+  assert.equal(lineageFamily("x", "Gnome (Deep)"), "deep-gnome");
+  assert.equal(lineageFamily("x", "Deep Gnome"), "deep-gnome");
+  assert.equal(lineageFamily("x", "Gnome (Rock)"), "gnome");
+  for (const element of ["air", "earth", "fire", "water"]) {
+    assert.equal(lineageFamily(`${element}_genasi`), `genasi-${element}`);
+    assert.equal(lineageFamily("x", `Genasi (${element[0].toUpperCase()}${element.slice(1)})`), `genasi-${element}`);
+  }
+  assert.equal(lineageFamily("genasi"), "genasi");
+  assert.equal(lineageFamily("x", "Genasi"), "genasi");
+  assert.equal(lineageFamily("catfolk"), "catfolk");
+  assert.equal(lineageFamily("tabaxi"), "tabaxi");
   assert.equal(lineageFamily("reskinned", "Hill Dwarf"), "dwarf");
-  assert.equal(lineageFamily("mushroomfolk"), null);
-  const fallback = lineageArt("mushroomfolk", "Mushroomfolk", "");
+  assert.equal(lineageFamily("spacefolk", "Spacefolk"), null);
+  const fallback = lineageArt("spacefolk", "Spacefolk", "");
   assert.ok(exists(fallback), `${fallback} exists`);
+});
+
+// Every Tome of Heroes row in both Open5e shapes: the v1 slug and the v2
+// "toh_" key, by id alone and by an unknown id carrying only the name.
+const TOH = {
+  alseid: "alseid", catfolk: "catfolk", malkin: "malkin", pantheran: "pantheran",
+  darakhul: "darakhul-human", "derro-heritage": "darakhul-derro", "dragonborn-heritage": "darakhul-dragonborn",
+  "drow-heritage": "darakhul-drow", "dwarf-heritage": "darakhul-dwarf", "elfshadow-fey-heritage": "darakhul-elf",
+  "gnome-heritage": "darakhul-gnome", "halfling-heritage": "darakhul-halfling", "humanhalf-elf-heritage": "darakhul-human",
+  "kobold-heritage": "darakhul-kobold", ravenfolk: "darakhul-ravenfolk", "tiefling-heritage": "darakhul-tiefling",
+  "trollkin-heritage": "darakhul-trollkin",
+  derro: "derro", "far-touched": "derro", mutated: "derro", uncorrupted: "derro",
+  delver: "drow", "fever-bit": "drow", purified: "drow",
+  erina: "erina", gearforged: "warforged", "dwarf-chassis": "gearforged-dwarf", "gnome-chassis": "gearforged-gnome",
+  "kobold-chassis": "gearforged-kobold", "human-chassis": "warforged",
+  minotaur: "minotaur", "bhain-kwai": "minotaur", boghaid: "minotaur",
+  mushroomfolk: "mushroomfolk", "acid-cap": "mushroomfolk", favored: "mushroomfolk", morel: "mushroomfolk",
+  satarre: "satarre", shade: "shade",
+};
+
+test("every Tome of Heroes row has its own plate, by v1 slug and v2 key", () => {
+  for (const [slug, family] of Object.entries(TOH)) {
+    assert.equal(lineageFamily(slug), family, slug);
+    assert.equal(lineageFamily(`toh_${slug}`), family, `toh_${slug}`);
+    for (const gender of ["", "Male", "Female"]) {
+      assert.ok(exists(lineageArt(`toh_${slug}`, "", gender)), `${slug}/${gender} exists`);
+    }
+  }
+  assert.equal(lineageFamily("toh_drow"), "drow");
+});
+
+test("heritage and chassis names win over the living race's word", () => {
+  assert.equal(lineageFamily("x", "Darakhul (Drow Heritage)"), "darakhul-drow");
+  assert.equal(lineageFamily("x", "Darakhul (Ravenfolk Heritage)"), "darakhul-ravenfolk");
+  assert.equal(lineageFamily("x", "Darakhul (Human/Half-Elf Heritage)"), "darakhul-human");
+  assert.equal(lineageFamily("x", "Darakhul (Elf/Shadow Fey Heritage)"), "darakhul-elf");
+  assert.equal(lineageFamily("x", "Gearforged (Kobold Chassis)"), "gearforged-kobold");
+  assert.equal(lineageFamily("x", "Ravenfolk"), "kenku");
+  assert.equal(lineageFamily("x", "Drow (Fever-Bit)"), "drow");
+  assert.equal(lineageFamily("x", "Catfolk (Malkin)"), "malkin");
+  assert.equal(lineageFamily("x", "Minotaur (Bhain Kwai)"), "minotaur");
 });
 
 test("every class card has a plate that exists, and a neutral look still shows the class", () => {
@@ -233,6 +290,45 @@ test("every class card has a plate that exists, and a neutral look still shows t
   }
   // A pack class nobody painted falls back to the adventurer, not a 404.
   assert.ok(exists(classArt("marshal", "")));
+});
+
+// Q12. The search reads what the card prints, not only its name.
+test("search matches the tagline and the chips a card prints", () => {
+  const cards = [
+    {
+      label: "Core",
+      options: [
+        { id: "fighter", name: "Fighter", tagline: "Core class", chips: ["Easy to learn", "Tank", "d10"] },
+        { id: "paladin", name: "Paladin", tagline: "Like Fighter + Cleric · CHA caster", chips: ["Tank", "Healer", "d10"] },
+        { id: "rogue", name: "Rogue", tagline: "Core class", chips: ["Striker", "d8"] },
+      ],
+    },
+  ];
+  const ids = (query) => filterGroups(cards, query).flatMap((group) => group.options.map((option) => option.id));
+  assert.deepEqual(ids("tank"), ["fighter", "paladin"], "a role chip");
+  assert.deepEqual(ids("healer tank"), ["paladin"], "every word, across chips");
+  assert.deepEqual(ids("cleric"), ["paladin"], "the plays-like tagline");
+  assert.deepEqual(ids("easy"), ["fighter"], "the easy-to-learn chip");
+  assert.deepEqual(ids("D8"), ["rogue"], "case does not matter");
+  // A card with no tagline or chips still searches by name.
+  assert.deepEqual(filterGroups([{ label: null, options: [{ id: "elf", name: "Elf" }] }], "elf").length, 1);
+});
+
+// Q6. A step names the lineage it reached.
+test("the carousel's position names the lineage, and the seal only where it applies", () => {
+  assert.equal(slidePosition({ name: "Tiefling", recommended: true }, 2, 40), "Tiefling, 3 of 40, recommended");
+  assert.equal(slidePosition({ name: "Dwarf", recommended: false }, 0, 9), "Dwarf, 1 of 9");
+  assert.equal(slidePosition({ name: "Elf" }, 8, 9), "Elf, 9 of 9");
+});
+
+// Q14. A swipe pages; a tap, a nudge or a scroll does not.
+test("a sideways swipe pages the carousel and nothing else does", () => {
+  assert.equal(swipeStep(-120, 10), 1, "a swipe left goes on");
+  assert.equal(swipeStep(120, -10), -1, "a swipe right goes back");
+  assert.equal(swipeStep(0, 0), 0, "a tap");
+  assert.equal(swipeStep(-30, 0), 0, "a nudge");
+  assert.equal(swipeStep(-80, 200), 0, "mostly a scroll");
+  assert.equal(swipeStep(-80, 60), 0, "too diagonal to be meant");
 });
 
 console.log(`test-lineage-cards: ${passed} passed`);

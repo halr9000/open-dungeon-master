@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@/lib/model-client";
-import { markToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // What the table reads when a DM turn ends with no narration at all.
 //
@@ -78,11 +78,12 @@ function lastActionRefusal(conversation: ChatMessage[]): string | null {
     } catch {
       continue;
     }
-    const error = (parsed as { error?: unknown } | null)?.error;
-    // Only the rules saying no is the player's business. An argument fault
-    // (a wrong id the model sent) coaches the model and means nothing at
-    // the table, and a cap on the turn is not their character failing.
-    if (typeof error === "string" && error.trim() && markToolError(parsed as Record<string, unknown>).refused === "rules") {
+    const { error, refused } = (parsed ?? {}) as { error?: unknown; refused?: unknown };
+    // Only the rules saying no is the player's business. A retry (a wrong id
+    // the model sent, a choice to ask for) coaches the model and means
+    // nothing at the table, and a cap on the turn is not their character
+    // failing.
+    if (typeof error === "string" && error.trim() && refused === "rules") {
       return firstSentences(error);
     }
   }
@@ -94,10 +95,10 @@ function lastActionRefusal(conversation: ChatMessage[]): string | null {
 // now, and its slot level. No word list reads the message, so every table
 // language gets the same hint.
 function explainLooseAction(player: EmptyTurnPlayer): string {
-  const lower = player.text.trim().toLowerCase();
+  const lower = textKey(player.text);
   const named = [...player.spells]
     .sort((a, b) => b.length - a.length)
-    .find((spell) => lower.includes(spell.trim().toLowerCase()));
+    .find((spell) => lower.includes(textKey(spell)));
   if (!named) {
     return `The DM had no answer to that. Try again saying plainly what your character does, and to whom or what; for a spell, its name as it is on your sheet, the slot level and the target. ${CARDS_HINT}`;
   }

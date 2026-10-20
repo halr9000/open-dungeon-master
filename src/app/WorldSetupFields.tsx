@@ -124,7 +124,7 @@ export function WorldSetupFields({
               className={ui.input}
             />
             <span className="mt-1 block text-xs text-stone-500">
-              The DM is reminded of the relevant rules each turn. Editable later in Setup.
+              The DM is reminded of the relevant rules each turn. Editable later in the table&apos;s Settings.
             </span>
           </label>
 

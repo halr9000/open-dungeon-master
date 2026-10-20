@@ -464,6 +464,27 @@ await test("Spectral Defense: a reaction halves the damage of the attack that hi
   assert.equal(hp(walker), 56);
 });
 
+await test("Dampen Elements: a reaction gives resistance against the fire hit; on a creature that already resists fire it is taken and changes nothing.", async () => {
+  const druidic = hero({ class: "cleric", subclass: "Nature Domain", level: 6 });
+  const tiefling = hero({ class: "fighter", level: 6, race: "Tiefling" });
+  const fire = { stats: { attacks: [{ name: "Fire Lash", toHit: 4, damage: "1d6+2", type: "fire" }] } };
+  for (const [target, resists] of [[druidic, false], [tiefling, true]]) {
+    const [enemy] = await stage(target);
+    kit.setEnemy(enemy.id, fire);
+    fresh(target.id, { currentHp: 60, ac: 12, acOverride: true });
+    kit.place(druidic.id, 5, 4);
+    await enemyHits(enemy, target, [15, 6]);
+    assert.equal(hp(target), resists ? 56 : 52);
+    const out = await react(druidic, "Dampen Elements", target === druidic ? {} : { targetCharacterId: target.id });
+    assert.equal(out.ok, true, out.error);
+    assert.equal(hp(target), 56);
+    assert.ok(world.encounter().reactionsUsed.includes(druidic.id), "the reaction was not taken");
+    if (resists) {
+      assert.match(String(out.result.applied), /already resists fire damage/);
+    }
+  }
+});
+
 await test("Spirit Shield: a raging Ancestral Guardian's reaction takes 2d6 off an ally's hit.", async () => {
   const warden = hero({ class: "barbarian", subclass: "Path of the Ancestral Guardian", level: 6 });
   const friend = hero({ class: "fighter", level: 6 });

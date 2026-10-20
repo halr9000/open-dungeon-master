@@ -4,6 +4,7 @@
 // decides the attack these belong to.
 
 import { CURVING_SHOT } from "@/lib/srd/authored-economy";
+import { settleEnemyIncapacitation } from "@/lib/dm/enemy-incapacitation";
 import { storeBudget } from "@/lib/dm/turn-budget";
 import { untilTurnEnd } from "@/lib/dm/turn-end";
 import type { Campaign } from "@/lib/db/campaigns";
@@ -14,14 +15,17 @@ import { resourceLeft } from "@/lib/dm/attack-rules";
 import type { ManeuverPick } from "@/lib/dm/pc-attack-plan";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
-import { removeConditions, type ConditionMeta } from "@/lib/dm/condition-logic";
+import { isIncapacitated, removeConditions, type ConditionMeta } from "@/lib/dm/condition-logic";
 import { sizeRank } from "@/lib/bestiary/statblock";
 import { publishEncounter } from "@/lib/dm/enemy-damage";
 import { applyDmMutation } from "@/lib/dm/mutations";
 import { GRAPPLING_STRIKE, MANEUVERED, maneuverDieFor, maneuverUse, offSwingRefusal, type ManeuverUse } from "@/lib/dm/maneuver-rules";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-
-export { superiorityDie, maneuverDieFor } from "@/lib/dm/maneuver-rules";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { optionsOfKind } from "@/lib/srd/options";
+import { textKey } from "@/lib/language/text-logic";
+import type { WeaponMaterial } from "@/lib/dm/damage-logic";
+import { ammoKindForWeapon } from "@/lib/srd/ammunition";
 
 // The condition a maneuver's rider save decides, when it has one.
 export const MANEUVER_RIDERS: Array<{ match: RegExp; condition: string; save: "str" | "wis" }> = [
@@ -38,26 +42,30 @@ export function pickManeuver(
   sheet: CharacterSheet,
   asked: string | undefined,
   weaponAttack: boolean,
-): { refused: string } | { maneuver: ManeuverPick | null } {
+): { refused: ToolError } | { maneuver: ManeuverPick | null } {
   if (!asked?.trim()) {
     return { maneuver: null };
   }
   if (!weaponAttack) {
-    return { refused: "Maneuvers ride weapon attacks, not spells." };
+    return { refused: { error: "Maneuvers ride weapon attacks, not spells. Ask the player whether to cast it without the maneuver.", retry: true } };
   }
   const term = asked.trim().toLowerCase();
   const picks = sheet.features
     .map((feature) => feature.name)
-    .filter((name) => name.toLowerCase().startsWith("maneuver"));
+    .filter((name) => textKey(name).startsWith("maneuver"));
   const known = picks.some((name) => {
-    const bare = name.toLowerCase().replace(/^maneuver:\s*/, "");
-    return bare.includes(term) || term.includes(bare);
+    const bare = textKey(name.replace(/^maneuver:\s*/i, ""));
+    return bare.includes(textKey(asked)) || textKey(asked).includes(bare);
   });
   if (!known) {
+    const theirs = picks.length ? ` Their maneuvers: ${picks.join(", ")}.` : " They have no maneuver picks.";
+    // A maneuver the rules know that they did not pick rides an attack they
+    // can still make; a name nobody knows is the call's to fix, from their
+    // picks.
     return {
-      refused: `${sheet.name} knows no maneuver "${asked}".${
-        picks.length ? ` Their maneuvers: ${picks.join(", ")}.` : " They have no maneuver picks."
-      }`,
+      refused: optionsOfKind("maneuver").some((option) => textKey(option.n) === textKey(asked.replace(/^maneuver:\s*/i, "")))
+        ? { error: `${sheet.name} knows no maneuver "${asked}".${theirs} They can make the attack without it.`, retry: true }
+        : { error: `No maneuver called "${asked}" is known.${theirs} Send the one meant, by the name on the sheet.`, retry: true },
     };
   }
   // A reaction, a bonus action of its own or a check is not part of a swing.
@@ -69,9 +77,9 @@ export function pickManeuver(
   if (pool === null || pool.left < 1) {
     return {
       refused:
-        pool === null
-          ? `${sheet.name} has no Superiority Dice.`
-          : `${sheet.name} has 0/${pool.max} Superiority Dice left; ${asked.trim()} is not available until they rest. They can make the attack without it.`,
+        { error: pool === null
+          ? `${sheet.name} has no Superiority Dice. They can make the attack without the maneuver.`
+          : `${sheet.name} has 0/${pool.max} Superiority Dice left; ${asked.trim()} is not available until they rest. They can make the attack without it.`, retry: true },
     };
   }
   return {
@@ -107,9 +115,13 @@ export type OnHitSpends = {
 // `hitSpent`: the attacker's conditions the hit uses up (the smites);
 // `spell`: an attack spell whose rider lands on the hit.
 export type ParkedAttack = PendingAttack & {
+  // The wielded item's material (damage-logic.ts weaponMaterial).
+  material?: WeaponMaterial;
   onHit?: OnHitSpends;
   nonlethal?: boolean;
   hitSpent?: string[];
+  // The once-per-turn riders the hit spends (Sneak Attack): pc-attack-damage.ts claimHitRiders.
+  hitClaims?: string[];
   spell?: string;
   // A melee attack, which a monster's Parry answers (enemy-reactions.ts).
   melee?: boolean;
@@ -229,9 +241,10 @@ function markAttacker(campaign: Campaign, characterId: string, condition: string
 
 // An Arcane Archer's arrow missed: Curving Shot may reroll it at another
 // creature with the bonus action, this turn (authored-economy.ts).
-export function openCurvingShot(campaignId: string, sheet: CharacterSheet, enemyId: string, weapon: string): string | null {
-  const holds = sheet.features.some((feature) => feature.name.trim().toLowerCase() === "curving shot");
-  if (!holds || !/bow\b/i.test(weapon)) {
+export function openCurvingShot(campaignId: string, sheet: CharacterSheet, enemyId: string, base: string | undefined): string | null {
+  const holds = sheet.features.some((feature) => textKey(feature.name) === "curving shot");
+  // A bow is a weapon that fires arrows (src/lib/srd/ammunition.ts).
+  if (!holds || ammoKindForWeapon(base) !== "arrows") {
     return null;
   }
   const encounter = getActiveEncounter(campaignId);
@@ -288,6 +301,8 @@ export function stunningStrikeSave(
       ...fresh.conditionMeta,
       stunned: untilTurnEnd(monkId, { source: monkId }),
     });
+    // Stunned is out of action: its concentration and grapples end.
+    settleEnemyIncapacitation(fresh.id, isIncapacitated(fresh.conditions));
     publishEncounter(campaign.id);
   }
   return `Stunning Strike: ${fresh.displayName} fails the CON save (${save.autoFailed ? "automatic" : save.total} vs DC ${dc}) and is stunned until the end of the monk's next turn.`;

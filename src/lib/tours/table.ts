@@ -115,6 +115,18 @@ export const PLAYER_TOUR: TourStep[] = [
     prepare: "open-chat",
   },
   {
+    id: "settings",
+    title: "How this table is set up",
+    body: "Settings holds the table's settings in the same named groups the campaign creator used, each saying what is set inside before you open it. Whoever steers the story changes them there and the change reaches everyone at once; everyone else can read them.",
+    anchors: ["tab-settings"],
+  },
+  {
+    id: "more",
+    title: "Every other tab",
+    body: "On a phone the bar keeps the table and the tabs you use most. More lists the rest, the map, notes and settings among them, and lights up when one of them is waiting on you.",
+    anchors: ["tab-more"],
+  },
+  {
     id: "dice",
     title: "Dice",
     body: "Every roll is made by the server, never invented, and the latest one flashes up over the story with its total. This menu turns the tumbling 3D dice on or off, opens the editor for your own dice colours, and on a phone lets you shake to roll.",
@@ -129,8 +141,48 @@ export const PLAYER_TOUR: TourStep[] = [
   {
     id: "help",
     title: "Help, settings and the way home",
-    body: "Help explains every button. The account menu beside it holds your characters, settings, log out, and, inside the app, the way back to its home screen.",
-    anchors: ["header-help"],
+    body: "Help explains every button. On a phone it shares the table menu with narration, sound and the rulebook, each row saying what it does. The account menu beside it holds your characters, settings, log out, and, inside the app, the way back to its home screen.",
+    anchors: ["header-help", "header-menu"],
+  },
+];
+
+// What a player meets the first time they sit at a table: how to take a
+// turn, how to ask a question, where their character and Help are. It
+// replaces the full tour as the one that opens by itself (no more
+// interruptions than before, and fewer steps); finishing it counts as the
+// player tour seen, and Help's "Tour the table" plays every step.
+export const FIRST_TURN_TOUR: TourStep[] = [
+  {
+    id: "first-welcome",
+    title: "Your first turn",
+    body: "Three things are all a first turn needs: saying what you do, asking when you are unsure, and finding your character. Everything else waits until you want it.",
+    anchors: [],
+  },
+  {
+    id: "first-act",
+    title: "Say what you do",
+    body: "Pick Do for an action or Say to speak in character, write it here and press Enter. The Dungeon Master answers the whole table at once, so agree on a plan before you send.",
+    anchors: ["composer-input", "composer-modes"],
+    prepare: "show-chat",
+  },
+  {
+    id: "first-ask",
+    title: "Ask when unsure",
+    body: "A question about the story, the rules or your sheet goes here. Asking never moves the story on.",
+    anchors: ["ask-dm"],
+    prepare: "show-chat",
+  },
+  {
+    id: "first-hero",
+    title: "Your character",
+    body: "Your hit points, spells and gear are in Party. Select your card to open the full sheet.",
+    anchors: ["party-rail", "tab-party"],
+  },
+  {
+    id: "first-help",
+    title: "Everything else",
+    body: "Help explains every button and holds the full tour of the table: maps, chat, settings, dice and voice.",
+    anchors: ["header-help", "header-menu"],
   },
 ];
 
@@ -236,9 +288,21 @@ export const DM_TOUR: TourStep[] = [
     prepare: "open-chat",
   },
   {
+    id: "settings",
+    title: "The table's settings",
+    body: "Settings holds everything this table can switch, in the campaign creator's named groups, beside the campaign's details and the Story AI. A change applies to everyone the moment you make it; the search finds a setting by its name.",
+    anchors: ["tab-settings"],
+  },
+  {
+    id: "more",
+    title: "Every other tab",
+    body: "On a phone the bar keeps your console and the tabs you use most. More lists the rest, the map, notes and settings among them, and lights up when one of them is waiting on you.",
+    anchors: ["tab-more"],
+  },
+  {
     id: "help",
     title: "Help and the way home",
-    body: "Help explains every button and replays this tour. The account menu beside it holds settings, log out and, inside the app, the way back to its home screen.",
-    anchors: ["header-help"],
+    body: "Help explains every button and replays this tour. On a phone it shares the table menu with narration, sound and the rulebook. The account menu beside it holds settings, log out and, inside the app, the way back to its home screen.",
+    anchors: ["header-help", "header-menu"],
   },
 ];

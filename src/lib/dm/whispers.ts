@@ -4,6 +4,7 @@ import { insertWhisper, type WhisperRecipient } from "@/lib/db/dm-whispers";
 import { publishEphemeral } from "@/lib/events";
 import { resolveSheetRef } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Executes one send_whisper tool call: a private note from the DM to the
 // players of the named characters, and the DM's reply channel for private
@@ -48,12 +49,12 @@ export function handleSendWhisper(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof whisperArgsSchema>;
   try {
     args = whisperArgsSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "send_whisper needs characterIds (from GAME STATE) and a message." };
+    return { error: "send_whisper needs characterIds (from GAME STATE) and a message.", retry: true };
   }
   const refs = [
     ...(Array.isArray(args.characterIds)
@@ -71,7 +72,7 @@ export function handleSendWhisper(
     }
   }
   if (!resolved.size) {
-    return { error: "No valid characterIds; use exact characterIds from GAME STATE." };
+    return { error: "No valid characterIds; use exact characterIds from GAME STATE.", retry: true };
   }
   const recipients: WhisperRecipient[] = [...resolved.values()].map((sheet) => ({
     userId: sheet.userId,

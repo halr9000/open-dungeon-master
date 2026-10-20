@@ -238,6 +238,36 @@ await test("several takes around refused calls leave the last one alone", async 
   assert.ok(!content.includes("First take.") && !content.includes("Second take."), content);
 });
 
+// Grok Build reports each tool call it starts, its own or ODM's
+// (tool_round). Played as the storyteller, it wrote a note on the scene
+// before calling a tool, and the note reached the table; text before one of
+// its own tools ran into the text after it ("the village.Mother Hesk").
+await test("a note written before a tool call is not the narration: the table reads what came after", async () => {
+  script([[{ text: "Mother Hesk is already on the green, and Kara has asked her outright." }, { round: true }, roll, { text: "\"Three nights ago,\" Mother Hesk says. \"The bell stayed still.\"" }]]);
+  say("Mother Hesk? What happened to the bell?");
+  await startDmTurn(campaign.id);
+  const content = getLatestDmMessage(campaign.id).content;
+  assert.ok(content.includes("Three nights ago"), content);
+  assert.ok(!content.includes("already on the green"), "the note before the tool call reached the players");
+});
+
+await test("text before and after one of the program's own tools does not run together", async () => {
+  script([[{ text: "Kara is calling for whoever runs the village." }, { round: true }, { text: "Mother Hesk turns from the green and lifts a hand." }]]);
+  say("Hello? Who's in charge here?");
+  await startDmTurn(campaign.id);
+  const content = getLatestDmMessage(campaign.id).content;
+  assert.ok(!content.includes("village.Mother"), content);
+  assert.ok(content.includes("Mother Hesk turns from the green"), content);
+  assert.ok(!content.includes("Kara is calling"), content);
+});
+
+await test("a program that writes nothing after its tool call keeps what it wrote before", async () => {
+  script([[{ text: "The fog lifts off the river, and the chapel hill stands silent." }, { round: true }]]);
+  say("I look around.");
+  await startDmTurn(campaign.id);
+  assert.ok(getLatestDmMessage(campaign.id).content.includes("The fog lifts off the river"));
+});
+
 await test("a signed-out program halts the turn with a message the table can act on", async () => {
   script([[{ fail: "signed-out", message: "Not logged in" }]]);
   say("I look around.");

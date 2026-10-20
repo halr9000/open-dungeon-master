@@ -6,9 +6,9 @@ import { starterSpellsFor } from "@/lib/help";
 import type { Ability, AbilityScores, AsiChoice, EquipmentItem } from "@/lib/schemas/sheet";
 import { acBreakdownFor, computeSheetDerived } from "@/lib/srd";
 import { applyAsiChoices, asiLevelsFor, asiSlotsTakenInPlay } from "@/lib/srd/asi";
-import { derivedMaxHp, hpBonusPerLevelFor, hpRange, type HpMethod } from "@/lib/srd/hit-points";
-import { featureHitPoints, reachesPrimalChampion, withPrimalChampion } from "@/lib/srd/trait-rules";
-import { hpBonusPerLevel, racialFeatCount } from "@/lib/srd/race-id";
+import type { HpMethod } from "@/lib/srd/hit-points";
+import { reachesPrimalChampion, withPrimalChampion } from "@/lib/srd/trait-rules";
+import { racialFeatCount } from "@/lib/srd/race-id";
 import { innateCantripsFor } from "@/lib/srd/racial-grants";
 import { halfFeatPicks, scoresWithHalfFeats, settledHalfFeats } from "@/lib/srd/legality/half-feats";
 import {
@@ -24,8 +24,10 @@ import { spellStyleFor, spellbookAllowance, type SpellStyle } from "@/lib/srd/sp
 import {
   chooseKitOption as withKitOption,
   classKitFor,
+  kitLineOfSlot,
   kitNames,
   pickKitSlot as withKitPick,
+  removedAfterKitChange,
   resolveKit,
   startingKitFor,
   type KitTraining,
@@ -40,8 +42,10 @@ import { applySubclassTraining, subclassGrants } from "@/lib/srd/subclass-traini
 import { featSpellGrants, featSpellNames } from "@/lib/srd/feat-spells";
 import { expandBackgroundGear } from "@/lib/srd/gear-choices";
 import { splitToolGrants, type ToolChoice } from "@/lib/srd/tool-choices";
+import { builderHitPoints } from "./builderHp";
 import type { BackgroundOption, ClassOption, RaceOption } from "./useBuilderOptions";
 import type { BuilderState, EquipmentItem as BuilderItem } from "./useBuilderState";
+import { textKey } from "@/lib/language/text-logic";
 
 // Everything the builder computes from its fields: final abilities, the sheet
 // preview, the auto loadout and AC, spell counts and the class option slots.
@@ -65,14 +69,15 @@ export function resolveToolPicks(
   picks: string[],
 ): { fixed: string[]; choices: ToolChoice[]; chosen: string[]; left: number[] } {
   const { fixed, choices } = splitToolGrants(grants);
-  const taken = new Set(fixed.map((tool) => tool.toLowerCase()));
+  const taken = new Set(fixed.map((tool) => textKey(tool)));
   const left = choices.map((choice) => choice.count);
   const chosen: string[] = [];
-  for (const pick of picks.map((tool) => tool.trim().toLowerCase())) {
-    const slot = choices.findIndex((choice, index) => left[index] > 0 && choice.from.includes(pick));
-    if (slot >= 0 && !chosen.includes(pick) && !taken.has(pick)) {
+  for (const pick of picks.map((tool) => textKey(tool))) {
+    const slot = choices.findIndex((choice, index) => left[index] > 0 && choice.from.some((tool) => textKey(tool) === pick));
+    const tool = slot >= 0 ? choices[slot].from.find((entry) => textKey(entry) === pick) : undefined;
+    if (tool !== undefined && !chosen.includes(tool) && !taken.has(pick)) {
       left[slot] -= 1;
-      chosen.push(pick);
+      chosen.push(tool);
     }
   }
   return { fixed, choices, chosen, left };
@@ -337,8 +342,35 @@ export function useBuilderDerived({
     return applySubclassTraining({ proficiencies: withFeats, grants: subclassTraining, choices: featChoices, strict: false }).proficiencies;
   }, [proficientSkills, klass, race, background, expertisePicks, bonusLanguages, trainedTools, featNames, featDescOf, featChoices, subclassTraining]);
 
+  // Hit points as the server will work them out (builderHp.ts): lineage,
+  // feats, Draconic Resilience and the table's method. A table that rolls
+  // them rolls on the server when the character is saved, so the figure is
+  // the fixed value and `range` what the dice may give. A stored character
+  // keeps the hit points it came home with (hpOverride) only while the
+  // server would.
+  const storedHp = state.storedHp;
+  const hp = useMemo(() => {
+    if (!shownAbilities || !klass) {
+      return null;
+    }
+    return builderHitPoints({
+      hitDie: klass.hitDie,
+      classId: klass.id,
+      subclass: subclass ?? "",
+      level: effectiveLevel,
+      con: shownAbilities.con,
+      raceId: race?.id ?? null,
+      feats: [
+        ...state.feats,
+        ...activeAsiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : [])),
+      ],
+      method: rules?.hpMethod ?? null,
+      stored: hpOverride !== null && storedHp ? { maxHp: hpOverride, ...storedHp } : null,
+    });
+  }, [shownAbilities, klass, subclass, effectiveLevel, race, state.feats, activeAsiChoices, rules?.hpMethod, hpOverride, storedHp]);
+
   const preview = useMemo(() => {
-    if (!shownAbilities || !race || !klass || !background) {
+    if (!shownAbilities || !race || !klass || !background || !hp) {
       return null;
     }
     const trained = training;
@@ -363,27 +395,10 @@ export function useBuilderDerived({
         ? { ability: castingAbility, slots: {}, prepared: [], known: [], cantrips: [] }
         : null,
     });
-    // Hit points are the server's to derive, by the table's method; this is
-    // the same arithmetic, shown. A table that rolls them rolls on the
-    // server when the character is saved, so the figure here is the fixed
-    // value and `hpRange` what the dice may give. A stored character keeps
-    // the hit points it came home with (hpOverride) until the server says
-    // otherwise.
-    const hpInput = {
-      classes: [{ die: klass.hitDie, level: effectiveLevel }],
-      con: shownAbilities.con,
-      perLevelBonus: hpBonusPerLevelFor(hpBonusPerLevel(race.id) > 0, [
-        ...state.feats,
-        ...activeAsiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : [])),
-      ]),
-      // Draconic Resilience, as the server adds it (src/lib/srd/trait-rules.ts).
-      extraHp: featureHitPoints({ class: klass.id, subclass: subclass ?? "", level: effectiveLevel }),
-    };
-    const method = rules?.hpMethod ?? "average";
-    const maxHp =
-      hpOverride ?? derivedMaxHp(method === "max" ? "max" : "average", hpInput);
-    return { proficiencies: trained, derived, maxHp, hpMethod: method, hpRange: hpRange(hpInput) };
-  }, [shownAbilities, halfFeats, race, klass, subclass, background, training, effectiveLevel, hpOverride, rules?.hpMethod, state.feats, activeAsiChoices]);
+    // Hit points are the server's to derive; `hp` is the same arithmetic,
+    // shown, and the explainer reads it too.
+    return { proficiencies: trained, derived, maxHp: hp.maxHp, hpMethod: hp.method, hpRange: hp.range, hpKept: hp.kept };
+  }, [shownAbilities, halfFeats, race, klass, subclass, background, training, effectiveLevel, hp, state.feats, activeAsiChoices]);
 
   // The class's starting equipment rides along automatically (removable
   // chips): the book's list with the either-or choices the player made on
@@ -546,11 +561,13 @@ export function useBuilderDerived({
             classId: klass.id,
             subclass,
             level: effectiveLevel,
-            features: optionPicks.map((optionName) => ({ name: optionName })),
+            // The class's own features too: a workshop subclass that
+            // borrowed Combat Superiority opens maneuvers by it.
+            features: [...grantedFeatures, ...optionPicks.map((optionName) => ({ name: optionName }))],
             feats: featNames,
           })
         : [],
-    [klass, subclass, effectiveLevel, optionPicks, featNames],
+    [klass, subclass, effectiveLevel, grantedFeatures, optionPicks, featNames],
   );
 
   // Spell lists and advice go through the borrowed SRD list for catalog
@@ -571,9 +588,13 @@ export function useBuilderDerived({
       ? builderSpellAdvice(casting, klass, subclass, effectiveLevel, shownAbilities)
       : null;
   // Opening suggestions, so a player who has never seen a 5e spell list is
-  // not left staring at an empty search box.
+  // not left staring at an empty search box. A third caster gets picks from
+  // its own two schools, not the wizard's, which its school rule would refuse.
   const starters = useMemo(
-    () => (casts && klass ? starterSpellsFor(casting.third ? casting.list : klass.id) : null),
+    () =>
+      casts && klass
+        ? starterSpellsFor(casting.profile ?? klass.id)
+        : null,
     [klass, casts, casting],
   );
   // Domain, circle, oath and patron spells: always prepared, free, and worth
@@ -613,7 +634,7 @@ export function useBuilderDerived({
     const own = race ? innateCantripsFor(race.id, effectiveLevel) : [];
     const seen = new Set<string>();
     return [...(racialCantripPick ? [racialCantripPick] : []), ...own].filter((name) => {
-      const key = name.trim().toLowerCase();
+      const key = textKey(name);
       if (!key || seen.has(key)) {
         return false;
       }
@@ -636,19 +657,19 @@ export function useBuilderDerived({
     [featNames, featDescOf, featChoices],
   );
   const chosenCantrips = useMemo(() => {
-    const free = new Set([...racialCantrips, ...featSpells.cantrips].map((name) => name.trim().toLowerCase()));
-    return cantrips.filter((name) => !free.has(name.trim().toLowerCase()));
+    const free = new Set([...racialCantrips, ...featSpells.cantrips].map((name) => textKey(name)));
+    return cantrips.filter((name) => !free.has(textKey(name)));
   }, [cantrips, racialCantrips, featSpells]);
   const chosenSpells = useMemo(() => {
-    const free = new Set(subclassSpells.map((spellName) => spellName.toLowerCase()));
-    return spells.filter((spellName) => !free.has(spellName.toLowerCase()));
+    const free = new Set(subclassSpells.map((spellName) => textKey(spellName)));
+    return spells.filter((spellName) => !free.has(textKey(spellName)));
   }, [spells, subclassSpells]);
   const chosenPrepared = useMemo(() => {
     if (spellStyle !== "spellbook") {
       return chosenSpells;
     }
-    const book = new Set(spells.map((spellName) => spellName.toLowerCase()));
-    return bookPrepared.filter((spellName) => book.has(spellName.toLowerCase()));
+    const book = new Set(spells.map((spellName) => textKey(spellName)));
+    return bookPrepared.filter((spellName) => book.has(textKey(spellName)));
   }, [spellStyle, chosenSpells, spells, bookPrepared]);
 
   return {
@@ -671,6 +692,7 @@ export function useBuilderDerived({
     subclassTraining,
     training,
     preview,
+    hp,
     equipmentSuggestions,
     classKit,
     kitChoices,
@@ -769,22 +791,27 @@ export function builderActions(
       }
     },
     // An either-or line of the class's starting equipment, and the weapon
-    // named for an "any simple weapon" slot. Kit items the player removed
-    // come back with a new choice, since the choice is about them.
+    // named for an "any simple weapon" slot. The items of that line the
+    // player removed come back with a new choice, since the choice is about
+    // them; a removal from any other line stands.
     chooseKitOption(line: number, option: number) {
       const kit = klass ? classKitFor(klass.id) : null;
       if (kit) {
-        state.setKitChoices((current) => withKitOption(kit, current, line, option));
-        state.setRemovedAutoNames([]);
+        const before = state.kitChoices;
+        const after = withKitOption(kit, before, line, option);
+        state.setKitChoices(after);
+        state.setRemovedAutoNames((removed) => removedAfterKitChange(kit, before, after, line, removed));
       }
     },
     pickKitSlot(index: number, name: string) {
       const kit = klass ? classKitFor(klass.id) : null;
       if (kit) {
-        state.setKitChoices((current) =>
-          withKitPick(resolveKit(kit, current, { armor: [], weapons: [] }).choices, index, name),
+        const before = state.kitChoices;
+        const after = withKitPick(resolveKit(kit, before, { armor: [], weapons: [] }).choices, index, name);
+        state.setKitChoices(after);
+        state.setRemovedAutoNames((removed) =>
+          removedAfterKitChange(kit, before, after, kitLineOfSlot(kit, before, index), removed),
         );
-        state.setRemovedAutoNames([]);
       }
     },
     // One either-or line of the background's kit answered, by the words of

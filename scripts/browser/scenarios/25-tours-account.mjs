@@ -98,6 +98,11 @@ export default {
         const phone = await appContext.newPage();
         await enterApp(phone, new URL(page.url()).origin, base, { ...ids, lead: ids.walker }, true);
         const tile = phone.locator(".game-root a, .game-root button").filter({ hasText: new RegExp(ids.tourTableTitle, "i") }).first();
+        // Entering lands on the latest table; the tour table's tile is on the
+        // host's home.
+        if (!(await tile.isVisible().catch(() => false))) {
+          await phone.evaluate(() => window.odmShell.navigation.push("/"));
+        }
         await tile.waitFor({ state: "visible", timeout: 30_000 });
         await tile.tap();
         await eventually(() => phone.locator(".game-root .cine-stage").count(), { timeoutMs: 30_000, label: "the table in the app" });

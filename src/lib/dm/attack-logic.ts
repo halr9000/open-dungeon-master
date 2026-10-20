@@ -15,9 +15,10 @@ import type { TypedRider } from "@/lib/dm/damage-parts";
 import type { GearDice } from "@/lib/srd/magic-gear";
 import type { CombatRiders } from "@/lib/srd/feature-effects";
 import { rageDamageBonus } from "@/lib/srd/class-resources";
-import { rageApplies } from "@/lib/dm/damage-logic";
+import { rageApplies, type WeaponMaterial } from "@/lib/dm/damage-logic";
 import type { EquipmentItem } from "@/lib/schemas/sheet";
 import type { SheetDerived } from "@/lib/srd";
+import { textKey } from "@/lib/language/text-logic";
 
 // Pure attack math for the pc_attack engine: which weapon a character swings,
 // what their to-hit and damage bonuses are, and whether a roll beats an AC.
@@ -43,6 +44,14 @@ export type ResolvedWeapon = {
 
 export type AttackProfile = {
   weapon: string;
+  // The SRD weapon it swings as, by its row's name (a Flame Tongue is a
+  // Longsword): what the ammunition and the feats keyed to a weapon read,
+  // never the name it is carried under. Absent for an unarmed strike or an
+  // improvised weapon.
+  base?: string;
+  // The wielded item's material, for the resistances that name it
+  // (damage-logic.ts weaponMaterial).
+  material?: WeaponMaterial;
   toHit: number;
   damageExpression: string;
   damageType: string;
@@ -103,14 +112,15 @@ export function weaponOf(item: EquipmentItem | undefined): SrdWeapon | null {
 }
 
 function itemMatchesTerm(itemName: string, term: string): boolean {
-  const item = itemName.trim().toLowerCase();
-  const wanted = term.trim().toLowerCase();
+  const item = textKey(itemName);
+  const wanted = textKey(term);
   return Boolean(item && wanted && (item.includes(wanted) || wanted.includes(item)));
 }
 
 // Which weapon the character attacks with. A named weapon fuzzy-matches
-// their carried equipment and the SRD table; no name picks the best
-// proficient carried weapon; nothing usable falls back to an unarmed strike.
+// their carried equipment and the SRD table, and "unarmed strike" is the
+// rules' own; no name picks the best proficient carried weapon; nothing
+// usable falls back to an unarmed strike.
 export function resolveAttackWeapon(
   equipment: EquipmentItem[],
   weaponProfs: string[],
@@ -118,14 +128,14 @@ export function resolveAttackWeapon(
 ): ResolvedWeapon {
   const arg = (weaponArg ?? "").trim();
   if (arg) {
-    if (/unarmed|fist|punch|kick/i.test(arg)) {
+    if (textKey(arg) === "unarmed strike") {
       return { displayName: "Unarmed strike", srd: null, unarmed: true, carried: true };
     }
     // The exact name wins over a name that merely contains it, so a
     // "Longsword" asked for beside a "Longsword +1" is the plain one.
-    const wanted = arg.toLowerCase();
+    const wanted = textKey(arg);
     const carriedItem =
-      equipment.find((item) => item.name.trim().toLowerCase() === wanted) ??
+      equipment.find((item) => textKey(item.name) === wanted) ??
       equipment.find((item) => itemMatchesTerm(item.name, arg));
     // A carried homebrew weapon carries its own block (src/lib/homebrew/
     // gear.ts) and wins over a name that happens to resemble an SRD one. A
@@ -383,6 +393,7 @@ export function weaponAttackProfile(
 
   return {
     weapon: resolved.displayName,
+    base: srd.name,
     toHit: mod + magicBonus + toHitBonus + (proficient ? derived.proficiencyBonus : 0),
     damageExpression: `${withModifier(damageDice, abilityToDamage + magicBonus + damageBonus)}${gearParts.suffix}`,
     damageType: type,
@@ -414,6 +425,8 @@ export function weaponAttackProfile(
 // Attack-roll spells (Fire Bolt, Guiding Bolt...): to-hit is the sheet's
 // spell attack bonus; the damage dice come from the model (validated by the
 // caller) because spell payloads live in the content pack's prose.
+export function spellAttackProfile(derived: { spellAttack: number }, spellName: string, damageExpression: string, damageType: string): AttackProfile;
+export function spellAttackProfile(derived: Pick<SheetDerived, "spellAttack">, spellName: string, damageExpression: string, damageType: string): AttackProfile | null;
 export function spellAttackProfile(
   derived: Pick<SheetDerived, "spellAttack">,
   spellName: string,

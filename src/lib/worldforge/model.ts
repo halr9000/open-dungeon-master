@@ -75,7 +75,49 @@ export type Entry = {
   // The entity's id in a WorldForge export, so a second import of the same
   // world updates rather than duplicates.
   wfId: string;
+  // The playable records this entry stands for (audit finding WF-17): a
+  // creature's stat block in the Bestiary, an artifact's item in Homebrew.
+  // A reference, never a copy: the record keeps its own store and rules.
+  bindings: Binding[];
 };
+
+// A World entry's link to a playable record. The ref is the one the rest of
+// the app already uses for that record: "homebrew:<id>" for the author's
+// own, a content-pack slug for the rulebook's. Inside a workshop bundle
+// only, a homebrew ref travels by name as "homebrew:@<kind>:<name>" and
+// lands as the arrived copy's id (src/lib/db/world-forge-bundle.ts).
+//
+// A place also links to the prepared battle maps and encounters fought
+// there (M4, a place's "Create battle map"): "map" names a prepared map's
+// id and "encounter" a prepared encounter's, both rows of this same
+// campaign or workshop, so a copy or a bundle moves them to the copies
+// that travelled ("@map:#<n>" and "@encounter:#<n>" inside a bundle, by
+// the row's place in the bundle's own list). Only a place takes them.
+export const BINDING_KINDS = ["monster", "item", "map", "encounter"] as const;
+export type BindingKind = (typeof BINDING_KINDS)[number];
+export type Binding = { kind: BindingKind; ref: string };
+export const PLACE_BINDING_KINDS = ["map", "encounter"] as const satisfies readonly BindingKind[];
+export type PlaceBindingKind = (typeof PLACE_BINDING_KINDS)[number];
+export const isPlaceBinding = (kind: BindingKind): kind is PlaceBindingKind => (PLACE_BINDING_KINDS as readonly string[]).includes(kind);
+export const BINDINGS_MAX = 12;
+const BINDING_REF = /^(?:homebrew:[\w-]{1,80}|homebrew:@(?:monster|item):[^:\r\n]{1,80}|[a-z0-9][a-z0-9-]{0,79})$/;
+const PLACE_BINDING_REF = /^(?:[\w-]{1,80}|@(?:map|encounter):#\d{1,4})$/;
+
+export function readBindings(value: unknown): Binding[] {
+  const seen = new Set<string>();
+  const out: Binding[] = [];
+  for (const item of list(value, BINDINGS_MAX * 2)) {
+    const raw = rec(item);
+    const kind = oneOf(raw.kind, BINDING_KINDS, "monster");
+    const ref = typeof raw.ref === "string" ? raw.ref.trim() : "";
+    const shape = isPlaceBinding(kind) ? PLACE_BINDING_REF : BINDING_REF;
+    if (raw.kind !== kind || !shape.test(ref) || (ref.startsWith("@") && ref.slice(1, ref.indexOf(":")) !== kind) || seen.has(`${kind}|${ref}`)) continue;
+    seen.add(`${kind}|${ref}`);
+    out.push({ kind, ref });
+    if (out.length >= BINDINGS_MAX) break;
+  }
+  return out;
+}
 
 export const VERACITIES = ["known", "hidden", "believed"] as const;
 export type Veracity = (typeof VERACITIES)[number];
@@ -109,12 +151,69 @@ export function linkFingerprint(link: Pick<WorldLink, "from" | "to" | "label" | 
 export type Folder = { id: string; name: string; parentId: string };
 export type Calendar = { id: string; name: string; abbrev: string; epochOffset: number; notes: string };
 export type WorldEvent = { id: string; title: string; body: string; era: string; when: YearValue; refs: string[]; canon: Canon };
-export type Secret = { id: string; title: string; subject: string; notes: string; knownBy: string[]; partyKnows: boolean };
+export type Secret = {
+  id: string;
+  title: string;
+  subject: string;
+  notes: string;
+  knownBy: string[];
+  partyKnows: boolean;
+  // Set by "Reveal to the party" at a table (audit WF-10): when the party was
+  // told, and the lore entry ("lore:<id>") the players read it in. A secret
+  // only marked learned has neither. A copy keeps them only while that entry
+  // came along (remapDoc), and a file never carries them.
+  revealedAt?: string;
+  revealedAs?: string;
+};
 export type Stub = { id: string; name: string; note: string; source: "scan" | "manual" | "import"; status: "open" | "dismissed" };
 export type XY = { x: number; y: number };
-export type Region = { id: string; name: string; points: XY[]; color: string; ref: string; notes: string };
-export type AtlasMap = { id: string; name: string; image: string; parentPinId: string; regions: Region[] };
-export type Pin = { id: string; mapId: string; x: number; y: number; name: string; ref: string; linkedMapId: string; notes: string };
+// `hidden` keeps a region off the party's Atlas when its map is shown to
+// them (src/lib/worldforge/party-atlas.ts); absent, it shows.
+export type Region = { id: string; name: string; points: XY[]; color: string; ref: string; notes: string; hidden?: true };
+
+// What an Atlas map is to the table (audit finding WF-09). Every Atlas map
+// is an illustrated, navigational picture; "region" says this one is laid
+// over the campaign's playable Region map edge to edge, so its pins can
+// place their places there (src/lib/worldforge/atlas-frame.ts). A world
+// has at most one. A prepared battle map is another thing again, with
+// combat geometry of its own: no picture here ever supplies walls, terrain
+// or light.
+export const MAP_ROLES = ["atlas", "region"] as const;
+export type MapRole = (typeof MAP_ROLES)[number];
+
+// How the 0..1 positions of a map's pins and regions relate to its
+// picture. `surface` is the width over height of the box they were placed
+// in, `image` the picture's own (0 while nobody has measured it), and
+// `fit` how the picture fills that box: "cover" crops it, "contain"
+// letterboxes it. A map made in the workshop is placed on a 16:10 box with
+// the picture cropped to fill it, which is what a map without a frame
+// means; a map from a WorldForge file is placed on its picture itself.
+export const MAP_FITS = ["cover", "contain"] as const;
+export type MapFit = (typeof MAP_FITS)[number];
+export type MapFrame = { surface: number; image: number; fit: MapFit };
+export const ATLAS_SURFACE = 16 / 10;
+export const DEFAULT_FRAME: MapFrame = { surface: ATLAS_SURFACE, image: 0, fit: "cover" };
+// Widest and tallest a box or a picture may be, as width over height.
+export const ASPECT_RANGE = { min: 0.1, max: 10 } as const;
+
+// `role` and `frame` are absent while they are the plain defaults, so a map
+// that never met the Region reads, hashes and merges as it always has.
+// `party: "shown"` puts the map on the party's Atlas (the player
+// projection, src/lib/worldforge/party-atlas.ts). Absent, it is the DM's
+// alone: a map is shown only by the reviewed step (src/lib/db/party-atlas.ts),
+// and the editor's saves may hide one but never show it.
+export type AtlasMap = { id: string; name: string; image: string; parentPinId: string; regions: Region[]; role?: MapRole; frame?: MapFrame; party?: "shown" };
+// `regionLink` is the place ref this pin was bound for with "Place this
+// location in the Region": while the pin still names that place and stands
+// on the Region's map, the two move together. A binding is only ever made
+// by that explicit step (src/lib/db/atlas-region.ts), never inferred.
+// `hidden` keeps the pin off the party's Atlas, as for a region.
+export type Pin = { id: string; mapId: string; x: number; y: number; name: string; ref: string; linkedMapId: string; notes: string; regionLink?: string; hidden?: true };
+
+// Where an imported row or entry came from ("<source>|<slice>|<id there>")
+// and how each of its values read: "<source reading>.<local reading>" as of
+// the import that last settled it (src/lib/worldforge/import-merge.ts).
+export type Origin = { from: string; at: Record<string, string> };
 
 export type WorldDoc = {
   version: 1;
@@ -128,6 +227,8 @@ export type WorldDoc = {
   stubs: Stub[];
   maps: AtlasMap[];
   pins: Pin[];
+  // Keyed "<slice>/<id>", or "entries/<ref>". Absent until an import.
+  origins?: Record<string, Origin>;
 };
 
 export const SLICES = ["types", "entries", "links", "folders", "calendars", "events", "secrets", "stubs", "maps", "pins"] as const;
@@ -150,7 +251,10 @@ export const LIMITS = {
   points: 200,
   refs: 40,
   name: 120,
-  article: 12_000,
+  // The article holds what a lore entry's own body does
+  // (src/lib/dm/world-lore-logic.ts LORE_BODY_MAX), so a long entry makes
+  // the round trip through a WorldForge file whole.
+  article: 20_000,
   note: 4_000,
 } as const;
 
@@ -162,8 +266,6 @@ export const LINK_LABELS = [
   "parent of", "child of", "spouse of", "sibling of", "descended from",
   "superior of", "reports to", "liege of", "vassal of",
 ] as const;
-export const KIN_LABELS = ["parent of", "child of", "spouse of", "sibling of"] as const;
-export const CHAIN_LABELS = ["superior of", "reports to", "liege of", "vassal of"] as const;
 
 export const TYPE_COLORS = ["#c44444", "#3d9e9e", "#c9a84c", "#a090e0", "#d08a3c", "#5d9b8a", "#b8608a", "#7a6e54", "#8a9bb8", "#7da868"];
 
@@ -225,6 +327,7 @@ const unit = (value: unknown) => Math.min(1, Math.max(0, num(value, 0.5)));
 const oneOf = <T extends string>(value: unknown, options: readonly T[], fallback: T): T => (options.includes(value as T) ? (value as T) : fallback);
 const idOf = (value: unknown) => str(value, 80).replace(/[^\w:.-]/g, "");
 const ref = (value: unknown) => (parseRef(value) ? (value as string) : "");
+const readRevealedAt = (value: unknown) => (typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value)) ? value : "");
 const color = (value: unknown, fallback = "#7a6e54") => (typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback);
 const uniqueById = <T extends { id: string }>(rows: T[]): T[] => {
   const seen = new Set<string>();
@@ -238,6 +341,19 @@ const uploadedPath = (value: unknown) => {
 };
 const strings = (value: unknown, max: number, each: number) =>
   [...new Set(list(value, max).map((item) => str(item, each)).filter(Boolean))];
+
+const aspect = (value: unknown) => {
+  const n = num(value, 0);
+  return n >= ASPECT_RANGE.min && n <= ASPECT_RANGE.max ? Math.round(n * 10_000) / 10_000 : 0;
+};
+
+export function readFrame(value: unknown): MapFrame | undefined {
+  const raw = rec(value);
+  const surface = aspect(raw.surface);
+  if (!surface) return undefined;
+  const frame: MapFrame = { surface, image: aspect(raw.image), fit: oneOf(raw.fit, MAP_FITS, "cover") };
+  return frame.surface === DEFAULT_FRAME.surface && frame.image === DEFAULT_FRAME.image && frame.fit === DEFAULT_FRAME.fit ? undefined : frame;
+}
 
 export function readYear(value: unknown): YearValue {
   const raw = rec(value);
@@ -303,6 +419,7 @@ export function readEntry(value: unknown): Entry {
     tags: strings(raw.tags, 8, 40),
     image: uploadedPath(raw.image),
     wfId: str(raw.wfId, 80),
+    bindings: readBindings(raw.bindings),
   };
 }
 
@@ -350,7 +467,19 @@ const readers: { [K in Exclude<Slice, "entries" | "types">]: (value: unknown) =>
     const raw = rec(value);
     const title = str(raw.title, LIMITS.name);
     return title
-      ? { id: idOf(raw.id) || newId("sec"), title, subject: ref(raw.subject), notes: str(raw.notes, LIMITS.note), knownBy: [...new Set(list(raw.knownBy, LIMITS.refs).map(ref).filter(Boolean))], partyKnows: raw.partyKnows === true }
+      ? {
+          id: idOf(raw.id) || newId("sec"),
+          title,
+          subject: ref(raw.subject),
+          notes: str(raw.notes, LIMITS.note),
+          knownBy: [...new Set(list(raw.knownBy, LIMITS.refs).map(ref).filter(Boolean))],
+          partyKnows: raw.partyKnows === true,
+          // The reveal's record, kept only when whole: a time that reads as
+          // one, and the entry it went to. A secret never revealed has
+          // neither field, so its row reads as it always has.
+          ...(readRevealedAt(raw.revealedAt) ? { revealedAt: readRevealedAt(raw.revealedAt) } : {}),
+          ...(ref(raw.revealedAs) ? { revealedAs: ref(raw.revealedAs) } : {}),
+        }
       : null;
   },
   stubs: (value) => {
@@ -365,18 +494,22 @@ const readers: { [K in Exclude<Slice, "entries" | "types">]: (value: unknown) =>
     const id = idOf(raw.id);
     const name = str(raw.name, 80);
     if (!id || !name) return null;
+    const frame = readFrame(raw.frame);
     return {
       id,
       name,
       image: uploadedPath(raw.image),
       parentPinId: idOf(raw.parentPinId),
+      ...(raw.role === "region" ? { role: "region" as const } : {}),
+      ...(frame ? { frame } : {}),
+      ...(raw.party === "shown" ? { party: "shown" as const } : {}),
       regions: uniqueById(
         list(raw.regions, LIMITS.regions).flatMap((item) => {
           const region = rec(item);
           const points = list(region.points, LIMITS.points).map((point) => ({ x: unit(rec(point).x), y: unit(rec(point).y) }));
           const regionName = str(region.name, 80);
           return regionName && points.length >= 3
-            ? [{ id: idOf(region.id) || newId("rg"), name: regionName, points, color: color(region.color, "#c9a84c"), ref: ref(region.ref), notes: str(region.notes, 400) }]
+            ? [{ id: idOf(region.id) || newId("rg"), name: regionName, points, color: color(region.color, "#c9a84c"), ref: ref(region.ref), notes: str(region.notes, 400), ...(region.hidden === true ? { hidden: true as const } : {}) }]
             : [];
         }),
       ),
@@ -386,9 +519,11 @@ const readers: { [K in Exclude<Slice, "entries" | "types">]: (value: unknown) =>
     const raw = rec(value);
     const id = idOf(raw.id);
     const mapId = idOf(raw.mapId);
-    return id && mapId
-      ? { id, mapId, x: unit(raw.x), y: unit(raw.y), name: str(raw.name, 80), ref: ref(raw.ref), linkedMapId: idOf(raw.linkedMapId), notes: str(raw.notes, 400) }
-      : null;
+    if (!id || !mapId) return null;
+    const pin: Pin = { id, mapId, x: unit(raw.x), y: unit(raw.y), name: str(raw.name, 80), ref: ref(raw.ref), linkedMapId: idOf(raw.linkedMapId), notes: str(raw.notes, 400), ...(raw.hidden === true ? { hidden: true as const } : {}) };
+    // Bound for a place, and only for the place the pin still names.
+    const link = ref(raw.regionLink);
+    return link && link === pin.ref && parseRef(link)?.shelf === "location" ? { ...pin, regionLink: link } : pin;
   },
 };
 
@@ -406,8 +541,41 @@ export function readSlice<K extends Slice>(slice: K, value: unknown): WorldDoc[K
     return entries as WorldDoc[K];
   }
   const read = readers[slice as Exclude<Slice, "entries" | "types">] as (value: unknown) => { id: string } | null;
-  const rows = list(value, LIMITS[slice as Exclude<Slice, "entries" | "types">]).map((item) => read(item)).filter((row): row is { id: string } => row !== null);
-  return uniqueById(rows) as unknown as WorldDoc[K];
+  const rows = uniqueById(list(value, LIMITS[slice as Exclude<Slice, "entries" | "types">]).map((item) => read(item)).filter((row): row is { id: string } => row !== null));
+  if (slice === "maps") {
+    // One map stands over the Region at a time: the first that says so.
+    const first = (rows as AtlasMap[]).find((atlas) => atlas.role === "region");
+    return (rows as AtlasMap[]).map((atlas) => (atlas.role === "region" && atlas !== first ? withoutRole(atlas) : atlas)) as unknown as WorldDoc[K];
+  }
+  return rows as unknown as WorldDoc[K];
+}
+
+function withoutRole(atlas: AtlasMap): AtlasMap {
+  return without(atlas, "role");
+}
+
+// A map or pin with its Region fields taken off (role, frame, regionLink).
+export function without<T extends AtlasMap | Pin>(row: T, ...keys: Array<"role" | "frame" | "regionLink">): T {
+  const copy: Record<string, unknown> = { ...row };
+  for (const key of keys) delete copy[key];
+  return copy as T;
+}
+
+const ORIGINS_MAX = 20_000;
+
+export function readOrigins(value: unknown): Record<string, Origin> {
+  const origins: Record<string, Origin> = {};
+  for (const [key, item] of Object.entries(rec(value)).slice(0, ORIGINS_MAX)) {
+    const raw = rec(item);
+    const from = str(raw.from, 300);
+    if (!from || key.length > 120) continue;
+    const at: Record<string, string> = {};
+    for (const [name, reading] of Object.entries(rec(raw.at)).slice(0, 80)) {
+      if (typeof reading === "string" && reading.length <= 40 && name.length <= 100) at[name] = reading;
+    }
+    origins[key] = { from, at };
+  }
+  return origins;
 }
 
 export function readDoc(value: unknown): WorldDoc {
@@ -418,16 +586,19 @@ export function readDoc(value: unknown): WorldDoc {
       (doc as Record<Slice, unknown>)[slice] = readSlice(slice, raw[slice]);
     }
   }
+  if (raw.origins !== undefined) doc.origins = readOrigins(raw.origins);
   return doc;
 }
 
-// The type an entry reads as: its own, else the first type on its shelf.
+// The type an entry reads as: its own, else its shelf's plainest. The lore
+// shelf keeps several types, and an untyped lore entry (one made in the Lore
+// tool and never typed in WorldForge) used to read as the first of them,
+// Artifact, which says an item exists where none does (audit WF-08). It
+// reads as the shelf's "other" type, when the world still has one.
 export function typeFor(doc: Pick<WorldDoc, "types">, shelf: Shelf, typeId: string): WorldType {
-  return (
-    doc.types.find((type) => type.id === typeId && type.shelf === shelf) ??
-    doc.types.find((type) => type.shelf === shelf) ??
-    defaultTypes().find((type) => type.shelf === shelf)!
-  );
+  const plainest = (types: WorldType[]) =>
+    types.find((type) => type.shelf === shelf && (shelf !== "lore" || type.loreCategory === "other")) ?? types.find((type) => type.shelf === shelf);
+  return doc.types.find((type) => type.id === typeId && type.shelf === shelf) ?? plainest(doc.types) ?? plainest(defaultTypes())!;
 }
 
 // Every ref in the document rewritten through `map`; a ref that maps to
@@ -450,9 +621,17 @@ export function remapDoc(doc: WorldDoc, map: (ref: string) => string | null): Wo
       return from && to ? [{ ...link, from, to }] : [];
     }),
     events: doc.events.map((event) => ({ ...event, refs: many(event.refs) })),
-    secrets: doc.secrets.map((secret) => ({ ...secret, subject: one(secret.subject), knownBy: many(secret.knownBy) })),
+    secrets: doc.secrets.map((secret) => {
+      const { revealedAs, ...rest } = secret;
+      const told = revealedAs ? one(revealedAs) : "";
+      return { ...rest, subject: one(secret.subject), knownBy: many(secret.knownBy), ...(told ? { revealedAs: told } : {}) };
+    }),
     maps: doc.maps.map((atlas) => ({ ...atlas, regions: atlas.regions.map((region) => ({ ...region, ref: one(region.ref) })) })),
-    pins: doc.pins.map((pin) => ({ ...pin, ref: one(pin.ref) })),
+    pins: doc.pins.map((pin) => {
+      const moved = { ...without(pin, "regionLink"), ref: one(pin.ref) };
+      const link = pin.regionLink ? one(pin.regionLink) : "";
+      return link && link === moved.ref ? { ...moved, regionLink: link } : moved;
+    }),
   };
 }
 

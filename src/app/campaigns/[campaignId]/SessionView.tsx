@@ -35,7 +35,7 @@ import {
 import { JOIN_NOTE_PREFIX, latestUnintroducedJoin } from "@/lib/campaign-types";
 import { composerLimit, textLength } from "@/lib/text-limits";
 import type { TourEnd } from "@/lib/tours/account-logic";
-import { DM_TOUR, DM_TOUR_ID, PLAYER_TOUR, PLAYER_TOUR_ID } from "@/lib/tours/table";
+import { DM_TOUR, DM_TOUR_ID, FIRST_TURN_TOUR, PLAYER_TOUR, PLAYER_TOUR_ID } from "@/lib/tours/table";
 import { finishTour, useTourFinished } from "@/lib/tours/tour-store";
 import { Composer, type InputKind } from "@/app/campaigns/[campaignId]/Composer";
 import { composerGate } from "@/app/campaigns/[campaignId]/composerGate";
@@ -240,7 +240,9 @@ export function SessionView({
   // Bumped on pin/unpin so the pins panel refetches without a stream event.
   const [pinsVersion, setPinsVersion] = useState(0);
   // The guided tour on screen, if any: the player's or the DM's.
-  const [tour, setTour] = useState<"player" | "dm" | null>(null);
+  // "first" is the short first-turn tour a player meets by itself; "player"
+  // and "dm" are the full tours Help plays.
+  const [tour, setTour] = useState<"first" | "player" | "dm" | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const dice3d = useSyncExternalStore(subscribeDicePref, readDice3d, () => true);
   const toggleDice3d = useCallback(() => {
@@ -409,7 +411,7 @@ export function SessionView({
   // off the page before any step's prepare runs, and a fight with a map
   // opens the phone on the board, which would drop every composer step.
   const startTour = useCallback(
-    (which: "player" | "dm") => {
+    (which: "first" | "player" | "dm") => {
       setMobileView("chat");
       setTour(which);
     },
@@ -417,7 +419,7 @@ export function SessionView({
   );
   useEffect(() => {
     if (seatTourFinished !== false) return;
-    const timer = window.setTimeout(() => startTour(isDm ? "dm" : "player"), 1200);
+    const timer = window.setTimeout(() => startTour(isDm ? "dm" : "first"), 1200);
     return () => clearTimeout(timer);
   }, [seatTourFinished, isDm, startTour]);
   // The tour that was on screen is the one finished: Help can replay the
@@ -883,6 +885,8 @@ export function SessionView({
     refreshBattleMap,
     relationshipsVersion: state.relationshipsVersion,
     factionsVersion: state.factionsVersion,
+    worldVersion: state.worldVersion,
+    loreVersion: state.loreVersion,
     shopsVersion: state.shopsVersion,
     coins: state.coins,
     activeSheetId: state.activeSheetId,
@@ -1068,6 +1072,7 @@ export function SessionView({
                     inputBlocked={gate.inputBlocked || silenced}
                     placeholder={silenced ? silencedPlaceholder : gate.placeholder}
                     dmStatus={dmStatus}
+                    dmJob={state.dmJob}
                     pendingRolls={pendingRolls}
                     members={state.members}
                     floor={floor}
@@ -1196,7 +1201,7 @@ export function SessionView({
       {tourMounted ? (
       <GuidedTour
         open={tour !== null}
-        steps={tour === "dm" ? DM_TOUR : PLAYER_TOUR}
+        steps={tour === "dm" ? DM_TOUR : tour === "first" ? FIRST_TURN_TOUR : PLAYER_TOUR}
         onPrepare={prepareTourStep}
         onClose={closeTour}
       />

@@ -4,23 +4,22 @@
 // cast-guard.ts, which sends a repeat here before any refusal of a new
 // casting is asked.
 
-import type { Campaign } from "@/lib/db/campaigns";
 import type { Encounter } from "@/lib/db/encounters";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { SpellFacts } from "@/lib/srd/spell-facts";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { canAct } from "@/lib/dm/can-act";
 import type { CastInput, CastResult } from "@/lib/dm/cast-guard";
 import { turnCharge } from "@/lib/dm/cast-rules";
 import { lastCastSlot } from "@/lib/dm/spell-effects";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
+import { toolError } from "@/lib/dm/tool-errors";
 
 // The effect of a concentration spell coming again (Call Lightning's next
 // bolt): the caster must still be up and able, and the turn pays what the
 // spell says; the slot level is the one the casting was made from, read
 // from the audit trail, so an upcast bolt stays upcast.
 export function repeatSpell(
-  campaign: Campaign,
   sheet: CharacterSheet,
   // The encounter when a fight with turns is running, null otherwise.
   fight: Encounter | null,
@@ -30,7 +29,7 @@ export function repeatSpell(
   input: CastInput,
 ): CastResult {
   if (sheet.deathSaves?.dead || sheet.currentHp <= 0) {
-    return { error: `${sheet.name} is ${sheet.deathSaves?.dead ? "dead" : "at 0 HP"}, and ${name} ended with their concentration.` };
+    return { error: `${sheet.name} is ${sheet.deathSaves?.dead ? "dead" : "at 0 HP"}, and ${name} ended with their concentration.`, refused: "rules" };
   }
   const slotLevel = lastCastSlot(sheet.id, name) ?? facts?.level ?? null;
   const repeatNote = `${name} is already cast and held by ${sheet.name}'s concentration: this is its effect again, and no slot is spent.`;
@@ -41,9 +40,9 @@ export function repeatSpell(
   }
   const able = canAct({ sheet, encounter: fight, kind: cost === "bonus" ? "bonus" : "action" });
   if (!able.ok) {
-    return { error: able.error };
+    return toolError(able);
   }
-  const budget = budgetFor(fight, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions));
+  const budget = budgetFor(fight, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions));
   // Not a casting: the bonus-action spell rule and the levelled spell mark
   // do not apply, so the charge is made as for a cantrip of that time.
   const charge = turnCharge({

@@ -8,9 +8,9 @@
 // Pure and client-safe on purpose: the character builder imports it directly
 // and plain-node tests import it with no Next or database context.
 import type { WorldPack } from "@/lib/worlds/types";
+import { textKey } from "@/lib/language/text-logic";
 
 export type IdReskin = { id: string; name: string; blurb: string };
-export type NameReskin = { from: string; name: string; blurb: string };
 
 // What an overlaid option carries on top of its canonical shape. `packName` is
 // present only when this pack actually renames the entry, which is what the
@@ -76,8 +76,8 @@ export function displayName(
   if (!pack) {
     return canonical;
   }
-  const wanted = canonical.trim().toLowerCase();
-  const match = pack[kind].find((entry) => entry.from.trim().toLowerCase() === wanted);
+  const wanted = textKey(canonical);
+  const match = pack[kind].find((entry) => textKey(entry.from) === wanted);
   return match ? match.name : canonical;
 }
 

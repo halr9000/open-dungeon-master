@@ -11,9 +11,11 @@
 import { spellClassFor } from "@/lib/classes";
 import { suggestedCantripCount, suggestedSpellCount } from "@/lib/content/mechanics";
 import type { AbilityScores } from "@/lib/schemas/sheet";
-import { abilityMod, spellSlotsFor } from "@/lib/srd";
+import { abilityMod, formatModifier, spellSlotsFor } from "@/lib/srd";
+import { ABILITY_NAMES } from "@/lib/srd/legality/types";
 import { cantripCapOf, spellCapOf } from "@/lib/srd/spell-prep";
-import { THIRD_CASTER_ABILITY, THIRD_CASTER_LIST, isThirdCaster } from "@/lib/srd/third-caster";
+import { thirdCasterAbility, thirdCasterList, thirdCasterProfileOf, type ThirdCasterProfile } from "@/lib/srd/third-caster";
+import { subclassCastingProfileFor } from "@/lib/srd/features";
 
 type CastingClass = {
   id: string;
@@ -23,6 +25,9 @@ type CastingClass = {
 
 export type BuilderCasting = {
   third: boolean;
+  // Whose rules a third caster casts by: the Eldritch Knight's or the
+  // Arcane Trickster's (its schools, its cantrips, its suggestions).
+  profile: ThirdCasterProfile | null;
   ability: "int" | "wis" | "cha" | null;
   // The spell list searched (the borrowed SRD list for a setting class).
   list: string;
@@ -39,22 +44,23 @@ export function builderCasting(
   level: number,
 ): BuilderCasting {
   if (!klass) {
-    return { third: false, ability: null, list: "", maxSpellLevel: 0, cantripCap: null, casts: false };
+    return { third: false, profile: null, ability: null, list: "", maxSpellLevel: 0, cantripCap: null, casts: false };
   }
-  const third = isThirdCaster(klass.id, subclass);
-  const ability = (third ? THIRD_CASTER_ABILITY : klass.spellAbility || null) as BuilderCasting["ability"];
-  const list = third ? THIRD_CASTER_LIST : spellClassFor(klass.id);
+  const profile = thirdCasterProfileOf(klass.id, subclass, subclassCastingProfileFor(klass.id, subclass ?? ""));
+  const third = profile !== null;
+  const ability = (profile ? thirdCasterAbility(profile) : klass.spellAbility || null) as BuilderCasting["ability"];
+  const list = profile ? thirdCasterList(profile) : spellClassFor(klass.id);
   const maxSpellLevel =
     third || klass.casterType !== "none"
-      ? Object.keys(spellSlotsFor(klass.id, level, subclass)).reduce((top, slot) => Math.max(top, Number(slot)), 0)
+      ? Object.keys(spellSlotsFor(klass.id, level, subclass, profile)).reduce((top, slot) => Math.max(top, Number(slot)), 0)
       : 0;
   const cantripCap = !ability
     ? null
     : third
-      ? cantripCapOf({ classId: klass.id, level, subclass: subclass ?? "" })
+      ? cantripCapOf({ classId: klass.id, level, subclass: subclass ?? "", progression: profile })
       : suggestedCantripCount(list, level, klass.casterType as Parameters<typeof suggestedCantripCount>[2]);
   const casts = Boolean(ability) && (maxSpellLevel > 0 || cantripCap !== null);
-  return { third, ability, list, maxSpellLevel, cantripCap: casts ? cantripCap : null, casts };
+  return { third, profile, ability, list, maxSpellLevel, cantripCap: casts ? cantripCap : null, casts };
 }
 
 // How many levelled spells the class may hold at this level.
@@ -64,7 +70,7 @@ export function builderSpellAdvice(
   subclass: string | undefined | null,
   level: number,
   abilities: AbilityScores,
-): { label: string; count: number } | null {
+): { label: string; count: number; formula?: string } | null {
   if (!casting.casts || !casting.ability) {
     return null;
   }
@@ -75,6 +81,7 @@ export function builderSpellAdvice(
         ability: casting.ability,
         level,
         subclass: subclass ?? "",
+        progression: casting.profile ?? undefined,
         style: "known",
         known: [],
         prepared: [],
@@ -85,5 +92,21 @@ export function builderSpellAdvice(
       abilities,
     );
   }
-  return suggestedSpellCount(casting.list, level, abilityMod(abilities[casting.ability]));
+  const mod = abilityMod(abilities[casting.ability]);
+  const advice = suggestedSpellCount(casting.list, level, mod);
+  if (!advice || advice.label !== "spells prepared") {
+    return advice;
+  }
+  return { ...advice, formula: preparedFormula(casting.ability, mod, casting.list, level) };
+}
+
+// How a prepared caster's count is worked out, said in the limit note so the
+// number is not a mystery: "Wisdom modifier (+2) + level (3)". The level part
+// is read back from the engine's own count with a modifier too large to hit
+// the floor of one, so the half casters' rounding is never restated here.
+export function preparedFormula(ability: "int" | "wis" | "cha", mod: number, list: string, level: number): string {
+  const levelPart = (suggestedSpellCount(list, level, 100)?.count ?? 100) - 100;
+  const levelWords = levelPart === level ? `level (${level})` : `half your level, rounded down (${levelPart})`;
+  const sum = `${ABILITY_NAMES[ability]} modifier (${formatModifier(mod)}) + ${levelWords}`;
+  return mod + levelPart < 1 ? `${sum}, and never fewer than 1` : sum;
 }

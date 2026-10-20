@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { storedSheetSchema, type CreateSheetInput, type SheetAttachment } from "@/lib/schemas/sheet";
 import { isUploadedImagePath } from "@/lib/uploads";
+import { slugOf } from "@/lib/language/text-logic";
 
 export const CHARACTER_BUNDLE_KIND = "odm.character";
 export const CHARACTER_BUNDLE_VERSION = 1;
@@ -76,7 +77,6 @@ export const characterBundleSchema = z.object({
   portrait: bundlePortraitSchema.optional(),
 });
 export type CharacterBundle = z.infer<typeof characterBundleSchema>;
-export type BundlePortrait = NonNullable<CharacterBundle["portrait"]>;
 
 // What the export route reads off disk for us: the bytes behind a
 // /uploads/ path, or null when the file is gone.
@@ -214,11 +214,6 @@ export async function unpackCharacterBundle(
 
 // Download name for an exported bundle.
 export function characterBundleFilename(name: string): string {
-  const slug =
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "character";
+  const slug = slugOf(name) || "character";
   return `${slug}.odm-character.json`;
 }

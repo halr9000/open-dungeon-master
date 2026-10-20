@@ -36,73 +36,92 @@ export function AbilitySummary({
       best = { label: row.label, final };
     }
   }
-  const cell = "border-t border-stone-700/50 py-[5px] creator-cascade";
+  // An empty bonus cell shows a dot and reads as "none".
+  const none = (
+    <>
+      <span aria-hidden="true">·</span>
+      <span className="sr-only">none</span>
+    </>
+  );
+  const cell = "border-t border-stone-700/50 px-1 py-[5px] align-middle creator-cascade";
   return (
     <div className="creator-panel-in mt-4 rounded-xl border border-amber-500/30 bg-gradient-to-b from-stone-800/60 to-stone-950/75 p-3.5 sm:p-4">
       <Ribbon className="mb-1.5">Your scores</Ribbon>
       <p className="mb-3 font-serif text-sm leading-relaxed text-stone-300">{summaryLine({ method, best, who })}</p>
-      <div
-        className={cn(
-          "grid items-center gap-x-2.5",
-          // A phone names the abilities as the rows above do (STR, DEX), so
-          // the numbers keep their columns; the full names from sm up.
-          anyAdded
-            ? "grid-cols-[minmax(0,40px)_repeat(5,minmax(0,1fr))] sm:grid-cols-[minmax(0,96px)_repeat(5,minmax(0,1fr))]"
-            : "grid-cols-[minmax(0,40px)_repeat(4,minmax(0,1fr))] sm:grid-cols-[minmax(0,106px)_repeat(4,minmax(0,1fr))]",
-        )}
-      >
-        {head.map((label, index) => (
-          <span
-            key={label}
-            className={cn(
-              "pb-1.5 font-display text-[8.5px] font-semibold uppercase tracking-[0.12em] text-stone-500 sm:tracking-[0.2em]",
-              index === 0 ? "text-left" : "text-center",
-            )}
-          >
-            {label}
-          </span>
-        ))}
-        {rows.map((row, index) => {
-          const final = row.base + row.bonus + row.added;
-          const style = { "--i": index } as CSSProperties;
-          return (
-            <div key={row.ability} className="contents">
-              <span style={style} className={cn(cell, "truncate font-display text-[12.5px] font-semibold text-stone-100")}>
-                <span className="font-mono text-[11px] sm:hidden" aria-hidden="true">
-                  {row.ability.toUpperCase()}
-                </span>
-                <span className="sr-only sm:not-sr-only">{row.label}</span>
-              </span>
-              <span style={style} className={cn(cell, "text-center font-mono text-xs text-stone-400")}>
-                {row.base}
-              </span>
-              <span
-                style={style}
-                className={cn(cell, "text-center font-mono text-xs", row.bonus ? "text-amber-300" : "text-stone-600")}
+      {/* A real table, so a screen reader can read each score against its
+          column (Base, Racial, Final). The fixed layout keeps the columns the
+          old grid gave: a narrow name column on a phone, wider from sm up. */}
+      <table className="w-full table-fixed border-collapse">
+        <caption className="sr-only">Your scores</caption>
+        <colgroup>
+          <col className={anyAdded ? "w-10 sm:w-24" : "w-10 sm:w-[106px]"} />
+          {head.slice(1).map((label) => (
+            <col key={label} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr>
+            {head.map((label, index) => (
+              <th
+                key={label}
+                scope="col"
+                className={cn(
+                  "px-1 pb-1.5 font-display text-[0.6875rem] font-semibold uppercase tracking-[0.12em] text-stone-500 sm:tracking-[0.2em]",
+                  index === 0 ? "pl-0 text-left" : "text-center",
+                )}
               >
-                {row.bonus ? `+${row.bonus}` : "·"}
-              </span>
-              {anyAdded ? (
-                <span
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const final = row.base + row.bonus + row.added;
+            const style = { "--i": index } as CSSProperties;
+            return (
+              <tr key={row.ability}>
+                <th
+                  scope="row"
                   style={style}
-                  className={cn(cell, "text-center font-mono text-xs", row.added ? "text-amber-200" : "text-stone-600")}
+                  className={cn(cell, "truncate pl-0 text-left font-display text-[12.5px] font-semibold text-stone-100")}
                 >
-                  {row.added ? <CountPop value={row.added}>+{row.added}</CountPop> : "·"}
-                </span>
-              ) : null}
-              <span
-                style={style}
-                className={cn(cell, "text-center font-display text-[17px] font-bold", `roll-tier-${rollTier(row.base)}`)}
-              >
-                <CountPop value={final} />
-              </span>
-              <span style={style} className={cn(cell, "text-center font-mono text-xs text-stone-400")}>
-                {formatModifier(abilityMod(final))}
-              </span>
-            </div>
-          );
-        })}
-      </div>
+                  <span className="font-mono text-[11px] sm:hidden" aria-hidden="true">
+                    {row.ability.toUpperCase()}
+                  </span>
+                  <span className="sr-only sm:not-sr-only">{row.label}</span>
+                </th>
+                <td style={style} className={cn(cell, "text-center font-mono text-xs text-stone-400")}>
+                  {row.base}
+                </td>
+                <td
+                  style={style}
+                  className={cn(cell, "text-center font-mono text-xs", row.bonus ? "text-amber-300" : "text-stone-600")}
+                >
+                  {row.bonus ? `+${row.bonus}` : none}
+                </td>
+                {anyAdded ? (
+                  <td
+                    style={style}
+                    className={cn(cell, "text-center font-mono text-xs", row.added ? "text-amber-200" : "text-stone-600")}
+                  >
+                    {row.added ? <CountPop value={row.added}>+{row.added}</CountPop> : none}
+                  </td>
+                ) : null}
+                <td
+                  style={style}
+                  className={cn(cell, "text-center font-display text-[17px] font-bold", `roll-tier-${rollTier(row.base)}`)}
+                >
+                  <CountPop value={final} />
+                </td>
+                <td style={style} className={cn(cell, "text-center font-mono text-xs text-stone-400")}>
+                  {formatModifier(abilityMod(final))}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
       {hp ? (
         <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
           <HpExplainerButton hp={hp} />

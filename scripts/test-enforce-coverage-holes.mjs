@@ -174,13 +174,35 @@ await test("Polymorph at a creature: a beast above its challenge rating is refus
   assert.ok(!enemyOf(world, dummy.id).conditions.includes("polymorphed"));
 });
 
-await test("Polymorph at a creature: a shapechanger, or a creature at 0 hit points, is unaffected and the spell is refused before it is spent", async () => {
+await test("Polymorph at a creature with no beast named, or one the table does not hold, asks which, naming the beasts within its challenge rating", async () => {
+  const { world, wizard, dummy, polymorph } = await hostileTable();
+  const before = castingState(world.sheet(wizard.id));
+  const unnamed = await polymorph("", 1);
+  assert.equal(unnamed.retry, true, JSON.stringify(unnamed).slice(0, 300));
+  assert.match(unnamed.error, new RegExp(`Polymorph needs the beast in variant; ${dummy.displayName} \\(CR 2\\) can become: .*Wolf \\(CR 1\\/4\\).*Brown Bear \\(CR 1\\).*Ask the caster's player which`));
+  assert.doesNotMatch(unnamed.error, /Giant Ape|Tyrannosaurus/, "a beast above the creature's challenge rating was offered");
+  const elk = await polymorph("giant elk", 1);
+  assert.match(elk.error, /The beast-form table holds no "giant elk"; .* can become: /);
+  assert.equal(castingState(world.sheet(wizard.id)), before, "a question spent something");
+});
+
+await test("Polymorph on a character with no beast named asks which, naming the beasts within their level", async () => {
+  const { world, sheets: [wizard] } = await table([caster("wizard", "int", ["Polymorph"], [], 7)], 1, OWN);
+  const before = castingState(world.sheet(wizard.id));
+  const out = await world.invoke("cast_buff", { characterId: wizard.id, spell: "Polymorph", targetCharacterIds: [wizard.id] });
+  assert.equal(out.ok, false);
+  assert.match(String(out.error ?? out.result?.error), new RegExp(`Polymorph needs the beast in variant; ${wizard.name} can become: .*Brown Bear \\(CR 1\\).*Ask the player which`));
+  assert.doesNotMatch(String(out.error ?? out.result?.error), /Tyrannosaurus/, "a beast above the character's level was offered");
+  assert.equal(castingState(world.sheet(wizard.id)), before);
+});
+
+await test("Polymorph at a creature: a shapechanger, or a creature at 0 hit points, is unaffected, the spell cast and spent", async () => {
   const { world, wizard, polymorph, own } = await hostileTable({ traits: ["Shapechanger: The creature can use its action to polymorph into a Small or Medium humanoid, or back into its true form."] });
   const before = { caster: castingState(world.sheet(wizard.id)), enemy: own() };
   const out = await polymorph("brown bear", 1);
-  assert.equal(out.ok, false, "a shapechanger was polymorphed");
-  assert.match(out.error, /shapechanger/i);
-  assert.equal(castingState(world.sheet(wizard.id)), before.caster);
+  assert.equal(out.ok, true, out.error);
+  assert.match(String(out.noEffect), /shapechanger/i);
+  assert.notEqual(castingState(world.sheet(wizard.id)), before.caster, "the cast spent nothing");
   assert.deepEqual(own(), before.enemy);
 
   const down = await hostileTable();
@@ -188,9 +210,10 @@ await test("Polymorph at a creature: a shapechanger, or a creature at 0 hit poin
   patchEnemyHp(down.dummy.id, 0, "alive");
   const spent = castingState(down.world.sheet(down.wizard.id));
   const atZero = await down.polymorph("brown bear", 1);
-  assert.equal(atZero.ok, false, "a creature at 0 hit points was polymorphed");
-  assert.match(atZero.error, /0 hit points/);
-  assert.equal(castingState(down.world.sheet(down.wizard.id)), spent);
+  assert.equal(atZero.ok, true, atZero.error);
+  assert.match(String(atZero.noEffect), /0 hit points/);
+  assert.notEqual(castingState(down.world.sheet(down.wizard.id)), spent, "the cast spent nothing");
+  assert.ok(!enemyOf(down.world, down.dummy.id).conditions.includes("polymorphed"));
 });
 
 await test("Polymorph at a creature: a successful WIS save leaves it as it was, and the slot is spent", async () => {

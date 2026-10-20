@@ -39,6 +39,10 @@ import { publishEphemeral, publishPersisted, publishWithSeq } from "@/lib/events
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { addCopper, formatCopper } from "@/lib/srd/currency";
 import { waypointProperty } from "@/lib/dm/waypoint-logic";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { notCarried } from "@/lib/dm/item-logic";
+import { isTableGearName } from "@/lib/db/homebrew";
+import { textKey } from "@/lib/language/text-logic";
 
 // The shop tools (docs/vtt-parity-implementation-plan.md 11.1). The server
 // prices everything: the model names the item, the shelf says what it
@@ -162,10 +166,10 @@ export function stockPool(kind: string): Array<{ name: string; cost: string }> {
   const seen = new Set<string>();
   for (const itemKind of spec.kinds) {
     for (const item of searchItems({ kind: itemKind, limit: 400 })) {
-      if (!item.cost || (spec.match && !spec.match.test(item.name)) || seen.has(item.name.toLowerCase())) {
+      if (!item.cost || (spec.match && !spec.match.test(item.name)) || seen.has(textKey(item.name))) {
         continue;
       }
-      seen.add(item.name.toLowerCase());
+      seen.add(textKey(item.name));
       pool.push({ name: item.name, cost: item.cost });
     }
   }
@@ -189,10 +193,10 @@ const openSchema = z.object({
   keeper: z.string().trim().max(80).default(""),
 });
 
-export function handleOpenShop(campaign: Campaign, rawArguments: string, random: () => number = Math.random): Record<string, unknown> {
+export function handleOpenShop(campaign: Campaign, rawArguments: string, random: () => number = Math.random): ToolResult {
   const args = parse(openSchema, rawArguments);
   if (!args) {
-    return { error: "Invalid arguments: open_shop needs a name and a kind." };
+    return { error: "Invalid arguments: open_shop needs a name and a kind.", retry: true };
   }
   const location = getCurrentLocation(campaign.id);
   const size = normalizeShopSize(args.size);
@@ -206,7 +210,7 @@ export function handleOpenShop(campaign: Campaign, rawArguments: string, random:
     found &&
     (!location ||
       found.locationId === location.id ||
-      (!found.locationId && (!found.locationName || found.locationName.toLowerCase() === location.name.toLowerCase())))
+      (!found.locationId && (!found.locationName || textKey(found.locationName) === textKey(location.name))))
       ? found
       : null;
   if (existing) {
@@ -260,38 +264,38 @@ function ledger(campaign: Campaign, sheet: CharacterSheet, kind: string, delta: 
   });
 }
 
-export function handleBuyItem(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleBuyItem(campaign: Campaign, rawArguments: string): ToolResult {
   const args = parse(buySchema, rawArguments);
   if (!args) {
-    return { error: "Invalid arguments: buy_item needs characterId, shop and item." };
+    return { error: "Invalid arguments: buy_item needs characterId, shop and item.", retry: true };
   }
   const sheet = resolveSheet(campaign, args.characterId);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const shop = resolveShop(campaign, args.shop);
   if (!shop) {
-    return { error: `No shop called "${args.shop}" here. Open one with open_shop first.` };
+    return { error: `No shop called "${args.shop}" here. Open one with open_shop first.`, retry: true };
   }
   const line = findStockLine(shop.stock, args.item);
   if (!line) {
-    return { error: `${shop.name} does not stock "${args.item}". On the shelf: ${shop.stock.map((entry) => entry.itemName).join(", ") || "nothing"}.` };
+    return { error: `${shop.name} does not stock "${args.item}". On the shelf: ${shop.stock.map((entry) => entry.itemName).join(", ") || "nothing"}.`, refused: "rules" };
   }
   if (line.qty < args.qty) {
-    return { error: `${shop.name} has only ${line.qty} of ${line.itemName}.` };
+    return { error: `${shop.name} has only ${line.qty} of ${line.itemName}.`, retry: true };
   }
   const each = askingPriceCp(line.priceCp, shop.markup);
   const total = each * args.qty;
   const purse = { gold: sheet.gold, copper: sheet.copper };
   if (purse.gold * 100 + purse.copper < total) {
-    return { error: `${line.itemName} x${args.qty} costs ${formatCopper(total)}; ${sheet.name} carries ${formatCopper(purse.gold * 100 + purse.copper)}. They cannot afford it.` };
+    return { error: `${line.itemName} x${args.qty} costs ${formatCopper(total)}; ${sheet.name} carries ${formatCopper(purse.gold * 100 + purse.copper)}. They cannot afford it.`, refused: "rules" };
   }
   const paid = addCopper(purse, -total);
   const items = grantItemMath(sheet.equipment, line.itemName, args.qty);
   // Strength x 15 pounds is all a character can carry (src/lib/dm/load-rules.ts).
   const tooHeavy = capacityProblem(sheet, items.equipment, line.itemName, paid.purse.gold);
   if (tooHeavy) {
-    return { error: `${tooHeavy} Nothing was bought.` };
+    return { ...tooHeavy, error: `${tooHeavy.error} Nothing was bought.` };
   }
   const patch = { gold: paid.purse.gold, copper: paid.purse.copper, equipment: items.equipment };
   patchSheet(sheet.id, patch);
@@ -308,35 +312,35 @@ export function handleBuyItem(campaign: Campaign, rawArguments: string): Record<
 const MAX_UNPRICED_CP = 10_000_000;
 const sellSchema = buySchema.extend({ priceCp: z.coerce.number().int().min(1).max(MAX_UNPRICED_CP).optional() });
 
-export function handleSellItem(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleSellItem(campaign: Campaign, rawArguments: string): ToolResult {
   const args = parse(sellSchema, rawArguments);
   if (!args) {
-    return { error: "Invalid arguments: sell_item needs characterId, shop and item, and a priceCp of at most 10000000 (100,000 gp) when one is given." };
+    return { error: "Invalid arguments: sell_item needs characterId, shop and item, and a priceCp of at most 10000000 (100,000 gp) when one is given.", retry: true };
   }
   const sheet = resolveSheet(campaign, args.characterId);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const shop = resolveShop(campaign, args.shop);
   if (!shop) {
-    return { error: `No shop called "${args.shop}" here.` };
+    return { error: `No shop called "${args.shop}" here.`, retry: true };
   }
   if (!shop.buys) {
-    return { error: `${shop.name} does not buy.` };
+    return { error: `${shop.name} does not buy.`, refused: "rules" };
   }
   const removal = removeItemMath(sheet.equipment, args.item, args.qty);
   if (!removal) {
-    return { error: `${sheet.name} does not carry "${args.item}".` };
+    return notCarried(sheet.name, sheet.equipment.map((item) => item.name), args.item, isTableGearName(campaign.id, args.item));
   }
-  const carried = sheet.equipment.find((item) => item.name.toLowerCase() === args.item.toLowerCase())?.name ?? args.item;
+  const line = sheet.equipment.find((item) => textKey(item.name) === textKey(args.item)) ?? { name: args.item };
+  const carried = line.name;
   // Gems, jewelry, art and trade goods keep their full value (SRD 5.1,
-  // Selling Treasure); a treasure named with its value is priced by it.
-  // A value written into the name prices only treasure; "Longsword (15 gp)"
-  // is priced as a longsword (src/lib/dm/trade-value.ts).
-  const listCp = listPriceCp(carried);
-  const each = listCp !== null ? (keepsFullValue(carried) ? listCp : offerPriceCp(listCp)) : args.priceCp ?? null;
+  // Selling Treasure), priced by the worth they were given; a name is never
+  // read for a price (src/lib/dm/trade-value.ts).
+  const listCp = listPriceCp(line);
+  const each = listCp !== null ? (keepsFullValue(line) ? listCp : offerPriceCp(listCp)) : args.priceCp ?? null;
   if (each === null) {
-    return { error: `The pack has no price for "${carried}"; pass priceCp for what the keeper pays each.` };
+    return { error: `The pack has no price for "${carried}"; pass priceCp for what the keeper pays each.`, retry: true };
   }
   const total = each * removal.removed;
   const paid = addCopper({ gold: sheet.gold, copper: sheet.copper }, total);
@@ -352,21 +356,21 @@ export function handleSellItem(campaign: Campaign, rawArguments: string): Record
 
 const haggleSchema = z.object({ characterId: z.string().trim().min(1), shop: z.string().trim().min(1) });
 
-export function handleHaggle(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleHaggle(campaign: Campaign, rawArguments: string): ToolResult {
   const args = parse(haggleSchema, rawArguments);
   if (!args) {
-    return { error: "Invalid arguments: haggle needs characterId and shop." };
+    return { error: "Invalid arguments: haggle needs characterId and shop.", retry: true };
   }
   const sheet = resolveSheet(campaign, args.characterId);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const shop = resolveShop(campaign, args.shop);
   if (!shop) {
-    return { error: `No shop called "${args.shop}" here.` };
+    return { error: `No shop called "${args.shop}" here.`, retry: true };
   }
   if (shop.haggledBy.includes(sheet.id)) {
-    return { error: `${sheet.name} already tried their luck with ${shop.name}'s keeper.` };
+    return { error: `${sheet.name} already tried their luck with ${shop.name}'s keeper.`, refused: "rules" };
   }
   // Held carriers and lasting effects ride the haggling check, and the
   // carrier is spent by it.
@@ -376,7 +380,7 @@ export function handleHaggle(campaign: Campaign, rawArguments: string): Record<s
     rollExtrasFor(campaign, sheet, "skill_check"),
   );
   if ("error" in resolved || "autoFail" in resolved) {
-    return { error: "error" in resolved ? resolved.error : `${sheet.name} cannot make that check.` };
+    return "error" in resolved ? resolved : { error: `${sheet.name} cannot make that check.`, refused: "rules" };
   }
   spendRollCarriers(campaign.id, sheet.id, resolved.spendInspiration);
   const dc = haggleDc(shop.size);

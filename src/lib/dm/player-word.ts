@@ -19,6 +19,7 @@ import { canAct } from "@/lib/dm/can-act";
 import { isNarration } from "@/lib/dm/ooc-question";
 import { resolveSheetRef } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // Whether the character's player asked for something in the input this DM
 // turn answers: a message of theirs since the DM last spoke, table talk
@@ -60,7 +61,7 @@ export function characterCallUnasked(
   turn: Pick<DmTurn, "actor"> | null,
   rawArguments: string,
   key: "characterId" | "casterId" | "healerId",
-): string | null {
+): ToolError | null {
   if (turn?.actor !== "ai") {
     return null;
   }
@@ -74,5 +75,5 @@ export function characterCallUnasked(
   if (typeof ref !== "string" || !sheet || !resolveSheetRef(ref, [sheet], new Map([[sheet.id, sheet]]))) {
     return null;
   }
-  return `${sheet.name} has not acted: their player hasn't declared an action this turn, and nothing was spent. Don't narrate an attempt; wait for them to say what ${sheet.name} does, or narrate the moment and stop.`;
+  return { error: `${sheet.name} has not acted: their player hasn't declared an action this turn. Nothing was spent. Don't narrate an attempt; wait for them to say what ${sheet.name} does, or narrate the moment and stop.`, retry: true };
 }

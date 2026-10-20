@@ -32,6 +32,11 @@ export const FAMILIAR_FORMS: FamiliarForm[] = [
 ];
 
 // Every form's name, the Pact of the Chain forms included.
+// The forms a caster can be offered: Pact of the Chain's four with it.
+export function familiarOffer(chain: boolean): string {
+  return FAMILIAR_FORMS.filter((entry) => chain || !entry.chainOnly).map((entry) => entry.form.toLowerCase()).join(", ");
+}
+
 export function familiarFormNames(): string[] {
   return FAMILIAR_FORMS.map((entry) => entry.form);
 }

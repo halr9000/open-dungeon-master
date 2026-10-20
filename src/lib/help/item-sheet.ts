@@ -2,6 +2,8 @@ import { describeContentEntry } from "@/lib/help";
 import { DAMAGE_TYPE_BLURBS, WEAPON_PROPERTY_BLURBS } from "@/lib/help/terms";
 import { magicItemBonus, matchArmor, type SrdArmor } from "@/lib/srd/armor";
 import { SRD_WEAPONS, type SrdWeapon } from "@/lib/srd/weapons";
+import { textKey } from "@/lib/language/text-logic";
+import { pluralForms } from "@/lib/srd/name-forms";
 
 // The ⓘ card for a carried thing. An item's facts are scattered: the Open5e
 // v1 tables give a Longsword's die and a Plate's AC but no prose and (for
@@ -210,20 +212,16 @@ const isHomebrew = (row: Row) => typeof row.itemKind === "string";
 // Holster" is not read as a pistol. Longest name wins: "Hand Crossbow"
 // before a plain crossbow.
 function matchWeaponTail(name: string): SrdWeapon | null {
-  const wanted = name
-    .toLowerCase()
-    .replace(/[+-]\d+/g, " ")
-    .replace(/[^a-z0-9-]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(/s$/, "");
+  const wanted = textKey(name)
+    .split(" ")
+    .filter((part) => !/^[+-]/.test(part))
+    .join(" ");
   if (!wanted) {
     return null;
   }
-  const hits = SRD_WEAPONS.filter((weapon) => {
-    const key = weapon.name.toLowerCase();
-    return wanted === key || wanted.endsWith(` ${key}`);
-  });
+  const hits = SRD_WEAPONS.filter((weapon) =>
+    pluralForms(textKey(weapon.name)).some((form) => wanted === form || wanted.endsWith(` ${form}`)),
+  );
   hits.sort((a, b) => b.name.length - a.name.length);
   return hits[0] ?? null;
 }

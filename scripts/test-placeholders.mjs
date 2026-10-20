@@ -84,6 +84,11 @@ for (const gender of GENDER_INPUTS) {
     check(R.characterPlaceholder({ genre, gender }), `genre lead ${genre}/${gender}`);
     check(R.characterPlaceholder({ gender }), `bare ${gender}`);
   }
+  // Pack races mapped by id (Tome of Heroes and the rest), so their plates
+  // are reachable.
+  for (const id of R.raceFamilyIds()) {
+    check(R.characterPlaceholder({ race: id, gender }), `pack race ${id}/${gender}`);
+  }
   // An unknown race or class must still land somewhere real.
   check(R.characterPlaceholder({ race: "spacefolk", class: "chronomancer", gender }), `unknown/${gender}`);
   // Every race in every genre: the wasteland's half-orc is its mutant lead.

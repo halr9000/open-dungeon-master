@@ -42,6 +42,8 @@ import { rollExtrasFor, spendRollCarriers } from "@/lib/dm/forced-save";
 import type { RollArgs } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { waypointProperty } from "@/lib/dm/waypoint-logic";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The social-interaction engine: NPC disposition was pure narration with no
 // state, so a shopkeeper the party bullied yesterday greeted them warmly today
@@ -176,7 +178,7 @@ function bootstrapAgency(
     ? campaign.storyArc?.cast?.find(
         (entry) =>
           entry.status !== "gone" &&
-          entry.name.trim().toLowerCase() === npc.name.trim().toLowerCase(),
+          textKey(entry.name) === textKey(npc.name),
       )
     : undefined;
   if (cast) {
@@ -217,12 +219,12 @@ const setNpcSchema = z.object({
   ambition: z.string().max(300).optional(),
 });
 
-export function handleSetNpc(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleSetNpc(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof setNpcSchema>;
   try {
     args = setNpcSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: set_npc needs at least a name." };
+    return { error: "Invalid arguments: set_npc needs at least a name.", retry: true };
   }
   // gender is optional so an update need not restate it, which leaves a
   // registration free to forget it: the result then asks, never refuses.
@@ -264,12 +266,12 @@ export function handleNpcReaction(
   campaign: Campaign,
   turn: DmTurn,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof reactionSchema>;
   try {
     args = reactionSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: npc_reaction needs a name and a gender (Female, Male, Nonbinary or Unknown)." };
+    return { error: "Invalid arguments: npc_reaction needs a name and a gender (Female, Male, Nonbinary or Unknown).", retry: true };
   }
   const modifier = args.modifier ?? 0;
   // A penalty is written as 2d6-3, never 2d6+-3, which no dice parser reads.
@@ -323,27 +325,28 @@ export function handleSocialCheck(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof socialCheckSchema>;
   try {
     args = socialCheckSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: social_check needs characterId, npc, and approach." };
+    return { error: "Invalid arguments: social_check needs characterId, npc, and approach.", retry: true };
   }
   const stale = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = stale ? getSheetById(stale.id) ?? stale : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const npc = getNpcByName(campaign.id, args.npc);
   if (!npc) {
     return {
       error: `No tracked NPC named "${args.npc}".${nearestNpcHint(nearestNpcName(campaign.id, args.npc))} Register them with set_npc or npc_reaction first.`,
+      retry: true,
     };
   }
   const skill = approachSkill(args.approach);
   if (!skill) {
-    return { error: "approach must be persuade, deceive, or intimidate." };
+    return { error: "approach must be persuade, deceive, or intimidate.", retry: true };
   }
 
   // Held carriers (Bardic Inspiration, Help, Guidance) and lasting effects
@@ -354,7 +357,7 @@ export function handleSocialCheck(
     rollExtrasFor(campaign, sheet, "skill_check"),
   );
   if ("error" in resolved || "autoFail" in resolved) {
-    return { error: "error" in resolved ? resolved.error : `${sheet.name} cannot make that check.` };
+    return "error" in resolved ? resolved : { error: `${sheet.name} cannot make that check.`, refused: "rules" };
   }
   spendRollCarriers(campaign.id, sheet.id, resolved.spendInspiration);
   // A faction's member leans on the party's standing with that faction

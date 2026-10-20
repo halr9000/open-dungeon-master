@@ -25,6 +25,7 @@ import { summonSteelDefender } from "@/lib/dm/summon-defender";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
 import { rollCard, sheetAttacker } from "@/lib/dm/roll-card";
 import { rollAgainst } from "@/lib/roll-labels";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // A spend's damage on one enemy, as the holder's dice card.
 const damageDice = (ctx: SpendContext, enemy: EncounterEnemy, dice: string) =>
@@ -44,7 +45,7 @@ export type SpendContext = {
   reason: string;
 };
 
-type Resolution = { error: string } | { patch?: FullPatchSheetInput; result: Record<string, unknown> };
+type Resolution = ToolError | { patch?: FullPatchSheetInput; result: Record<string, unknown> };
 
 const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
 
@@ -75,10 +76,10 @@ function conditionName(ctx: SpendContext, does: Extract<SpendDoes, { kind: "buff
 
 // The creature a spend aims at: the one named, else the one the character
 // attacked last this round.
-function targetEnemy(ctx: SpendContext): EncounterEnemy | { error: string } {
+function targetEnemy(ctx: SpendContext): EncounterEnemy | ToolError {
   const encounter = getActiveEncounter(ctx.campaign.id);
   if (!encounter) {
-    return { error: `${ctx.spend.name} aims at a creature in a fight; there is no fight. Nothing was spent.` };
+    return { error: `${ctx.spend.name} aims at a creature in a fight; there is no fight. Nothing was spent.`, refused: "rules" };
   }
   let ref = ctx.args.targetEnemyId;
   if (!ref) {
@@ -87,7 +88,7 @@ function targetEnemy(ctx: SpendContext): EncounterEnemy | { error: string } {
   }
   const enemy = ref ? resolveEnemyRef(encounter.id, ref) : null;
   if (!enemy || enemy.status !== "alive") {
-    return { error: `${ctx.spend.name} needs a living creature: pass targetEnemyId from GAME STATE. Nothing was spent.` };
+    return { error: `${ctx.spend.name} needs a living creature: pass targetEnemyId from GAME STATE. Nothing was spent.`, retry: true };
   }
   return enemy;
 }
@@ -160,7 +161,7 @@ export function resolveSpendEffect(ctx: SpendContext, does: SpendDoes): Resoluti
       const wanted = lower(ctx.args.variant);
       const option = does.options.find((entry) => wanted && (lower(entry) === wanted || wanted.includes(lower(entry))));
       if (!option) {
-        return { error: `${ctx.spend.name} takes one option as the variant: ${does.options.join(", ")}. Nothing was changed.` };
+        return { error: `${ctx.spend.name} takes one option as the variant: ${does.options.join(", ")}. Ask the player which, unless they named one. Nothing was changed.`, retry: true };
       }
       const features = sheet.features.map((feature) =>
         feature.name === ctx.held.name ? { ...feature, name: `${ctx.held.feature} (${option})` } : feature,
@@ -188,7 +189,7 @@ export function resolveSpendEffect(ctx: SpendContext, does: SpendDoes): Resoluti
       } else if (does.target === "ally") {
         const ally = ctx.args.targetCharacterId ? getSheetById(ctx.args.targetCharacterId) : sheet;
         if (!ally || ally.campaignId !== campaign.id) {
-          return { error: `${ctx.spend.name} goes to a creature at the table: pass targetCharacterId. Nothing was spent.` };
+          return { error: `${ctx.spend.name} goes to a creature at the table: pass targetCharacterId. Nothing was spent.`, retry: true };
         }
         if (ally.id !== sheet.id) {
           sheetCondition(campaign, ally, condition, does.rounds, tempHp > ally.tempHp ? { tempHp } : {});
@@ -238,10 +239,10 @@ export function resolveSpendEffect(ctx: SpendContext, does: SpendDoes): Resoluti
       }
       const encounter = getActiveEncounter(campaign.id)!;
       if (does.rangeFt && !withinFeet(encounter.id, sheet.id, enemy.id, does.rangeFt)) {
-        return { error: `${enemy.displayName} is beyond ${does.rangeFt} feet of ${sheet.name}; ${ctx.spend.name} reaches no further. Nothing was spent.` };
+        return { error: `${enemy.displayName} is beyond ${does.rangeFt} feet of ${sheet.name}; ${ctx.spend.name} reaches no further. Nothing was spent.`, refused: "rules" };
       }
       if (does.perUnit && ctx.units < 1) {
-        return { error: `${ctx.spend.name} needs at least 1 point spent: pass amount. Nothing was spent.` };
+        return { error: `${ctx.spend.name} needs at least 1 point spent: pass amount. Nothing was spent.`, retry: true };
       }
       const dc = saveDc(ctx, does.dcAbility);
       const save = rollEnemySave(campaign.id, enemy, does.save, dc, {
@@ -350,7 +351,7 @@ export function resolveSpendEffect(ctx: SpendContext, does: SpendDoes): Resoluti
         const rolled = rollCard(ctx.campaign, ctx.turn, sheet.id, "custom", `${ctx.spend.name}: healing`, formula(ctx, does.formula), null).total;
         const ally = ctx.args.targetCharacterId ? getSheetById(ctx.args.targetCharacterId) : sheet;
         if (!ally || ally.deathSaves?.dead) {
-          return { error: `${ctx.spend.name} heals a living creature at the table: pass targetCharacterId. Nothing was spent.` };
+          return { error: `${ctx.spend.name} heals a living creature at the table: pass targetCharacterId. Nothing was spent.`, retry: true };
         }
         const currentHp = Math.min(effectiveMaxHp(ally), ally.currentHp + rolled);
         patchSheet(ally.id, { currentHp });
@@ -362,7 +363,7 @@ export function resolveSpendEffect(ctx: SpendContext, does: SpendDoes): Resoluti
         return { result: { healed: `${ally.name} regains ${currentHp - ally.currentHp} hit points (${rolled} rolled).` } };
       }
       if (!/burn|harm|damage/.test(wanted)) {
-        return { error: `${ctx.spend.name} takes variant "heal" or "burn". Nothing was spent.` };
+        return { error: `${ctx.spend.name} takes variant "heal" or "burn". Ask the player which, unless they named one. Nothing was spent.`, retry: true };
       }
       const enemy = targetEnemy(ctx);
       if ("error" in enemy) {
@@ -389,7 +390,7 @@ export function resolveSpendEffect(ctx: SpendContext, does: SpendDoes): Resoluti
       return { result: { insight: insight.total, deception, read: `${sheet.name} reads ${enemy.displayName}: ${does.condition} for a minute.` } };
     }
     case "variants":
-      return { error: `${ctx.spend.name} needs a variant. Nothing was spent.` };
+      return { error: `${ctx.spend.name} needs a variant: ${Object.keys(does.options).join(" or ")}. Ask the player which, unless they named one. Nothing was spent.`, retry: true };
     // Gathered Swarm's push (src/lib/dm/authored-spend-more.ts).
     case "swarm_push":
       return swarmPush(ctx, does);
@@ -451,7 +452,7 @@ function hasBoard(encounter: Encounter): boolean {
 function stormAura(ctx: SpendContext): Resolution {
   const kind = (["desert", "sea", "tundra"] as const).find((entry) => lower(ctx.args.variant).includes(entry));
   if (!kind) {
-    return { error: "Storm Aura takes the environment as the variant: desert, sea or tundra. Nothing was spent." };
+    return { error: "Storm Aura takes the environment as the variant: desert, sea or tundra, the one chosen when the barbarian took Storm Aura (on their sheet). Nothing was spent.", retry: true };
   }
   const encounter = getActiveEncounter(ctx.campaign.id);
   const amount = formula(ctx, STORM_AURA[kind]);

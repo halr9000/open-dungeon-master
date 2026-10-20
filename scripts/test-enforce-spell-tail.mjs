@@ -220,9 +220,22 @@ await test("Blight has no effect on undead or constructs, and a plant saves with
   assert.equal(d20s(world.diceLog()), 2);
   assert.equal(enemyOf(world, shrub.id).maxHp - enemyOf(world, shrub.id).currentHp, 64);
   const other = await table([caster("druid", "wis", ["Blight"])], 1, { type: "undead" });
-  const refused = await other.world.invoke("cast_at_enemy", { characterId: other.sheets[0].id, targetEnemyId: other.enemies[0].id, spell: "Blight", saveAbility: "con", level: 4 });
-  assert.equal(refused.ok, false);
-  assert.equal(other.world.sheet(other.sheets[0].id).spellcasting.slots["4"].used, 0);
+  const spared = await other.world.invoke("cast_at_enemy", { characterId: other.sheets[0].id, targetEnemyId: other.enemies[0].id, spell: "Blight", saveAbility: "con", level: 4 });
+  assert.equal(spared.ok, true, spared.error);
+  assert.match(String(spared.result.noEffect), /no effect on undead/);
+  assert.equal(other.world.sheet(other.sheets[0].id).spellcasting.slots["4"].used, 1);
+  assert.equal(enemyOf(other.world, other.enemies[0].id).currentHp, enemyOf(other.world, other.enemies[0].id).maxHp);
+});
+
+await test("Command has no effect on undead: the spell is cast, its slot spent, and the creature does as it would.", async () => {
+  const { world, sheets: [cleric], enemies: [zombie] } = await table([caster("cleric", "wis", ["Command"])], 1, { type: "undead" });
+  world.dice(1);
+  const out = await world.invoke("cast_at_enemy", { characterId: cleric.id, targetEnemyId: zombie.id, spell: "Command", condition: "grovel", saveAbility: "wis", level: 1 });
+  world.clearDice();
+  assert.equal(out.ok, true, out.error);
+  assert.match(String(out.result.noEffect), /no effect on undead/);
+  assert.equal(world.sheet(cleric.id).spellcasting.slots["1"].used, 1);
+  assert.deepEqual(enemyOf(world, zombie.id).conditions, []);
 });
 
 // ---- Bestow Curse: each of its four curses held by the engine ----

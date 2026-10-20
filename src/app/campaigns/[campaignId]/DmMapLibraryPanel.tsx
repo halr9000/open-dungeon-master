@@ -13,9 +13,11 @@ import { DEFAULT_MAP_TOOLS, type MapTools } from "@/app/campaigns/[campaignId]/M
 import { useMapToasts } from "@/app/campaigns/[campaignId]/MapToasts";
 import { Listed } from "@/app/campaigns/[campaignId]/PanelKit";
 import { MapCreateControls } from "@/app/workshop/maps/MapCreateControls";
+import { AddonMapGenerator } from "@/app/workshop/maps/AddonMapGenerator";
 import { MapEditor } from "@/app/workshop/maps/MapEditor";
 import { MapGallery } from "@/app/workshop/maps/MapGallery";
 import type { LibraryState, PreparedMap } from "@/app/workshop/maps/types";
+import { useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
 
 // The map library: maps built before anybody needed them.
 //
@@ -40,9 +42,19 @@ import type { LibraryState, PreparedMap } from "@/app/workshop/maps/types";
 export function DmMapLibraryPanel({
   campaignId,
   layout = "drawer",
+  openOnArrival,
+  only = false,
+  onClose,
 }: {
   campaignId: string;
   layout?: "drawer" | "gallery";
+  // The map to open in the editor on arrival, by id: a World place's "Open
+  // battle map" or "Create battle map" (src/app/workshop/world/PlaceBattleMaps.tsx).
+  openOnArrival?: string | null;
+  // The gallery's editor sheet for that one map and nothing else, calling
+  // onClose when it shuts: the table's World tab, which has no gallery.
+  only?: boolean;
+  onClose?: () => void;
 }) {
   const [state, setState] = useState<LibraryState>({
     maps: [],
@@ -103,7 +115,13 @@ export function DmMapLibraryPanel({
   }, [campaignId]);
 
   const selected = state.maps.find((map) => map.id === selectedId) ?? null;
-  const gallery = layout === "gallery";
+  const gallery = layout === "gallery" || only;
+  useOpenOnArrival(openOnArrival, loaded ? state.maps : null, (map) => select(map.id));
+
+  function showEditor(open: boolean) {
+    setEditorOpen(open);
+    if (!open && only) onClose?.();
+  }
 
   // The tour's "open the new-map controls" step.
   useTourPrepare((name) => {
@@ -271,7 +289,7 @@ export function DmMapLibraryPanel({
     try {
       await fetch(`/api/campaigns/${campaignId}/dm/maps/${selected.id}`, { method: "DELETE" });
       setSelectedId("");
-      setEditorOpen(false);
+      showEditor(false);
       await load();
     } finally {
       setBusy(false);
@@ -355,6 +373,23 @@ export function DmMapLibraryPanel({
     </>
   );
 
+  const sheet = (
+    <Sheet
+      open={editorOpen && selected !== null}
+      onOpenChange={showEditor}
+      title={selected?.name ?? "Map"}
+      // The editor brings its own top bar, with the map's name in it.
+      hideTitle
+      className="top-0 h-dvh max-h-none rounded-none px-0 pb-0 pt-[env(safe-area-inset-top)] lg:top-1/2 lg:h-[94vh] lg:max-h-[94vh] lg:w-[min(98vw,110rem)] lg:rounded-xl lg:p-0"
+    >
+      <div className="h-full">{editor}</div>
+    </Sheet>
+  );
+
+  if (only) {
+    return sheet;
+  }
+
   if (gallery) {
     return (
       <div className="space-y-3">
@@ -384,6 +419,8 @@ export function DmMapLibraryPanel({
                 onCreate={create}
                 onImport={(file) => void importUvtt(file)}
               />
+              {/* Only drawn when an admin has switched a map addon on. */}
+              <AddonMapGenerator campaignId={campaignId} onCreated={(id) => void load().then(() => select(id))} />
             </div>
           ) : null}
         </section>
@@ -394,17 +431,7 @@ export function DmMapLibraryPanel({
           </Listed>
         </div>
         {feedback}
-
-        <Sheet
-          open={editorOpen && selected !== null}
-          onOpenChange={setEditorOpen}
-          title={selected?.name ?? "Map"}
-          // The editor brings its own top bar, with the map's name in it.
-          hideTitle
-          className="top-0 h-dvh max-h-none rounded-none px-0 pb-0 pt-[env(safe-area-inset-top)] lg:top-1/2 lg:h-[94vh] lg:max-h-[94vh] lg:w-[min(98vw,110rem)] lg:rounded-xl lg:p-0"
-        >
-          <div className="h-full">{editor}</div>
-        </Sheet>
+        {sheet}
       </div>
     );
   }
@@ -418,6 +445,7 @@ export function DmMapLibraryPanel({
         onCreate={create}
         onImport={(file) => void importUvtt(file)}
       />
+      <AddonMapGenerator campaignId={campaignId} onCreated={(id) => void load().then(() => setSelectedId(id))} />
 
       <Listed loaded={loaded} error={loadError} onRetry={() => void load()} loading="Opening the drawer...">
       {state.maps.length ? (

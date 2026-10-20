@@ -8,6 +8,7 @@ import {
   SelectField,
   type EnvDefaults,
   type MaskedConfig,
+  inheritedHint,
 } from "@/app/admin/AdminSettingsFields";
 
 // The two sections about how the server is reached from outside: live voice
@@ -140,7 +141,7 @@ export function AdminNetworkSections({
           <div className="grid gap-3 sm:grid-cols-2">
             <Field
               label="Client ID"
-              hint={env.discordClientId ? `Env: ${env.discordClientId}` : undefined}
+              hint={inheritedHint(config.discord.clientId, env.discordClientId)}
             >
               <input
                 className={ui.input}

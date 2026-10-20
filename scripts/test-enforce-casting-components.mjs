@@ -81,9 +81,15 @@ await test("a spell cannot be cast at an enemy that is dead, gone or not there",
   assert.equal(live.ok, true, live.error);
 });
 
-await test("an enemy immune to the condition is no target, and the slot is kept", async () => {
+await test("an enemy immune to the condition is cast at to no effect: the slot is spent, the enemy unchanged", async () => {
   const { world, sheets: [mage], enemies: [golem] } = await table([wizard(5)], 1, { stats: { conditionImmune: "charmed, paralyzed, poisoned" } });
-  await refused(world, mage, "cast_at_enemy", hold(mage, golem), "Hold Person on a creature immune to paralysis");
+  const before = castingState(world.sheet(mage.id));
+  const enemies = enemyState(world);
+  const out = await world.invoke("cast_at_enemy", hold(mage, golem));
+  assert.equal(out.ok, true, out.error);
+  assert.match(String(out.result.noEffect), /immune to paralyzed/);
+  assert.notEqual(castingState(world.sheet(mage.id)), before, "the cast spent nothing");
+  assert.equal(enemyState(world), enemies, "the immune enemy changed");
 });
 
 await test("with no fight on there is nobody to cast at", async () => {
@@ -122,11 +128,23 @@ await test("a silenced caster cannot cast a spell with a verbal component", asyn
 await test("Revivify consumes the diamond it is cast with", async () => {
   const world = await openWorld();
   worlds.push(world);
-  const priest = world.addHero(cleric(5, { equipment: [{ name: "Diamond (300 gp)", qty: 1 }], gold: 0 }));
+  const priest = world.addHero(cleric(5, { equipment: [{ name: "Diamond", qty: 1, worth: 300 }], gold: 0 }));
   const out = await world.invoke("use_spell_slot", { characterId: priest.id, level: 3, spell: "Revivify" });
   assert.equal(out.ok, true, out.error);
   const left = world.sheet(priest.id).equipment.filter((item) => /diamond/i.test(item.name));
   assert.deepEqual(left, [], "the diamond is still in the pack");
+});
+
+await test("Revivify takes a diamond by the worth it was given; a worth written only into a name is no worth", async () => {
+  const world = await openWorld();
+  worlds.push(world);
+  const priest = world.addHero(cleric(5, { equipment: [{ name: "Diamond", qty: 1, worth: 300 }], gold: 0 }));
+  const out = await world.invoke("use_spell_slot", { characterId: priest.id, level: 3, spell: "Revivify" });
+  assert.equal(out.ok, true, out.error);
+  assert.deepEqual(world.sheet(priest.id).equipment.filter((item) => item.name === "Diamond"), [], "the diamond is still in the pack");
+  const poor = world.addHero(cleric(5, { equipment: [{ name: "Diamond (300 gp)", qty: 1 }], gold: 0 }));
+  const refusal = await world.invoke("use_spell_slot", { characterId: poor.id, level: 3, spell: "Revivify" });
+  assert.match(String(refusal.error), /with worth 300/, "a diamond named with its worth paid for Revivify");
 });
 
 // ---- the bonus action rule ----

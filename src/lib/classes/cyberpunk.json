@@ -31,6 +31,10 @@
         "cyberpunk"
       ],
       "blurb": "A console cowboy who cracks systems and minds alike, running intrusion programs from a battered cyberdeck.",
+      "roles": [
+        "Control"
+      ],
+      "playsLike": "Wizard",
       "spellListFrom": "wizard",
       "knownCaster": false,
       "castingLabel": "Programs",
@@ -74,6 +78,10 @@
         "cyberpunk"
       ],
       "blurb": "Chromed to the teeth and faster than thought, a blade-and-bullet artist who sells violence with a warranty.",
+      "roles": [
+        "DPS"
+      ],
+      "playsLike": "Fighter",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -113,6 +121,11 @@
         "cyberpunk"
       ],
       "blurb": "A drone whisperer who rides camera feeds, jury-rigs machines, and casts support routines through a loyal swarm.",
+      "roles": [
+        "Support",
+        "Utility"
+      ],
+      "playsLike": "Wizard",
       "spellListFrom": "wizard",
       "knownCaster": false,
       "castingLabel": "Drone Routines",
@@ -156,6 +169,10 @@
         "cyberpunk"
       ],
       "blurb": "The one who knows a guy. Contacts, favors, and a silver tongue open doors that guns cannot.",
+      "roles": [
+        "Utility"
+      ],
+      "playsLike": "Rogue",
       "spellListFrom": null,
       "knownCaster": false,
       "castingLabel": null,
@@ -193,6 +210,10 @@
         "cyberpunk"
       ],
       "blurb": "A psychic surge burns behind their eyes: raw, unstable psionics that megacorp labs would kill to bottle.",
+      "roles": [
+        "DPS"
+      ],
+      "playsLike": "Wizard",
       "spellListFrom": "sorcerer",
       "knownCaster": true,
       "castingLabel": "Psionics",
@@ -230,6 +251,10 @@
         "cyberpunk"
       ],
       "blurb": "Combat medic with a stim gun and a nanite pharmacy, keeping the crew breathing through the firefight.",
+      "roles": [
+        "Healer"
+      ],
+      "playsLike": "Cleric",
       "spellListFrom": "cleric",
       "knownCaster": false,
       "castingLabel": "Nanomeds",

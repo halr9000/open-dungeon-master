@@ -1,4 +1,6 @@
 import type { SaveAbility } from "@/lib/bestiary/statblock";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { splitWords, textKey } from "@/lib/language/text-logic";
 
 // A monster's special actions as numbers the engine runs (SRD 5.1,
 // Monsters): the save, DC and dice an ability prints, whether it recharges
@@ -64,7 +66,7 @@ const TAGS = /\s*\((?:recharge[^)]*|\d+\s*\/\s*day[^)]*|costs?\s+\d\s+actions?|r
 // "Fire Breath (Recharge 5-6)" -> "fire breath": the name two lines are
 // matched on.
 export function abilityKey(name: string): string {
-  return name.replace(TAGS, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  return textKey(name.replace(TAGS, " "));
 }
 
 function compactDice(raw: string): string {
@@ -215,7 +217,10 @@ export type MonsterSpellcasting = {
 };
 
 const titleCase = (name: string) =>
-  name.replace(/\b([a-z])/g, (_match, letter: string) => letter.toUpperCase()).replace(/\b(Of|The|And|From|To)\b/g, (word) => word.toLowerCase());
+  splitWords(name)
+    .map((part, index) => (index % 2 ? part.split("-").map((piece) => piece.charAt(0).toUpperCase() + piece.slice(1)).join("-") : part))
+    .join("")
+    .replace(/\b(Of|The|And|From|To)\b/g, (word) => word.toLowerCase());
 
 function spellNames(list: string): string[] {
   return list
@@ -268,8 +273,8 @@ export function parseSpellcasting(desc: string): MonsterSpellcasting | null {
 }
 
 export function findMonsterSpell(casting: MonsterSpellcasting | undefined, wanted: string): MonsterSpell | null {
-  const key = wanted.trim().toLowerCase();
-  return casting?.spells.find((spell) => spell.name.toLowerCase() === key) ?? null;
+  const key = textKey(wanted);
+  return casting?.spells.find((spell) => textKey(spell.name) === key) ?? null;
 }
 
 // ---- the per-fight ledger ----
@@ -315,14 +320,14 @@ export function normalizeAbilityLedgers(raw: unknown): Record<string, AbilityLed
 }
 
 // Why an ability cannot be used now, or null when it can.
-export function abilityRefusal(creature: string, ability: MonsterAbility, ledger: AbilityLedger | undefined): string | null {
+export function abilityRefusal(creature: string, ability: MonsterAbility, ledger: AbilityLedger | undefined): ToolError | null {
   const key = abilityKey(ability.name);
   if (ability.recharge && ledger?.spent?.includes(key)) {
-    return `${creature}'s ${ability.name} has not recharged: it comes back on a ${ability.recharge === 6 ? "6" : `${ability.recharge} or higher`} on the d6 rolled at the start of its turn. Pick another action.`;
+    return { error: `${creature}'s ${ability.name} has not recharged: it comes back on a ${ability.recharge === 6 ? "6" : `${ability.recharge} or higher`} on the d6 rolled at the start of its turn. Pick another action.`, retry: true };
   }
   const limit = ability.perDay ?? (ability.perRest ? 1 : 0);
   if (limit && (ledger?.uses?.[key] ?? 0) >= limit) {
-    return `${creature} has used ${ability.name} ${limit === 1 ? "already" : `all ${limit} times`} and cannot use it again today. Pick another action.`;
+    return { error: `${creature} has used ${ability.name} ${limit === 1 ? "already" : `all ${limit} times`} and cannot use it again today. Pick another action.`, retry: true };
   }
   return null;
 }
@@ -395,7 +400,7 @@ export function spendSlot(ledger: AbilityLedger | undefined, slot: number): Abil
 }
 
 export function spendSpellUse(ledger: AbilityLedger | undefined, spell: string): AbilityLedger {
-  const key = `spell:${spell.toLowerCase()}`;
+  const key = `spell:${textKey(spell)}`;
   return { ...(ledger ?? {}), uses: { ...(ledger?.uses ?? {}), [key]: (ledger?.uses?.[key] ?? 0) + 1 } };
 }
 
@@ -403,7 +408,7 @@ export function spellUsesLeft(ledger: AbilityLedger | undefined, spell: MonsterS
   if (!spell.perDay) {
     return Number.POSITIVE_INFINITY;
   }
-  return spell.perDay - (ledger?.uses?.[`spell:${spell.name.toLowerCase()}`] ?? 0);
+  return spell.perDay - (ledger?.uses?.[`spell:${textKey(spell.name)}`] ?? 0);
 }
 
 // ---- exhaustion on a creature ----

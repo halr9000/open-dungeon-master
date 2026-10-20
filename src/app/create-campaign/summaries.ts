@@ -56,7 +56,7 @@ export function narrationSummary(draft: CampaignDraft, gates: WizardGates, voice
   }`;
 }
 
-export function safetySummary(draft: CampaignDraft): string {
+export function safetySummary(draft: Pick<CampaignDraft, "safety" | "gm">): string {
   const { safety, gm } = draft;
   const lists = [
     safety.lines.length ? count(safety.lines.length, "line") : null,
@@ -82,7 +82,7 @@ export function aiSummary(draft: CampaignDraft): string {
   ].join(" · ");
 }
 
-export function bondsSummary(draft: CampaignDraft): string {
+export function bondsSummary(draft: Pick<CampaignDraft, "relationships" | "romance">): string {
   if (draft.relationships === "off") {
     return "Bonds off";
   }
@@ -100,18 +100,22 @@ export function playersSummary(draft: CampaignDraft, gates: WizardGates): string
     .join(" · ");
 }
 
-export function boardSummary(draft: CampaignDraft): string {
+export function boardSummary(draft: Pick<CampaignDraft, "boardDrawing" | "enemyIntent">): string {
   return `Drawing ${onOff(draft.boardDrawing)} · enemy intent ${draft.enemyIntent ? "shown" : "hidden"}`;
 }
 
-export function variantSummary(draft: CampaignDraft): string {
+export function variantSummary(draft: Pick<CampaignDraft, "variantRules">): string {
   const { restVariant, ...toggles } = draft.variantRules;
   const on = Object.values(toggles).filter(Boolean).length;
   return `${on ? `${on} on` : "None on"} · ${REST_WORDS[restVariant]}`;
 }
 
-export function voiceChatSummary(draft: CampaignDraft): string {
-  const voice = draft.voiceChat;
+export function voiceChatSummary(draft: Pick<CampaignDraft, "voiceChat">): string {
+  return voiceSummary(draft.voiceChat);
+}
+
+// The live table's settings call it `voice`; the creator's draft `voiceChat`.
+export function voiceSummary(voice: CampaignDraft["voiceChat"]): string {
   if (!voice.enabled) {
     return "Off";
   }

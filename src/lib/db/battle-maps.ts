@@ -29,6 +29,8 @@ import {
 import { isEmptyMapSkin, normalizeMapSkin, type MapSkin } from "@/lib/battlemap/skins";
 import { normalizeSpellZones, withZoneWalls, type SpellZone } from "@/lib/battlemap/zones";
 import { isUploadedImagePath } from "@/lib/uploads";
+import { parseMapAddonView, type MapAddonView } from "@/lib/addons/map-view";
+import { writeMapAddonView } from "@/lib/db/map-addon-view";
 
 // Persistence for tactical battle maps. One map per encounter; the active
 // map is always found through the active encounter, so ended encounters
@@ -71,6 +73,8 @@ export type BattleMap = {
   skin: MapSkin;
   // Spell areas on the board; their walls are already rock in `terrain`.
   spellZones: SpellZone[];
+  // What a map addon left for its board view (src/lib/addons/map-view.ts).
+  addonView: MapAddonView | null;
 };
 
 type MapRow = {
@@ -95,6 +99,7 @@ type MapRow = {
   drawings_json: string | null;
   skin_json: string | null;
   spell_zones_json?: string | null;
+  addon_view_json?: string | null;
 };
 
 export type SceneExtras = {
@@ -135,7 +140,7 @@ function mapRow(row: MapRow): BattleMap {
     campaignId: row.campaign_id,
     width: row.width,
     height: row.height,
-    terrain: withZoneWalls(effectiveTerrain(row.terrain, row.width, doors), row.width, spellZones),
+    terrain: withZoneWalls(effectiveTerrain(row.terrain, row.width, doors), spellZones),
     drawnTerrain: row.terrain,
     ambient: row.ambient,
     theme: row.theme ?? "field",
@@ -156,6 +161,7 @@ function mapRow(row: MapRow): BattleMap {
     drawings: normalizeDrawings(parseJson<unknown>(row.drawings_json ?? "[]", []), row.width, row.height),
     skin: normalizeMapSkin(parseJson<unknown>(row.skin_json ?? "{}", {})),
     spellZones,
+    addonView: parseMapAddonView(row.addon_view_json),
   };
 }
 
@@ -206,6 +212,8 @@ export function createBattleMap(input: {
   outdoors?: boolean | null;
   // The look a prepared map was drawn with, carried onto the table.
   skin?: MapSkin | null;
+  // And what a map addon left for its board view.
+  addonView?: MapAddonView | null;
 }): BattleMap {
   const id = crypto.randomUUID();
   const now = nowIso();
@@ -244,6 +252,9 @@ export function createBattleMap(input: {
   }
   if (!isEmptyMapSkin(input.skin)) {
     setBattleMapSkin(id, input.skin);
+  }
+  if (input.addonView) {
+    writeMapAddonView("battle_maps", id, input.addonView);
   }
   return getBattleMap(id) as BattleMap;
 }
@@ -311,6 +322,8 @@ export function replaceBattleMapTerrain(
     scene?: SceneExtras;
     // Absent clears it too: new ground wears its own default until told otherwise.
     skin?: MapSkin | null;
+    // Likewise: a model built for the old ground does not fit the new.
+    addonView?: MapAddonView | null;
   },
 ) {
   const scene = sceneColumns(input.scene, input.terrain, input.width, input.height);
@@ -336,6 +349,7 @@ export function replaceBattleMapTerrain(
       mapId,
     );
   setBattleMapSkin(mapId, input.skin ?? null);
+  writeMapAddonView("battle_maps", mapId, input.addonView ?? null);
 }
 
 // The skin a board is painted with, normalised on the way in like every

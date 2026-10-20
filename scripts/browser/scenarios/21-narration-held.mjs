@@ -5,7 +5,7 @@
 // stays away; with speech back (the harness's own server names Kokoro), the
 // table's switch is its own again. The server's answer is stood in for
 // here, so the same table is seen both ways.
-import { check, eventually, sleep } from "../lib.mjs";
+import { check, eventually, openSettingsGroup, sleep } from "../lib.mjs";
 
 export default {
   name: "narration-held",
@@ -27,6 +27,8 @@ export default {
         await route.fulfill({ response, json: body });
       });
       await t.open(`/campaigns/${ids.lobbyId}`);
+      // The row lives in the table settings' Narration group.
+      await openSettingsGroup(t, "narration");
       const row = page.locator(`[role="switch"][aria-label="Narration"]`);
       await eventually(() => row.count(), { timeoutMs: 30_000, label: "the lobby's Narration switch" });
       await sleep(800);
@@ -43,6 +45,7 @@ export default {
       // switch is its own, on, and the voice picker is back.
       await page.unroute(/\/api\/capabilities(\?|$)/);
       await t.open(`/campaigns/${ids.lobbyId}`);
+      await openSettingsGroup(t, "narration");
       await eventually(() => row.count(), { timeoutMs: 30_000, label: "the lobby's Narration switch, speech named" });
       await sleep(800);
       check(!(await row.isDisabled()), "with speech named on the server, the switch is the table's own");

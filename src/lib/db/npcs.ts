@@ -340,6 +340,18 @@ export function setNpcPortrait(npcId: string, url: string): Npc | null {
   return row ? mapNpc(row) : null;
 }
 
+// The faction they belong to, or where they live, as one World link says
+// (src/lib/db/world-forge.ts applyPlayLink): one column, nothing else.
+export function setNpcPlace(npcId: string, patch: { factionId: string } | { location: string }): Npc | null {
+  const db = getDatabase();
+  if ("factionId" in patch) {
+    db.prepare(`UPDATE npcs SET faction_id = ?, updated_at = ? WHERE id = ?`).run(patch.factionId, nowIso(), npcId);
+  } else {
+    db.prepare(`UPDATE npcs SET location = ?, updated_at = ? WHERE id = ?`).run(patch.location, nowIso(), npcId);
+  }
+  return getNpcById(npcId);
+}
+
 // Records an attitude change and the turn it happened on (the one-shift-per-
 // exchange guard reads last_shift_turn).
 export function setNpcAttitude(id: string, attitude: Attitude, turnId: string): Npc | null {

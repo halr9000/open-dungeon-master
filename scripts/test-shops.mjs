@@ -155,7 +155,14 @@ test("selling pays half list for a known item and restocks the shelf", () => {
   assert.ok(after.gold > 9, "the sale paid nothing");
   assert.ok(!after.equipment.some((item) => item.name === "Longsword"));
   assert.ok(getShop(shop.id).stock.some((line) => line.itemName === "Longsword"));
-  assert.match(String(handleSellItem(campaign, JSON.stringify({ characterId: marla.id, shop: shop.id, item: "Unicorn tear" })).error), /does not carry/);
+  // A name nobody knows is the call's to fix, from what she carries; one the
+  // rules know that she lacks is the game saying no.
+  const unknown = handleSellItem(campaign, JSON.stringify({ characterId: marla.id, shop: shop.id, item: "Unicorn tear" }));
+  assert.equal(unknown.retry, true, JSON.stringify(unknown));
+  assert.match(String(unknown.error), /carries nothing called "Unicorn tear".*They carry: /);
+  const lacking = handleSellItem(campaign, JSON.stringify({ characterId: marla.id, shop: shop.id, item: "Longsword" }));
+  assert.equal(lacking.refused, "rules", JSON.stringify(lacking));
+  assert.match(String(lacking.error), /does not carry "Longsword"/);
 });
 
 test("a haggle moves the markup a step and is one try per character", () => {

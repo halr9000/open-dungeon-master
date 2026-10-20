@@ -1,4 +1,4 @@
-import { foldName } from "@/lib/language/text-logic";
+import { textKey } from "@/lib/language/text-logic";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import type { GeneratedImage } from "@/lib/types";
 
@@ -17,6 +17,9 @@ export type CampaignLocation = {
   // Why the last map render failed, while the place has no map. Kept so a
   // reload shows the failure instead of a placeholder that never ends.
   mapFailed: string | null;
+  // A render is queued or running for a place with no map, so the narration
+  // that introduced it is still charting it.
+  mapPending: boolean;
   // The prepared map this place stands on, when the DM linked one, and the
   // sound it makes (docs/vtt-parity-implementation-plan.md section 3.5).
   preparedMapId: string | null;
@@ -41,16 +44,21 @@ type LocationRow = {
 };
 
 // map_image_json holds the map, or, while there is none, why the last render
-// failed ({ failed }): the failure needs to outlive its ephemeral
-// media_status without a column of its own.
-type StoredMap = GeneratedImage | { failed: string };
+// failed ({ failed }) or when the one on its way was queued ({ pending }):
+// both need to outlive their ephemeral media_status without a column of
+// their own.
+type StoredMap = GeneratedImage | { failed: string } | { pending: string };
 
-function storedMap(raw: string | null): { mapImage: GeneratedImage | null; mapFailed: string | null } {
+function storedMap(raw: string | null): Pick<CampaignLocation, "mapImage" | "mapFailed" | "mapPending"> {
   const stored = parseJson<StoredMap | null>(raw, null);
   if (stored && "url" in stored) {
-    return { mapImage: stored, mapFailed: null };
+    return { mapImage: stored, mapFailed: null, mapPending: false };
   }
-  return { mapImage: null, mapFailed: stored && typeof stored.failed === "string" ? stored.failed : null };
+  return {
+    mapImage: null,
+    mapFailed: stored && "failed" in stored && typeof stored.failed === "string" ? stored.failed : null,
+    mapPending: Boolean(stored && "pending" in stored),
+  };
 }
 
 function mapLocation(row: LocationRow): CampaignLocation {
@@ -80,8 +88,8 @@ export function getLocation(id: string): CampaignLocation | null {
 // Compared in JavaScript, by Unicode case and form (src/lib/language): SQLite's
 // NOCASE folds ASCII only, so "église" after "Église" would be a second place.
 export function getLocationByName(campaignId: string, name: string): CampaignLocation | null {
-  const wanted = foldName(name);
-  return listLocations(campaignId).find((location) => foldName(location.name) === wanted) ?? null;
+  const wanted = textKey(name);
+  return listLocations(campaignId).find((location) => textKey(location.name) === wanted) ?? null;
 }
 
 export function listLocations(campaignId: string): CampaignLocation[] {
@@ -104,10 +112,10 @@ export function getCurrentLocation(campaignId: string): CampaignLocation | null 
 // the routes already known. update_location remains the way to revise them.
 // Names are compared folded, as places are (getLocationByName).
 export function withNewNames(known: string[], added: string[]): string[] {
-  const seen = new Set(known.map(foldName));
+  const seen = new Set(known.map(textKey));
   const merged = [...known];
   for (const name of added) {
-    const folded = foldName(name);
+    const folded = textKey(name);
     if (!seen.has(folded)) {
       seen.add(folded);
       merged.push(name);
@@ -252,7 +260,7 @@ export function renameLocation(
   if (!trimmed || !location || location.campaignId !== campaignId) {
     return null;
   }
-  if (trimmed.toLowerCase() === location.name.toLowerCase()) {
+  if (textKey(trimmed) === textKey(location.name)) {
     return location;
   }
   const clash = getLocationByName(campaignId, trimmed);
@@ -272,7 +280,7 @@ export function renameLocation(
         continue;
       }
       const repointed = other.connections.map((connection) =>
-        connection.trim().toLowerCase() === location.name.toLowerCase() ? trimmed : connection,
+        textKey(connection) === textKey(location.name) ? trimmed : connection,
       );
       if (repointed.join("\u0000") !== other.connections.join("\u0000")) {
         db.prepare(`UPDATE locations SET connections_json = ? WHERE id = ?`).run(
@@ -308,13 +316,29 @@ export function setLocationMapFailed(locationId: string, reason: string): boolea
   return true;
 }
 
-// A new render is on its way: the old failure no longer describes the place.
-export function clearLocationMapFailed(locationId: string): boolean {
-  if (!getLocation(locationId)?.mapFailed) {
+// A new render is on its way to a place with no map: an old failure no
+// longer describes the place, and until the render lands or fails, a reload
+// still shows the narration charting it. A place with a map keeps it while
+// a redraw waits. True when what is stored changed.
+export function setLocationMapPending(locationId: string): boolean {
+  const location = getLocation(locationId);
+  if (!location || location.mapImage || location.mapPending) {
     return false;
   }
-  getDatabase().prepare(`UPDATE locations SET map_image_json = NULL WHERE id = ?`).run(locationId);
+  getDatabase()
+    .prepare(`UPDATE locations SET map_image_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ pending: nowIso() } satisfies StoredMap), locationId);
   return true;
+}
+
+// Renders a stopped process had queued or running. The queue lived in its
+// memory, so none of them is coming: each place gets the failure, which
+// shows the reason and leaves the redraw to the Map panel, instead of a
+// placeholder that charts forever. How many places that was.
+export function failPendingLocationMaps(reason: string): number {
+  return getDatabase()
+    .prepare(`UPDATE locations SET map_image_json = ? WHERE map_image_json LIKE '{"pending":%'`)
+    .run(JSON.stringify({ failed: reason } satisfies StoredMap)).changes;
 }
 
 // Link a place to a prepared map and a sound, or clear either with null.

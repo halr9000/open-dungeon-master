@@ -19,13 +19,13 @@ import { applyPcDamage } from "@/lib/dm/pc-damage";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { SpellFacts } from "@/lib/srd/spell-facts";
 import { rollCard } from "@/lib/dm/roll-card";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 type Featured = Pick<CharacterSheet, "features">;
 
 const holds = (sheet: Featured, name: string) =>
-  sheet.features.some((feature) => feature.name.trim().toLowerCase().startsWith(name));
-
-const keyOf = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  sheet.features.some((feature) => textKey(feature.name).startsWith(name));
 
 // ---- Sculpt Spells ----
 
@@ -48,18 +48,18 @@ export function sculptedIds(
 // ---- Overchannel ----
 
 // Whether this casting may be overchanneled, or why not.
-export function overchannelProblem(caster: CharacterSheet, facts: SpellFacts | null, dealsDamage: boolean): string | null {
+export function overchannelProblem(caster: CharacterSheet, facts: SpellFacts | null, dealsDamage: boolean): ToolError | null {
   if (!holds(caster, "overchannel")) {
-    return `${caster.name} does not have Overchannel (School of Evocation, 14th level).`;
+    return { error: `${caster.name} does not have Overchannel (School of Evocation, 14th level). Ask the player whether to cast it without Overchannel.`, retry: true };
   }
   if (!facts || facts.level < 1 || facts.level > 5) {
-    return "Overchannel works on a wizard spell of 1st through 5th level.";
+    return { error: "Overchannel works on a wizard spell of 1st through 5th level. Ask the player whether to cast it without Overchannel.", retry: true };
   }
   if (facts.classes?.length && !facts.classes.some((entry) => entry.toLowerCase() === "wizard")) {
-    return `Overchannel works on a wizard spell, and ${facts.name} is not one.`;
+    return { error: `Overchannel works on a wizard spell, and ${facts.name} is not one. Ask the player whether to cast it without Overchannel.`, retry: true };
   }
   if (!dealsDamage) {
-    return `Overchannel maximizes damage, and ${facts.name} deals none.`;
+    return { error: `Overchannel maximizes damage, and ${facts.name} deals none. Ask the player whether to cast it without Overchannel.`, retry: true };
   }
   return null;
 }
@@ -105,8 +105,8 @@ export function signatureCounter(
   const chosen = sheet.features
     .map((feature) => SIGNATURE.exec(feature.name.trim())?.[1] ?? null)
     .find((list): list is string => Boolean(list));
-  const spells = (chosen ?? "").split(/,|\band\b/).map(keyOf).filter(Boolean);
-  const index = spells.indexOf(keyOf(facts.name));
+  const spells = (chosen ?? "").split(/,|\band\b/).map(textKey).filter(Boolean);
+  const index = spells.indexOf(textKey(facts.name));
   if (index < 0 || index > 1) {
     return null;
   }

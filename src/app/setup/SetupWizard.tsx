@@ -7,7 +7,7 @@ import { GoldTitle } from "@/components/ui/GoldTitle";
 import { navigateTo } from "@/lib/navigation";
 import type { EnvDefaults, MaskedConfig } from "@/app/admin/AdminSettingsFields";
 import { draftFromConfig, draftStoryIsOpenAi, draftWithScan, picturesBlocker as picturesStepBlocker, type Draft } from "@/app/setup/draft";
-import { PicturesStep, VoiceStep } from "@/app/setup/MediaSteps";
+import { PicturesStep, VoiceStep, withNarration, withPictures } from "@/app/setup/MediaSteps";
 import { PlayersStep } from "@/app/setup/PlayersStep";
 import { ReadyStep } from "@/app/setup/ReadyStep";
 import type { ScanResult } from "@/app/setup/SetupParts";
@@ -15,6 +15,7 @@ import { StorytellerStep } from "@/app/setup/StorytellerStep";
 import { WelcomeStep } from "@/app/setup/WelcomeStep";
 import { YourAgentStep, type MadeConnection } from "@/app/setup/YourAgentStep";
 import { storySourceForUrl } from "@/lib/setup/discovery-logic";
+import { fillsStep, suggestNarration, suggestPictures } from "@/lib/setup/suggest";
 import {
   PAINTING_AGENTS,
   dictationPatch,
@@ -108,6 +109,17 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
   }
 
   const storyIsOpenAi = draftStoryIsOpenAi(draft);
+  // What the setup suggests for the media steps: reuse what is already set
+  // up (src/lib/setup/suggest.ts).
+  const suggestInput = {
+    story: draft.story,
+    agentId: draft.agent.id,
+    storyIsOpenAi,
+    comfyFound: Boolean(scan?.comfyui),
+    kokoroFound: Boolean(scan?.kokoro),
+  };
+  const picturesSuggestion = suggestPictures(suggestInput);
+  const narrationSuggestion = suggestNarration(suggestInput);
   const savedKeyFor = useMemo(() => {
     if (!config.text.hasCustomApiKey) return null;
     const source = storySourceForUrl(config.text.customBaseUrl);
@@ -149,25 +161,32 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
       return "error" in built ? built : built.patch;
     }
     if (key === "pictures") {
+      // Unanswered: nothing is written, so a server left on its own keeps
+      // finding a ComfyUI that starts later. Only a deliberate "No pictures
+      // for now" saves the switch off.
+      if (draft.pictures === "") return null;
       if (draft.pictures === "comfyui") return picturesPatch({ kind: "comfyui", url: draft.comfy.url, checkpoint: draft.comfy.checkpoint, preset: draft.comfy.preset });
       if (draft.pictures === "openai") return picturesPatch({ kind: "openai", apiKey: draft.picturesKey, model: draft.picturesModel });
       if (draft.pictures === "agent") return picturesPatch({ kind: "agent" });
       return picturesPatch({ kind: "none" });
     }
     if (key === "voice") {
+      // Unanswered narration writes nothing, like unanswered pictures.
       const narration =
         draft.narration === "kokoro"
           ? narrationPatch({ kind: "kokoro", url: draft.kokoro.url, voice: draft.kokoro.voice })
           : draft.narration === "openai"
             ? narrationPatch({ kind: "openai", apiKey: draft.narrationKey, model: draft.narrationModel })
-            : narrationPatch({ kind: "off" });
+            : draft.narration === "off"
+              ? narrationPatch({ kind: "off" })
+              : null;
       // The dictation model the step asked for, if it asked (VoiceStep).
       const dictation = scan?.whisper
         ? dictationPatch({ whisperModel: draft.dictation.whisperModel })
         : storyIsOpenAi
           ? dictationPatch({ openaiModel: draft.dictation.openaiModel })
           : null;
-      return dictation ? mergePatches(narration, dictation) : narration;
+      return narration && dictation ? mergePatches(narration, dictation) : (narration ?? dictation);
     }
     if (key === "players") {
       return joiningPatch({ signupMode: draft.signupMode, publicUrl: draft.publicUrl });
@@ -192,8 +211,58 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
       setSaving(false);
       if (!ok) return;
     }
-    if (KEYS[next] === "ready") setReadyVisit((visit) => visit + 1);
+    arrive(next);
+  }
+
+  // Arriving at a step: the last one asks the server afresh, and a media
+  // step nobody has answered yet is filled with the setup's suggestion (only
+  // a real service: "none" and "off" are never chosen for the admin).
+  function arrive(next: number) {
+    const key = KEYS[next];
+    if (key === "ready") setReadyVisit((visit) => visit + 1);
+    if (key === "pictures" && fillsStep(picturesSuggestion.pick)) {
+      setDraft((current) => (current.pictures === "" ? withPictures(current, picturesSuggestion.pick, scan?.comfyui ?? null) : current));
+    }
+    if (key === "voice" && fillsStep(narrationSuggestion.pick)) {
+      setDraft((current) => (current.narration === "" ? withNarration(current, narrationSuggestion.pick, scan?.kokoro ?? null) : current));
+    }
     setStep(next);
+  }
+
+  // "Skip for now": this step's answer goes back to what the server holds
+  // and nothing is saved for it, so skipping never writes an Off over a
+  // service that is set up.
+  function skip(key: StepKey) {
+    const saved = draftFromConfig(config, firstRun);
+    setSaveError("");
+    setDraft((current) =>
+      key === "pictures"
+        ? { ...current, pictures: saved.pictures, comfy: saved.comfy, picturesKey: "", picturesModel: saved.picturesModel }
+        : key === "voice"
+          ? { ...current, narration: saved.narration, kokoro: saved.kokoro, narrationKey: "", narrationModel: saved.narrationModel, dictation: saved.dictation }
+          : key === "players"
+            ? { ...current, signupMode: saved.signupMode, publicUrl: saved.publicUrl }
+            : current,
+    );
+    arrive(STEP_INDEX[key] + 1);
+  }
+
+  // Once someone tells the story, the rest can wait: the storyteller is
+  // saved and the last step shows what the server can do, each line with a
+  // way back to the step it skipped.
+  async function finishLater() {
+    const body = patchFor("story");
+    if (body && "error" in body && typeof body.error === "string") {
+      setSaveError(body.error);
+      return;
+    }
+    if (body) {
+      setSaving(true);
+      const ok = await patch(body as Patch);
+      setSaving(false);
+      if (!ok) return;
+    }
+    arrive(STEP_INDEX.ready);
   }
 
   async function finish() {
@@ -240,6 +309,8 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
           : null;
 
   const address = draft.publicUrl.trim() || info.lanUrls[0] || "";
+  // The eyebrow names the topic; the wizard's own "Step 3 / 7" is the one
+  // count, so the two never disagree (Welcome is a step there).
   const title = (eyebrow: string, text: string, key: StepKey) => (
     <span className="block">
       <span className="eyebrow block text-[10px] text-stone-500">{eyebrow}</span>
@@ -261,8 +332,8 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
     {
       key: "story",
       label: "Storyteller",
-      title: title("Step 1", "Who tells the story?", "story"),
-      blurb: "The Dungeon Master's voice. The server always rolls the dice and keeps the rules; this only chooses who narrates.",
+      title: title("The storyteller", "Who tells the story?", "story"),
+      blurb: "The Dungeon Master's words. The server always rolls the dice and keeps the rules; this only chooses who tells the story. Reading it aloud is a later step.",
       content: (
         <StorytellerStep
           draft={draft}
@@ -277,11 +348,18 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
       ),
       blocker: storyBlocker,
       canContinue: !storyBlocker,
+      secondary: storyBlocker
+        ? undefined
+        : {
+            label: "Save and finish later",
+            title: "Saves the storyteller and goes to the summary. Pictures, voice and the rest stay as they are until you set them.",
+            onClick: () => void finishLater(),
+          },
     },
     {
       key: "pictures",
       label: "Pictures",
-      title: title("Step 2", "Should the table have pictures?", "pictures"),
+      title: title("Pictures", "Should the table have pictures?", "pictures"),
       blurb: "Character portraits, scene art and battle maps. Every table works without them.",
       content: (
         <PicturesStep
@@ -297,15 +375,18 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
           openaiKeySaved={config.images.hasOpenaiApiKey}
           env={env}
           onComfyOffers={setComfyOffers}
+          suggestion={picturesSuggestion}
+          onRescan={rescan}
         />
       ),
       blocker: picturesBlocker,
       canContinue: !picturesBlocker,
+      secondary: { label: "Skip for now", title: "Leaves pictures as they are. Nothing on this step is saved.", onClick: () => skip("pictures") },
     },
     {
       key: "voice",
       label: "Voice",
-      title: title("Step 3", "Should the storyteller speak?", "voice"),
+      title: title("Speech", "Should the storyteller speak?", "voice"),
       blurb: "Narration reads each passage aloud; dictation lets players talk instead of type. Both are optional.",
       content: (
         <VoiceStep
@@ -316,24 +397,28 @@ export function SetupWizard({ config: initialConfig, env, info }: { config: Mask
           storyIsOpenAi={storyIsOpenAi}
           ttsKeySaved={config.speech.hasTtsApiKey || config.images.hasOpenaiApiKey}
           env={env}
+          suggestion={narrationSuggestion}
+          onRescan={rescan}
         />
       ),
       blocker: voiceBlocker,
       canContinue: !voiceBlocker,
+      secondary: { label: "Skip for now", title: "Leaves narration and dictation as they are. Nothing on this step is saved.", onClick: () => skip("voice") },
     },
     {
       key: "players",
       label: "Players",
-      title: title("Step 4", "How do players get in?", "players"),
+      title: title("Players", "How do players get in?", "players"),
       blurb: "The address to send your friends, and who may make an account.",
       content: (
         <PlayersStep draft={draft} update={update} lanUrls={info.lanUrls} />
       ),
+      secondary: { label: "Skip for now", title: "Leaves sign-ups and the address as they are. Nothing on this step is saved.", onClick: () => skip("players") },
     },
     {
       key: "agent",
       label: "Your agent",
-      title: title("Step 5", "Bring your own AI agent?", "agent"),
+      title: title("Your own agent", "Bring your own AI agent?", "agent"),
       blurb: "Optional. Connect Claude Code, Codex or opencode to this server over MCP, as you.",
       content: <YourAgentStep made={made} onMade={setMade} />,
       continueLabel: made ? "Continue" : "Skip for now",

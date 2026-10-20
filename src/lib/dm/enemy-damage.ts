@@ -34,6 +34,8 @@ import { publishFx, tokenPosition } from "@/lib/dm/fx";
 import { dismissGuestCompanions } from "@/lib/dm/companion-tools";
 import { followCombatAmbience } from "@/lib/dm/ambience-tools";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The single server-side path for damage landing on an enemy. Used by the
 // damage_enemy tool AND by damage rolls carrying targetEnemyId, which the
@@ -59,7 +61,7 @@ export function resolveEnemyRef(encounterId: string, ref: string): EncounterEnem
   }
   return (
     listEnemies(encounterId).find(
-      (enemy) => enemy.displayName.toLowerCase() === trimmed.toLowerCase(),
+      (enemy) => textKey(enemy.displayName) === textKey(trimmed),
     ) ?? null
   );
 }
@@ -253,7 +255,7 @@ export function applyEnemyDamage(
     // concentration save at disadvantage (src/lib/srd/feat-combat.ts).
     concentrationDisadvantage?: boolean;
   },
-): Record<string, unknown> {
+): ToolResult {
   // Inescapable Destruction: the acting Death cleric's necrotic ignores resistance (authored-saves.ts).
   const ignores = (damageType && authoredIgnoresResistance(campaign.id, damageType)) || (options?.ignoreResistance && damageType ? (options.ignoreResistanceBy ?? "Elemental Adept") : null);
   // Lightning, Fire or Acid Absorption (the golems): the damage heals it
@@ -355,7 +357,7 @@ export function applyEnemyDamage(
   }
   publishEncounter(campaign.id);
   if (!updated) {
-    return { error: "Failed to update enemy." };
+    throw new Error("Failed to update enemy.");
   }
   const base: Record<string, unknown> = {
     ok: true,
@@ -458,4 +460,4 @@ export function applyEnemyDamage(
 
 // The blow of a parked (physical dice) attack and a targeted damage roll:
 // src/lib/dm/enemy-blow.ts, re-exported for the callers that find them here.
-export { applyPendingDamageRoll, autoApplyDamageRoll, type DamageBlow } from "@/lib/dm/enemy-blow";
+export { applyPendingDamageRoll, autoApplyDamageRoll } from "@/lib/dm/enemy-blow";

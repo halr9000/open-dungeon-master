@@ -124,10 +124,10 @@ test("castRedirect aims each resolution at its tool", () => {
   const mk = (resolution) => ({ mech: { resolution }, name: "X", spellLevel: 1, concentration: false });
   assert.equal(castRedirect(null, "save"), null);
   assert.equal(castRedirect(mk("save"), "save"), null);
-  assert.ok(castRedirect(mk("attack"), "save")?.includes("pc_attack"));
-  assert.ok(castRedirect(mk("buff"), "save")?.includes("cast_buff"));
-  assert.ok(castRedirect(mk("save"), "attack")?.includes("cast_at_enemy"));
-  assert.ok(castRedirect(mk("heal"), "buff")?.includes("heal"));
+  assert.ok(castRedirect(mk("attack"), "save")?.error?.includes("pc_attack"));
+  assert.ok(castRedirect(mk("buff"), "save")?.error?.includes("cast_buff"));
+  assert.ok(castRedirect(mk("save"), "attack")?.error?.includes("cast_at_enemy"));
+  assert.ok(castRedirect(mk("heal"), "buff")?.error?.includes("heal"));
   // Magic Missile through cast_at_enemy is tolerated (no save rolls).
   assert.equal(castRedirect(mk("auto"), "save"), null);
   assert.ok(castRedirect(mk("auto"), "attack"));

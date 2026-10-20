@@ -60,6 +60,7 @@ import { stripReasoningArtifacts } from "@/lib/story-prompt";
 import { setDmStatus } from "@/lib/dm/status";
 import { renderWorldArcsForPrompt } from "@/lib/dm/world-arc-logic";
 import { ensureWorldArcs } from "@/lib/dm/world-arc";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Story-arc generation and upkeep. The arc is the DM's secret spine: a saga
 // sized by the lead's campaign-length setting is generated once at campaign
@@ -269,21 +270,20 @@ export async function generateStoryArc(
         { role: "system", content: withLanguage(sagaGenerateSystem(profile), campaign.gameSettings.tableLanguage) },
         { role: "user", content: context },
       ],
-      { timeoutMs: arcTextTimeoutMs() },
+      { meta: { task: "arc_generate" }, timeoutMs: arcTextTimeoutMs() },
     );
     if (error) {
-      if (process.env.DM_DEBUG) {
-        const payload = await error
-          .clone()
-          .json()
-          .catch(() => null);
-        console.log("[dm-debug] arc generation: model call failed:", JSON.stringify(payload));
-      }
+      const payload = (await error
+        .clone()
+        .json()
+        .catch(() => null)) as { error?: string } | null;
+      console.warn(`[arc] campaign ${campaignId}: the story arc was not planned; the model call failed (${error.status}): ${payload?.error ?? "no detail"}`);
       return;
     }
     const raw = typeof message?.content === "string" ? message.content : "";
     const arc = parseSagaJson(raw, profile);
     if (!arc) {
+      console.warn(`[arc] campaign ${campaignId}: the story arc was not planned; the model's reply was not a readable plan`);
       if (process.env.DM_DEBUG) {
         console.log("[dm-debug] arc generation: unparseable reply:", raw.slice(0, 500));
       }
@@ -298,9 +298,9 @@ export async function generateStoryArc(
       setStoryArc(campaignId, withWorld);
     }
   } catch (error) {
-    if (process.env.DM_DEBUG) {
-      console.log("[dm-debug] arc generation threw:", error);
-    }
+    // Always logged: a plan that silently never arrived is what an operator
+    // reading the server log needs to see (issue #383).
+    console.error(`[arc] campaign ${campaignId}: the story arc could not be planned`, error);
   } finally {
     setDmStatus(campaignId, "idle");
   }
@@ -315,14 +315,14 @@ export function handleCompleteBeat(
   campaignId: string,
   rawArguments: string,
   alreadyCompleted: boolean,
-): { result: Record<string, unknown>; completed: boolean; gated: boolean } {
+): { result: ToolResult; completed: boolean; gated: boolean } {
   const campaign = getCampaignById(campaignId);
   if (!campaign?.storyArc) {
-    return { result: { error: "This campaign has no story arc yet." }, completed: false, gated: false };
+    return { result: { error: "This campaign has no story arc yet.", retry: true }, completed: false, gated: false };
   }
   if (alreadyCompleted) {
     return {
-      result: { error: "A beat was already completed this turn; let the story breathe." },
+      result: { error: "A beat was already completed this turn; let the story breathe.", retry: true },
       completed: false,
       gated: false,
     };
@@ -331,7 +331,7 @@ export function handleCompleteBeat(
   try {
     args = JSON.parse(rawArguments || "{}");
   } catch {
-    return { result: { error: "Invalid arguments." }, completed: false, gated: false };
+    return { result: { error: "Invalid arguments.", retry: true }, completed: false, gated: false };
   }
   const arc = campaign.storyArc;
   const active = activeBeatNumber(arc);
@@ -341,7 +341,7 @@ export function handleCompleteBeat(
   const beatNumber = Number.isInteger(requested) && requested >= 1 ? requested : active;
   if (beatNumber === null) {
     return {
-      result: { error: "Every beat of the arc is already finished." },
+      result: { error: "Every beat of the arc is already finished.", retry: true },
       completed: false,
       gated: false,
     };
@@ -356,6 +356,7 @@ export function handleCompleteBeat(
         error: `Beat ${beatNumber} still has open waypoints: ${openWaypoints(target)
           .map((waypoint) => waypoint.text)
           .join("; ")}. Steer the party through them first. They tick from your own tool calls (move_party, set_npc, grant_item, tick_objective, end_encounter) or from the server's check of play, and the beat completes once every one is done.`,
+        retry: true,
         openWaypoints: openWaypoints(target).map((waypoint) => waypoint.text),
       },
       completed: false,
@@ -367,6 +368,7 @@ export function handleCompleteBeat(
     return {
       result: {
         error: `Beat ${beatNumber} is not an open beat.`,
+        retry: true,
         ...(active === null ? {} : { activeBeat: active }),
       },
       completed: false,
@@ -482,7 +484,7 @@ export async function judgeBeatCompleted(campaignId: string, sinceSeq: number): 
         { role: "system", content: JUDGE_SYSTEM },
         { role: "user", content: `Beat: ${beat.text}\n\nRecent play:\n${recent}` },
       ],
-      { timeoutMs: arcTextTimeoutMs() },
+      { meta: { task: "beat_judge" }, timeoutMs: arcTextTimeoutMs() },
     );
     if (error) {
       return false;
@@ -608,7 +610,7 @@ async function arcModelCall(
       { role: "system", content: withLanguage(system, campaign.gameSettings.tableLanguage) },
       { role: "user", content: user },
     ],
-    { timeoutMs: arcTextTimeoutMs() },
+    { meta: { task: "arc_plan" }, timeoutMs: arcTextTimeoutMs() },
   );
   if (error) {
     if (process.env.DM_DEBUG) {
@@ -880,9 +882,7 @@ export async function refreshStoryArc(
       setQuestLog(campaignId, activeQuestLines(next));
     }
   } catch (error) {
-    if (process.env.DM_DEBUG) {
-      console.log("[dm-debug] arc refresh threw:", error);
-    }
+    console.error(`[arc] campaign ${campaignId}: the story arc could not be refreshed`, error);
   } finally {
     setDmStatus(campaignId, "idle");
   }
@@ -933,9 +933,7 @@ export async function planExhaustedArc(campaignId: string): Promise<boolean> {
     setQuestLog(campaignId, activeQuestLines(next));
     return true;
   } catch (error) {
-    if (process.env.DM_DEBUG) {
-      console.log("[dm-debug] exhausted-arc planning threw:", error);
-    }
+    console.error(`[arc] campaign ${campaignId}: the next stretch of the arc could not be planned`, error);
     return false;
   } finally {
     setDmStatus(campaignId, "idle");
@@ -1064,7 +1062,7 @@ async function writeActRecap(
             }\n\nIts chapters:\n${source}`,
           },
         ],
-        { timeoutMs: arcTextTimeoutMs() },
+        { meta: { task: "act_recap" }, timeoutMs: arcTextTimeoutMs() },
       ),
     );
     if (error) {

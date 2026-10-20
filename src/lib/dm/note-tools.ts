@@ -1,6 +1,7 @@
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { insertNote } from "@/lib/db/notes";
 import { publishPersisted } from "@/lib/events";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // write_campaign_note: the DM records a durable table note. It lands as a
 // pending suggestion (the same flow as member suggestions), so the party
@@ -29,16 +30,16 @@ export const writeCampaignNoteTool = {
 export function handleWriteCampaignNote(
   campaign: Campaign,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   let args: { title?: unknown; body?: unknown };
   try {
     args = JSON.parse(rawArguments || "{}");
   } catch {
-    return { error: "Invalid arguments." };
+    return { error: "Invalid arguments.", retry: true };
   }
   const body = String(args.body ?? "").trim();
   if (!body) {
-    return { error: "The note body is required." };
+    return { error: "The note body is required.", retry: true };
   }
   const note = insertNote({
     campaignId: campaign.id,

@@ -17,6 +17,8 @@ import type { SummonForm } from "@/lib/srd/summon-forms";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { removeSummon, spawnSummons, summonsOf } from "@/lib/dm/summon-store";
 import { SUMMONED, summonRecord } from "@/lib/dm/summon-rules";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type SummonCastArgs = {
   caster: CharacterSheet;
@@ -92,7 +94,7 @@ export function castSummon(
 
   // Cast again while it still holds, the spell's first casting ends, and
   // the creatures it made with it.
-  const recast = spell.concentration && (caster.concentratingOn ?? "").trim().toLowerCase() === castAs.toLowerCase();
+  const recast = spell.concentration && textKey(caster.concentratingOn ?? "") === textKey(castAs);
 
   // The spend, through the one cast guard: the list, the slot, the turn, the
   // material, concentration (a second concentration spell ends the first,
@@ -173,11 +175,11 @@ function reassertControl(
   args: SummonCastArgs,
   slotLevel: number,
   cast: (input: Record<string, unknown>) => Record<string, unknown>,
-): Record<string, unknown> {
+): ToolResult {
   const { caster, spell } = args;
   const held = summonsOf(campaign.id, caster.id, spell.name);
   if (!held.length) {
-    return { error: `${caster.name} has no creatures of ${spell.name} to reassert control over. Nothing was spent.` };
+    return { error: `${caster.name} has no creatures of ${spell.name} to reassert control over. Nothing was spent.`, refused: "rules" };
   }
   const most = (spell.reassert ?? 0) + (spell.reassertPerSlot ?? 0) * Math.max(0, slotLevel - spell.level);
   const spent = cast({ characterId: caster.id, spell: spell.name, level: slotLevel, via: "buff", reason: (args.reason ?? "reasserting control").slice(0, 200) });

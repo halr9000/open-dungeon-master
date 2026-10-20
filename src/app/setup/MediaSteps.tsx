@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Loader2, X, Zap } from "lucide-react";
+import { Check, Loader2, RefreshCw, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { registerOutput, releaseOutput } from "@/lib/audio-devices";
 import { CHECKPOINT_PRESET, comfyModel } from "@/lib/image-models/catalog";
@@ -15,7 +15,10 @@ import { BLANK, SPEECH_MODELS, fromEnv } from "@/app/admin/model-blanks";
 import type { EnvDefaults } from "@/app/admin/AdminSettingsFields";
 import { HarnessPictureTest } from "@/app/admin/HarnessPictureTest";
 import { comfyFromScan, type Draft, type ModelField } from "@/app/setup/draft";
-import { ChoiceCard, ChoiceCards, Lamp, host, type ScanResult } from "@/app/setup/SetupParts";
+import { ChoiceCard, ChoiceCards, Lamp, SuggestionNote, host, type ScanResult } from "@/app/setup/SetupParts";
+import { CopyLine } from "@/components/CopyLine";
+import { cn } from "@/lib/cn";
+import { fillsStep, type NarrationSuggestion, type PicturesSuggestion } from "@/lib/setup/suggest";
 
 const OPENAI_V1 = "https://api.openai.com/v1";
 
@@ -77,6 +80,95 @@ function KeyField({ label, value, onChange, saved, hint }: { label: string; valu
   );
 }
 
+// A picture answer with what the scan found filled in: a ComfyUI picked
+// with no address yet takes the one found here. Shared by the cards and by
+// the wizard, which fills an unanswered step with its suggestion.
+export function withPictures(current: Draft, pictures: Draft["pictures"], scanned: ScanResult["comfyui"]): Draft {
+  return {
+    ...current,
+    pictures,
+    comfy: pictures === "comfyui" && !current.comfy.url && scanned ? comfyFromScan(current.comfy, scanned) : current.comfy,
+  };
+}
+
+export function withNarration(current: Draft, narration: Draft["narration"], kokoro: ScanResult["kokoro"]): Draft {
+  return {
+    ...current,
+    narration,
+    kokoro:
+      narration === "kokoro" && !current.kokoro.url && kokoro
+        ? { url: kokoro.url, voice: current.kokoro.voice || (kokoro.voices.includes("af_heart") ? "af_heart" : kokoro.voices[0] ?? "") }
+        : current.kokoro,
+  };
+}
+
+// "Look again" for a step whose services the scan looks for: start one, then
+// press it, and the card lights up without leaving the wizard.
+function ScanAgain({ scanning, onRescan, what }: { scanning: boolean; onRescan?: () => void; what: string }) {
+  if (!onRescan) return null;
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-stone-500">{scanning ? `Looking for ${what} on this computer…` : `Started ${what} just now?`}</span>
+      <button type="button" className={ui.btnSmall} onClick={onRescan} disabled={scanning} aria-busy={scanning}>
+        <RefreshCw className={cn("size-3.5", scanning && "animate-spin")} /> Look again
+      </button>
+    </div>
+  );
+}
+
+// The commands that start each local service, for an admin who has none
+// running yet. They match docs/media-setup.md.
+function ComfyStartHints() {
+  return (
+    <details className="reveal rounded-lg border border-stone-800 bg-stone-950/40 px-3 py-2">
+      <summary className="cursor-pointer text-sm text-stone-300">How do I start ComfyUI?</summary>
+      <div className="mt-3 space-y-3 text-xs text-stone-400">
+        <div>
+          <span className="mb-1 block">On Linux or a Mac, with Python 3 and Git installed (install the PyTorch build for your GPU first if the ComfyUI README says to):</span>
+          <CopyLine
+            text="git clone https://github.com/comfyanonymous/ComfyUI && cd ComfyUI && python -m venv venv && . venv/bin/activate && pip install -r requirements.txt && python main.py --listen 127.0.0.1 --port 8188"
+            label="ComfyUI install command"
+          />
+        </div>
+        <p>On Windows, the ComfyUI desktop installer or the portable build both work.</p>
+        <p>
+          Then give it a model: a checkpoint in ComfyUI/models/checkpoints, or one of the measured models Admin &gt; Image
+          generation lists with its download links. Press Look again once it is running.{" "}
+          <a href={MEDIA_GUIDE} target="_blank" rel="noreferrer" className="text-amber-200 underline">
+            The media guide, step by step
+          </a>
+          .
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function KokoroStartHints() {
+  return (
+    <details className="reveal rounded-lg border border-stone-800 bg-stone-950/40 px-3 py-2">
+      <summary className="cursor-pointer text-sm text-stone-300">How do I start Kokoro?</summary>
+      <div className="mt-3 space-y-3 text-xs text-stone-400">
+        <div>
+          <span className="mb-1 block">On the processor, with Docker:</span>
+          <CopyLine text="docker run -d --name kokoro --restart unless-stopped -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest" label="Kokoro CPU command" />
+        </div>
+        <div>
+          <span className="mb-1 block">On an NVIDIA graphics card, faster:</span>
+          <CopyLine text="docker run -d --name kokoro --restart unless-stopped --gpus all -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-gpu:latest" label="Kokoro GPU command" />
+        </div>
+        <p>
+          It answers on port 8880 within a minute of starting. Press Look again and its voices appear.{" "}
+          <a href={MEDIA_GUIDE} target="_blank" rel="noreferrer" className="text-amber-200 underline">
+            More in the media guide
+          </a>
+          .
+        </p>
+      </div>
+    </details>
+  );
+}
+
 export function PicturesStep({
   draft,
   update,
@@ -90,11 +182,16 @@ export function PicturesStep({
   openaiKeySaved,
   env,
   onComfyOffers,
+  suggestion,
+  onRescan,
 }: {
   draft: Draft;
   update: Update;
   scan: ScanResult | null;
   scanning: boolean;
+  // What the setup suggests here, from the storyteller and the scan.
+  suggestion?: PicturesSuggestion;
+  onRescan?: () => void;
   storyIsOpenAi: boolean;
   // The storyteller chosen on the last step has an image tool of its own.
   agentPaints: boolean;
@@ -146,20 +243,25 @@ export function PicturesStep({
   useEffect(() => {
     onComfyOffers?.(comfyOffers);
   }, [comfyOffers, onComfyOffers]);
-  const pick = (pictures: Draft["pictures"]) =>
-    update((current) => ({
-      ...current,
-      pictures,
-      comfy: pictures === "comfyui" && !current.comfy.url && scannedComfy ? comfyFromScan(current.comfy, scannedComfy) : current.comfy,
-    }));
+  const pick = (pictures: Draft["pictures"]) => update((current) => withPictures(current, pictures, scannedComfy));
   const setComfy = (patch: Partial<Draft["comfy"]>) => update((current) => ({ ...current, comfy: { ...current.comfy, ...patch } }));
 
+  const picksName: Record<PicturesSuggestion["pick"], string> = { agent: agentLabel, openai: "OpenAI", comfyui: "ComfyUI", none: "" };
   return (
     <div className="space-y-4">
+      {suggestion ? (
+        <SuggestionNote
+          reason={suggestion.reason}
+          title={fillsStep(suggestion.pick) ? picksName[suggestion.pick] : undefined}
+          taken={draft.pictures === suggestion.pick}
+          onTake={() => pick(suggestion.pick)}
+        />
+      ) : null}
       <ChoiceCards label="Pictures">
         <ChoiceCard
           picked={draft.pictures === "comfyui"}
           onPick={() => pick("comfyui")}
+          suggested={suggestion?.pick === "comfyui"}
           glyph="ui-paint"
           title="ComfyUI on this computer"
           sub="Portraits, scene art and battle maps, painted on your own GPU. Free to run."
@@ -168,6 +270,7 @@ export function PicturesStep({
         <ChoiceCard
           picked={draft.pictures === "openai"}
           onPick={() => pick("openai")}
+          suggested={suggestion?.pick === "openai"}
           glyph="tab-admin"
           title="OpenAI's image model"
           sub={storyIsOpenAi ? "On the key from the last step. Each picture is billed to it." : "Billed to an OpenAI key, per picture. No GPU needed."}
@@ -176,6 +279,7 @@ export function PicturesStep({
           <ChoiceCard
             picked={draft.pictures === "agent"}
             onPick={() => pick("agent")}
+            suggested={suggestion?.pick === "agent"}
             glyph="system-share"
             title={`${agentLabel} paints`}
             sub={
@@ -189,11 +293,15 @@ export function PicturesStep({
         <ChoiceCard
           picked={draft.pictures === "none"}
           onPick={() => pick("none")}
+          suggested={suggestion?.pick === "none"}
           glyph="tab-handout"
           title="No pictures for now"
           sub="Painted placeholders stand in. A ComfyUI started later on this computer is picked up on its own."
         />
       </ChoiceCards>
+
+      <ScanAgain scanning={scanning || checkingComfy} onRescan={onRescan} what="ComfyUI" />
+      {!scanning && !(comfy && !comfy.error) && (draft.pictures === "comfyui" || draft.pictures === "" || draft.pictures === "none") ? <ComfyStartHints /> : null}
 
       {draft.pictures === "comfyui" ? (
         <div key="comfy" className="reveal-height space-y-3">
@@ -348,6 +456,8 @@ export function VoiceStep({
   storyIsOpenAi,
   ttsKeySaved,
   env,
+  suggestion,
+  onRescan,
 }: {
   draft: Draft;
   update: Update;
@@ -356,26 +466,30 @@ export function VoiceStep({
   storyIsOpenAi: boolean;
   ttsKeySaved: boolean;
   env: EnvDefaults;
+  suggestion?: NarrationSuggestion;
+  onRescan?: () => void;
 }) {
   const kokoro = scan?.kokoro ?? null;
   const whisper = scan?.whisper ?? null;
-  const pick = (narration: Draft["narration"]) =>
-    update((current) => ({
-      ...current,
-      narration,
-      kokoro:
-        narration === "kokoro" && !current.kokoro.url && kokoro
-          ? { url: kokoro.url, voice: current.kokoro.voice || (kokoro.voices.includes("af_heart") ? "af_heart" : kokoro.voices[0] ?? "") }
-          : current.kokoro,
-    }));
+  const pick = (narration: Draft["narration"]) => update((current) => withNarration(current, narration, kokoro));
   const setKokoro = (patch: Partial<Draft["kokoro"]>) => update((current) => ({ ...current, kokoro: { ...current.kokoro, ...patch } }));
 
+  const picksName: Record<NarrationSuggestion["pick"], string> = { kokoro: "Kokoro", openai: "OpenAI", off: "" };
   return (
     <div className="space-y-4">
+      {suggestion ? (
+        <SuggestionNote
+          reason={suggestion.reason}
+          title={fillsStep(suggestion.pick) ? picksName[suggestion.pick] : undefined}
+          taken={draft.narration === suggestion.pick}
+          onTake={() => pick(suggestion.pick)}
+        />
+      ) : null}
       <ChoiceCards label="Narration">
         <ChoiceCard
           picked={draft.narration === "kokoro"}
           onPick={() => pick("kokoro")}
+          suggested={suggestion?.pick === "kokoro"}
           glyph="ui-speech"
           title="Kokoro on this computer"
           sub="Reads each passage aloud in the campaign's chosen voice. Free, and the text stays here."
@@ -384,6 +498,7 @@ export function VoiceStep({
         <ChoiceCard
           picked={draft.narration === "openai"}
           onPick={() => pick("openai")}
+          suggested={suggestion?.pick === "openai"}
           glyph="tab-admin"
           title="OpenAI's voices"
           sub={storyIsOpenAi ? "On the storyteller's key. Every passage read aloud is billed to it." : "Billed to an OpenAI key for every passage read aloud."}
@@ -391,23 +506,20 @@ export function VoiceStep({
         <ChoiceCard
           picked={draft.narration === "off"}
           onPick={() => pick("off")}
+          suggested={suggestion?.pick === "off"}
           glyph="tab-handout"
           title="Text only"
           sub="No narration. Nothing is sent anywhere to be spoken."
         />
       </ChoiceCards>
 
+      <ScanAgain scanning={scanning} onRescan={onRescan} what="Kokoro" />
+      {!kokoro && !scanning && draft.narration !== "openai" ? <KokoroStartHints /> : null}
+
       {draft.narration === "kokoro" ? (
         <div key="kokoro" className="reveal-height space-y-3">
           {!kokoro && !scanning ? (
-            <p className="su-note">
-              Nothing answered at Kokoro&apos;s usual address (port 8880). One Docker command starts it:{" "}
-              <code className="text-amber-100">docker run -d --name kokoro -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest</code>.{" "}
-              <a href={MEDIA_GUIDE} target="_blank" rel="noreferrer" className="text-amber-200 underline">
-                More in the media guide
-              </a>
-              .
-            </p>
+            <p className="su-note">Nothing answered at Kokoro&apos;s usual address (port 8880). Start it with a command above, or type where it runs.</p>
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block">

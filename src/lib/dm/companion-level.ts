@@ -36,6 +36,8 @@ import { levelUpSpells } from "@/lib/srd/level-up-spells";
 import { classListFor } from "@/lib/srd/multiclass";
 import { checklistSpellsOn } from "@/lib/srd/spell-lists";
 import { casterViewsOf, spellStyleFor, type CasterView } from "@/lib/srd/spell-prep";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // A companion's sheet is made and levelled by the same rules as a player's:
 // the legality check at the door (src/lib/characters/admit.ts, the "engine"
@@ -74,7 +76,7 @@ export type CompanionDraft = {
 
 export type CompanionSheet =
   | { ok: true; sheet: CreateSheetInput; notes: string[] }
-  | { ok: false; error: string };
+  | ({ ok: false } & ToolError);
 
 // A drafted companion as a legal character of its level: the improvements
 // its class has earned by then, a spell list the class's tables allow, and
@@ -96,7 +98,7 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
   const abilities = applyAsiChoices(draft.sheet.abilities, asiChoices);
 
   let spellcasting: Spellcasting = null;
-  const [casting] = castingClassesOf(classes, classGrantsFor);
+  const [casting] = castingClassesOf(classes, classGrantsFor, subclassExtrasFor(tableAuthors(campaign.id)));
   if (casting) {
     const spellOf = (name: string) => spellFactsFor(name, tableAuthors(campaign.id));
     const before = emptyView(klass.id, casting.ability, level);
@@ -110,7 +112,7 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
       wanted: draft.wantedSpells.map((name) => spellOf(name)?.name ?? name),
     });
     const passed = draft.wantedSpells.filter(
-      (name) => !picks.some((pick) => lower(pick) === lower(spellOf(name)?.name ?? name)),
+      (name) => !picks.some((pick) => textKey(pick) === textKey(spellOf(name)?.name ?? name)),
     );
     if (passed.length) {
       notes.push(
@@ -147,7 +149,7 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
     campaign,
   });
   if (!admitted.ok) {
-    return { ok: false, error: admitted.problems[0] ?? "That companion is not within the rules." };
+    return { ok: false, error: admitted.problems[0] ?? "That companion is not within the rules.", retry: true };
   }
   return { ok: true, sheet: admitted.sheet, notes };
 }
@@ -196,11 +198,14 @@ function levelOnce(campaign: Campaign, sheet: CharacterSheet): CharacterSheet | 
   const abilities = applyAsiChoices(sheet.abilities, asiChoices);
 
   let picks: string[] = [];
-  const casting = castingClassesOf(after, classGrantsFor).find(
+  // The table's workshop subclasses: one that casts as an Eldritch Knight,
+  // or hands out always-prepared spells, does so for a companion too.
+  const extras = subclassExtrasFor(tableAuthors(campaign.id));
+  const casting = castingClassesOf(after, classGrantsFor, extras, sheet.spellcasting).find(
     (entry) => lower(entry.entry.id) === lower(leading.id),
   );
   if (casting) {
-    const held = casterViewsOf(sheet).find(
+    const held = casterViewsOf(sheet, extras).find(
       (view) => !sheet.spellcasting?.casters?.length || lower(view.classId) === lower(leading.id),
     );
     picks = companionSpellPicks({

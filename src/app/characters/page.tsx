@@ -62,7 +62,7 @@ export default function CharactersPage() {
   const [authed, setAuthed] = useState(true);
   // A refused or failed read is shown in the server's words with a way to
   // ask again, never as "nothing here yet" (issue 140).
-  const { loaded, loadError, settle } = useLoadStatus();
+  const { loadError, settle } = useLoadStatus();
   const [reloads, setReloads] = useState(0);
   const [croppingId, setCroppingId] = useState("");
   const [cloningId, setCloningId] = useState("");
@@ -362,11 +362,15 @@ function CharacterCard({
               className="size-12 shrink-0 rounded-lg border border-amber-500/30 object-cover shadow-glow-gold"
             />
           ) : portraitPending(character) ? (
+            // The spinner says what it is waiting on, to a screen reader as
+            // well as to a pointer, and says it once, politely.
             <span
+              role="status"
               title="Painting portrait..."
               className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-stone-900"
             >
-              <Loader2 className="size-4 animate-spin text-amber-200" />
+              <Loader2 className="size-4 animate-spin text-amber-200" aria-hidden="true" />
+              <span className="sr-only">Painting {character.name}&apos;s portrait...</span>
             </span>
           ) : (
             <span

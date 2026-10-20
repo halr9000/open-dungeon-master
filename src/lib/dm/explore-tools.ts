@@ -22,9 +22,11 @@ import { LIFESTYLE_COST_CP, downtimeProblem, spendDowntime, type DowntimeEntry }
 import { infectDisease, infectWorkshopDisease, inflictMadness } from "@/lib/dm/afflictions";
 import { diseaseAt, hazardNamesAt, poisonAt } from "@/lib/srd/table-hazards";
 import { applyPoison } from "@/lib/dm/affliction-poisons";
-import { DISEASES, POISONS, findDisease } from "@/lib/srd/afflictions";
+import { DISEASES, MADNESS_KINDS, POISONS, findDisease } from "@/lib/srd/afflictions";
+import { textKey } from "@/lib/language/text-logic";
 import { formatCopper } from "@/lib/srd/currency";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 type ToolDef = {
   type: "function";
@@ -154,17 +156,18 @@ const liftSchema = z.object({
   reason: z.string().max(200).optional(),
 });
 
-function handleLift(args: z.infer<typeof liftSchema>, sheets: CharacterSheet[], sheetsById: Map<string, CharacterSheet>): Record<string, unknown> {
+function handleLift(args: z.infer<typeof liftSchema>, sheets: CharacterSheet[], sheetsById: Map<string, CharacterSheet>): ToolResult {
   const stale = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = stale ? (getSheetById(stale.id) ?? stale) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   const how = args.how ?? "lift";
   const limits = liftLimits(sheet);
   if (args.weightLb > limits.liftLb) {
     return {
       error: `${sheet.name} can push, drag or lift at most ${limits.liftLb} lb (30 x Strength); ${args.weightLb} lb does not move. Narrate the strain; more hands (another character's own lift) or a lever are the way.`,
+      refused: "rules",
     };
   }
   const load = encumbranceFor({
@@ -247,19 +250,19 @@ export function handleExploreCall(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   if (name === "lift") {
     const args = parse(liftSchema, rawArguments);
-    return args ? handleLift(args, sheets, sheetsById) : { error: "Invalid arguments: lift needs characterId and weightLb." };
+    return args ? handleLift(args, sheets, sheetsById) : { error: "Invalid arguments: lift needs characterId and weightLb.", retry: true };
   }
   if (name === "set_lifestyle") {
     const args = parse(lifestyleSchema, rawArguments);
     if (!args) {
-      return { error: `Invalid arguments: set_lifestyle needs a lifestyle (${LIFESTYLES.join(", ")}, or none).` };
+      return { error: `Invalid arguments: set_lifestyle needs a lifestyle (${LIFESTYLES.join(", ")}, or none).`, retry: true };
     }
     const targets = resolveTargets(args.characterIds, sheets, sheetsById);
     if (!targets.length) {
-      return { error: "No valid characters; use characterIds from GAME STATE." };
+      return { error: "No valid characters; use characterIds from GAME STATE.", retry: true };
     }
     for (const sheet of targets) {
       writeLifestyle(campaign.id, sheet.id, args.lifestyle === "none" ? null : args.lifestyle);
@@ -277,10 +280,10 @@ export function handleExploreCall(
   if (name === "downtime") {
     const args = parse(downtimeSchema, rawArguments);
     if (!args) {
-      return { error: "Invalid arguments: downtime needs days, and a characterId with an activity (or activities)." };
+      return { error: "Invalid arguments: downtime needs days, and a characterId with an activity (or activities).", retry: true };
     }
     if (getActiveEncounter(campaign.id)) {
-      return { error: "Downtime is time between adventures; end the fight first." };
+      return { error: "Downtime is time between adventures; end the fight first.", refused: "rules" };
     }
     const entries: DowntimeEntry[] = args.activities?.length
       ? args.activities
@@ -288,19 +291,19 @@ export function handleExploreCall(
         ? [args as DowntimeEntry]
         : [];
     if (!entries.length) {
-      return { error: "downtime needs a characterId and an activity, or activities." };
+      return { error: "downtime needs a characterId and an activity, or activities.", retry: true };
     }
     const resolved: DowntimeEntry[] = [];
     for (const entry of entries) {
       const stale = resolveSheetRef(entry.characterId, sheets, sheetsById);
       const sheet = stale ? (getSheetById(stale.id) ?? stale) : null;
       if (!sheet) {
-        return { error: `Unknown characterId ${entry.characterId}; use one from GAME STATE. No time passed.` };
+        return { error: `Unknown characterId ${entry.characterId}; use one from GAME STATE. No time passed.`, retry: true };
       }
       const fixed = { ...entry, characterId: sheet.id };
       const problem = downtimeProblem(campaign, sheet, fixed);
       if (problem) {
-        return { error: `${problem} No time passed.` };
+        return { ...problem, error: `${problem.error} No time passed.` };
       }
       resolved.push(fixed);
     }
@@ -317,15 +320,15 @@ export function handleExploreCall(
   if (name === "afflict") {
     const args = parse(afflictSchema, rawArguments);
     if (!args) {
-      return { error: "Invalid arguments: afflict needs characterId, kind (disease, madness, poison) and name." };
+      return { error: "Invalid arguments: afflict needs characterId, kind (disease, madness, poison) and name.", retry: true };
     }
     const stale = resolveSheetRef(args.characterId, sheets, sheetsById);
     const sheet = stale ? (getSheetById(stale.id) ?? stale) : null;
     if (!sheet) {
-      return { error: "Unknown characterId; use one from GAME STATE." };
+      return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
     }
     if (sheet.deathSaves?.dead) {
-      return { error: `${sheet.name} is dead; nothing more takes hold.` };
+      return { error: `${sheet.name} is dead; nothing more takes hold.`, retry: true };
     }
     if (args.kind === "disease") {
       const disease = findDisease(args.name);
@@ -338,21 +341,21 @@ export function handleExploreCall(
         return infectWorkshopDisease(campaign, turn.id, sheet, own, { save: args.save, dc: args.dc, symptomsNow: args.symptomsNow });
       }
       const table = hazardNamesAt(campaign.id).disease;
-      return { error: `The server knows the SRD diseases ${Object.values(DISEASES).map((entry) => entry.name).join(", ")}${table.length ? ` and this table's ${table.join(", ")}` : ""}; "${args.name}" is not one. A story illness is set_condition with a duration.` };
+      return { error: `The server knows the SRD diseases ${Object.values(DISEASES).map((entry) => entry.name).join(", ")}${table.length ? ` and this table's ${table.join(", ")}` : ""}; "${args.name}" is not one. A story illness is set_condition with a duration.`, retry: true };
     }
     if (args.kind === "madness") {
-      const kind = /indef/i.test(args.name) ? "indefinite" : /long/i.test(args.name) ? "long" : /short/i.test(args.name) ? "short" : null;
+      const kind = MADNESS_KINDS.find((entry) => entry === textKey(args.name));
       if (!kind) {
-        return { error: "Madness is short, long or indefinite: pass that as name." };
+        return { error: "Madness is short, long or indefinite: pass that as name.", retry: true };
       }
       return inflictMadness(campaign, turn.id, sheet, kind, { saveDc: args.save === false ? undefined : args.saveDc, saveAbility: args.saveAbility });
     }
     const poison = poisonAt(args.name, campaign.id);
     if (!poison) {
       const table = hazardNamesAt(campaign.id).poison;
-      return { error: `The server knows the SRD poisons ${POISONS.map((entry) => entry.name).join(", ")}${table.length ? ` and this table's ${table.join(", ")}` : ""}; "${args.name}" is not one. Another poison is apply_damage with type poison and set_condition poisoned with a duration.` };
+      return { error: `The server knows the SRD poisons ${POISONS.map((entry) => entry.name).join(", ")}${table.length ? ` and this table's ${table.join(", ")}` : ""}; "${args.name}" is not one. Another poison is apply_damage with type poison and set_condition poisoned with a duration.`, retry: true };
     }
     return applyPoison(campaign, turn.id, sheet, poison, { save: args.save });
   }
-  return { error: `Unknown tool ${name}.` };
+  return { error: `Unknown tool ${name}.`, retry: true };
 }

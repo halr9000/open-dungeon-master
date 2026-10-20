@@ -241,7 +241,7 @@ await test("Auto names what it resolved to; a person running the table or a lone
   const block = lastingCompanionBlock(auto, 2, 0);
   assert.equal(block.code, "auto-guests");
   assert.match(block.reason, /on Auto, and at a table the AI runs for several players Auto allows only temporary guests/);
-  assert.match(block.remedy, /set AI companions to "Party members and guests" \(Setup tab, Game settings, Allies\)/);
+  assert.match(block.remedy, /set AI companions to "Party members and guests" \(Settings tab, Table settings, Allies\)/);
   assert.match(block.remedy, /other lasting companions at this table too/);
   assert.equal(lastingCompanionBlock(auto, 1, 0), null, "a solo table");
   assert.equal(lastingCompanionBlock(auto, 3, 0, true), null, "a table a person runs");
@@ -265,7 +265,7 @@ await test("at a multiplayer AI table on Auto the handoff names Auto, guests onl
   assert.equal(refused.status, 409);
   assert.equal(refused.json.code, "auto-guests");
   assert.match(refused.json.error, /^Wren cannot be handed to the DM yet\. AI companions is on Auto/);
-  assert.match(refused.json.error, /"Party members and guests" \(Setup tab, Game settings, Allies\)/);
+  assert.match(refused.json.error, /"Party members and guests" \(Settings tab, Table settings, Allies\)/);
   assert.equal(autoTable.sheet(wrenCopy.id).userId, autoPlayer.id, "unchanged when refused");
   // The library's "Join the party" hears the same.
   const join = await call(autoTable, CREATE, "POST", autoTable.owner, { libraryCharacterId: wrenLib.id });

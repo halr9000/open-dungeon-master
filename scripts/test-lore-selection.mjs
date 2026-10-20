@@ -235,4 +235,11 @@ test("a secret entry is marked in the prompt and in the trace", () => {
   assert.equal(trace.picks[0].secret, true);
 });
 
+test("a draft WorldForge holds back from players is marked as not the party's", () => {
+  const draft = { ...entry("dft", "The Second Bell", "A bell rang under the harbour once.", {}), unpublished: true };
+  const { text, trace } = renderLoreBlock({ pinned: [], picked: [{ entry: draft, reason: "words match" }], budget: 1_000 });
+  assert.match(text, /The Second Bell \(NOT CANON YET: the party does not know this; use it only if it fits\)/);
+  assert.equal(trace.picks[0].secret, true);
+});
+
 console.log(`test-lore-selection: ${passed} passed`);

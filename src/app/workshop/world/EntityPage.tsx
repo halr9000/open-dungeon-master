@@ -7,11 +7,16 @@ import { appConfirm } from "@/components/ui/ConfirmDialog";
 import { KitButton } from "@/app/campaigns/[campaignId]/PanelKit";
 import { SHELF_LABELS, type WorldLink } from "@/lib/worldforge/model";
 import { mentionSegments } from "@/lib/worldforge/text";
+import { accountOf, olderText } from "@/lib/worldforge/account";
 import { absoluteYear, fieldLines, formatLifespan, formatYear, lifespan, lifespanIssue, sortEvents } from "@/lib/worldforge/time";
 import { folderPath } from "@/lib/worldforge/tree";
 import type { WorldEntity } from "@/lib/db/world-forge";
 import type { WorldApi, WorldState } from "./useWorld";
 import { EntityEditor } from "./EntityEditor";
+import { BoundRecords } from "./BoundRecords";
+import { PlaceBattleMaps, type OpenPrep } from "./PlaceBattleMaps";
+import { PlayFields } from "./PlayFields";
+import type { OpenSystem } from "./WorldForgePanel";
 import { LinkEditor } from "./LinkEditor";
 import { EntityAvatar, SHELF_SYSTEMS, TypeChip, typeOf } from "./world-ui";
 
@@ -49,15 +54,22 @@ export function EntityPage({
   onFocus,
   onBack,
   onOpenSystem,
+  onOpenPrep,
   canWrite,
   canPaint,
+  campaignId,
 }: {
+  campaignId: string;
   api: WorldApi;
   world: WorldState;
   entity: WorldEntity;
   onFocus: (ref: string) => void;
   onBack: () => void;
-  onOpenSystem: (system: string) => void;
+  // Absent at the play table (WikiView).
+  onOpenSystem?: OpenSystem;
+  // A place's battle map or encounter, opened in the workshop's tool or in a
+  // sheet at the table (PlaceBattleMaps).
+  onOpenPrep?: OpenPrep;
   canWrite: boolean;
   canPaint: boolean;
 }) {
@@ -85,7 +97,12 @@ export function EntityPage({
   const secrets = doc.secrets.filter((secret) => secret.subject === entity.ref || secret.knownBy.includes(entity.ref));
   const span = lifespan(type, entity.entry, doc.calendars);
   const lifeLine = formatLifespan(type, entity.entry, doc.calendars);
-  const article = entity.entry.article || entity.text;
+  // One account, and each other text under its own name
+  // (src/lib/worldforge/account.ts): a place's arrival text beside its
+  // article, a lore entry's older article waiting for the author's choice.
+  const article = accountOf(entity);
+  const arrival = entity.shelf === "location" && entity.entry.article && entity.text ? entity.text : "";
+  const older = olderText(entity);
   const folders = folderPath(doc.folders, entity.entry.folderId);
   const home = SHELF_SYSTEMS[entity.shelf];
   const facts = Object.entries(entity.table).filter(([, value]) => tableValue("", value) !== "");
@@ -119,8 +136,10 @@ export function EntityPage({
           api.clearError();
           setEditing(false);
         }}
-        onSave={async (input) => {
-          if (await api.update(entity.ref, input)) setEditing(false);
+        onSave={async (input, opened) => {
+          const outcome = await api.update(entity.ref, input, opened);
+          if (outcome && !("conflicts" in outcome)) setEditing(false);
+          return outcome;
         }}
       />
     );
@@ -172,11 +191,11 @@ export function EntityPage({
   return (
     <article className="flex flex-col gap-4 animate-fade-up" data-tour="world-entry">
       <header className="flex flex-wrap items-start gap-3">
-        <button type="button" onClick={onBack} className="md:hidden" aria-label="Back to the list">
+        <button type="button" onClick={onBack} className="@2xl:hidden" aria-label="Back to the list">
           <ArrowLeft className="size-5 text-stone-400" />
         </button>
         <span key={entity.portrait} className="motion-pop">
-          <EntityAvatar entity={entity} type={type} size="size-12 sm:size-16" />
+          <EntityAvatar entity={entity} type={type} size="size-12 @lg:size-16" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -188,7 +207,7 @@ export function EntityPage({
           {folders.length ? <p className="text-[11px] text-stone-500">{folders.map((folder) => folder.name).join(" / ")}</p> : null}
           {lifeLine ? <p className="text-xs text-stone-400">{lifeLine}</p> : null}
         </div>
-        <div className="flex basis-full flex-wrap gap-1.5 sm:basis-auto">
+        <div className="flex basis-full flex-wrap gap-1.5 @lg:basis-auto">
           <KitButton tone="small" onClick={() => setEditing(true)} data-tour="world-edit">
             <Pencil className="size-3.5" /> Edit
           </KitButton>
@@ -205,9 +224,11 @@ export function EntityPage({
               {isPainting ? null : <Brush className="size-3.5" />} {isPainting ? "Painting" : "Paint"}
             </KitButton>
           ) : null}
-          <KitButton tone="small" onClick={() => onOpenSystem(home.system)} title={`Open ${entity.name}'s own tool`}>
-            <ExternalLink className="size-3.5" /> {home.label}
-          </KitButton>
+          {onOpenSystem ? (
+            <KitButton tone="small" onClick={() => onOpenSystem(home.system, { id: entity.id, from: entity.ref })} title={`Open ${entity.name}'s own tool`}>
+              <ExternalLink className="size-3.5" /> {home.label}
+            </KitButton>
+          ) : null}
           <KitButton tone="iconDanger" always aria-label={`Delete ${entity.name}`} onClick={remove}>
             <Trash2 className="size-4" />
           </KitButton>
@@ -240,9 +261,28 @@ export function EntityPage({
       ) : (
         <p className="text-sm text-stone-500">Nothing written yet.</p>
       )}
+      {arrival ? (
+        <div className="flex flex-col gap-1" data-testid="world-arrival">
+          <span className="eyebrow text-[10px] text-stone-500">On arrival</span>
+          <p className="whitespace-pre-wrap text-sm leading-6 text-stone-300">{arrival}</p>
+        </div>
+      ) : null}
+      {older ? (
+        <p className="text-xs text-amber-300" data-testid="world-older-text">
+          An older text from an import is kept beside this entry, because the two say different things. Players never see it. Open Edit to choose between them.
+        </p>
+      ) : null}
+      <BoundRecords
+        campaignId={campaignId}
+        entity={entity}
+        api={api}
+        loreOnly={entity.shelf === "lore" && type.loreCategory === "magic" && !entity.bound.some((record) => record.kind === "item" && record.found)}
+        onOpenSystem={onOpenSystem}
+      />
+      {entity.shelf === "location" && onOpenPrep ? <PlaceBattleMaps campaignId={campaignId} entity={entity} api={api} onOpenPrep={onOpenPrep} /> : null}
 
       {fieldLines(type, entity.entry, doc.calendars, true).length ? (
-        <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+        <dl className="grid gap-x-4 gap-y-1 text-sm @lg:grid-cols-2">
           {fieldLines(type, entity.entry, doc.calendars, true).map(({ def, text }) => (
             <div key={def.id} className={cn("flex gap-2", def.authorOnly && "text-red-300")}>
               <dt className="text-stone-500">{def.name}</dt>
@@ -277,6 +317,7 @@ export function EntityPage({
           <div className="mt-1 flex flex-col gap-1.5 border-t border-stone-800/80 pt-2">{grouped(incoming.filter((link) => !link.oneway), true)}</div>
         ) : null}
       </section>
+      <PlayFields campaignId={campaignId} entity={entity} onChanged={api.refresh} />
 
       {events.length ? (
         <section className="flex flex-col gap-1" aria-label="Events">

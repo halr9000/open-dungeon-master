@@ -8,7 +8,11 @@ import { STANDARD_LANGUAGES } from "@/lib/content/mechanics";
 import { describeRace } from "@/lib/help";
 import type { Reskinned } from "@/lib/worlds/reskin-logic";
 import { LineageCarousel, type LineageSlide } from "../LineageCarousel";
-import { asiChips, flattenGroups, lineageArt, lineageTagline } from "../lineage";
+import { asiChips, flattenGroups, lineageArt, srdRaceFor } from "../lineage";
+import { lineageFits } from "../lineageFits";
+import { SRD_CLASSES } from "@/lib/srd";
+import type { CardFacet } from "../OptionCardGrid";
+import type { Ability } from "@/lib/schemas/sheet";
 import { OptionCardGrid, type OptionCardGroup } from "../OptionCardGrid";
 import type { PickerGroup } from "../OptionPicker";
 import { knownTraining } from "../FeatChoicesFields";
@@ -110,7 +114,9 @@ export function AncestryStep({
               // Under a reskin the canonical name leads, so a player always
               // knows which SRD race they are actually taking; then the
               // book, where the heading does not say it (issue #116).
-              tagline: [slide.canonical, slide.sourceOnCard, lineageTagline(slide)].filter(Boolean).join(" · "),
+              // Then the classes its bonuses suit ("Suits Bard, Sorcerer"),
+              // where a phrase restating its biggest bonus used to sit.
+              tagline: [slide.canonical, slide.sourceOnCard, suitsLine(slide)].filter(Boolean).join(" · "),
               chips: asiChips(slide.asi)
                 .slice(0, 2)
                 .map((chip) => chip.label),
@@ -120,6 +126,7 @@ export function AncestryStep({
       })),
     [raceGroups, slides],
   );
+  const facets = useMemo(() => raceFacets(slides), [slides]);
 
   return (
     <div className="space-y-4">
@@ -137,7 +144,7 @@ export function AncestryStep({
           <span className="mb-3 flex items-start gap-1 text-xs text-stone-500">
             <span className="line-clamp-2 grow">
               <span className="text-amber-200">{race.name}</span>
-              {race.source ? <span className="font-mono text-[10px] text-stone-500"> · {race.source}</span> : null}
+              {race.source ? <span className="font-mono text-[0.6875rem] text-stone-500"> · {race.source}</span> : null}
               <span className="text-amber-200">: </span>
               {race.note}
             </span>
@@ -154,6 +161,7 @@ export function AncestryStep({
           onChoose={state.changeRace}
           onDetails={(id) => setDetailIndex(slides.findIndex((slide) => slide.id === id))}
           noun="lineage"
+          facets={facets}
         />
         <LineageCarousel
           slides={slides}
@@ -269,4 +277,57 @@ export function AncestryStep({
       ) : null}
     </div>
   );
+}
+
+// The first two classes a lineage's bonuses suit, for its card.
+function suitsLine(slide: LineageSlide): string {
+  const fits = lineageFits(slide, 2);
+  if (!fits) {
+    return "";
+  }
+  return fits.kind === "any" ? "Suits any class" : `Suits ${fits.names.join(", ")}`;
+}
+
+const ABILITY_WORDS: Array<[Ability, string]> = [
+  ["str", "Strength"], ["dex", "Dexterity"], ["con", "Constitution"],
+  ["int", "Intelligence"], ["wis", "Wisdom"], ["cha", "Charisma"],
+];
+
+// The race grid's filters: what a lineage raises, which classes it suits,
+// its size and its book. Each offers only the values some lineage has. A
+// lineage whose bumps are the player's to place raises anything they like
+// and suits any class.
+function raceFacets(slides: LineageSlide[]): CardFacet[] {
+  const byId = new Map(slides.map((slide) => [slide.id, slide]));
+  const sizeOf = (id: string) => srdRaceFor(id)?.size ?? "";
+  const bookOf = (slide: LineageSlide) => slide.source || "Core rules";
+  const sizes = [...new Set(slides.map((slide) => sizeOf(slide.id)).filter(Boolean))].sort();
+  const books = [...new Set(slides.map(bookOf))].sort();
+  return [
+    {
+      key: "raises",
+      label: "Raises",
+      options: ABILITY_WORDS.map(([value, label]) => ({ value, label })),
+      test: (id, ability) => {
+        const slide = byId.get(id);
+        return Boolean(slide && ((slide.asi[ability as Ability] ?? 0) > 0 || slide.asiChoice));
+      },
+    },
+    {
+      key: "suits",
+      label: "Good for",
+      options: SRD_CLASSES.map((klass) => ({ value: klass.name, label: klass.name })),
+      test: (id, className) => {
+        const slide = byId.get(id);
+        const fits = slide ? lineageFits(slide, 13) : null;
+        return Boolean(fits && (fits.kind === "any" || fits.names.includes(className)));
+      },
+    },
+    ...(sizes.length > 1
+      ? [{ key: "size", label: "Size", options: sizes.map((size) => ({ value: size, label: size })), test: (id: string, size: string) => sizeOf(id) === size }]
+      : []),
+    ...(books.length > 1
+      ? [{ key: "book", label: "Book", options: books.map((book) => ({ value: book, label: book })), test: (id: string, book: string) => { const slide = byId.get(id); return Boolean(slide && bookOf(slide) === book); } }]
+      : []),
+  ];
 }

@@ -5,6 +5,8 @@ import { importWorkshopBundle } from "@/lib/db/workshop-bundle";
 import { sharedHomesFor } from "@/lib/db/workshop-bundle-parts";
 import { uploadRefusalResponse } from "@/lib/upload-budget";
 import { applyWorldImport } from "@/lib/db/world-forge-io";
+import { importedBundleText } from "@/lib/addons/run-importer";
+import { taskFor } from "@/lib/addons/tasks";
 import type { WorldImport } from "@/lib/worldforge/format";
 import {
   bundleCounts,
@@ -14,6 +16,7 @@ import {
   pickBundleKinds,
   readBundle,
 } from "@/lib/workshop/bundle";
+import { MAX_ADDON_BUNDLE_BYTES } from "@/lib/workshop/bundle-schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,11 +38,16 @@ export const dynamic = "force-dynamic";
 //
 // `preview: true` runs steps 1 and 2 and stops, so a DM can read what they
 // were sent, and its warnings, before anything is written.
+//
+// `addonTask` instead of `text` takes the bundle a workshop importer addon
+// made (src/lib/addons/run-importer.ts) from the finished run of the person
+// asking, so a rulebook read by an addon passes the very same three steps.
 
 const bodySchema = z.object({
   // A little headroom over the byte cap, since readBundle measures the true
   // encoded size and this measures characters.
-  text: z.string().min(1).max(MAX_BUNDLE_BYTES),
+  text: z.string().min(1).max(MAX_BUNDLE_BYTES).optional(),
+  addonTask: z.string().min(1).max(60).optional(),
   preview: z.boolean().default(false),
   // The kinds to take. Absent or empty means the whole bundle.
   kinds: z.array(z.string().max(40)).max(20).default([]),
@@ -62,7 +70,22 @@ export async function POST(request: Request) {
     return Response.json({ error: "That file is empty or too large." }, { status: 400 });
   }
 
-  const read = readBundle(parsed.data.text);
+  let text = parsed.data.text ?? "";
+  if (parsed.data.addonTask) {
+    const task = taskFor(parsed.data.addonTask, user);
+    const made = task && task.userId === user.id ? await importedBundleText(task) : null;
+    if (!made) {
+      return Response.json({ error: "That addon run has no workshop waiting. Run the import again." }, { status: 404 });
+    }
+    text = made;
+  }
+  if (!text) {
+    return Response.json({ error: "That file is empty or too large." }, { status: 400 });
+  }
+  // An addon's bundle was made and checked on this server, with room for
+  // its pictures (src/lib/addons/run-importer.ts); a pasted one is held to
+  // the file cap.
+  const read = readBundle(text, parsed.data.addonTask ? { maxBytes: MAX_ADDON_BUNDLE_BYTES } : {});
   if ("error" in read) {
     return Response.json({ error: read.error }, { status: 400 });
   }
@@ -85,7 +108,9 @@ export async function POST(request: Request) {
       // and the importer's workshops that hold its shared rows.
       dependsOn: bundle.dependsOn,
       sharedHomes: sharedHomesFor(user.id, bundle),
-      warnings: bundleWarnings(bundle),
+      // A WorldForge file names what it would not bring in whole, and what
+      // it brings in differently, before the workshop is made.
+      warnings: [...bundleWarnings(bundle), ...(read.worldForge?.losses ?? []), ...(read.worldForge?.notes ?? [])],
     });
   }
 

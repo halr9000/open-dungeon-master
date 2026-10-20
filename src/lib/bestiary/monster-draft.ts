@@ -18,6 +18,7 @@ import {
   checkSpecials,
   checkSpellcasting,
 } from "@/lib/bestiary/block-check";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // The monster a person writes, and the rules for turning it into the stat
 // block the engine fights with.
@@ -100,18 +101,18 @@ function text(value: unknown, max: number): string {
 // An attack whose damage the dice engine cannot parse is not a weaker
 // attack, it is an attack that throws mid-fight. Refused at the boundary,
 // where a person can still fix it.
-export function checkAttack(raw: unknown): { attack: EnemyAttack } | { error: string } {
+export function checkAttack(raw: unknown): { attack: EnemyAttack } | ToolError {
   const source = (raw ?? {}) as Partial<EnemyAttack>;
   const name = text(source.name, ATTACK_NAME_MAX);
   if (!name) {
-    return { error: "An attack needs a name." };
+    return { error: "An attack needs a name.", retry: true };
   }
   const damage = String(source.damage ?? "").replace(/\s+/g, "");
   if (!damage) {
-    return { error: `${name} has no damage.` };
+    return { error: `${name} has no damage.`, retry: true };
   }
   if (!isValidExpression(damage)) {
-    return { error: `"${damage}" is not a dice expression the table can roll.` };
+    return { error: `"${damage}" is not a dice expression the table can roll.`, retry: true };
   }
   // Reach, range, the dice riding the hit and what a hit does besides
   // damage: the engine reads every one (src/lib/dm/enemy-profile.ts,
@@ -140,7 +141,7 @@ function normalizeSaves(raw: unknown): EnemySaveMods {
 
 // ---- the draft ----
 
-export type DraftCheck = { draft: MonsterDraft } | { error: string };
+export type DraftCheck = { draft: MonsterDraft } | ToolError;
 
 // Everything a client can send, checked. The one rule with teeth is the
 // damage expression; the rest clamps, because a DM who types 900 hit points
@@ -149,7 +150,7 @@ export function checkMonsterDraft(raw: unknown): DraftCheck {
   const source = (raw ?? {}) as Record<string, unknown>;
   const name = text(source.name, MONSTER_NAME_MAX);
   if (!name) {
-    return { error: "A monster needs a name." };
+    return { error: "A monster needs a name.", retry: true };
   }
 
   const attacks: EnemyAttack[] = [];

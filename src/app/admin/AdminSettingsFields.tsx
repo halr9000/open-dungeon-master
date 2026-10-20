@@ -89,6 +89,21 @@ export type EnvDefaults = {
   voiceRtcPort: string;
 };
 
+// What a field left blank falls back to, said in words rather than left to
+// a placeholder: "In use: http://127.0.0.1:8188, the server's start-up
+// setting (.env.server or its built-in default)." A typed value says what it
+// replaces and how to go back. `extra` follows either line.
+export function inheritedHint(value: string, startup: string | undefined, extra?: string): string | undefined {
+  const fallback = (startup ?? "").trim();
+  const own = value.trim();
+  const line = !fallback
+    ? ""
+    : own
+      ? `Replaces the start-up setting (${fallback}) on this server. Clear it to use that again.`
+      : `In use: ${fallback}, the server's start-up setting (.env.server or its built-in default). Type here to replace it.`;
+  return [line, extra ?? ""].filter(Boolean).join(" ") || undefined;
+}
+
 // A secret field never receives its stored value; SECRET_KEPT means "leave it
 // as is" and is stripped from the patch before sending.
 export const SECRET_KEPT = "\u0000keep";

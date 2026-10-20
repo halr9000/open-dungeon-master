@@ -3,7 +3,9 @@
 // src/lib/dm/monster-traits.ts):
 //
 //   - Fire Absorption (Iron Golem): fire damage heals it instead.
-//   - Immutable Form (the golems): Polymorph has no hold on it.
+//   - Immutable Form (the golems): Polymorph is cast and has no effect.
+//   - Condition immunity: a spell that only lays the condition is cast and
+//     has no effect; one that deals damage too deals it.
 //   - Limited Magic Immunity (Rakshasa): spells of 6th level or lower do not
 //     affect it; an area washes over it.
 //   - Martial Advantage (Hobgoblin): 2d6 more on a weapon hit against a
@@ -29,8 +31,8 @@ const mage = world.addHero({
   class: "wizard", level: 13, maxHp: 60, abilities: { int: 18 }, proficiencies: TRAINED,
   spellcasting: {
     ability: "int",
-    slots: { 2: { max: 3, used: 0 }, 3: { max: 3, used: 0 }, 4: { max: 3, used: 0 }, 7: { max: 1, used: 0 } },
-    prepared: ["Hold Person", "Fireball", "Polymorph", "Animate Dead"], known: [], cantrips: [],
+    slots: { 2: { max: 3, used: 0 }, 3: { max: 3, used: 0 }, 4: { max: 3, used: 0 }, 6: { max: 1, used: 0 }, 7: { max: 1, used: 0 } },
+    prepared: ["Hold Person", "Fireball", "Polymorph", "Animate Dead", "Sunbeam"], known: [], cantrips: [],
   },
 });
 
@@ -58,22 +60,45 @@ await test("Fire Absorption: an iron golem's fire damage heals it instead.", asy
   assert.equal(kit.enemy(golem.id).currentHp, 62);
 });
 
-await test("Immutable Form: Polymorph is refused before the slot.", async () => {
+await test("Immutable Form: Polymorph is cast, the slot spent, and the golem keeps its form.", async () => {
   const [golem] = await stage(["Immutable Form: The golem is immune to any spell or effect that would alter its form."]);
   kit.giveTurn(mage.id);
   const out = await world.invoke("cast_at_enemy", { characterId: mage.id, targetEnemyId: golem.id, spell: "Polymorph", saveAbility: "wis", level: 4, variant: "wolf" });
-  assert.equal(out.ok, false);
-  assert.match(String(out.error), /Immutable Form/);
-  assert.equal(world.sheet(mage.id).spellcasting.slots["4"].used, 0);
+  assert.equal(out.ok, true, out.error);
+  assert.match(String(out.result.noEffect), /Immutable Form/);
+  assert.equal(world.sheet(mage.id).spellcasting.slots["4"].used, 1);
+  assert.ok(!kit.enemy(golem.id).conditions.includes("polymorphed"));
+  assert.equal(kit.enemy(golem.id).stats.polymorphedFrom, undefined);
 });
 
-await test("Limited Magic Immunity: Hold Person is refused; from a 7th-level slot it reaches.", async () => {
+await test("Condition immunity: Hold Person is cast and has no effect; Sunbeam still deals its damage.", async () => {
+  const [ooze] = await stage([], 1, { conditionImmune: "paralyzed, blinded" });
+  kit.giveTurn(mage.id);
+  const hold = await world.invoke("cast_at_enemy", { characterId: mage.id, targetEnemyId: ooze.id, spell: "Hold Person", saveAbility: "wis", level: 3 });
+  assert.equal(hold.ok, true, hold.error);
+  assert.match(String(hold.result.noEffect), /immune to paralyzed/);
+  assert.equal(world.sheet(mage.id).spellcasting.slots["3"].used, 1);
+  assert.ok(!kit.enemy(ooze.id).conditions.includes("paralyzed"));
+
+  kit.giveTurn(mage.id);
+  world.dice(1);
+  const ray = await world.invoke("cast_at_enemy", { characterId: mage.id, targetEnemyId: ooze.id, spell: "Sunbeam", saveAbility: "con", level: 6 });
+  world.clearDice();
+  assert.equal(ray.ok, true, ray.error);
+  assert.equal(ray.result.noEffect, undefined);
+  assert.ok(kit.enemy(ooze.id).currentHp < 100, "the radiant damage did not land");
+  assert.ok(!kit.enemy(ooze.id).conditions.includes("blinded"));
+});
+
+await test("Limited Magic Immunity: Hold Person is cast and has no effect; from a 7th-level slot it reaches.", async () => {
   const [rakshasa] = await stage(["Limited Magic Immunity: The rakshasa can't be affected or detected by spells of 6th level or lower unless it wishes to be."]);
   kit.giveTurn(mage.id);
   const low = await world.invoke("cast_at_enemy", { characterId: mage.id, targetEnemyId: rakshasa.id, spell: "Hold Person", saveAbility: "wis", level: 2 });
-  assert.equal(low.ok, false);
-  assert.match(String(low.error), /Limited Magic Immunity/);
-  assert.equal(world.sheet(mage.id).spellcasting.slots["2"].used, 0);
+  assert.equal(low.ok, true, low.error);
+  assert.match(String(low.result.noEffect), /Limited Magic Immunity/);
+  assert.equal(world.sheet(mage.id).spellcasting.slots["2"].used, 1);
+  assert.ok(!kit.enemy(rakshasa.id).conditions.includes("paralyzed"));
+  kit.giveTurn(mage.id);
   world.dice(1);
   const high = await world.invoke("cast_at_enemy", { characterId: mage.id, targetEnemyId: rakshasa.id, spell: "Hold Person", saveAbility: "wis", level: 7 });
   world.clearDice();

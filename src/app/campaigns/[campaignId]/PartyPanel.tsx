@@ -31,6 +31,7 @@ import type { Genre, LastingCompanionBlock } from "@/lib/schemas/game-settings";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { computeSheetDerived, formatModifier } from "@/lib/srd";
 import { usePackArt } from "@/lib/worlds/use-pack-art";
+import { textKey } from "@/lib/language/text-logic";
 
 // The portrait cropper (and its cropping library) loads when a portrait is
 // being cropped, not with the table.
@@ -120,12 +121,19 @@ function RequestCompanionButton({ campaignId }: { campaignId: string }) {
   );
 }
 
-// Brings a Game settings row into view once the Setup tab has mounted it
-// (a moment after the switch) and flashes it, so "change this" lands on
-// the one control meant rather than the top of a long panel.
+// Brings a table settings row into view once the Settings tab has mounted
+// it (a moment after the switch) and flashes it, so "change this" lands on
+// the one control meant rather than the top of a long panel. A row inside a
+// closed group is mounted but hidden, so its group is opened first.
 function revealSettingsRow(row: string, tries = 40) {
   const element = document.querySelector<HTMLElement>(`[data-settings-row="${row}"]`);
   if (!element) {
+    if (tries > 0) window.setTimeout(() => revealSettingsRow(row, tries - 1), 50);
+    return;
+  }
+  const closed = element.closest<HTMLElement>(".cc-group:not([data-open])");
+  if (closed) {
+    closed.querySelector<HTMLButtonElement>(".cc-group-toggle")?.click();
     if (tries > 0) window.setTimeout(() => revealSettingsRow(row, tries - 1), 50);
     return;
   }
@@ -198,7 +206,7 @@ function HandToDmButton({
               }}
               className="font-medium text-amber-300 underline decoration-amber-500/40 underline-offset-2 transition-colors hover:text-amber-100"
             >
-              Open Game settings
+              Open Table settings
             </button>
           ) : null}
         </div>
@@ -355,7 +363,7 @@ export function PartyPanel({
   // Why a lasting party companion cannot join now, and how to allow one
   // (game-settings.ts lastingCompanionBlock): said beside Hand to the DM.
   companionBlock?: LastingCompanionBlock | null;
-  // Opens the Setup tab, where that setting lives.
+  // Opens the Settings tab, where that setting lives.
   onOpenSettings?: () => void;
   // A person runs this table. There is no AI to ask for an ally, so the
   // request button goes and the build button is the only door left; it is
@@ -680,7 +688,7 @@ export function PartyPanel({
                 <span className="flex min-w-0 items-center gap-1 truncate">
                   <PawPrint className="size-3 shrink-0 text-stone-500" />
                   {pet.name}
-                  {pet.name.toLowerCase() !== pet.form.toLowerCase() ? ` (${pet.form})` : ""}
+                  {textKey(pet.name) !== textKey(pet.form) ? ` (${pet.form})` : ""}
                 </span>
                 <span className={cn("font-mono", pet.hp <= 0 && "text-red-400")}>
                   {pet.hp}/{pet.maxHp}

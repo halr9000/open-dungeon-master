@@ -25,9 +25,10 @@ import { healMath } from "@/lib/dm/mutation-math";
 import { hitDiceHealing, hitDicePlanExpression, shortRestDicePlan } from "@/lib/dm/rest-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { hitDiceHealingFactor } from "@/lib/dm/afflictions";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export type HitDiceOutcome =
-  | { error: string }
+  | ToolError
   | { name: string; diceSpent: number; healed: number; hp: string; rollId: string };
 
 // Rolls `requested` hit dice for one character (as many as they have left),
@@ -46,20 +47,21 @@ export function spendHitDice(input: {
   const { campaign } = input;
   const sheet = getSheetById(input.sheetId);
   if (!sheet) {
-    return { error: "Character not found." };
+    return { error: "Character not found.", retry: true };
   }
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead and spends no hit dice.` };
+    return { error: `${sheet.name} is dead and spends no hit dice.`, refused: "rules" };
   }
   if (sheet.currentHp <= 0) {
     return {
       error: `${sheet.name} is unconscious at 0 hit points; hit dice cannot be spent until they are healed or stable and awake.`,
+      refused: "rules",
     };
   }
   const available = Math.max(0, sheet.hitDice.total - sheet.hitDice.spent);
   const count = Math.min(input.requested, available);
   if (count < 1) {
-    return { error: `${sheet.name} has no hit dice left; they come back with a long rest.` };
+    return { error: `${sheet.name} has no hit dice left; they come back with a long rest.`, refused: "rules" };
   }
   const conMod = computeSheetDerived(sheet).abilityMods.con;
   // Multiclass sheets draw from their per-class pools, biggest die first

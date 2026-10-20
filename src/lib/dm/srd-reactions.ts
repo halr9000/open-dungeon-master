@@ -28,6 +28,7 @@ import { rollAgainst } from "@/lib/roll-labels";
 import { READIED } from "@/lib/dm/object-actions";
 import { handlePcAttack } from "@/lib/dm/pc-attack";
 import { noHit, SPENT, spendReaction, type Ctx } from "@/lib/dm/reaction-tools";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
 
@@ -42,24 +43,24 @@ export function srdFeatureReaction(ctx: Ctx): Record<string, unknown> | null {
   return null;
 }
 
-function retaliation(ctx: Ctx): Record<string, unknown> {
+function retaliation(ctx: Ctx): ToolResult {
   const { campaign, sheet, encounter } = ctx;
   if (!holdsFeature(sheet, "retaliation")) {
-    return { error: `${sheet.name} does not have Retaliation (a Berserker's 14th level feature). Nothing was spent.` };
+    return { error: `${sheet.name} does not have Retaliation (a Berserker's 14th level feature). Nothing was spent.`, refused: "rules" };
   }
   const record = freshLastHit(campaign.id, sheet.id);
   const damaged = record && record.source === "attack" && record.attacker.kind === "enemy" && record.attacker.id && !record.answered.includes("retaliation")
     ? record.swings.some((swing) => swing.hit && swing.raw > 0)
     : false;
   if (!record || !damaged || !record.attacker.id || !encounter) {
-    return { error: noHit(sheet.name, "Retaliation", "damage from a creature within 5 feet") };
+    return noHit(sheet.name, "Retaliation", "damage from a creature within 5 feet");
   }
   const enemy = resolveEnemyRef(encounter.id, ctx.args.targetEnemyId ?? record.attacker.id);
   if (!enemy || enemy.id !== record.attacker.id || enemy.status !== "alive") {
-    return { error: `Retaliation answers ${record.attacker.name}, the creature that just damaged ${sheet.name}. Nothing was spent.` };
+    return { error: `Retaliation answers ${record.attacker.name}, the creature that just damaged ${sheet.name}. Nothing was spent.`, retry: true };
   }
   if (!withinFeet(encounter.id, sheet.id, enemy.id, 5)) {
-    return { error: `${enemy.displayName} is not within 5 feet of ${sheet.name}; Retaliation is a melee attack. Nothing was spent.` };
+    return { error: `${enemy.displayName} is not within 5 feet of ${sheet.name}; Retaliation is a melee attack. Nothing was spent.`, refused: "rules" };
   }
   // The attack is the reaction: a readied swing, as the attack path reads it.
   addSheetCondition(campaign, sheet, READIED, { untilTurnOf: sheet.id }, "Retaliation");
@@ -69,34 +70,34 @@ function retaliation(ctx: Ctx): Record<string, unknown> {
     const cleared = removeConditions(after.conditions, after.conditionMeta, [READIED]);
     patchSheet(after.id, { conditions: cleared.conditions, conditionMeta: cleared.meta });
   }
-  if ("error" in result) {
-    return { error: String(result.error) };
+  if (typeof result.error === "string") {
+    return toolError(result);
   }
   writeLastHit(campaign.id, { ...record, answered: [...record.answered, "retaliation"] });
   spendReaction(ctx);
   return { ok: true, reaction: "Retaliation", spent: SPENT(sheet.name), attack: result };
 }
 
-function standAgainstTheTide(ctx: Ctx): Record<string, unknown> {
+function standAgainstTheTide(ctx: Ctx): ToolResult {
   const { campaign, sheet, encounter } = ctx;
   if (!holdsFeature(sheet, "stand against the tide", "superior hunter's defense: stand against the tide")) {
-    return { error: `${sheet.name} does not have Stand Against the Tide (a Hunter's Superior Hunter's Defense pick). Nothing was spent.` };
+    return { error: `${sheet.name} does not have Stand Against the Tide (a Hunter's Superior Hunter's Defense pick). Nothing was spent.`, refused: "rules" };
   }
   const record = freshLastHit(campaign.id, sheet.id);
   const missed = record && record.source === "attack" && !record.ranged && !record.answered.includes("stand against the tide")
     ? record.swings.some((swing) => !swing.hit && !(swing.ranged ?? false))
     : false;
   if (!record || !missed || record.attacker.kind !== "enemy" || !record.attacker.id || !encounter) {
-    return { error: noHit(sheet.name, "Stand Against the Tide", "a melee attack that missed them") };
+    return noHit(sheet.name, "Stand Against the Tide", "a melee attack that missed them");
   }
   const target = ctx.args.targetEnemyId ? resolveEnemyRef(encounter.id, ctx.args.targetEnemyId) : null;
   if (!target || target.status !== "alive" || target.id === record.attacker.id) {
-    return { error: "Stand Against the Tide turns the attack on another creature, not the attacker: pass its targetEnemyId. Nothing was spent." };
+    return { error: "Stand Against the Tide turns the attack on another creature, not the attacker: pass its targetEnemyId. Nothing was spent.", retry: true };
   }
   const attacker = getEnemy(record.attacker.id);
   const attack = (attacker?.stats.attacks ?? []).find((entry) => lower(entry.name) === lower(record.attack)) ?? attacker?.stats.attacks?.[0];
   if (!attacker || !attack) {
-    return { error: `The server has no record of ${record.attacker.name}'s ${record.attack} to repeat. Nothing was spent.` };
+    return { error: `The server has no record of ${record.attacker.name}'s ${record.attack} to repeat. Nothing was spent.`, refused: "rules" };
   }
   const ac = enemyAcWithEffects(campaign.id, target);
   const bonus = Number(attack.toHit ?? 0);

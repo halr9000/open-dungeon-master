@@ -2,7 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { Loader2, Upload, X, ZoomIn } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
 import Cropper, { type Area } from "react-easy-crop";
 import { ui } from "@/lib/ui";
 import { cn } from "@/lib/cn";
@@ -55,6 +55,7 @@ export function AvatarCropDialog({
   const [areaPixels, setAreaPixels] = useState<Area | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const hintId = useId();
   const fileInput = useRef<HTMLInputElement>(null);
 
   const onCropComplete = useCallback((_area: Area, croppedAreaPixels: Area) => {
@@ -142,10 +143,17 @@ export function AvatarCropDialog({
                   onCropChange={setCrop}
                   onZoomChange={setZoom}
                   onCropComplete={onCropComplete}
+                  // The crop area takes focus and moves with the arrow keys;
+                  // nothing said so, and it had no name to be found by.
+                  cropperProps={{ "aria-label": "Portrait framing", "aria-describedby": hintId }}
+                  mediaProps={{ alt: "" }}
                 />
               </div>
-              <div className="mt-3 flex items-center gap-2">
-                <ZoomIn className="size-4 text-stone-500" />
+              <p id={hintId} className="mt-2 text-xs text-stone-400">
+                Drag the picture, or focus it and use the arrow keys. The slider zooms.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <ZoomIn className="size-4 text-stone-500" aria-hidden="true" />
                 <Slider
                   label="Zoom"
                   min={1}
@@ -156,6 +164,16 @@ export function AvatarCropDialog({
                   bubble={(value) => `${value.toFixed(1)}x`}
                   className="flex-1"
                 />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCrop({ x: 0, y: 0 });
+                    setZoom(1);
+                  }}
+                  className={ui.btnSmall}
+                >
+                  Center and fit
+                </button>
               </div>
             </>
           ) : (
@@ -164,12 +182,16 @@ export function AvatarCropDialog({
               onClick={() => fileInput.current?.click()}
               className="motion-press flex h-40 w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-amber-500/30 bg-stone-950/40 text-sm text-stone-400 hover:border-amber-500/60 hover:text-amber-100"
             >
-              <Upload className="size-5" />
+              <Upload className="size-5" aria-hidden="true" />
               Choose an image
             </button>
           )}
 
-          {error ? <p className="motion-shake mt-2 text-xs text-red-400">{error}</p> : null}
+          {error ? (
+            <p role="alert" className="motion-shake mt-2 text-xs text-red-400">
+              {error}
+            </p>
+          ) : null}
 
           <div className="mt-4 flex justify-between gap-2">
             {source ? (

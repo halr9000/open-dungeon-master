@@ -2,7 +2,7 @@
 // spell planned by aoe-spell.ts, an enemy's breath or spell by enemy-casting.ts,
 // a trap). Split out of encounter-tools-extra.ts; never imports encounter-tools.
 
-import { magicImmunityProblem } from "@/lib/dm/monster-traits";
+import { magicImmunityNote } from "@/lib/dm/monster-traits";
 import { abilityAreaShape, areaProblem, spellAreaShape } from "@/lib/dm/aoe-shape";
 import { spellFactsFor } from "@/lib/content";
 import { bindsWorthResisting } from "@/lib/dm/legendary-logic";
@@ -22,6 +22,7 @@ import { prepareEnemyUse, type EnemyUse } from "@/lib/dm/enemy-casting";
 import { layEnemyCondition } from "@/lib/dm/cast-at-player";
 import { charmedBy } from "@/lib/dm/enemy-profile";
 import { planAoeSpell, type AoeSpellPlan } from "@/lib/dm/aoe-spell";
+import { freeRepeatOf, markRepeatStruck, repeatStrikesProblem } from "@/lib/dm/area-casting";
 import { aoePool } from "@/lib/dm/spell-pool";
 import { spellConditionMeta } from "@/lib/dm/spell-effects";
 import { afterEnemySave, concentrationShaken, layAreaConditions, spellAutoSave, spellSaveOptions } from "@/lib/dm/spell-riders";
@@ -38,10 +39,11 @@ import { zoneArgsSchema, zonePlacement } from "@/lib/dm/zone-args";
 import { zoneRowFor } from "@/lib/battlemap/zones-spells";
 import { spellEngineName } from "@/lib/content";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
-import { globeProblemFor } from "@/lib/dm/zone-rules";
+import { spellWardOn } from "@/lib/dm/cast-reach";
 import { partsTaken, partsTotal, splitDamageExpression, type DamagePart } from "@/lib/dm/aoe-parts";
 import { castingHold, outOfReach } from "@/lib/dm/spell-planes";
 import { castPrismaticSpray, isPrismaticSpray } from "@/lib/dm/prismatic";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 export { aoeDamageTool } from "@/lib/dm/aoe-damage-tool";
 const aoeArgsSchema = z.object({
@@ -75,10 +77,10 @@ export function handleAoeDamage(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: aoe_damage hits creatures in a fight. Call start_encounter first.", retry: true };
   }
   let args: z.infer<typeof aoeArgsSchema>;
   try {
@@ -86,6 +88,7 @@ export function handleAoeDamage(
   } catch {
     return {
       error: "Invalid arguments: aoe_damage needs targets, and saveAbility and dc unless a caster's spell or an enemy's ability sets them.",
+      retry: true,
     };
   }
   // A trap or a collapsing ceiling names no spell and no caster: its save
@@ -93,6 +96,7 @@ export function handleAoeDamage(
   if (!args.spell && !args.casterEnemyId && (!args.saveAbility || !args.dc)) {
     return {
       error: "aoe_damage needs saveAbility and dc for an effect that names no spell; a player's spell (casterId and spell) or an enemy's (casterEnemyId) brings its own.",
+      retry: true,
     };
   }
 
@@ -140,7 +144,7 @@ export function handleAoeDamage(
     pcTargets.splice(0, pcTargets.length, ...pcTargets.filter((sheet) => !sheet.deathSaves?.dead));
     // A spell that lays its area (a Web over the fallen) is still cast.
     if (!enemyTargets.length && !pcTargets.length && !(args.spell && zoneRowFor(engineSpell))) {
-      return { error: `${skippedDead.join(", ")} ${skippedDead.length === 1 ? "is" : "are"} dead; the area catches nobody it can harm. Nothing was spent.` };
+      return { error: `${skippedDead.join(", ")} ${skippedDead.length === 1 ? "is" : "are"} dead; the area catches nobody it can harm. Ask the player where to aim it instead. Nothing was spent.`, retry: true };
     }
   }
   // A creature Blink, Etherealness, Maze or a Resilient Sphere took away is
@@ -149,7 +153,7 @@ export function handleAoeDamage(
   const awayCaster = args.casterId ? resolveSheetRef(args.casterId, sheets, sheetsById) : null;
   const casterAway = awayCaster ? castingHold(awayCaster) : null;
   if (casterAway) {
-    return { error: casterAway };
+    return casterAway;
   }
   const beyondReach = [
     ...enemyTargets.filter((enemy) => outOfReach({ name: enemy.displayName, conditions: enemy.conditions })).map((enemy) => enemy.displayName),
@@ -159,34 +163,44 @@ export function handleAoeDamage(
     enemyTargets.splice(0, enemyTargets.length, ...enemyTargets.filter((enemy) => !beyondReach.includes(enemy.displayName)));
     pcTargets.splice(0, pcTargets.length, ...pcTargets.filter((sheet) => !beyondReach.includes(sheet.name)));
     if (!enemyTargets.length && !pcTargets.length) {
-      return { error: `${beyondReach.join(", ")} ${beyondReach.length === 1 ? "is" : "are"} out of reach of the Material Plane; the area catches nobody. Nothing was spent.` };
+      // A character's spell is the player's to hear about; an enemy's or a
+      // trap's is the DM's own call, to aim elsewhere.
+      const error = `${beyondReach.join(", ")} ${beyondReach.length === 1 ? "is" : "are"} out of reach of the Material Plane; the area catches nobody. Nothing was spent; aim it elsewhere.`;
+      return args.casterId ? { error, refused: "rules" } : { error, retry: true };
     }
   }
-  // A Globe of Invulnerability shields the creatures inside it from a spell
-  // cast from outside (src/lib/dm/zone-rules.ts); one that catches nobody
-  // else is refused before anything is spent.
+  // A Globe of Invulnerability or an Antimagic Field keeps the creatures
+  // inside it out of a spell's area from outside (src/lib/dm/zone-rules.ts):
+  // the spell is cast all the same, and catches only the others, or nobody.
   const areaCasterRef = args.casterEnemyId ?? args.casterId;
   const shielded: string[] = [];
   if (args.spell && areaCasterRef) {
     const caster = args.casterEnemyId ? resolveEnemyRef(encounter.id, args.casterEnemyId)?.id : resolveSheetRef(args.casterId ?? "", sheets, sheetsById)?.id;
-    const guard = (id: string, name: string) => (caster ? globeProblemFor(encounter.id, caster, id, name, args.spell, args.level) : null);
-    const blocked = [...enemyTargets.filter((enemy) => guard(enemy.id, enemy.displayName)), ...pcTargets.filter((sheet) => guard(sheet.id, sheet.name))];
-    if (blocked.length && blocked.length === enemyTargets.length + pcTargets.length) {
-      return { error: guard(blocked[0].id, "displayName" in blocked[0] ? blocked[0].displayName : blocked[0].name) ?? "" };
+    const facts = spellFactsFor(args.spell, spellAuthorsFor(campaign));
+    const wardOn = (id: string, name: string) => (caster ? spellWardOn({ encounterId: encounter.id, casterId: caster, targetId: id, targetName: name, facts }) : null);
+    for (const enemy of [...enemyTargets]) {
+      const ward = wardOn(enemy.id, enemy.displayName);
+      if (ward) {
+        shielded.push(ward);
+        enemyTargets.splice(enemyTargets.indexOf(enemy), 1);
+      }
     }
-    for (const entry of blocked) {
-      shielded.push("displayName" in entry ? entry.displayName : entry.name);
+    for (const target of [...pcTargets]) {
+      const ward = wardOn(target.id, target.name);
+      if (ward) {
+        shielded.push(ward);
+        pcTargets.splice(pcTargets.indexOf(target), 1);
+      }
     }
-    enemyTargets.splice(0, enemyTargets.length, ...enemyTargets.filter((enemy) => !blocked.includes(enemy)));
-    pcTargets.splice(0, pcTargets.length, ...pcTargets.filter((sheet) => !blocked.includes(sheet)));
   }
   // A spell that only lays its area (an enemy's Darkness, a Web with nobody
   // in it yet) catches nobody (src/lib/dm/zone-cast.ts).
   const areaOnly = Boolean(args.spell && zoneRowFor(engineSpell));
-  if (!enemyTargets.length && !pcTargets.length && !areaOnly) {
+  if (!enemyTargets.length && !pcTargets.length && !areaOnly && !shielded.length) {
     return {
       error:
         "aoe_damage needs at least one valid target: enemyIds and/or characterIds from GAME STATE.",
+      retry: true,
     };
   }
 
@@ -196,7 +210,7 @@ export function handleAoeDamage(
     ? enemyTargets.find((enemy) => charmedBy(charmedCaster.conditions, charmedCaster.conditionMeta, enemy.id))
     : null;
   if (charmedCaster && charmer) {
-    return { error: `${charmedCaster.name} is charmed by ${charmer.displayName} and cannot catch it in harmful magic. Nothing was spent; leave it out of the area.` };
+    return { error: `${charmedCaster.name} is charmed by ${charmer.displayName} and cannot catch it in harmful magic. Nothing was spent; leave it out of the area.`, refused: "rules" };
   }
   // A named player spell is cast and paid for, and its own numbers apply
   // (src/lib/dm/aoe-spell.ts): the slot, the save, the DC, the dice, the
@@ -204,6 +218,15 @@ export function handleAoeDamage(
   // An enemy's spell (casterEnemyId) keeps the caller's numbers.
   const corrections: string[] = [];
   let plan: AoeSpellPlan | null = null;
+  // A held area coming again strikes each creature once a turn, where it
+  // stands (src/lib/dm/area-casting.ts).
+  const repeating = args.spell && !args.casterEnemyId ? freeRepeatOf(campaign, charmedCaster?.id, args.spell) : null;
+  const struck = repeating && charmedCaster
+    ? repeatStrikesProblem(encounter, repeating, charmedCaster.id, [...enemyTargets.map((enemy) => ({ id: enemy.id, name: enemy.displayName })), ...pcTargets.map((sheet) => ({ id: sheet.id, name: sheet.name }))])
+    : null;
+  if (struck) {
+    return struck;
+  }
   if (args.spell && !args.casterEnemyId) {
     const planned = planAoeSpell(campaign, turn, sheets, sheetsById, {
       encounterId: encounter.id,
@@ -234,9 +257,10 @@ export function handleAoeDamage(
     // Limited Magic Immunity (the rakshasa): the area washes over it.
     const level = args.level ?? spellFactsFor(planned.spell)?.level ?? 0;
     for (const enemy of [...enemyTargets]) {
-      if (magicImmunityProblem(enemy, planned.spell, level)) {
+      const shrugged = magicImmunityNote(enemy, planned.spell, level);
+      if (shrugged) {
         enemyTargets.splice(enemyTargets.indexOf(enemy), 1);
-        corrections.push(`${enemy.displayName} is unaffected: Limited Magic Immunity turns aside spells of its level or lower.`);
+        corrections.push(shrugged);
       }
     }
     args.damage = planned.damage ?? undefined;
@@ -273,10 +297,10 @@ export function handleAoeDamage(
     args.dc = prepared.dc ?? args.dc;
     corrections.push(...prepared.corrections);
     if ((!args.saveAbility || !args.dc) && (enemyTargets.length || pcTargets.length)) {
-      return { error: `${prepared.enemy.displayName}'s block gives ${prepared.name} no save and DC; send saveAbility and dc with it. Nothing was spent.` };
+      return { error: `${prepared.enemy.displayName}'s block gives ${prepared.name} no save and DC; send saveAbility and dc with it. Nothing was spent.`, retry: true };
     }
     if (args.damage === undefined && !prepared.condition && !zoneRowFor(prepared.name)) {
-      return { error: `${prepared.name} forces no save with damage or a condition on ${prepared.enemy.displayName}'s block; narrate what it does, or use its attacks.` };
+      return { error: `${prepared.name} forces no save with damage or a condition on ${prepared.enemy.displayName}'s block; narrate what it does, or use its attacks.`, retry: true };
     }
     // One breath, one cone: everyone caught fits one placement of the shape
     // the block prints (src/lib/dm/aoe-shape.ts).
@@ -293,7 +317,7 @@ export function handleAoeDamage(
         ...zonePlacement(args),
       });
       if (problem) {
-        return { error: problem };
+        return problem;
       }
     }
     prepared.commit();
@@ -305,7 +329,7 @@ export function handleAoeDamage(
     return aoePool(campaign, encounter.id, plan, enemyTargets, corrections);
   }
   if (args.damage === undefined && !plan?.conditions.length && !plan?.mech?.riders && !enemyUse?.condition && !areaOnly) {
-    return { error: "aoe_damage needs damage (dice or a number), or a known spell that lays a condition." };
+    return { error: "aoe_damage needs damage (dice or a number), or a known spell that lays a condition.", retry: true };
   }
 
   // The damage rolls once for the whole effect; a spell that deals none
@@ -337,7 +361,7 @@ export function handleAoeDamage(
     total = args.damage;
   } else if (args.damage) {
     if (!isValidExpression(args.damage)) {
-      return { error: `Invalid damage expression "${args.damage}".` };
+      return { error: `Invalid damage expression "${args.damage}".`, retry: true };
     }
     const split = splitDamageExpression(args.damage, plan?.mech?.secondType);
     for (const [index, expression] of (split ?? [args.damage]).entries()) {
@@ -558,7 +582,7 @@ export function handleAoeDamage(
         sheetsById,
       );
       if (!("error" in applied)) {
-        row.conditionApplied = enemyUse.condition;
+        row.conditionApplied = [enemyUse.condition, ...(Array.isArray(applied.alsoApplied) ? applied.alsoApplied : [])].join(", ");
       }
     }
   }
@@ -570,6 +594,10 @@ export function handleAoeDamage(
   // The spell's area on the board, where it was cast (src/lib/dm/zone-cast.ts).
   const areaCaster = plan ? { kind: "pc" as const, id: plan.caster.id, name: plan.caster.name } : enemyUse && args.spell ? { kind: "enemy" as const, id: enemyUse.enemy.id, name: enemyUse.enemy.displayName } : null;
   const area = areaCaster ? placeSpellZone(campaign, { spell: plan?.spell ?? enemyUse?.name ?? "", runsAs: plan?.runsAs, caster: areaCaster, slotLevel: plan?.slotLevel, dc: saveDc, caught: [...enemyTargets.map((enemy) => enemy.id), ...pcTargets.map((sheet) => sheet.id)], ...zonePlacement(args) }) : null;
+  // This turn's strike of a recurring area, cast or come again.
+  if (plan?.mech?.repeat === "free") {
+    markRepeatStruck(campaign, plan.spell, plan.caster.id, [...enemyTargets.map((enemy) => enemy.id), ...pcTargets.map((sheet) => sheet.id)]);
+  }
 
   return {
     ok: true,
@@ -587,7 +615,7 @@ export function handleAoeDamage(
     ...(enemyConcentration ? { enemyConcentration } : {}),
     ...(area ? { area } : {}),
     ...(beyondReach.length ? { outOfReach: `${beyondReach.join(", ")} ${beyondReach.length === 1 ? "is" : "are"} off the Material Plane; the spell does not touch them.` } : {}),
-    ...(shielded.length ? { globeShielded: `${shielded.join(", ")} stand inside a Globe of Invulnerability; the spell has no effect on them.` } : {}),
+    ...(shielded.length ? { noEffect: shielded.join(" ") } : {}),
     ...encounterOver,
   };
 }

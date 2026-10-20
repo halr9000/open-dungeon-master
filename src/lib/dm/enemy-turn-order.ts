@@ -13,12 +13,13 @@
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { getActiveEncounter, type Encounter, type EncounterEnemy } from "@/lib/db/encounters";
 import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export function enemyTurnRefusal(
   encounter: Encounter | null,
   enemy: Pick<EncounterEnemy, "id" | "displayName" | "status">,
   turn: Pick<DmTurn, "id" | "actor">,
-): string | null {
+): ToolError | null {
   if (turn.actor !== "ai" || !encounter || !encounter.orderReady || encounter.kind === "scene") {
     return null;
   }
@@ -27,7 +28,7 @@ export function enemyTurnRefusal(
   // model a turn that never comes, and whether it heard that or "is dead"
   // would hang on where the corpse sat in the order.
   if (enemy.status !== "alive") {
-    return `${enemy.displayName} is ${enemy.status} and cannot act.`;
+    return { error: `${enemy.displayName} is ${enemy.status} and cannot act.`, retry: true };
   }
   const slot = encounter.order.findIndex((entry) => entry.kind === "enemy" && entry.enemyId === enemy.id);
   if (slot < 0 || slot < encounter.turnIndex) {
@@ -43,7 +44,7 @@ export function enemyTurnRefusal(
     return null;
   }
   const current = encounter.order[encounter.turnIndex];
-  return `${enemy.displayName}'s turn has not come yet this round: it is ${current?.name ?? "another combatant"}'s turn. An enemy acts when end_turn hands it to you; off its turn it only reacts (opportunity attacks are automatic) or takes a legendary action.`;
+  return { error: `${enemy.displayName}'s turn has not come yet this round: it is ${current?.name ?? "another combatant"}'s turn. An enemy acts when end_turn hands it to you; off its turn it only reacts (opportunity attacks are automatic) or takes a legendary action.`, retry: true };
 }
 
 // The same, read from a tool call's arguments (enemyId for enemy_attack,
@@ -53,7 +54,7 @@ export function enemyCallOutOfTurn(
   turn: Pick<DmTurn, "id" | "actor">,
   rawArguments: string,
   key: "enemyId" | "casterEnemyId",
-): string | null {
+): ToolError | null {
   if (turn.actor !== "ai") {
     return null;
   }

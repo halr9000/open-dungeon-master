@@ -18,6 +18,9 @@ const CONTENT_TYPES: Record<string, string> = {
   // A lore entry's attachment (/api/upload stores PDFs beside the pictures).
   // It was accepted and saved, then answered 404 here for want of this line.
   ".pdf": "application/pdf",
+  // A map addon's 3D model (src/lib/addons/map-view.ts), fetched by the
+  // table page and handed to the addon's board view.
+  ".glb": "model/gltf-binary",
 };
 
 // Shown in the browser rather than saved, under its own name; nosniff on
@@ -165,4 +168,14 @@ export async function serveGeneratedFile(
       "Cache-Control": CACHE_CONTROL,
     },
   });
+}
+
+// A download saved under its own name in any script: filename* carries the
+// UTF-8 name (RFC 6266), which a plain filename="" cannot. encodeURIComponent
+// leaves ' ( ) * as they are, and RFC 5987 does not allow them there.
+const RFC5987_ESCAPES: Record<string, string> = { "'": "%27", "(": "%28", ")": "%29", "*": "%2A" };
+
+export function attachmentDisposition(fileName: string): string {
+  const encoded = encodeURIComponent(fileName).replace(/['()*]/g, (char) => RFC5987_ESCAPES[char]);
+  return `attachment; filename*=UTF-8''${encoded}`;
 }

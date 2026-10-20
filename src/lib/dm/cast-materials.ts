@@ -6,8 +6,9 @@
 //     whether the spell consumes it. Nine SRD spells print theirs in a way a
 //     single price cannot hold (Clone's diamond and vessel, Warding Bond's
 //     pair of rings): their rows are written out below.
-//   - A carried line counts only when it states its worth ("Diamond (300 gp)")
-//     and that worth covers the component; a name alone proves nothing.
+//   - A carried line counts only when it carries its worth (the `worth` the
+//     tool that gave it set) and that worth covers the component; a name
+//     alone proves nothing, and a worth written into one is only a name.
 //   - What the caster does not carry may be bought from the purse outside a
 //     fight. In a fight there is no merchant: it must be carried.
 //   - A material with no price is replaced by a component pouch or the
@@ -15,9 +16,13 @@
 //
 // Pure: the Hand (src/lib/battlemap/hand-spells.ts) asks the same questions.
 
-import type { SpellFacts } from "@/lib/srd/spell-facts";
+import { spellNamesOf, type SpellFacts } from "@/lib/srd/spell-facts";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { COPPER_PER_GOLD, purseCopper } from "@/lib/srd/currency";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { hasItemTag } from "@/lib/srd/item-tags";
+import type { ItemTag } from "@/lib/schemas/item-tags";
 
 export type MaterialComponent = {
   // The words a carried line must share.
@@ -61,13 +66,17 @@ const PRINTED: Record<string, MaterialComponent[]> = {
   simulacrum: [{ what: "ruby dust", gp: 1500, count: 1, consumed: true }],
 };
 
+const PRINTED_BY_KEY = new Map(Object.entries(PRINTED).map(([name, components]) => [textKey(name), components]));
+
 export function materialComponents(facts: Pick<SpellFacts, "name" | "material" | "materialCostGp" | "materialText" | "materialConsumed"> | null): MaterialComponent[] {
   if (!facts?.material) {
     return [];
   }
-  // The SRD's own name, without a wizard's ("Mordenkainen's Magnificent Mansion").
-  const key = facts.name.trim().toLowerCase();
-  const printed = PRINTED[key] ?? PRINTED[key.replace(/^[a-z]+'s\s+/, "")];
+  // The SRD's own name, without a wizard's ("Mordenkainen's Magnificent
+  // Mansion"), is one of the checklist's names for it.
+  const printed = spellNamesOf(facts.name)
+    .map((name) => PRINTED_BY_KEY.get(textKey(name)))
+    .find((components) => components !== undefined);
   if (printed) {
     return printed;
   }
@@ -94,14 +103,8 @@ export function materialWords(text: string): string[] {
   )];
 }
 
-// The worth a line states in its own name: "Diamond (300 gp)" is 300 for one.
-export function statedValue(name: string): number | null {
-  const match = /(\d[\d,]*)\s*gp\b/i.exec(name);
-  return match ? Number(match[1].replace(/,/g, "")) : null;
-}
-
 export type MaterialUse = { index: number; itemName: string; take: number; consume: boolean };
-export type MaterialBuy = { name: string; qty: number; copper: number; consume: boolean };
+export type MaterialBuy = { name: string; qty: number; gp: number; copper: number; consume: boolean };
 
 export type MaterialPlan =
   | { kind: "none" }
@@ -119,7 +122,7 @@ export type MaterialContext = {
 type Holder = Pick<CharacterSheet, "name" | "equipment" | "gold" | "copper">;
 
 // How many times a component's count is taken.
-function unitsFor(component: MaterialComponent, spell: string, ctx: MaterialContext): number | string {
+function unitsFor(component: MaterialComponent, spell: string, ctx: MaterialContext): number | ToolError {
   if (!component.per) {
     return 1;
   }
@@ -133,12 +136,12 @@ function unitsFor(component: MaterialComponent, spell: string, ctx: MaterialCont
     // Create Undead: three corpses at 6th level, one more for each slot above.
     return Math.max(1, (ctx.slotLevel ?? 6) - 3);
   }
-  return `${spell}'s component is worth ${component.gp} gp per Hit Die of its target: name the target so the server knows its Hit Dice. Nothing was spent.`;
+  return { error: `${spell}'s component is worth ${component.gp} gp per Hit Die of its target: name the target so the server knows its Hit Dice. Nothing was spent.`, retry: true };
 }
 
 const title = (word: string) => `${word[0].toUpperCase()}${word.slice(1)}`;
 
-export function materialPlan(sheet: Holder, facts: SpellFacts | null, ctx: MaterialContext = {}): MaterialPlan | { error: string } {
+export function materialPlan(sheet: Holder, facts: SpellFacts | null, ctx: MaterialContext = {}): MaterialPlan | ToolError {
   const components = materialComponents(facts);
   if (!facts || !components.length) {
     return { kind: "none" };
@@ -149,14 +152,14 @@ export function materialPlan(sheet: Holder, facts: SpellFacts | null, ctx: Mater
   let purse = purseCopper({ gold: sheet.gold ?? 0, copper: sheet.copper ?? 0 });
   for (const component of components) {
     const units = unitsFor(component, facts.name, ctx);
-    if (typeof units === "string") {
-      return { error: units };
+    if (typeof units !== "number") {
+      return units;
     }
     const words = materialWords(component.what);
-    // Lines that name the component and state what one is worth.
+    // Lines that name the component and carry what one is worth.
     const lines = sheet.equipment
-      .map((item, index) => ({ item, index, value: statedValue(item.name), free: Math.max(1, item.qty ?? 1) - (taken.get(index) ?? 0) }))
-      .filter(({ item, value, free }) => free > 0 && value !== null && (words.length ? words.some((word) => item.name.toLowerCase().includes(word)) : true));
+      .map((item, index) => ({ item, index, value: item.worth ?? null, free: Math.max(1, item.qty ?? 1) - (taken.get(index) ?? 0) }))
+      .filter(({ item, value, free }) => free > 0 && value !== null && (words.length ? words.some((word) => textKey(item.name).includes(word)) : true));
     const pieces = component.count * units;
     let missing: { qty: number; gp: number } | null = null;
     if (component.count === 1 && !component.per) {
@@ -186,35 +189,37 @@ export function materialPlan(sheet: Holder, facts: SpellFacts | null, ctx: Mater
       continue;
     }
     const short = component.what.split(/\s+/).length <= 3 ? component.what : words[0] ?? "";
-    const name = `${short ? title(short) : `${facts.name} component`} (${missing.gp} gp)`;
+    const name = short ? title(short) : `${facts.name} component`;
     const copper = missing.qty * missing.gp * COPPER_PER_GOLD;
     const stated = /\d\s*gp/i.test(component.what);
     const printed = `${pieces > 1 ? `${pieces} × ` : ""}${component.what.replace(/\.$/, "")}${stated ? "" : ` worth ${component.gp} gp${pieces > 1 ? " each" : ""}`}${component.consumed && !/consum/i.test(component.what) ? ", which the spell consumes" : ""}`;
     if (ctx.inFight) {
       return {
-        error: `${facts.name} needs ${printed}, and ${sheet.name} does not carry it (a line on the sheet that states its worth, like "${name}"). There is no buying one in the middle of a fight. No slot was spent.`,
+        error: `${facts.name} needs ${printed}, and ${sheet.name} does not carry it (a line on the sheet with its worth, like "${name}" with worth ${missing.gp}). There is no buying one in the middle of a fight. Nothing was spent.`,
+        refused: "rules",
       };
     }
     if (purse < copper) {
       return {
-        error: `${facts.name} needs ${printed}. ${sheet.name} carries none (a line on the sheet that states its worth, like "${name}") and has not the gold to buy it. No slot was spent.`,
+        error: `${facts.name} needs ${printed}. ${sheet.name} carries none (a line on the sheet with its worth, like "${name}" with worth ${missing.gp}) and has not the gold to buy it. Nothing was spent.`,
+        refused: "rules",
       };
     }
     purse -= copper;
-    bought.push({ name, qty: missing.qty, copper, consume: component.consumed });
+    bought.push({ name, qty: missing.qty, gp: missing.gp, copper, consume: component.consumed });
   }
   return { kind: "components", uses, bought };
 }
 
 // ---- a focus or a component pouch ----
 
-const POUCH = /component pouch/i;
-const FOCI: Record<string, RegExp> = {
-  arcane: /arcane focus|\bcrystal\b|\borb\b|\brod\b|\bstaff\b|\bwand\b/i,
-  holy: /holy symbol|\bamulet\b|\bemblem\b|\breliquary\b/i,
-  druidic: /druidic focus|mistletoe|\btotem\b|yew wand|wooden staff|\bstaff\b/i,
-  instrument: /\blute\b|\blyre\b|\bflute\b|\bdrum\b|\bhorn\b|bagpipes|dulcimer|shawm|\bviol\b|instrument/i,
-  tools: /thieves'? tools|artisan'?s? tools|\btools\b|infused/i,
+// What each focus is (src/lib/srd/item-tags.ts).
+const FOCI: Record<string, ItemTag> = {
+  arcane: "arcane_focus",
+  holy: "holy_symbol",
+  druidic: "druidic_focus",
+  instrument: "instrument",
+  tools: "tools",
 };
 const CLASS_FOCUS: Record<string, string[]> = {
   wizard: ["arcane"],
@@ -230,12 +235,11 @@ const CLASS_FOCUS: Record<string, string[]> = {
 // A material with no price needs a component pouch or the caster's focus.
 // The priced parts are the materialPlan's to find; an item's own spell (a
 // scroll, a wand) never asks (cast-guard.ts castFromItem).
-export function focusProblem(sheet: Pick<CharacterSheet, "name" | "class" | "classes" | "equipment">, facts: SpellFacts | null): string | null {
+export function focusProblem(sheet: Pick<CharacterSheet, "name" | "class" | "classes" | "equipment">, facts: SpellFacts | null): ToolError | null {
   if (!facts?.material || materialComponents(facts).length) {
     return null;
   }
-  const carried = sheet.equipment.map((item) => item.name);
-  if (carried.some((name) => POUCH.test(name))) {
+  if (sheet.equipment.some((item) => hasItemTag(item, "component_pouch"))) {
     return null;
   }
   const classIds = [sheet.class, ...(sheet.classes ?? []).map((entry) => entry.id)].map((id) => (id ?? "").trim().toLowerCase());
@@ -243,9 +247,9 @@ export function focusProblem(sheet: Pick<CharacterSheet, "name" | "class" | "cla
   // A caster whose class names no focus (a ranger, a fighter's Eldritch
   // Knight reads an arcane one) may use any.
   const allowed = kinds.length ? kinds : Object.keys(FOCI);
-  if (carried.some((name) => allowed.some((kind) => FOCI[kind].test(name)))) {
+  if (sheet.equipment.some((item) => allowed.some((kind) => hasItemTag(item, FOCI[kind])))) {
     return null;
   }
   const what = kinds.length ? kinds.map((kind) => (kind === "arcane" ? "an arcane focus" : kind === "holy" ? "a holy symbol" : kind === "druidic" ? "a druidic focus" : kind === "instrument" ? "a musical instrument" : "artisan's tools")).join(" or ") : "a spellcasting focus";
-  return `${facts.name} has a material component${facts.materialText ? ` (${facts.materialText.replace(/\.$/, "")})` : ""}: ${sheet.name} needs a component pouch or ${what} to cast it, and carries neither. Add one to the sheet. No slot was spent.`;
+  return { error: `${facts.name} has a material component${facts.materialText ? ` (${facts.materialText.replace(/\.$/, "")})` : ""}: ${sheet.name} needs a component pouch or ${what} to cast it, and carries neither. Add one to the sheet. Nothing was spent.`, refused: "rules" };
 }

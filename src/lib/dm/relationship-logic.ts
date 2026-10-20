@@ -17,6 +17,8 @@
 // Everything here is deterministic given its inputs; dice arrive as injected
 // rolls.
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+
 export const APPROVAL_MIN = -100;
 export const APPROVAL_MAX = 100;
 
@@ -332,7 +334,7 @@ export function demoteRomance(stage: RomanceStage, approval: number): RomanceSta
 
 // ---- advancing the romance ladder ----
 
-export type AdvanceCheck = { ok: true; target: RomanceStage } | { ok: false; reason: string };
+export type AdvanceCheck = { ok: true; target: RomanceStage } | ({ ok: false } & ToolError);
 
 export function canAdvanceRomance(
   stage: RomanceStage,
@@ -341,30 +343,33 @@ export function canAdvanceRomance(
   status: RelationshipStatus,
 ): AdvanceCheck {
   if (status === "ended") {
-    return { ok: false, reason: "That relationship is over; it cannot be advanced." };
+    return { ok: false, error: "That relationship is over; it cannot be advanced.", refused: "rules" };
   }
   const expected = nextRomanceStage(stage);
   if (!expected) {
-    return { ok: false, reason: "They are already married; there is no further step." };
+    return { ok: false, error: "They are already married; there is no further step.", refused: "rules" };
   }
   if (target !== expected) {
     return {
       ok: false,
-      reason: `Romance moves one step at a time: from ${stage} the only next step is ${expected}.`,
+      error: `Romance moves one step at a time: from ${stage} the only next step is ${expected}.`,
+      refused: "rules",
     };
   }
   const tier = friendshipTier(approval);
   if (tierIndex(tier) < tierIndex(ROMANCE_MIN_TIER)) {
     return {
       ok: false,
-      reason: `${tier === "hostile" || tier === "disliked" ? "They do not even like them" : "They barely know them"} (${TIER_LABEL[tier]}). Nobody is courted into liking someone: build the friendship first.`,
+      error: `${tier === "hostile" || tier === "disliked" ? "They do not even like them" : "They barely know them"} (${TIER_LABEL[tier]}). Nobody is courted into liking someone: build the friendship first.`,
+      refused: "rules",
     };
   }
   const needed = ROMANCE_THRESHOLD[target];
   if (approval < needed) {
     return {
       ok: false,
-      reason: `Not enough between them yet: ${target} needs approval ${needed}, and it stands at ${approval}. Play out more between them first.`,
+      error: `Not enough between them yet: ${target} needs approval ${needed}, and it stands at ${approval}. Play out more between them first.`,
+      refused: "rules",
     };
   }
   return { ok: true, target };

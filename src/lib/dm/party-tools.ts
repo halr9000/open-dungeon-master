@@ -7,8 +7,12 @@ import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
 import { addPartyItem, removePartyItem, splitBankedXp } from "@/lib/dm/party-logic";
 import { grantItemMath, removeItemMath } from "@/lib/dm/mutation-math";
-import { addCopper, formatCopper, parseCoins, purseCopper } from "@/lib/srd/currency";
+import { addCopper, formatCopper, parseCoins, purseCopper, unreadCoins } from "@/lib/srd/currency";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { notCarried } from "@/lib/dm/item-logic";
+import { isTableGearName } from "@/lib/db/homebrew";
+import { textKey } from "@/lib/language/text-logic";
 
 // Moving things between a character and the party.
 //
@@ -91,7 +95,7 @@ function resolve(
   if (direct) {
     return direct;
   }
-  const named = sheets.find((sheet) => sheet.name.toLowerCase() === id.toLowerCase());
+  const named = sheets.find((sheet) => textKey(sheet.name) === textKey(id));
   return named ?? null;
 }
 
@@ -100,17 +104,17 @@ export function handlePartyStash(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof stashSchema>;
   try {
     args = stashSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: party_stash needs a `do` of stow, take, deposit or withdraw." };
+    return { error: "Invalid arguments: party_stash needs a `do` of stow, take, deposit or withdraw.", retry: true };
   }
 
   const sheet = resolve(args.characterId, sheets, sheetsById);
   if (!sheet) {
-    return { error: "party_stash needs a characterId: someone has to be handing it over or taking it." };
+    return { error: "party_stash needs a characterId: someone has to be handing it over or taking it.", retry: true };
   }
   // Re-read: the sheet handed in may be a snapshot from the start of the turn.
   const fresh = getSheetById(sheet.id) ?? sheet;
@@ -118,19 +122,25 @@ export function handlePartyStash(
   if (args.do === "stow" || args.do === "take") {
     const name = (args.name ?? "").trim();
     if (!name) {
-      return { error: "Name the item." };
+      return { error: "Name the item.", retry: true };
     }
     const qty = args.qty ?? 1;
 
     if (args.do === "stow") {
       const taken = removeItemMath(fresh.equipment, name, qty);
       if (!taken) {
-        return { error: `${fresh.name} is not carrying "${name}".` };
+        return notCarried(fresh.name, fresh.equipment.map((item) => item.name), name, isTableGearName(campaign.id, name));
       }
+      const { srdName, tags, worth, spell } = taken.item;
       const added = addPartyItem(getParty(campaign.id).inventory, {
         name,
         qty: taken.removed,
-        weight: fresh.equipment.find((item) => item.name.toLowerCase() === name.toLowerCase())?.weight,
+        weight: taken.item.weight,
+        identified: taken.item.identified,
+        srdName,
+        tags,
+        worth,
+        spell,
       });
       if ("error" in added) {
         return added;
@@ -143,12 +153,17 @@ export function handlePartyStash(
     }
 
     const party = getParty(campaign.id);
-    const taken = removePartyItem(party.inventory, name, qty);
+    const taken = removePartyItem(party.inventory, name, isTableGearName(campaign.id, name), qty);
     if ("error" in taken) {
       return taken;
     }
+    const { srdName, tags, worth, spell } = taken.item;
     const granted = grantItemMath(fresh.equipment, taken.item.name, taken.removed, {
       identified: taken.item.identified !== false,
+      srdName,
+      tags,
+      worth,
+      spell,
     });
     patchSheet(fresh.id, { equipment: granted.equipment });
     const next = updateParty(campaign.id, (current) => ({ ...current, inventory: taken.inventory }));
@@ -159,10 +174,14 @@ export function handlePartyStash(
 
   // Money. Coins win over the whole-gold amount when both are sent, for the
   // same reason they do in modify_gold: the more specific one was meant.
-  const parsed = args.coins ? parseCoins(args.coins) : null;
+  const parsed = args.coins?.trim() ? parseCoins(args.coins) : null;
+  // Coins sent and unread are asked for again, never taken as the amount.
+  if (args.coins?.trim() && parsed === null) {
+    return { error: `${unreadCoins(args.coins)}. Nothing changed.`, retry: true };
+  }
   const copper = parsed ?? (args.amount ?? 0) * 100;
   if (copper <= 0) {
-    return { error: "Say how much: coins like '3 gp 4 sp', or an amount in gold." };
+    return { error: "Say how much: coins like '3 gp 4 sp', or an amount in gold.", retry: true };
   }
 
   if (args.do === "deposit") {
@@ -170,6 +189,7 @@ export function handlePartyStash(
     if (change.short > 0) {
       return {
         error: `${fresh.name} only has ${formatCopper(purseCopper({ gold: fresh.gold, copper: fresh.copper }))}.`,
+        refused: "rules",
       };
     }
     patchSheet(fresh.id, { gold: change.purse.gold, copper: change.purse.copper });
@@ -184,7 +204,7 @@ export function handlePartyStash(
 
   const party = getParty(campaign.id);
   if (party.copper < copper) {
-    return { error: `The common purse holds ${formatCopper(party.copper)}.` };
+    return { error: `The common purse holds ${formatCopper(party.copper)}.`, refused: "rules" };
   }
   const change = addCopper({ gold: fresh.gold, copper: fresh.copper }, copper);
   patchSheet(fresh.id, { gold: change.purse.gold, copper: change.purse.copper });

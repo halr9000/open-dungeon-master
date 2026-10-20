@@ -1,0 +1,113 @@
+{
+  "$schema": "../../../docs/addons/addon.schema.json",
+  "id": "hello-dungeon",
+  "name": "Hello Dungeon",
+  "version": "1.2.0",
+  "apiVersion": 1,
+  "description": "The example addon: imports plain-text stat blocks into a workshop, builds cavern maps with a picture and a small 3D model, and draws the board in an isometric view.",
+  "author": "Open Dungeon Master",
+  "homepage": "https://github.com/Lebbitheplow/open-dungeon-master/tree/main/examples/addons/hello-dungeon",
+  "license": "MIT",
+  "runtime": {
+    "kind": "node",
+    "entry": "server/main.mjs"
+  },
+  "permissions": ["ai.text"],
+  "setup": {
+    "tool": "odm_setup",
+    "diskMB": 1
+  },
+  "settings": [
+    {
+      "key": "wallStyle",
+      "label": "Wall colour",
+      "type": "select",
+      "default": "slate",
+      "choices": [
+        { "value": "slate", "label": "Slate" },
+        { "value": "sandstone", "label": "Sandstone" }
+      ],
+      "help": "The colour the cavern generator paints walls in."
+    },
+    {
+      "key": "floorTexture",
+      "label": "Floor texture",
+      "type": "select",
+      "default": "flagstone",
+      "choices": [
+        { "value": "flagstone", "label": "Flagstones" },
+        { "value": "none", "label": "None" }
+      ],
+      "affectsSetup": true,
+      "help": "Painted by its setup into its asset library, for the isometric view. Changing it runs the setup again."
+    }
+  ],
+  "contributes": {
+    "workshopImporters": [
+      {
+        "id": "statblocks",
+        "title": "Plain-text stat blocks",
+        "description": "A .txt or .md file of '# Monster:' and '# Lore:' sections becomes a workshop of monsters and lore.",
+        "tool": "import_statblocks",
+        "accepts": [".txt", ".md", "text/plain", "text/markdown"],
+        "maxInputMB": 4,
+        "options": [
+          {
+            "key": "blurb",
+            "label": "Ask the storyteller for a blurb",
+            "type": "boolean",
+            "default": false,
+            "help": "Uses this server's model (the ai.text permission) to write the workshop's one-line description."
+          }
+        ]
+      }
+    ],
+    "mapGenerators": [
+      {
+        "id": "cavern",
+        "title": "Example cavern",
+        "description": "A cave grown from the seed, with a painted picture and a small 3D model for the isometric view.",
+        "tool": "generate_cavern",
+        "options": [
+          {
+            "key": "openness",
+            "label": "Openness",
+            "type": "number",
+            "default": 55,
+            "min": 35,
+            "max": 75,
+            "help": "How much of the ground is open floor, in percent."
+          },
+          {
+            "key": "pools",
+            "label": "Pools of water",
+            "type": "boolean",
+            "default": true
+          }
+        ]
+      }
+    ],
+    "boardViews": [
+      {
+        "id": "iso",
+        "title": "Isometric",
+        "description": "The board drawn at an angle, walls standing up. Tap a square or a figure as you would on the flat board.",
+        "entry": "ui/board.html",
+        "options": [
+          { "key": "outlines", "label": "Square outlines", "type": "boolean", "default": true },
+          {
+            "key": "walls",
+            "label": "Wall height",
+            "type": "select",
+            "default": "normal",
+            "choices": [
+              { "value": "low", "label": "Low, to see over them" },
+              { "value": "normal", "label": "Normal" },
+              { "value": "tall", "label": "Tall" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

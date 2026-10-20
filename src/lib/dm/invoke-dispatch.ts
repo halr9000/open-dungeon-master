@@ -70,6 +70,7 @@ import { EXPLORE_TOOL_NAMES, handleExploreCall } from "@/lib/dm/explore-tools";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 const MUTATIONS = new Set<string>(MUTATION_TOOL_NAMES);
 const ENCOUNTERS = new Set<string>(ENCOUNTER_TOOL_NAMES);
@@ -86,7 +87,7 @@ export async function dispatchAdjudication(
   name: string,
   sentArguments: string,
   context: DispatchContext,
-): Promise<Record<string, unknown>> {
+): Promise<ToolResult> {
   const { campaign, turn, sheets, sheetsById } = context;
   // "false" sent as a string is false (src/lib/dm/arg-coerce.ts).
   const coerced = strictBooleanArgs(sentArguments);
@@ -131,23 +132,23 @@ export async function dispatchAdjudication(
       );
     case "cast_buff": {
       const unasked = characterCallUnasked(campaign.id, turn, rawArguments, "characterId");
-      return unasked ? { error: unasked } : handleCastBuff(campaign, turn, rawArguments, sheets, sheetsById);
+      return unasked ? unasked : handleCastBuff(campaign, turn, rawArguments, sheets, sheetsById);
     }
     case "take_rest":
       return handleTakeRest(campaign, turn.id, rawArguments, sheets, sheetsById);
     case "group_check":
       return handleGroupCheck(campaign, turn, rawArguments, sheets, sheetsById);
     case "check_notice":
-      return handleCheckNotice(campaign, rawArguments, sheets, sheetsById);
+      return handleCheckNotice(campaign, turn, rawArguments, sheets, sheetsById);
     case "split_damage":
       return handleSplitDamage(campaign, turn, rawArguments, sheets, sheetsById);
     case "apply_hazard":
       return handleApplyHazard(campaign, turn, rawArguments, sheets, sheetsById);
     case "summon_pet":
-      return handleSummonPet(campaign, turn, rawArguments, sheets, sheetsById);
+      return handleSummonPet(campaign, rawArguments, sheets, sheetsById);
     case "pet_attack": {
       const unasked = characterCallUnasked(campaign.id, turn, rawArguments, "characterId");
-      return unasked ? { error: unasked } : handlePetAttack(campaign, turn, rawArguments, sheets, sheetsById);
+      return unasked ? unasked : handlePetAttack(campaign, turn, rawArguments, sheets, sheetsById);
     }
     case "damage_pet":
       return handleDamagePet(campaign, rawArguments, sheets, sheetsById);
@@ -270,6 +271,6 @@ export async function dispatchAdjudication(
     case "read_card":
       return handleReadCard(campaign, rawArguments);
     default:
-      return { error: `The engine has no action called "${name}".` };
+      return { error: `The engine has no action called "${name}".`, retry: true };
   }
 }

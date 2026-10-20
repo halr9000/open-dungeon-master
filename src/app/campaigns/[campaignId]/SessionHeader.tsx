@@ -19,14 +19,12 @@ import type { NarrationAudio } from "@/app/campaigns/[campaignId]/useNarrationAu
 import type { AmbienceAudio } from "@/app/campaigns/[campaignId]/useAmbienceAudio";
 import { SoundControl, type SoundSteering } from "@/app/campaigns/[campaignId]/SoundPanel";
 import { LayoutMenu } from "@/app/campaigns/[campaignId]/TableLayoutParts";
+import { HeaderPhoneMenu } from "@/app/campaigns/[campaignId]/HeaderPhoneMenu";
 import type { LayoutSeat } from "@/app/campaigns/[campaignId]/table-layout-store";
 
-// One audio group in the header: narration or ambience. On sm+ it is the
-// familiar icon button with an inline slider. Below sm the header has no
-// spare width at all (the 320px budget in SessionTabs.tsx is already spent),
-// so the same icon becomes a menu holding the mute toggle and the slider:
-// the phone gets a reachable volume control without the header growing a
-// pixel, in the menu surface the rest of the app already uses.
+// The narration group in the header from sm up: the familiar icon button
+// with an inline slider. Below sm the header has no spare width, and the same
+// mute toggle and slider live in the phone's table menu (HeaderPhoneMenu.tsx).
 function HeaderAudioControl({
   onLabel,
   offLabel,
@@ -53,66 +51,29 @@ function HeaderAudioControl({
 }) {
   const quiet = muted || !unlocked;
   const toggleLabel = !unlocked ? enableLabel : muted ? offLabel : onLabel;
-  const buttonClass = headerButtonClass(!quiet);
-  const icon = <HeaderGlyph glyph={glyph} off={quiet} />;
   const percent = (value: number) => `${Math.round(value * 100)}%`;
   return (
-    <>
-      <div className="hidden items-center sm:flex">
-        <Tooltip content={toggleLabel} side="bottom">
-          <button type="button" onClick={onToggle} aria-label={toggleLabel} className={buttonClass}>
-            {icon}
-          </button>
+    <div className="hidden items-center sm:flex">
+      <Tooltip content={toggleLabel} side="bottom">
+        <button type="button" onClick={onToggle} aria-label={toggleLabel} className={headerButtonClass(!quiet)}>
+          <HeaderGlyph glyph={glyph} off={quiet} />
+        </button>
+      </Tooltip>
+      {unlocked && !muted ? (
+        <Tooltip content={volumeLabel} side="bottom">
+          <Slider
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            onChange={onVolume}
+            label={volumeLabel}
+            bubble={percent}
+            className="session-volume"
+          />
         </Tooltip>
-        {unlocked && !muted ? (
-          <Tooltip content={volumeLabel} side="bottom">
-            <Slider
-              min={0}
-              max={1}
-              step={0.05}
-              value={volume}
-              onChange={onVolume}
-              label={volumeLabel}
-              bubble={percent}
-              className="session-volume"
-            />
-          </Tooltip>
-        ) : null}
-      </div>
-      <div className="sm:hidden">
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button type="button" aria-label={volumeLabel} className={buttonClass}>
-              {icon}
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content align="end" sideOffset={4} className="panel z-50 min-w-44 rounded-lg p-1">
-              <DropdownMenu.Item className="session-menu-row" onSelect={onToggle}>
-                {icon}
-                {toggleLabel}
-              </DropdownMenu.Item>
-              {unlocked && !muted ? (
-                // A plain row rather than an Item so dragging the slider does
-                // not close the menu.
-                <div className="px-2 pb-2 pt-3">
-                  <Slider
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={volume}
-                    onChange={onVolume}
-                    label={volumeLabel}
-                    bubble={percent}
-                    className="w-full"
-                  />
-                </div>
-              ) : null}
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      </div>
-    </>
+      ) : null}
+    </div>
   );
 }
 
@@ -289,7 +250,11 @@ export const SessionHeader = memo(function SessionHeader({
             glyph="ui-speech"
           />
         ) : null}
-        {ambienceEnabled ? <SoundControl ambience={ambience} steering={sound} /> : null}
+        {ambienceEnabled ? (
+          <div className="hidden sm:flex">
+            <SoundControl ambience={ambience} steering={sound} />
+          </div>
+        ) : null}
         {stage ? (
           <Tooltip content={stage.on ? "Show the story here, with the board in its tab" : "Show the board here, with the story beside it"} side="bottom">
             <button
@@ -305,18 +270,30 @@ export const SessionHeader = memo(function SessionHeader({
           </Tooltip>
         ) : null}
         {layoutSeat ? <LayoutMenu seat={layoutSeat} /> : null}
-        <RulebookButton />
-        <Tooltip content="How everything works, and the guided tours" side="bottom">
-          <button
-            type="button"
-            onClick={onHelp}
-            aria-label="Help"
-            data-tour="header-help"
-            className={headerButtonClass(false)}
-          >
-            <HeaderGlyph glyph="tab-reference" />
-          </button>
-        </Tooltip>
+        <div className="hidden sm:flex">
+          <RulebookButton />
+        </div>
+        <div className="hidden sm:flex">
+          <Tooltip content="How everything works, and the guided tours" side="bottom">
+            <button
+              type="button"
+              onClick={onHelp}
+              aria-label="Help"
+              data-tour="header-help"
+              className={headerButtonClass(false)}
+            >
+              <HeaderGlyph glyph="tab-reference" />
+            </button>
+          </Tooltip>
+        </div>
+        <HeaderPhoneMenu
+          narrates={narrates}
+          narration={narration}
+          ambienceEnabled={ambienceEnabled}
+          ambience={ambience}
+          sound={sound}
+          onHelp={onHelp}
+        />
         </div>
         <Tooltip content="All campaigns" side="bottom">
           <Link

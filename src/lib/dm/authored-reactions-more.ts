@@ -31,6 +31,7 @@ import { withinFeet } from "@/lib/dm/authored-saves";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { enemyAttacker, rollCard } from "@/lib/dm/roll-card";
 import { rollAgainst } from "@/lib/roll-labels";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // The mark a character's opportunity attack that hit leaves until their next
 // turn: what Relentless Avenger's move answers.
@@ -72,7 +73,7 @@ export function freeAuthoredReaction(ctx: Ctx): Record<string, unknown> | null {
   return "error" in outcome ? outcome : { ok: true, reaction: found.reaction.name, spent: "Part of the opportunity attack's reaction: nothing more is spent.", ...outcome };
 }
 
-export function resolveMoreReaction(ctx: Ctx, reaction: AuthoredReaction): Record<string, unknown> | { error: string } {
+export function resolveMoreReaction(ctx: Ctx, reaction: AuthoredReaction): ToolResult {
   const does = reaction.does;
   if (does.kind === "move") {
     return reactionMove(ctx, reaction.name, does.trigger);
@@ -80,33 +81,33 @@ export function resolveMoreReaction(ctx: Ctx, reaction: AuthoredReaction): Recor
   if (does.kind === "redirect_miss") {
     return redirectMiss(ctx, reaction.name, does.rangeFt);
   }
-  return { error: `${reaction.name} is not resolved here. Nothing was spent.` };
+  return { error: `${reaction.name} is not resolved here. Nothing was spent.`, retry: true };
 }
 
 // ---- the move ----
 
 // `opened`: the move another call already allowed (Maneuvering Attack's hit,
 // src/lib/dm/maneuver-reactions.ts), with nothing more to check here.
-export function reactionMove(ctx: Ctx, name: string, trigger: "enemy_adjacent" | "oa_hit" | "opened"): Record<string, unknown> | { error: string } {
+export function reactionMove(ctx: Ctx, name: string, trigger: "enemy_adjacent" | "oa_hit" | "opened"): ToolResult {
   const { campaign, encounter } = ctx;
   const map = encounter ? getBattleMapForEncounter(encounter.id) : null;
   const token = map ? getTokenByRef(map.id, ctx.sheet.id) : null;
   if (!encounter || !map || !token) {
-    return { error: `${name} moves ${ctx.sheet.name} on the battle map, and they have no token on one. Nothing was spent.` };
+    return { error: `${name} moves ${ctx.sheet.name} on the battle map, and they have no token on one. Nothing was spent.`, refused: "rules" };
   }
   const x = ctx.args.x;
   const y = ctx.args.y;
   if (x === undefined || y === undefined || x < 0 || y < 0 || x >= map.width || y >= map.height) {
-    return { error: `${name} needs the square to move to: pass x and y on the board. Nothing was spent.` };
+    return { error: `${name} needs the square to move to: pass x and y on the board. Nothing was spent.`, retry: true };
   }
   if (trigger === "oa_hit") {
     if (!ctx.sheet.conditions.some((entry) => lower(entry) === OA_HIT)) {
-      return { error: `${name} moves ${ctx.sheet.name} right after their opportunity attack hits, and none has hit since their turn. Nothing was spent.` };
+      return { error: `${name} moves ${ctx.sheet.name} right after their opportunity attack hits, and none has hit since their turn. Nothing was spent.`, refused: "rules" };
     }
   } else if (trigger === "enemy_adjacent") {
     const near = listEnemies(encounter.id).some((enemy) => enemy.status === "alive" && withinFeet(encounter.id, ctx.sheet.id, enemy.id, 5));
     if (!near) {
-      return { error: `${name} answers an enemy within 5 feet of ${ctx.sheet.name}, and none stands there. Nothing was spent.` };
+      return { error: `${name} answers an enemy within 5 feet of ${ctx.sheet.name}, and none stands there. Nothing was spent.`, refused: "rules" };
     }
   }
   const { speed } = pcMoveBudget(campaign.id, encounter, map, ctx.sheet, token);
@@ -124,7 +125,7 @@ export function reactionMove(ctx: Ctx, name: string, trigger: "enemy_adjacent" |
   });
   const reach = reachableTiles(map.terrain, map.width, map.height, occupiedTiles(map, tokens, token, footprintOf), token, half, 1, token.movement === "fly", traits);
   if (!reach.has(tileIndex(map.width, x, y))) {
-    return { error: `${ctx.sheet.name} cannot reach (${x},${y}) with half their speed (${half * 5} feet). Nothing was spent.` };
+    return { error: `${ctx.sheet.name} cannot reach (${x},${y}) with half their speed (${half * 5} feet). Nothing was spent.`, retry: true };
   }
   // A reaction's move draws no opportunity attack, and it is not the turn's
   // own movement, so the round's count stands.
@@ -144,7 +145,7 @@ export function reactionMove(ctx: Ctx, name: string, trigger: "enemy_adjacent" |
 
 // ---- Tipsy Sway ----
 
-function redirectMiss(ctx: Ctx, name: string, rangeFt: number): Record<string, unknown> | { error: string } {
+function redirectMiss(ctx: Ctx, name: string, rangeFt: number): ToolResult {
   const { campaign, encounter } = ctx;
   const record = freshLastHit(campaign.id, ctx.sheet.id);
   const label = lower(name);
@@ -152,19 +153,19 @@ function redirectMiss(ctx: Ctx, name: string, rangeFt: number): Record<string, u
     ? record.swings.findIndex((swing) => !swing.hit && !(swing.ranged ?? false))
     : -1;
   if (!record || missed < 0 || record.attacker.kind !== "enemy" || !record.attacker.id) {
-    return { error: noHit(ctx.sheet.name, name, "a melee attack that missed them") };
+    return noHit(ctx.sheet.name, name, "a melee attack that missed them");
   }
   const target = encounter && ctx.args.targetEnemyId ? resolveEnemyRef(encounter.id, ctx.args.targetEnemyId) : null;
   if (!encounter || !target || target.status !== "alive" || target.id === record.attacker.id) {
-    return { error: `${name} turns the miss onto another creature within ${rangeFt} feet of ${ctx.sheet.name}, not the attacker: pass its targetEnemyId. Nothing was spent.` };
+    return { error: `${name} turns the miss onto another creature within ${rangeFt} feet of ${ctx.sheet.name}, not the attacker: pass its targetEnemyId. Nothing was spent.`, retry: true };
   }
   if (!withinFeet(encounter.id, ctx.sheet.id, target.id, rangeFt)) {
-    return { error: `${target.displayName} is not within ${rangeFt} feet of ${ctx.sheet.name}. Nothing was spent.` };
+    return { error: `${target.displayName} is not within ${rangeFt} feet of ${ctx.sheet.name}. Nothing was spent.`, refused: "rules" };
   }
   const attacker = getEnemy(record.attacker.id);
   const attack = (attacker?.stats.attacks ?? []).find((entry) => lower(entry.name) === lower(record.attack)) ?? attacker?.stats.attacks?.[0];
   if (!attack?.damage) {
-    return { error: `The server has no damage on record for ${record.attacker.name}'s ${record.attack}. Nothing was spent.` };
+    return { error: `The server has no damage on record for ${record.attacker.name}'s ${record.attack}. Nothing was spent.`, refused: "rules" };
   }
   // The attacker's own blow, turned (Stand Against the Tide reads the same).
   const rolled = Math.max(0, rollCard(campaign, ctx.turn, null, "damage", rollAgainst(`${attack.name} (${name})`, target.displayName), attack.damage, attacker ? enemyAttacker(attacker) : null).total);

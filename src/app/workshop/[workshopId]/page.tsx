@@ -32,6 +32,11 @@ const WorkshopHelpDialog = lazy(() =>
   import("@/components/WorkshopHelpDialog").then((module) => ({ default: module.WorkshopHelpDialog })),
 );
 import type { WorkshopSummary } from "@/app/workshop/types";
+import { workshopHref, worldEntryPlace } from "@/lib/workshop/links";
+import { useWorkshopVersions } from "@/app/workshop/[workshopId]/useWorkshopVersions";
+import { mayLeaveDrafts } from "@/app/workshop/unsaved";
+import { CreateChooser } from "@/app/workshop/[workshopId]/CreateChooser";
+import type { CreateStep } from "@/lib/workshop/create-choices";
 
 // The workshop shell: a hub of system cards, or one system open.
 //
@@ -48,8 +53,15 @@ import type { WorkshopSummary } from "@/app/workshop/types";
 function WorkshopPageInner({ workshopId }: { workshopId: string }) {
   const router = useRouter();
   const pathname = usePathname();
-  const requested = useSearchParams().get("system");
+  const params = useSearchParams();
+  const requested = params.get("system");
   const system: SystemId | null = isSystemId(requested) ? requested : null;
+  // The record the tool opens on arrival, and the World entry the author
+  // came from (src/lib/workshop/links.ts).
+  const openId = params.get("open");
+  const from = params.get("from");
+  // Each kind of record's version, moved by changes here or in another tab.
+  const versions = useWorkshopVersions(workshopId);
   const [workshop, setWorkshop] = useState<WorkshopSummary | null>(null);
   const [bestiary, setBestiary] = useState<number | null>(null);
   const [homebrew, setHomebrew] = useState<number | null>(null);
@@ -167,6 +179,12 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
         }),
     [workshopId],
   );
+  // The world's counts on the hub and the rail, kept current as records
+  // change here or in another tab.
+  const changes = versions.npc + versions.lore + versions.location + versions.faction + versions.world;
+  useEffect(() => {
+    if (changes) void loadWorld();
+  }, [changes, loadWorld]);
 
   // Refetched whenever the view changes, so a person added inside Cast is
   // counted on the card the moment the DM steps back to the hub.
@@ -198,8 +216,25 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
     setTour(null);
   }
 
+  // Every move to another tool or the hub asks first when an editor has
+  // changes not saved (src/app/workshop/unsaved.ts).
+  async function go(href: string): Promise<boolean> {
+    if (!(await mayLeaveDrafts())) return false;
+    router.push(href);
+    return true;
+  }
+
   function openSystem(next: SystemId) {
-    router.push(`${pathname}?system=${next}`);
+    void go(workshopHref(pathname, { system: next }));
+  }
+
+  // One record in its own tool, with the way back to its World entry.
+  function openRecord(next: SystemId, id: string, fromRef: string) {
+    void go(workshopHref(pathname, { system: next, open: id, from: fromRef }));
+  }
+
+  function openWorldEntry(ref: string) {
+    void go(workshopHref(pathname, worldEntryPlace(ref)));
   }
 
   // "Create an entry" from the palette: go to the system, then ask its panel
@@ -219,6 +254,23 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
       openSystem(next);
     }
     setCreating((previous) => ({ prepare, ask: (previous?.ask ?? 0) + 1 }));
+  }
+
+  // A way in from the Create chooser (src/lib/workshop/create-choices.ts):
+  // the page or tool that makes the thing, with that tool's own editor
+  // asked to open once the author has left any unsaved one behind.
+  const [chooserOpen, setChooserOpen] = useState(false);
+  // The hub task the chooser opens on, or null for everything.
+  const [chooserAt, setChooserAt] = useState<string | null>(null);
+  async function createFrom(step: CreateStep) {
+    if (step.href) {
+      await go(step.href);
+      return;
+    }
+    if (!step.system) return;
+    const there = system === step.system && (!step.view || params.get("view") === step.view);
+    if (!there && !(await go(workshopHref(pathname, { system: step.system, view: step.view })))) return;
+    if (step.prepare) setCreating((previous) => ({ prepare: step.prepare!, ask: (previous?.ask ?? 0) + 1 }));
   }
 
   // What Help can replay from here: the hub's tour and, inside a tool, that
@@ -267,11 +319,22 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
         <WorkshopHeader
           workshop={workshop}
           onHelp={() => setHelpOpen(true)}
+          onCreate={() => setChooserOpen(true)}
           onRenamed={(title) =>
             setWorkshop((current) => (current ? { ...current, title } : current))
           }
         />
       )}
+      <CreateChooser
+        key={chooserAt ?? "all"}
+        open={chooserOpen}
+        onOpenChange={(next) => {
+          setChooserOpen(next);
+          if (!next) setChooserAt(null);
+        }}
+        onGo={(step) => void createFrom(step)}
+        startAt={chooserAt}
+      />
       <Suspense fallback={null}>
         {helpMounted ? (
           <WorkshopHelpDialog
@@ -315,7 +378,7 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
                 phrase: (id) => systemCount(id, workshop, bestiary, homebrew, pregens, plugin, world).phrase,
                 onJump: openSystem,
                 onCreate: createIn,
-                onHub: () => router.push(pathname),
+                onHub: () => void go(pathname),
                 onHelp: () => setHelpOpen(true),
               })}
             />
@@ -332,7 +395,13 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
           plugin={plugin}
           world={world}
           onChange={openSystem}
-          onBack={() => router.push(pathname)}
+          openId={openId}
+          from={from}
+          onOpenRecord={openRecord}
+          onWorldEntry={openWorldEntry}
+          onBack={() => void go(pathname)}
+          onCreate={() => setChooserOpen(true)}
+          versions={versions}
           onHelp={() => setHelpOpen(true)}
           onRulesApplied={() => void load()}
           onHomebrewChanged={() => void loadHomebrew()}
@@ -348,6 +417,10 @@ function WorkshopPageInner({ workshopId }: { workshopId: string }) {
           plugin={plugin}
           world={world}
           onOpen={openSystem}
+          onTask={(choiceId) => {
+            setChooserAt(choiceId);
+            setChooserOpen(true);
+          }}
         />
       )}
     </main>

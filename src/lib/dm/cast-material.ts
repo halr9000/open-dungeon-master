@@ -6,8 +6,9 @@
 import type { CharacterSheet, EquipmentItem, FullPatchSheetInput } from "@/lib/schemas/sheet";
 import { fromCopper, purseCopper } from "@/lib/srd/currency";
 import type { MaterialPlan } from "@/lib/dm/cast-materials";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
-type CastResult = Record<string, unknown>;
+type CastResult = ToolResult;
 
 // Equipment after the casting takes what it uses up: so many from each
 // row, the row gone at 0.
@@ -48,7 +49,7 @@ export function materialPatch(
     if (buy.consume) {
       lines.push(`${buy.qty > 1 ? `${buy.qty} × ` : ""}${buy.name} bought for the spell and consumed by it`);
     } else {
-      equipment = [...equipment, { name: buy.name, qty: buy.qty } as EquipmentItem];
+      equipment = [...equipment, { name: buy.name, qty: buy.qty, worth: buy.gp } as EquipmentItem];
       lines.push(`${buy.qty > 1 ? `${buy.qty} × ` : ""}${buy.name} bought for the spell and kept for the next casting`);
     }
   }

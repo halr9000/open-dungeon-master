@@ -33,6 +33,7 @@
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { holdsFeat } from "@/lib/srd/feat-effects";
 import { classLevelFor } from "@/lib/srd/multiclass";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export type ManeuverUse =
   | "swing"
@@ -79,17 +80,17 @@ export function maneuverUse(name: string): ManeuverUse {
 
 // The words a pc_attack call gets for a maneuver that is not part of a
 // swing, or null when it is.
-export function offSwingRefusal(name: string): string | null {
+export function offSwingRefusal(name: string): ToolError | null {
   const shown = name.trim();
   switch (maneuverUse(name)) {
     case "reaction":
-      return `${shown} is a reaction, not part of a swing: use_reaction with feature "${shown}" when its trigger comes (Parry: a melee hit on them; Riposte: a melee miss on them; Brace: a creature moving into their reach). Nothing was spent.`;
+      return { error: `${shown} is a reaction, not part of a swing: use_reaction with feature "${shown}" when its trigger comes (Parry: a melee hit on them; Riposte: a melee miss on them; Brace: a creature moving into their reach). Nothing was spent.`, retry: true };
     case "command":
-      return `Commander's Strike forgoes one of the fighter's attacks and uses their bonus action: use_resource "Superiority Dice" with variant "commander's strike" and the ally's targetCharacterId; the ally then attacks with use_reaction. Nothing was spent.`;
+      return { error: `Commander's Strike forgoes one of the fighter's attacks and uses their bonus action: use_resource "Superiority Dice" with variant "commander's strike" and the ally's targetCharacterId; the ally then attacks with use_reaction. Nothing was spent.`, retry: true };
     case "rally":
-      return `Rally is a bonus action, not part of a swing: use_resource "Superiority Dice" with variant "rally" and the ally's targetCharacterId. Nothing was spent.`;
+      return { error: `Rally is a bonus action, not part of a swing: use_resource "Superiority Dice" with variant "rally" and the ally's targetCharacterId. Nothing was spent.`, retry: true };
     case "check":
-      return `${shown} rides a check, initiative or a move, not an attack roll: use_resource "Superiority Dice" with variant "${shown}" and add the die where its text says. Nothing was spent.`;
+      return { error: `${shown} rides a check, initiative or a move, not an attack roll: use_resource "Superiority Dice" with variant "${shown}" and add the die where its text says. Nothing was spent.`, retry: true };
     default:
       return null;
   }

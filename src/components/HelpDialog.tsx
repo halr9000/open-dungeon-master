@@ -35,9 +35,12 @@ export function HelpDialog({
   open,
   onOpenChange,
   tours,
+  section,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  // A section to open at, by its title, for a control that has one.
+  section?: string;
   // The table offers its guided tours from here; each runs once on its own
   // and can be replayed at will. Other pages pass nothing.
   tours?: { label: string; detail: string; onStart: () => void }[];
@@ -50,7 +53,7 @@ export function HelpDialog({
       icon={<GameIcon icon={{ kind: "glyph", key: "tab-story" }} size="size-7" />}
       width="w-[min(94vw,44rem)]"
     >
-      <HelpContents withTours={Boolean(tours?.length)} />
+      <HelpContents withTours={Boolean(tours?.length)} initialSection={section} />
       {tours && tours.length ? (
         <Section icon={Footprints} title="Guided tours">
           <p>
@@ -77,10 +80,17 @@ export function HelpDialog({
       ) : null}
       <Section icon={Compass} title="Getting started">
         <p>
-          Create a campaign from the home page, or join a friend&apos;s with their invite code or a{" "}
-          <span className="text-stone-300">/join</span> link. Build a character in the creation
-          wizard, or reuse one saved to your library under Characters in the account menu. When
-          everyone in the lobby is ready, the owner starts the adventure.
+          <span className="text-stone-300">Quick start</span> is a prepared one-evening adventure with
+          ready-made heroes. <span className="text-stone-300">New campaign</span> builds a table your
+          way, and <span className="text-stone-300">Solo adventure</span> builds one for you alone. To
+          play at a friend&apos;s table, use <span className="text-stone-300">Join with a code</span> or
+          their <span className="text-stone-300">/join</span> link.
+        </p>
+        <p>
+          Every table needs a hero, and there are three ways to one: take a ready-made hero and play
+          in a minute, bring a character from your library (adapted to the table&apos;s level), or
+          build your own in the creation wizard. When everyone in the lobby is ready, the owner
+          starts the adventure.
         </p>
         <p>
           If the server has campaign plugins installed, the create form also offers a{" "}
@@ -91,11 +101,13 @@ export function HelpDialog({
 
       <Section icon={DoorOpen} title="The lobby">
         <p>
-          Before the game begins, each player readies up and whoever steers the story (the party
-          lead, or the DM when a person runs the table) can adjust the game settings: genre, an
-          optional secret story setup for the DM, dice policy, narration voice, and maps. Share the
-          room code or copy the invite link to bring in more players; the owner or the DM opens the
-          table once everyone is ready.
+          Before the game begins, each player picks a hero and readies up; the line above the
+          buttons always says what comes next. Whoever steers the story (the party lead, or the DM
+          when a person runs the table) can change the table settings, in the same named groups the
+          campaign creator used: world and story, character creation, narration, atmosphere, safety,
+          and the rest. Each group says what is set inside before you open it, and every change
+          applies to everyone at once. Share the room code or copy the invite link to bring in more
+          players; the owner or the DM opens the table once everyone is ready.
         </p>
       </Section>
 
@@ -272,10 +284,10 @@ export function HelpDialog({
             actually sent last turn, and anything the token budget dropped.
           </li>
           <li>
-            <span className="text-stone-300">Setup:</span> campaign settings, invites and game
-            toggles. Whoever steers the story can bring in more prep from a workshop here at any
-            point, and the owner or the DM can end the campaign, which saves each library
-            character&apos;s progress back to the player&apos;s library.
+            <span className="text-stone-300">Settings:</span> the campaign&apos;s details, the table
+            settings and the Story AI it plays with. Whoever steers the story can bring in more prep
+            from a workshop here at any point, and the owner or the DM can end the campaign, which
+            saves each library character&apos;s progress back to the player&apos;s library.
           </li>
         </ul>
         <p>
@@ -286,8 +298,9 @@ export function HelpDialog({
           beside another, float it over the table, maximize it (Escape puts it back) or set it aside
           and show it again later with whatever it held. <span className="text-stone-300">Lock
           layout</span> keeps it as it is and <span className="text-stone-300">Reset layout</span>{" "}
-          brings back the table&apos;s own. Only this browser remembers it; a phone keeps its bottom
-          bar.
+          brings back the table&apos;s own. Only this browser remembers it. On a phone the bottom bar
+          keeps the table and the tabs you use most, and <span className="text-stone-300">More</span>{" "}
+          lists every other tab.
         </p>
       </Section>
 
@@ -299,8 +312,7 @@ export function HelpDialog({
           <span className="text-stone-300">Roll in secret</span> to roll behind the screen: a DM&apos;s
           secret roll is seen by the DM seats alone, and a player&apos;s by that player and the DM;
           the rest of the table is not told a die was rolled. The same menu toggles the 3D dice
-          animation. If you opt into real dice in the game
-          settings, the DM waits for you to enter your physical roll, with a digital fallback
+          animation. If the table allows real dice and you opt in, the DM waits for you to enter your physical roll, with a digital fallback
           button if you would rather let the server roll.
         </p>
         <p>
@@ -317,9 +329,15 @@ export function HelpDialog({
 
       <Section icon={Volume2} title="Voice and narration">
         <p>
-          When narration is enabled, the DM reads its replies aloud. Use the speaker button in the
-          header to unmute (browsers require one click before audio can play) and the slider to set
-          the volume. Hover a DM message to replay its narration. Push-to-talk, when configured,
+          The story itself is written: the storyteller (the AI or the person in the DM&apos;s seat) writes each reply, and
+          nothing about sound changes that. Four different things then use sound, and each has its own switch.{" "}
+          <span className="text-stone-300">Narration</span> reads the DM&apos;s written replies aloud, and the table decides
+          whether it is on.{" "}
+          <span className="text-stone-300">Your volume</span> is yours alone: the speaker button in
+          the header unmutes (browsers require one click before audio can play) and its slider sets
+          how loud it plays on this device. <span className="text-stone-300">Live voice chat</span> is
+          people talking to each other (below), and <span className="text-stone-300">dictation</span>{" "}
+          turns your speech into typed words. Hover a DM message to replay its narration. Push-to-talk, when configured,
           lets you hold the microphone button to dictate your message.
         </p>
         <p>
@@ -347,14 +365,14 @@ export function HelpDialog({
           A table can also opt into rules that make the call behave like the world: proximity
           hearing (you only hear players whose characters are near yours on the map, while the DM
           hears everyone), whisper and shout ranges, walls muffling speech, and downed characters
-          going deaf. All of that lives under voice settings in Setup, and all of it is off by
-          default, so a plain group call is what you get until the table asks for more.
+          going deaf. All of that lives under Live voice chat in the Settings tab, and all of it is
+          off by default, so a plain group call is what you get until the table asks for more.
         </p>
       </Section>
 
       <Section icon={Music} title="Ambience and music">
         <p>
-          With ambience enabled in the game settings, the table shares a soundtrack: a room for
+          With ambience on in the table settings (under Atmosphere), the table shares a soundtrack: a room for
           where the party is (a tavern, a forest, a crypt), music for what the scene is doing, and
           one-shot sounds for dramatic moments. The DM changes it as the story moves, and combat
           brings its own music. A cue may have several takes; the player moves between them so a

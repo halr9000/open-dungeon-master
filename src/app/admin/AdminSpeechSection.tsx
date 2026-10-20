@@ -17,6 +17,7 @@ import {
   SelectField,
   type EnvDefaults,
   type MaskedConfig,
+  inheritedHint,
 } from "@/app/admin/AdminSettingsFields";
 
 // Narration and speech-to-text. Named "Speech" so it is not confused with the
@@ -160,7 +161,7 @@ export function AdminSpeechSection({
           ]}
         />
         {provider === "kokoro" ? (
-          <Field label="Kokoro server URL" hint={`Blank uses ${env.kokoroUrl}.`}>
+          <Field label="Kokoro server URL" hint={inheritedHint(speech.kokoroUrl, env.kokoroUrl)}>
             <input
               className={ui.input}
               value={speech.kokoroUrl}
@@ -175,7 +176,7 @@ export function AdminSpeechSection({
               label="Server base URL"
               hint={
                 env.ttsBaseUrl
-                  ? `Env: ${env.ttsBaseUrl}`
+                  ? inheritedHint(speech.ttsBaseUrl, env.ttsBaseUrl)
                   : "Any server with OpenAI's /v1/audio/speech. Blank = api.openai.com."
               }
             >
@@ -282,7 +283,7 @@ export function AdminSpeechSection({
 
       <h3 className="mb-1 mt-6 text-sm font-medium text-stone-200">Dictation (speech to text)</h3>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Whisper STT URL" hint={`Env: ${env.sttUrl}. Type off when this server has no Whisper service.`}>
+        <Field label="Whisper STT URL" hint={inheritedHint(speech.sttUrl, env.sttUrl, "Type off when this server has no Whisper service.")}>
           <input
             className={ui.input}
             value={speech.sttUrl}

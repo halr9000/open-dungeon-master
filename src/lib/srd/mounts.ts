@@ -10,7 +10,10 @@
 // speed, a capacity and a crew requirement. Nothing simulates a ship's
 // helm.
 //
-// Pure by design: no imports at all, so scripts/test-mounts.mjs can load it.
+// Pure by design: no imports beyond types, so scripts/test-mounts.mjs can load it.
+
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type MountProfile = {
   slug: string;
@@ -115,8 +118,8 @@ export function mountProfile(ref: string): MountProfile | null {
   const needle = ref.trim().toLowerCase();
   return (
     MOUNTS.find((mount) => mount.slug === needle) ??
-    MOUNTS.find((mount) => mount.name.toLowerCase() === needle) ??
-    MOUNTS.find((mount) => mount.name.toLowerCase().includes(needle)) ??
+    MOUNTS.find((mount) => textKey(mount.name) === textKey(ref)) ??
+    MOUNTS.find((mount) => textKey(mount.name).includes(textKey(ref))) ??
     null
   );
 }
@@ -136,7 +139,7 @@ export type MountState = {
   size: MountSize;
 };
 
-export type MountCheck = { ok: true; state: MountState } | { error: string };
+export type MountCheck = { ok: true; state: MountState } | ToolError;
 
 // Mounting. The rules it enforces are the ones the PHB actually states, and
 // the errors say which rule refused, because "you cannot do that" teaches a
@@ -154,6 +157,7 @@ export function checkMount(input: {
     if (!canCarry(input.custom.size, riderSize)) {
       return {
         error: `A mount has to be at least one size larger than its rider; a ${input.custom.size} mount cannot carry a ${riderSize} rider.`,
+        refused: "rules",
       };
     }
     return {
@@ -169,11 +173,12 @@ export function checkMount(input: {
   }
   const profile = mountProfile(input.ref);
   if (!profile) {
-    return { error: `No mount called "${input.ref}". Describe one instead and the DM can write it in.` };
+    return { error: `No mount called "${input.ref}". Describe one instead and the DM can write it in.`, retry: true };
   }
   if (!canCarry(profile.size, riderSize)) {
     return {
       error: `A ${riderSize} rider cannot ride a ${profile.size} ${profile.name}; a mount has to be one size larger.`,
+      refused: "rules",
     };
   }
   return {
@@ -243,8 +248,8 @@ export function vehicleProfile(ref: string): VehicleProfile | null {
   const needle = ref.trim().toLowerCase();
   return (
     VEHICLES.find((vehicle) => vehicle.slug === needle) ??
-    VEHICLES.find((vehicle) => vehicle.name.toLowerCase() === needle) ??
-    VEHICLES.find((vehicle) => vehicle.name.toLowerCase().includes(needle)) ??
+    VEHICLES.find((vehicle) => textKey(vehicle.name) === textKey(ref)) ??
+    VEHICLES.find((vehicle) => textKey(vehicle.name).includes(textKey(ref))) ??
     null
   );
 }

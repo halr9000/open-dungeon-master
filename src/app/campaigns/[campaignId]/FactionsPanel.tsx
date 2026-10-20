@@ -11,6 +11,21 @@ import { SectionHead } from "@/components/ui/SectionHead";
 import { Slider } from "@/components/ui/Slider";
 import { LoreImageField } from "@/app/workshop/lore/LoreFields";
 import { GlyphChip, KitButton, LoadFailed, PanelLoading, panelField, panelRow } from "./PanelKit";
+import { WorldEntryLink, useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
+import { useUnsavedDraft } from "@/app/workshop/unsaved";
+
+// A faction as the editor's draft.
+function draftOf(faction: FactionView): Draft {
+  return {
+    name: faction.name,
+    blurb: faction.blurb,
+    goal: faction.goal ?? "",
+    attitude: faction.attitude,
+    power: faction.power ?? 1,
+    tags: faction.tags.join(", "),
+    portraitPath: faction.portraitPath,
+  };
+}
 import { readLoad, useLoadStatus } from "@/lib/load-state";
 import { FACTION_ATTITUDES, REPUTATION_MAX, REPUTATION_MIN, reputationLabel, type FactionAttitude } from "@/lib/dm/faction-logic";
 import { DictateField } from "@/components/DictateField";
@@ -44,7 +59,21 @@ const blank = (): Draft => ({ name: "", blurb: "", goal: "", attitude: "neutral"
 const ATTITUDE_GLYPHS = new Set(["allied", "friendly", "neutral", "wary", "hostile"]);
 const attitudeGlyph = (attitude: string) => `attitude-${ATTITUDE_GLYPHS.has(attitude) ? attitude : "neutral"}`;
 
-export function FactionsPanel({ campaignId, steersStory, refreshKey = 0 }: { campaignId: string; steersStory: boolean; refreshKey?: number }) {
+export function FactionsPanel({
+  campaignId,
+  steersStory,
+  refreshKey = 0,
+  openId,
+  onWorldEntry,
+}: {
+  campaignId: string;
+  steersStory: boolean;
+  refreshKey?: number;
+  // In the workshop only (src/app/workshop/world/WorldEntryLink.tsx): the
+  // record to open on arrival, and the way to its WorldForge entry.
+  openId?: string | null;
+  onWorldEntry?: (id: string) => void;
+}) {
   const [factions, setFactions] = useState<FactionView[] | null>(null);
   const [editing, setEditing] = useState<string | "new" | null>(null);
   const [draft, setDraft] = useState<Draft>(blank());
@@ -71,17 +100,18 @@ export function FactionsPanel({ campaignId, steersStory, refreshKey = 0 }: { cam
   }, [campaignId, refreshKey, reload, settle]);
 
   function startEdit(faction: FactionView) {
-    setDraft({
-      name: faction.name,
-      blurb: faction.blurb,
-      goal: faction.goal ?? "",
-      attitude: faction.attitude,
-      power: faction.power ?? 1,
-      tags: faction.tags.join(", "),
-      portraitPath: faction.portraitPath,
-    });
+    setDraft(draftOf(faction));
     setEditing(faction.id);
   }
+
+  // In the workshop, an editor with changes is asked about before leaving.
+  const openFaction = editing && editing !== "new" ? factions?.find((faction) => faction.id === editing) ?? null : null;
+  useUnsavedDraft(
+    Boolean(onWorldEntry) && editing !== null &&
+      JSON.stringify(draft) !== JSON.stringify(openFaction ? draftOf(openFaction) : blank()),
+  );
+
+  useOpenOnArrival(openId, steersStory ? factions : null, startEdit);
 
   async function save() {
     if (!draft.name.trim()) {
@@ -175,6 +205,7 @@ export function FactionsPanel({ campaignId, steersStory, refreshKey = 0 }: { cam
             <KitButton onClick={() => setEditing(null)}>
               <X className="size-3.5" /> Cancel
             </KitButton>
+            {onWorldEntry && editing !== "new" ? <WorldEntryLink onOpen={() => onWorldEntry(editing)} /> : null}
           </div>
         </div>
       ) : null}

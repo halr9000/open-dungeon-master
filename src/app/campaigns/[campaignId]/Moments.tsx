@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PortraitMedallion } from "@/components/sheet/SheetParts";
 import { FxSprite } from "@/components/ui/FxSprite";
 import { GameIcon } from "@/components/ui/GameIcon";
 import type { AuditEntry, CampaignLocation } from "@/app/campaigns/[campaignId]/useCampaignStream";
 import { effectiveMaxHp } from "@/lib/dm/condition-logic";
+import { prefersReducedMotion, useLowEffects } from "@/lib/effects-mode";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { matchMagicItem } from "@/lib/srd/magic-items";
 import { CharacterPortrait } from "@/lib/ui";
@@ -35,31 +36,64 @@ export function MomentVeil() {
   );
 }
 
+// A set piece covers the table, and its only way out was a click on the
+// stage itself, which a keyboard cannot reach: Escape skips it too. Taken in
+// the capture phase and stopped there, so a dialog under the moment does not
+// close with it.
+function useEscapeToSkip(active: boolean, onSkip: () => void) {
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onSkip();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [active, onSkip]);
+}
+
 const LEVEL_UP_MS = 2600;
 
 export function LevelUpMoment({ sheet, level, onDone }: { sheet: CharacterSheet; level: number; onDone: () => void }) {
+  // Under reduced motion or low effects the flourish is a still card that
+  // waits for its Dismiss button: a moment that closed itself after 900 ms
+  // was gone before it could be read. With motion it plays out and moves on.
+  const lowEffects = useLowEffects();
+  const [still] = useState(() => lowEffects || prefersReducedMotion());
+  const dismiss = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const timer = window.setTimeout(onDone, still ? 900 : LEVEL_UP_MS);
+    dismiss.current?.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    if (still) return;
+    const timer = window.setTimeout(onDone, LEVEL_UP_MS);
     return () => window.clearTimeout(timer);
-  }, [onDone]);
+  }, [onDone, still]);
+  useEscapeToSkip(true, onDone);
 
   return (
-    <div className="moment-stage" role="status" onClick={onDone}>
+    <div className="moment-stage" data-still={still || undefined}>
       <div className="moment-levelup">
-        <FxSprite sheetId="burst-radiant" className="moment-levelup-burst" />
+        {still ? null : <FxSprite sheetId="burst-radiant" className="moment-levelup-burst" />}
         <span className="moment-ring" aria-hidden="true" />
         <span className="moment-ring moment-ring-late" aria-hidden="true" />
         <PortraitMedallion classId={sheet.class} className="moment-levelup-medallion">
           <Face sheet={sheet} />
         </PortraitMedallion>
       </div>
-      <p className="moment-kicker">
-        <GameIcon icon={{ kind: "glyph", key: "rest-level-up" }} size="size-7" /> Level up
-      </p>
-      <p className="gold-title moment-title">
-        {sheet.name} reaches level {level}
-      </p>
+      <div role="status">
+        <p className="moment-kicker">
+          <GameIcon icon={{ kind: "glyph", key: "rest-level-up" }} size="size-7" /> Level up
+        </p>
+        <p className="gold-title moment-title">
+          {sheet.name} reaches level {level}
+        </p>
+      </div>
+      <button ref={dismiss} type="button" className="moment-dismiss" onClick={onDone}>
+        Dismiss
+      </button>
     </div>
   );
 }
@@ -95,6 +129,8 @@ export function RestMoment({ auditLog, sheets }: { auditLog: AuditEntry[]; sheet
     const timer = window.setTimeout(() => setSeen(stamp), REST_MS);
     return () => window.clearTimeout(timer);
   }, [fresh.length, stamp]);
+  const skipRest = useCallback(() => setSeen(stamp), [stamp]);
+  useEscapeToSkip(fresh.length > 0, skipRest);
 
   if (!fresh.length) {
     return null;
@@ -126,7 +162,7 @@ export function RestMoment({ auditLog, sheets }: { auditLog: AuditEntry[]; sheet
           );
         })}
       </ul>
-      <p className="mt-4 text-[11px] text-stone-400">Select anywhere to return to the table</p>
+      <p className="mt-4 text-[11px] text-stone-400">Select anywhere, or press Esc, to return to the table</p>
     </div>
   );
 }
@@ -181,6 +217,8 @@ export function LootMoment({ sheet }: { sheet: CharacterSheet | null | undefined
     const timer = window.setTimeout(() => setQueue((waiting) => waiting.slice(1)), LOOT_MS);
     return () => window.clearTimeout(timer);
   }, [current]);
+  const skipLoot = useCallback(() => setQueue((waiting) => waiting.slice(1)), []);
+  useEscapeToSkip(Boolean(current), skipLoot);
 
   if (!current) {
     return null;

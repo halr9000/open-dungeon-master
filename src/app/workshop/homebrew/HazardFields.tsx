@@ -63,6 +63,7 @@ function TrapBlock({ block, put }: { block: Mech; put: (patch: Mech) => void }) 
   const disarm = sub(block.disarm);
   const save = sub(block.save);
   const damage = sub(block.damage);
+  const escape = sub(block.escape);
   return (
     <>
       <MechGroup title="How it works" summary={String(block.trigger ?? "") || "its trigger"} open>
@@ -91,8 +92,20 @@ function TrapBlock({ block, put }: { block: Mech; put: (patch: Mech) => void }) 
         ) : null}
         <div className="col-span-2 space-y-1 sm:col-span-4">
           <span className="text-[11px] text-stone-400">On everyone it catches, save or not</span>
-          <ChipList items={list(block.conditionsAlways)} onChange={(next) => put({ conditionsAlways: next.length ? next : undefined })} options={CONDITIONS} prompt="Add a condition" max={4} />
+          <ChipList items={list(block.conditionsAlways)} onChange={(next) => put({ conditionsAlways: next.length ? next : undefined, ...(next.length ? {} : { escape: undefined }) })} options={CONDITIONS} prompt="Add a condition" max={4} />
         </div>
+        {list(block.conditionsAlways).length ? (
+          <>
+            <SelectField
+              label="Broken free by"
+              value={String(escape.ability ?? "")}
+              options={[{ value: "", label: "STR vs the save DC" }, { value: "str", label: "a STR check" }, { value: "dex", label: "a DEX check" }]}
+              onChange={(ability) => put({ escape: ability ? { ability, dc: num(escape.dc, num(save.dc, 10)) } : undefined })}
+              hint="take_action escape rolls it; a falling net is DC 10 STR."
+            />
+            {escape.ability ? <NumberField label="Escape DC" value={num(escape.dc, 10)} min={1} max={30} onChange={(dc) => put({ escape: { ...escape, dc: dc === "" ? 10 : dc } })} /> : null}
+          </>
+        ) : null}
         <NumberField label="For (rounds)" value={num(block.rounds, 0) || ""} min={1} max={14400} onChange={(value) => put({ rounds: optional(value) })} hint="10 rounds a minute; empty until removed." />
       </MechGroup>
     </>

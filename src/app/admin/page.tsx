@@ -1,6 +1,6 @@
 "use client";
 
-import { Flag, Gauge, Globe2, Settings2, Users, Wand2 } from "lucide-react";
+import { Flag, Gauge, Globe2, Puzzle, ScrollText, Settings2, Users, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PIXEL_ICONS, ui } from "@/lib/ui";
@@ -11,6 +11,9 @@ import { AdminSettingsPanel } from "@/app/admin/AdminSettingsPanel";
 import { AdminUsagePanel } from "@/app/admin/AdminUsagePanel";
 import { AdminUsersPanel } from "@/app/admin/AdminUsersPanel";
 import { AdminWorldsPanel } from "@/app/admin/AdminWorldsPanel";
+import { AdminAddonsPanel } from "@/app/admin/AdminAddonsPanel";
+import { AdminServerLogPanel } from "@/app/admin/AdminServerLogPanel";
+import { addonsOfferedHere } from "@/lib/addons/use-addons";
 
 type Me = {
   id: string;
@@ -19,14 +22,16 @@ type Me = {
   isAdmin: boolean;
 };
 
-type Tab = "settings" | "worlds" | "users" | "usage" | "reports";
+type Tab = "settings" | "worlds" | "addons" | "users" | "usage" | "reports" | "log";
 
 const TABS: SegmentedOption<Tab>[] = [
   { value: "settings", label: "Server settings", icon: Settings2 },
   { value: "worlds", label: "Campaign plugins", icon: Globe2 },
+  { value: "addons", label: "Addons", icon: Puzzle },
   { value: "users", label: "Users", icon: Users },
   { value: "usage", label: "Usage", icon: Gauge },
   { value: "reports", label: "Reports", icon: Flag },
+  { value: "log", label: "Server log", icon: ScrollText },
 ];
 
 // Server control panel. The page only decides what to render; every admin
@@ -73,7 +78,7 @@ export default function AdminPage() {
       title="Admin panel"
       blurb={`Signed in as ${me.username}`}
     >
-      {/* Five long labels do not fit 360 px: the row scrolls rather than clipping the last mode. */}
+      {/* Seven long labels do not fit 360 px: the row scrolls rather than clipping the last mode. */}
       {/* The same settings, asked one question at a time, with what runs on
           this computer found and filled in (src/app/setup). */}
       {deviceWorld ? null : (
@@ -92,7 +97,8 @@ export default function AdminPage() {
 
       <div className="-mx-1 overflow-x-auto px-1 pb-1 [scrollbar-width:none]">
         <SegmentedControl
-          options={TABS}
+          // The Android app does not offer addons yet (src/lib/addons/use-addons.ts).
+          options={addonsOfferedHere() ? TABS : TABS.filter((option) => option.value !== "addons")}
           value={tab}
           onChange={setTab}
           label="Admin section"
@@ -105,10 +111,14 @@ export default function AdminPage() {
           <AdminSettingsPanel />
         ) : tab === "worlds" ? (
           <AdminWorldsPanel />
+        ) : tab === "addons" ? (
+          <AdminAddonsPanel />
         ) : tab === "reports" ? (
           <AdminReportsPanel />
         ) : tab === "usage" ? (
           <AdminUsagePanel />
+        ) : tab === "log" ? (
+          <AdminServerLogPanel />
         ) : (
           <AdminUsersPanel meId={me.id} />
         )}

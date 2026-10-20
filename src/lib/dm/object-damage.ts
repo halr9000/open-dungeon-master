@@ -23,6 +23,8 @@ import { critDamageExpression } from "@/lib/dm/encounter-logic";
 import { buildAttackProfile } from "@/lib/dm/pc-attack-profile";
 import { objectProfile, type ObjectMaterial, type ObjectSize } from "@/lib/srd/objects";
 import { breakWallSection, sectionHit, wallSectionFor } from "@/lib/dm/zone-walls";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export const OBJECT_MATERIALS: ObjectMaterial[] = [
   "cloth", "paper", "rope", "crystal", "glass", "ice", "wood", "bone", "stone", "iron", "steel", "mithral", "adamantine",
@@ -31,6 +33,8 @@ export const OBJECT_SIZES: ObjectSize[] = ["tiny", "small", "medium", "large"];
 
 const objectSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
+  // A sectioned wall's section (src/lib/dm/zone-walls.ts).
+  section: z.coerce.number().int().min(1).max(99).optional(),
   material: z.enum(OBJECT_MATERIALS as [ObjectMaterial, ...ObjectMaterial[]]).optional(),
   size: z.enum(OBJECT_SIZES as [ObjectSize, ...ObjectSize[]]).optional(),
   fragile: z.coerce.boolean().optional(),
@@ -46,7 +50,7 @@ const objectSchema = z.object({
   reason: z.string().optional(),
 });
 
-const keyOf = (name: string) => name.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 60);
+const keyOf = (name: string) => textKey(name).slice(0, 60);
 
 function publishRoll(campaign: Campaign, turn: DmTurn | null, characterId: string | null, kind: "attack" | "damage", detail: string, result: RollResult, attacker: RollAttacker | null) {
   const roll = insertRoll({ campaignId: campaign.id, characterId, requestedBy: "dm", kind, detail, result, attacker });
@@ -75,36 +79,38 @@ export function damageObject(
   campaign: Campaign | null,
   turn: DmTurn | null,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof objectSchema>;
   try {
     args = objectSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments for damage_object." };
+    return { error: "Invalid arguments for damage_object.", retry: true };
   }
   // A section of a Wall of Ice has its own numbers (src/lib/dm/zone-walls.ts).
-  const section = campaign && args.name ? wallSectionFor(campaign.id, args.name) : null;
+  const section = campaign && args.name ? wallSectionFor(campaign.id, args.name, args.section) : null;
   if (section && "error" in section) {
     return section;
   }
+  // Each section keeps its own damage between blows.
+  const kept = section ? `${section.zoneId} ${section.section}` : args.name;
   const profile = objectProfile(args.material ?? "wood", args.size ?? "medium", args.fragile);
   const ac = section?.ac ?? args.ac ?? profile.ac;
   const hp = section?.hp ?? args.hp ?? profile.hp;
-  const already = campaign && args.name ? objectDamageTaken(campaign.id, args.name) : 0;
+  const already = campaign && kept ? objectDamageTaken(campaign.id, kept) : 0;
 
   let dealt: number | null = null;
   let type = (args.damageType ?? "").trim().toLowerCase();
   const notes: string[] = [];
   const sheet = args.characterId ? getSheetById(args.characterId) : null;
   if (args.characterId && (!sheet || (campaign && sheet.campaignId !== campaign.id))) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   if (sheet && campaign) {
     // The character's own attack, from their sheet: the roll has to beat the
     // object's AC before any damage lands.
     const built = buildAttackProfile(campaign.id, sheet, { weapon: args.weapon });
     if ("error" in built) {
-      return { error: built.error };
+      return toolError(built);
     }
     const attack = rollExpression(`1d20${built.profile.toHit >= 0 ? "+" : ""}${built.profile.toHit}`);
     const striker: RollAttacker = { kind: "sheet", id: sheet.id, name: sheet.name };
@@ -138,7 +144,7 @@ export function damageObject(
       }
       dealt = rolled.total;
     } else {
-      return { error: `Invalid damage "${args.damage}".` };
+      return { error: `Invalid damage "${args.damage}".`, retry: true };
     }
   }
   if (dealt !== null && /^(poison|psychic)$/.test(type)) {
@@ -152,8 +158,8 @@ export function damageObject(
   }
   const taken = already + (dealt ?? 0);
   const broken = dealt !== null && taken >= hp;
-  if (campaign && args.name && dealt !== null) {
-    recordObjectDamage(campaign.id, args.name, taken, broken);
+  if (campaign && kept && dealt !== null) {
+    recordObjectDamage(campaign.id, kept, taken, broken);
   }
   if (campaign && section && broken) {
     notes.push(breakWallSection(campaign, section));

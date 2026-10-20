@@ -13,6 +13,8 @@
 // See docs/LICENSES.md.
 
 import { BEAST_FORMS, type BeastForm } from "@/lib/srd/beast-forms";
+import { findNamed } from "@/lib/language/text-logic";
+import { creatureSpellings } from "@/lib/srd/name-forms";
 
 export type SummonFormAttack = {
   name: string;
@@ -419,31 +421,23 @@ function fromBeast(beast: BeastForm): SummonForm {
   };
 }
 
-const normalize = (term: string) => term.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 const ALL: SummonForm[] = [
   ...SUMMON_FORMS,
   ...BEAST_FORMS.filter((beast) => !SUMMON_FORMS.some((form) => form.name === beast.name)).map(fromBeast),
 ];
 
-// The stat block a caller names: exact first, then the longest name inside
-// the request ("a big fire elemental" -> Fire Elemental, "spider" -> Giant
-// Spider). Null when the table does not know it.
+// The stat block a caller names, matched as a beast form is
+// (src/lib/language/text-logic.ts findNamed): "spider" is the Giant Spider, a giant elk no
+// Elk. Null when the table does not know it.
 export function findSummonForm(term: string): SummonForm | null {
-  const wanted = normalize(term);
-  if (!wanted) {
-    return null;
-  }
-  const exact = ALL.find((form) => normalize(form.name) === wanted);
-  if (exact) {
-    return exact;
-  }
-  const candidates = ALL.filter((form) => {
-    const name = normalize(form.name);
-    return wanted.includes(name) || name.includes(wanted) || name.split(" ").pop() === wanted;
-  });
-  candidates.sort((a, b) => b.name.length - a.name.length);
-  return candidates[0] ?? null;
+  return findNamed(ALL, [term], (form) => creatureSpellings(form.name));
+}
+
+// The creatures of these kinds the table holds at a challenge rating or
+// lower: what a summoning spell can be asked for.
+export function summonFormsOf(types: string[], maxCr: number): SummonForm[] {
+  return ALL.filter((form) => types.includes(form.type) && form.cr <= maxCr);
 }
 
 export function summonFormNames(): string[] {

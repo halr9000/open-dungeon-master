@@ -9,6 +9,7 @@ import { register } from "node:module";
 register("./lib/register-alias.mjs", import.meta.url);
 
 const { draftFindings } = await import("../src/app/workshop/homebrew/draft.ts");
+const { resistanceTrait, withTrait } = await import("../src/lib/workshop/species-traits.ts");
 let passed = 0;
 const test = (name, fn) => {
   fn();
@@ -57,6 +58,23 @@ test("a trap past the SRD's deadly band, a poison that costs nothing, a disease 
   assert.ok(check("hazard", { hazardKind: "trap", trap: { save: { ability: "dex", dc: 13 } } }).some((finding) => /dangerous \(12 to 15\)/.test(finding.text)));
   assert.ok(warns(check("hazard", { hazardKind: "poison", poison: { dc: 12 } })).some((text) => /costs nothing/.test(text)));
   assert.ok(warns(check("hazard", { hazardKind: "disease", disease: { exhaustion: 3, rest: true } })).some((text) => /3 levels of exhaustion/.test(text)));
+});
+
+test("a homebrew feat is told what the builder grants from its words, or that it grants nothing", () => {
+  const nimble = check("feat", { desc: "Increase your Dexterity by 1, to a maximum of 20. You gain proficiency in the Stealth skill." });
+  assert.ok(nimble.some((finding) => /From its words the builder grants: \+1 to Dexterity; proficiency in Stealth\./.test(finding.text)), JSON.stringify(nimble));
+  const linguist = check("feat", { desc: "You learn two languages of your choice." });
+  assert.ok(linguist.some((finding) => /two languages of the player's choice/.test(finding.text)));
+  const flavour = check("feat", { desc: "When you score a critical hit, you laugh loudly." });
+  assert.ok(flavour.some((finding) => /Nothing in its words is a grant/.test(finding.text)));
+  assert.ok(!check("feat", { desc: "When you score a critical hit, you laugh loudly.", runsAs: "Savage Attacker" }).some((finding) => /Nothing in its words/.test(finding.text)), "a feat that runs as a published one was told it grants nothing");
+});
+
+test("a species trait that resists by its words but not its name is told the table will not read it", () => {
+  const ember = { asi: [{ attributes: ["Strength"], value: 2 }, { attributes: ["Charisma"], value: 1 }], speed: { walk: 30 }, traits: "**_Ember Blood._** You have resistance to fire damage." };
+  assert.ok(warns(check("race", ember)).some((text) => /Ember Blood says it resists fire damage/.test(text)));
+  const picked = { ...ember, traits: withTrait(ember.traits, resistanceTrait("fire")) };
+  assert.deepEqual(warns(check("race", picked)), [], "the picked Fire Resistance still drew the warning");
 });
 
 console.log(`test-workshop-option-findings: ${passed} passed`);

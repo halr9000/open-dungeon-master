@@ -22,6 +22,7 @@ import {
   type OfferLine,
 } from "@/lib/dm/proposal-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Interception for the inventoryApprovals and vitalsApprovals game
 // settings: a DM inventory, gold, damage, healing or condition mutation
@@ -54,7 +55,7 @@ export function maybeProposeItemChange(
   toolName: string,
   rawArguments: string,
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> | null {
+): ToolResult | null {
   let args: OfferArgs & { characterId?: string; reason?: string };
   try {
     args = JSON.parse(rawArguments || "{}");
@@ -73,10 +74,10 @@ export function maybeProposeItemChange(
   // Light validation now, so a malformed offer fails while the model can
   // still fix it; the full check reruns in applyDmMutation on approval.
   if ((toolName === "grant_item" || toolName === "remove_item") && !String(args.name ?? "").trim()) {
-    return { error: `${toolName} needs an item name.` };
+    return { error: `${toolName} needs an item name.`, retry: true };
   }
   if (toolName === "modify_gold" && !Number(args.delta ?? 0)) {
-    return { error: "modify_gold needs a nonzero delta." };
+    return { error: "modify_gold needs a nonzero delta.", retry: true };
   }
   if (
     toolName === "purchase" &&
@@ -84,24 +85,24 @@ export function maybeProposeItemChange(
       args.price === undefined ||
       (args.action !== "buy" && args.action !== "sell"))
   ) {
-    return { error: "purchase needs item, price, and action buy|sell." };
+    return { error: "purchase needs item, price, and action buy|sell.", retry: true };
   }
 
   if (toolName === "apply_damage" && !(Number(args.amount ?? 0) >= 1)) {
-    return { error: "apply_damage needs a positive amount." };
+    return { error: "apply_damage needs a positive amount.", retry: true };
   }
   if (toolName === "heal" && !(Number(args.amount ?? 0) >= 1) && !String(args.spell ?? "").trim()) {
-    return { error: "heal needs an amount or a spell." };
+    return { error: "heal needs an amount or a spell.", retry: true };
   }
   if ((toolName === "set_condition" || toolName === "clear_condition") && !String(args.condition ?? "").trim()) {
-    return { error: `${toolName} needs a condition.` };
+    return { error: `${toolName} needs a condition.`, retry: true };
   }
 
   // An offer that could not apply is refused now, before the player sees
   // an apparently valid one (issue 239): nothing to take, nothing to sell.
   const cannot = offerPrecheck(toolName, args, sheet!);
   if (cannot) {
-    return { error: cannot };
+    return cannot;
   }
   // The same offer again, while the first waits or just after it was
   // accepted, is the same loot twice.
@@ -113,7 +114,7 @@ export function maybeProposeItemChange(
     Date.now(),
   );
   if (repeated) {
-    return { error: repeated };
+    return repeated;
   }
 
   const summary = proposalSummary(toolName, args, sheet!.name);

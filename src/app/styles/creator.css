@@ -121,6 +121,14 @@
   transition: transform 220ms var(--ease-spring);
 }
 .diamond-button:not(:disabled) { cursor: pointer; }
+/* The tap target reaches 44 px through an invisible ring past the button's
+   edge, so the stepper keeps its spacing. */
+.diamond-button::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+}
 @media (hover: hover) {
   .diamond-button:not(:disabled):hover { transform: scale(1.18); }
 }
@@ -365,7 +373,7 @@ html[data-theme="light"] .step-wipe-ring {
 }
 .creator-plate-tag {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 8.5px;
+  font-size: 0.6875rem;
   letter-spacing: 0.04em;
   color: #aeaac6;
 }
@@ -374,7 +382,18 @@ html[data-theme="light"] .step-wipe-ring {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.creator-plate-tag { white-space: nowrap; }
+/* At the text floor a tagline ("Tome of Heroes · Saves STR CON") no longer
+   fits one line of a card; it wraps to two rather than hide what it says. */
+.creator-plate-tag {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+}
+/* The chips wrap under each other for the same reason, instead of the last
+   one being cut off at the card's edge. */
+.creator-card-foot > span:first-child { flex-wrap: wrap; row-gap: 3px; }
 .creator-card[aria-pressed="true"] .creator-plate-tag { color: #ecd287; }
 .creator-card-foot {
   display: flex;
@@ -391,18 +410,18 @@ html[data-theme="light"] .step-wipe-ring {
   background: color-mix(in srgb, var(--color-amber-950) 35%, transparent);
   padding: 1px 5px;
   font-family: var(--font-geist-mono), monospace;
-  font-size: 8.5px;
+  font-size: 0.6875rem;
   white-space: nowrap;
   color: var(--color-amber-300);
 }
-.creator-chip[data-size="md"] { padding: 2px 8px; font-size: 10px; }
+.creator-chip[data-size="md"] { padding: 2px 8px; font-size: 0.75rem; }
 .creator-cta {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 8px;
+  font-size: 0.6875rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--color-stone-500);
+  color: var(--color-stone-400);
 }
 /* A narrow class card has no room for two chips and the prompt. */
 .creator-grid[data-compact] .creator-card-foot:has(.creator-chip + .creator-chip) .creator-cta { display: none; }
@@ -434,13 +453,20 @@ html[data-theme="light"] .step-wipe-ring {
   border-radius: 9999px;
   background: rgba(8, 6, 18, 0.82);
   font-family: var(--font-geist-mono), monospace;
-  font-size: 10px;
+  font-size: 0.75rem;
   color: #ecd287;
   transition: border-color var(--dur-quick) var(--ease-snap);
 }
 .creator-help:hover > span,
 .creator-help:focus-visible > span { border-color: rgba(212, 171, 58, 0.9); }
 .creator-help:active { transform: scale(0.86); }
+/* 44 px to the finger, 32 px to the card's layout. */
+.creator-help::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+}
 .creator-selected {
   position: absolute;
   left: -7px;
@@ -457,7 +483,7 @@ html[data-theme="light"] .step-wipe-ring {
   font-family: var(--font-display), Georgia, serif;
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  font-size: 8px;
+  font-size: 0.6875rem;
   font-weight: 700;
   color: #2b2008;
   rotate: -6deg;
@@ -481,7 +507,7 @@ html[data-theme="light"] .step-wipe-ring {
   font-family: var(--font-display), Georgia, serif;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  font-size: 7.5px;
+  font-size: 0.6875rem;
   font-weight: 700;
   color: #f4e0a6;
   pointer-events: none;
@@ -491,7 +517,7 @@ html[data-theme="light"] .step-wipe-ring {
 .creator-grid[data-compact] .creator-recommended {
   padding: 2px 5px 2px 3px;
   letter-spacing: 0.04em;
-  font-size: 7px;
+  font-size: 0.6875rem;
 }
 .creator-emblem {
   position: absolute;
@@ -515,13 +541,27 @@ html[data-theme="light"] .step-wipe-ring {
     border-color var(--dur-quick) var(--ease-snap),
     background-color var(--dur-quick) var(--ease-snap);
 }
-.creator-trait:not(:disabled) { cursor: pointer; }
+/* A trait with text to show has a toggle that holds its name only; its body
+   is a region below it, so a screen reader hears "Darkvision, collapsed" and
+   not a paragraph read as one button's name. A trait with nothing more to say
+   is a plain row, not a disabled button a keyboard would skip. */
+.creator-trait-toggle {
+  display: flex;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 9px;
+}
+.creator-trait-toggle:focus-visible { outline: 2px solid var(--color-amber-400); outline-offset: -2px; }
 /* Hover only where a pointer can hover: on touch it would stick after a tap. */
 @media (hover: hover) {
-  .creator-trait:not(:disabled):hover { transform: translateX(3px); background: color-mix(in srgb, var(--color-amber-950) 26%, transparent); }
+  .creator-trait:has(> .creator-trait-toggle:hover) { transform: translateX(3px); background: color-mix(in srgb, var(--color-amber-950) 26%, transparent); }
 }
-.creator-trait:not(:disabled):active { transform: scale(0.99); }
-.creator-trait[aria-expanded="true"] {
+.creator-trait:has(> .creator-trait-toggle:active) { transform: scale(0.99); }
+.creator-trait[data-open] {
   border-color: color-mix(in srgb, var(--color-amber-500) 50%, transparent);
   background: color-mix(in srgb, var(--color-amber-950) 30%, transparent);
 }
@@ -531,7 +571,7 @@ html[data-theme="light"] .step-wipe-ring {
   animation: creator-row-open var(--dur-move) var(--ease-snap) both;
 }
 .creator-chevron { transition: rotate var(--dur-move) var(--ease-spring); }
-.creator-trait[aria-expanded="true"] .creator-chevron { rotate: 180deg; }
+.creator-trait-toggle[aria-expanded="true"] .creator-chevron { rotate: 180deg; }
 
 /* ---- the dice grid ---- */
 .dice-row {
@@ -564,7 +604,7 @@ html[data-theme="light"] .step-wipe-ring {
   background: color-mix(in srgb, var(--color-stone-950) 80%, transparent);
   box-shadow: var(--shadow-glow-gold);
   font-family: var(--font-geist-mono), monospace;
-  font-size: 9.5px;
+  font-size: 0.6875rem;
   letter-spacing: 0.04em;
   color: var(--color-amber-300);
 }
@@ -612,7 +652,7 @@ html[data-theme="light"] .step-wipe-ring {
   background: rgba(8, 6, 18, 0.94);
   border: 1px solid rgba(220, 38, 38, 0.6);
   font-family: var(--font-geist-mono), monospace;
-  font-size: 9px;
+  font-size: 0.6875rem;
   line-height: 1;
   color: #f87171;
 }
@@ -655,7 +695,7 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
   border: 0;
   border-radius: 8px;
   background: transparent;
-  font-size: 11.5px;
+  font-size: 0.75rem;
   font-weight: 500;
   white-space: nowrap;
   color: var(--color-stone-500);
@@ -677,6 +717,13 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
 .method-option[aria-pressed="true"] { color: #2b2008; }
 .method-option[aria-pressed="true"]::before { opacity: 1; scale: 1; }
 .method-option > span { position: relative; }
+/* 30 px drawn, 44 px tall to the finger: the extra reaches over the
+   switch's own padding and a little past it. */
+.method-option::after {
+  content: "";
+  position: absolute;
+  inset: -7px 0;
+}
 
 .slot-button,
 .step-button {
@@ -703,7 +750,14 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
 .step-button:not(:disabled):active { transform: scale(0.9); }
 .slot-button:hover,
 .step-button:not(:disabled):hover { color: var(--color-amber-200); border-color: color-mix(in srgb, var(--color-amber-500) 50%, transparent); }
-.slot-button[data-taken] { border-color: color-mix(in srgb, var(--color-stone-700) 40%, transparent); color: var(--color-stone-600); opacity: 0.6; }
+/* A value another ability holds: struck through and still readable, rather
+   than faded to a shade a low-vision reader cannot make out. */
+.slot-button[data-taken] {
+  border-color: color-mix(in srgb, var(--color-stone-700) 40%, transparent);
+  color: var(--color-stone-400);
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
 .slot-button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--color-amber-500) 70%, transparent);
   background: color-mix(in srgb, var(--color-amber-500) 16%, transparent);
@@ -817,18 +871,35 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
   height: 24px;
   align-items: center;
   font-family: var(--font-geist-mono), monospace;
-  font-size: 9.5px;
+  font-size: 0.6875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--color-stone-500);
+  color: var(--color-stone-400);
 }
 .pool-token .dice-total { font-size: 25px; }
+/* The tier in words under the total, in the total's colour. */
+.pool-tier {
+  margin-top: -3px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow: none;
+}
+/* A remarkable pool's line in the note: held gold, no motion needed. */
+.pool-highlight {
+  margin-bottom: 2px;
+  font-family: var(--font-display), Georgia, serif;
+  font-size: 14px;
+  color: var(--color-amber-200);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--color-amber-400) 55%, transparent);
+}
 .pool-tag {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 9px;
+  font-size: 0.6875rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--color-stone-500);
+  color: var(--color-stone-400);
 }
 .pool-token[data-placed] .pool-tag { color: var(--color-amber-300); }
 .pool-token[data-held] .pool-tag { color: var(--color-amber-200); }
@@ -861,7 +932,8 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
     background-color var(--dur-quick) var(--ease-snap),
     box-shadow var(--dur-quick) var(--ease-snap);
 }
-.pool-socket:disabled { cursor: default; }
+.pool-socket:disabled,
+.pool-socket[aria-disabled="true"] { cursor: default; }
 .pool-socket[data-filled] {
   border-style: solid;
   border-color: color-mix(in srgb, var(--color-amber-500) 40%, transparent);
@@ -869,7 +941,7 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
   box-shadow: inset 0 1px 0 rgba(249, 236, 200, 0.06);
   cursor: grab;
 }
-.pool-socket:not(:disabled):active { transform: scale(0.92); }
+.pool-socket:not(:disabled):not([aria-disabled="true"]):active { transform: scale(0.92); }
 .dice-row[data-armed] .pool-socket:not([data-held]) {
   border-color: color-mix(in srgb, var(--color-amber-500) 75%, transparent);
   animation: pool-socket-breathe 1.6s var(--ease-drift) infinite;
@@ -887,10 +959,10 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
 }
 .pool-socket-hint {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 9.5px;
+  font-size: 0.6875rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--color-stone-600);
+  color: var(--color-stone-400);
 }
 .dice-row[data-armed] .pool-socket-hint { color: var(--color-amber-200); }
 
@@ -953,6 +1025,13 @@ html[data-theme="light"] .roll-tier-5 { color: #6d28d9; text-shadow: none; }
 .wizard-continue-held:hover {
   opacity: 0.7;
 }
+/* With reduced motion the global rule cuts every animation to 0.01ms, so the
+   flash above would end transparent before it was seen. The block keeps a
+   still outline for as long as it is marked instead. */
 @media (prefers-reduced-motion: reduce) {
-  [data-builder-target][data-flash] { animation-duration: 0.6s; }
+  [data-builder-target][data-flash] {
+    animation: none !important;
+    outline: 3px solid rgba(251, 191, 36, 0.8);
+    outline-offset: 2px;
+  }
 }

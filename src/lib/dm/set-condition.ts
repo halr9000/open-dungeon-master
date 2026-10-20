@@ -36,6 +36,7 @@ import { awardInspirationCounter, heldInspiration } from "@/lib/dm/roll-riders";
 import { featureConditionImmunities, sourcedConditionImmunity } from "@/lib/srd/trait-rules";
 import { conditionGrantedImmunity } from "@/lib/srd/condition-effect-queries";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // A sheet holds this many conditions at once (the stored list's own cap).
 export const MAX_CONDITIONS = 15;
@@ -141,9 +142,9 @@ export function raiseExhaustion(
   turnId: string,
   sheet: CharacterSheet,
   reason: string,
-): Record<string, unknown> {
+): ToolResult {
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead; exhaustion has nothing left to take.` };
+    return { error: `${sheet.name} is dead; exhaustion has nothing left to take.`, retry: true };
   }
   const patch = exhaustionPatch(sheet, sheet.exhaustion + 1);
   patchSheet(sheet.id, patch as FullPatchSheetInput);
@@ -189,7 +190,8 @@ export function conditionImmunity(
   campaign: Campaign,
   sheet: CharacterSheet,
   condition: string,
-  reason: string,
+  // The condition comes from a spell or other magic.
+  magical: boolean,
   sourceEnemyId?: string,
 ): string | null {
   const wanted = condition.trim().toLowerCase();
@@ -209,7 +211,7 @@ export function conditionImmunity(
   if (held) {
     return `${held.because} makes them immune`;
   }
-  if (wanted === "unconscious" && own.magicalSleep && /\bsleep|slumber/i.test(reason)) {
+  if (wanted === "unconscious" && own.magicalSleep && magical) {
     return `${own.magicalSleep}: magic cannot put them to sleep`;
   }
   const aura = allyConditionAura(campaign.id, sheet, wanted);
@@ -222,9 +224,9 @@ function awardInspiration(
   turnId: string,
   sheet: CharacterSheet,
   reason: string,
-): Record<string, unknown> {
+): ToolResult {
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead; Inspiration has nothing to inspire.` };
+    return { error: `${sheet.name} is dead; Inspiration has nothing to inspire.`, retry: true };
   }
   if (heldInspiration(sheet)) {
     return { ok: true, note: `${sheet.name} already has Inspiration; it does not stack.` };
@@ -250,6 +252,8 @@ export type SetConditionArgs = {
   saveDc?: number;
   sourceEnemyId?: string;
   sourceCharacterId?: string;
+  // From magic: Fey Ancestry's "magic can't put you to sleep".
+  magical?: boolean;
 };
 
 export function handleSetCondition(
@@ -261,7 +265,7 @@ export function handleSetCondition(
   // Set by cast_buff: the condition is a spell's effect, cast and paid for,
   // and this is what the spell records on it (src/lib/dm/spell-effects.ts).
   options?: { spellEffect?: ConditionMeta },
-): Record<string, unknown> {
+): ToolResult {
   const raw = args.condition ?? "";
   // Inspiration is the DM's award, held on the sheet until a roll spends it
   // (src/lib/dm/roll-riders.ts), not a condition.
@@ -275,24 +279,25 @@ export function handleSetCondition(
   }
   const normalized = canonicalCondition(raw);
   if (!normalized) {
-    return { error: "set_condition needs a condition name." };
+    return { error: "set_condition needs a condition name.", retry: true };
   }
   if (normalized.startsWith("exhaustion")) {
     return raiseExhaustion(campaign, turnId, sheet, reason);
   }
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead and takes no new conditions.` };
+    return { error: `${sheet.name} is dead and takes no new conditions.`, retry: true };
   }
   // A spell's effect comes from casting the spell; the AI DM cannot hand it
   // out for free (the human DM console keeps its correction power).
   const unpaid = options?.spellEffect ? null : spellEffectRefusal(normalized, turnId);
   if (unpaid) {
-    return { error: unpaid };
+    return unpaid;
   }
-  const immune = conditionImmunity(campaign, sheet, normalized, reason, args.sourceEnemyId);
+  const immune = conditionImmunity(campaign, sheet, normalized, Boolean(options?.spellEffect || args.magical), args.sourceEnemyId);
   if (immune) {
     return {
       error: `${sheet.name} cannot be ${normalized}: ${immune}. The condition was not applied; narrate them shrugging it off.`,
+      refused: "rules",
     };
   }
   // Duration metadata: timed conditions tick down at round wrap in combat
@@ -344,6 +349,7 @@ export function handleSetCondition(
   if (sheet.conditions.length >= MAX_CONDITIONS) {
     return {
       error: `${sheet.name} already holds ${MAX_CONDITIONS} conditions, the most a sheet keeps, so ${normalized} was NOT applied. Clear one that has ended with clear_condition, then set it again.`,
+      retry: true,
       currentConditions: sheet.conditions,
     };
   }

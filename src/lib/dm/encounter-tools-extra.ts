@@ -24,6 +24,7 @@ import { planConditionFx } from "@/lib/battlemap/fx-plan";
 import { publishFx, tokenPosition } from "@/lib/dm/fx";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { aoeDamageTool, handleAoeDamage } from "@/lib/dm/aoe-damage";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Encounter tools beyond the core start/damage/attack/end set:
 // reinforcements, enemy flight, enemy conditions, and multi-target AoE.
@@ -165,23 +166,23 @@ function handleEnemyFlees(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: enemy_flees works only in a fight.", retry: true };
   }
   let args: z.infer<typeof enemyRefArgsSchema>;
   try {
     args = enemyRefArgsSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: enemy_flees needs enemyId." };
+    return { error: "Invalid arguments: enemy_flees needs enemyId.", retry: true };
   }
   const enemy = resolveEnemyRef(encounter.id, args.enemyId);
   if (!enemy) {
-    return { error: "Unknown enemyId; use one from GAME STATE." };
+    return { error: "Unknown enemyId; use one from GAME STATE.", retry: true };
   }
   if (enemy.status !== "alive") {
-    return { error: `${enemy.displayName} is already ${enemy.status}.` };
+    return { error: `${enemy.displayName} is already ${enemy.status}.`, retry: true };
   }
   patchEnemyHp(enemy.id, enemy.currentHp, "fled");
   const map = getBattleMapForEncounter(encounter.id);
@@ -210,33 +211,34 @@ function handleEnemyCondition(
   action: "set" | "clear",
   rawArguments: string,
   ctx: { turn: DmTurn; sheets: CharacterSheet[]; sheetsById: Map<string, CharacterSheet> },
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: an enemy's condition is set only in a fight.", retry: true };
   }
   let args: z.infer<typeof enemyRefArgsSchema>;
   try {
     args = enemyRefArgsSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: needs enemyId and condition." };
+    return { error: "Invalid arguments: needs enemyId and condition.", retry: true };
   }
   const enemy = resolveEnemyRef(encounter.id, args.enemyId);
   if (!enemy) {
-    return { error: "Unknown enemyId; use one from GAME STATE." };
+    return { error: "Unknown enemyId; use one from GAME STATE.", retry: true };
   }
   if (enemy.status !== "alive") {
-    return { error: `${enemy.displayName} is ${enemy.status}.` };
+    return { error: `${enemy.displayName} is ${enemy.status}.`, retry: true };
   }
   const wanted = canonicalCondition(args.condition ?? "");
   if (!wanted) {
-    return { error: "A condition name is required." };
+    return { error: "A condition name is required.", retry: true };
   }
 
   if (action === "set") {
     if (enemy.stats.conditionImmune.toLowerCase().includes(wanted)) {
       return {
         error: `${enemy.displayName} is immune to ${wanted} (immunities: ${enemy.stats.conditionImmune}).`,
+        refused: "rules",
       };
     }
     // Exhaustion is a level, not a flag: the table applies (enemy-exhaustion.ts).
@@ -249,7 +251,7 @@ function handleEnemyCondition(
     let initialSave: string | null = null;
     if (ctx.turn.actor === "ai" && bindsCreature(wanted)) {
       if (!args.saveAbility || !args.saveDc) {
-        return { error: AI_BIND_REFUSAL(enemy.displayName, wanted) };
+        return AI_BIND_REFUSAL(enemy.displayName, wanted);
       }
       const save = rollEnemySave(campaign.id, enemy, args.saveAbility, args.saveDc, {
         resist: true,
@@ -315,6 +317,7 @@ function handleEnemyCondition(
   if (!removed.length) {
     return {
       error: `${enemy.displayName} is not ${wanted}.`,
+      retry: true,
       currentConditions: enemy.conditions,
     };
   }
@@ -324,15 +327,16 @@ function handleEnemyCondition(
   if (wanted === PRONE && ctx.turn.actor === "ai" && encounter.orderReady) {
     const early = enemyTurnRefusal(encounter, enemy, ctx.turn);
     if (early) {
-      return { error: early };
+      return early;
     }
     const stood = standUpIfProne(encounter.id, enemy);
     if (!stood.stood) {
       const speed = enemySpeedTiles(enemy) * 5;
       return {
         error: speed
-          ? `${enemy.displayName} has too little movement left this turn to stand: it costs half its speed (${Math.floor(speed / 10) * 5} ft).`
-          : `${enemy.displayName} cannot stand up at speed 0.`,
+          ? `${enemy.displayName} has too little movement left this turn to stand: it costs half its speed (${Math.floor(speed / 10) * 5} ft). It stays prone and takes its turn from there.`
+          : `${enemy.displayName} cannot stand up at speed 0. It stays prone and takes its turn from there.`,
+        retry: true,
       };
     }
     publishEncounter(campaign.id);
@@ -344,7 +348,7 @@ function handleEnemyCondition(
   if (ctx.turn.actor === "ai") {
     const kept = removed.find((name) => bindsCreature(canonicalCondition(name)) && instancesOf((enemy.conditionMeta as ConditionMetaMap)[name]).some(engineKept));
     if (kept) {
-      return { error: AI_CLEAR_REFUSAL(enemy.displayName, kept) };
+      return AI_CLEAR_REFUSAL(enemy.displayName, kept);
     }
   }
   const remaining = enemy.conditions.filter((entry) => !matches(entry));
@@ -360,7 +364,7 @@ export function applyExtraEncounterCall(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): { result: Record<string, unknown> } | null {
+): { result: ToolResult } | null {
   switch (toolName) {
     case "add_enemies":
       return { result: handleAddEnemies(campaign, rawArguments, sheets) };
@@ -376,7 +380,7 @@ export function applyExtraEncounterCall(
       const early =
         enemyCallOutOfTurn(campaign.id, turn, rawArguments, "casterEnemyId") ??
         characterCallUnasked(campaign.id, turn, rawArguments, "casterId");
-      return { result: early ? { error: early } : handleAoeDamage(campaign, turn, rawArguments, sheets, sheetsById) };
+      return { result: early ? early : handleAoeDamage(campaign, turn, rawArguments, sheets, sheetsById) };
     }
     case "legendary_action":
       return { result: handleLegendaryAction(campaign, rawArguments) };

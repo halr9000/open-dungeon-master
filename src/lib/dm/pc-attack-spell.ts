@@ -3,7 +3,7 @@
 // cast for real once the attack can no longer be refused. Split from
 // pc-attack.ts, which decides when each half runs.
 
-import { magicImmunityProblem } from "@/lib/dm/monster-traits";
+import { magicImmunityNote } from "@/lib/dm/monster-traits";
 import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
@@ -15,6 +15,7 @@ import type { PcAttackArgs } from "@/lib/dm/pc-attack";
 import type { AttackPlan } from "@/lib/dm/pc-attack-plan";
 import type { AttackKind } from "@/lib/dm/pc-attack-profile";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
 
 // A spell named here is a cast, whatever form the caster wears: it goes
 // through the one guard (src/lib/dm/cast-guard.ts) as a dry run now, so
@@ -31,8 +32,8 @@ export function checkAttackSpell(input: {
   sheets: CharacterSheet[];
   sheetsById: Map<string, CharacterSheet>;
 }):
-  | { refused: Record<string, unknown> }
-  | { castsSpell: boolean; spellSlotLevel: number | null; profile: AttackProfile } {
+  | { refused: ToolError }
+  | { castsSpell: boolean; spellSlotLevel: number | null; profile: AttackProfile; noEffect: string | null } {
   const { campaign, turn, sheet, args, kind, sheets, sheetsById } = input;
   let profile = input.profile;
   const castsSpell = Boolean(args.spell?.trim()) && kind !== "granted";
@@ -52,28 +53,27 @@ export function checkAttackSpell(input: {
       sheets,
       sheetsById,
     ).result;
-    if ("error" in check) {
-      return { refused: check };
+    if (typeof check.error === "string") {
+      return { refused: toolError(check) };
     }
     spellSlotLevel = typeof check.slotLevel === "number" ? check.slotLevel : null;
-    // Limited Magic Immunity (the rakshasa): a spell of its level or lower
-    // never touches it (src/lib/dm/monster-traits.ts).
-    const live = getActiveEncounter(campaign.id);
-    const target = live && args.targetEnemyId ? resolveEnemyRef(live.id, args.targetEnemyId) : null;
-    const shrugged = target ? magicImmunityProblem(target, args.spell ?? "the spell", spellSlotLevel ?? 0) : null;
-    if (shrugged) {
-      return { refused: { error: shrugged } };
-    }
   }
+  // Limited Magic Immunity (the rakshasa): a spell of its level or lower is
+  // cast and has no effect on it (src/lib/dm/monster-traits.ts).
+  const live = castsSpell ? getActiveEncounter(campaign.id) : null;
+  const target = live && args.targetEnemyId ? resolveEnemyRef(live.id, args.targetEnemyId) : null;
+  const noEffect = target ? magicImmunityNote(target, args.spell ?? "the spell", spellSlotLevel ?? 0) : null;
   if (kind === "spell") {
     profile = spellAttackReach(campaign, sheet, args.spell ?? "", profile, spellSlotLevel);
   }
-  return { castsSpell, spellSlotLevel, profile };
+  return { castsSpell, spellSlotLevel, profile, noEffect };
 }
 
 // Checked above, so the cast goes through: the slot, the material, the
-// action (or the rest of an open casting), and concentration.
-export function castAttackSpell(plan: AttackPlan) {
+// action (or the rest of an open casting), and concentration. A spell a
+// monster's Counterspell stops, or Slow holds back, is spent and ends here:
+// the refusal comes back for the caller to return in place of any roll.
+export function castAttackSpell(plan: AttackPlan): ToolError | null {
   const { campaign, turn, encounter, sheet, args, sheets, sheetsById } = plan;
   const cast = applyDmMutation(
     campaign,
@@ -100,4 +100,7 @@ export function castAttackSpell(plan: AttackPlan) {
     encounter.turnBudget = live.turnBudget;
     encounter.reactionsUsed = live.reactionsUsed;
   }
+  // Checked by the dry run, so a refusal now is a cast paid for and stopped
+  // (a counter, Slow's hold): no roll follows it.
+  return typeof cast.error === "string" ? toolError(cast) : null;
 }

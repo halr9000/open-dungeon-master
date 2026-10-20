@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { PIXEL_ICONS, UserAvatar, ui } from "@/lib/ui";
-import { DiceLookEditor } from "@/components/DiceLookEditor";
+import { DiceLookSummary } from "@/components/DiceLookEditor";
 import { PageLoading, PageNotice, PageSection, PageShell } from "@/components/PageShell";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
@@ -214,7 +214,34 @@ export default function SettingsPage() {
         ) : null
       }
     >
-      <PageSection heading="Profile picture" glyph="tab-characters">
+      {/* The page's parts, one tap away, with who each one belongs to: an
+          account setting follows you to any device, a device one stays here. */}
+      <nav aria-label="Settings sections" className="contents-rail panel">
+        {[
+          { id: "settings-profile", label: "Profile", glyph: "tab-characters" },
+          { id: "settings-dice", label: "Dice", glyph: "die-d20" },
+          ...(deviceWorld && !me.isAdmin ? [] : [{ id: "settings-signin", label: "Sign-in", glyph: "tab-admin" }]),
+          { id: "settings-appearance", label: "Appearance", glyph: "tab-settings" },
+          { id: "settings-dictation", label: "Dictation", glyph: "ui-speech" },
+          { id: "settings-blocked", label: "Blocked", glyph: "ui-lock" },
+          { id: "settings-agents", label: "Agents", glyph: "ui-agent" },
+          { id: "settings-account", label: "Account", glyph: "quest-failed" },
+        ].map((stop) => (
+          <button
+            key={stop.id}
+            type="button"
+            onClick={() => {
+              const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+              document.getElementById(stop.id)?.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+            }}
+            className="motion-press"
+          >
+            <GameIcon icon={{ kind: "glyph", key: stop.glyph }} size="size-7" /> {stop.label}
+          </button>
+        ))}
+      </nav>
+
+      <PageSection id="settings-profile" heading="Profile picture" glyph="tab-characters">
         <div className="flex items-center gap-5">
           <span className="medallion">
             {me.avatar ? (
@@ -258,15 +285,16 @@ export default function SettingsPage() {
       </PageSection>
 
       <PageSection
+        id="settings-dice"
         heading="Your dice"
         glyph="die-d20"
-        intro="The virtual dice that tumble across every table you sit at. Pick a set to start from, then change the colours, pattern and finish; the preview rolls as you go."
+        intro="The virtual dice that tumble across every table you sit at. Follows your account on this server, on every device."
       >
-        <DiceLookEditor />
+        <DiceLookSummary />
       </PageSection>
 
       {deviceWorld && !me.isAdmin ? null : (
-      <PageSection heading={me.hasPassword === false ? "Set a password" : "Password"} glyph="tab-admin">
+      <PageSection id="settings-signin" heading={me.hasPassword === false ? "Set a password" : "Password"} glyph="tab-admin">
         {me.hasPassword === false ? (
           <>
             <p className="mb-3 text-sm text-stone-400">
@@ -312,10 +340,19 @@ export default function SettingsPage() {
         </PageSection>
       ) : null}
 
-      <AppearanceSection />
-      <DictationShortcutSection />
-      <BlockedPlayersSection />
-      <ConnectedAgentsSection />
+      <div id="settings-appearance" className="scroll-mt-16">
+        <AppearanceSection />
+      </div>
+      <div id="settings-dictation" className="scroll-mt-16">
+        <DictationShortcutSection />
+      </div>
+      <div id="settings-blocked" className="scroll-mt-16">
+        <BlockedPlayersSection />
+      </div>
+      <div id="settings-agents" className="scroll-mt-16">
+        <ConnectedAgentsSection />
+      </div>
+      <span id="settings-account" className="block scroll-mt-16" aria-hidden="true" />
 
       {me.deletionDueAt ? (
         <PageSection

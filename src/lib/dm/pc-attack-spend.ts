@@ -24,6 +24,8 @@ import {
 import type { BuiltAttack } from "@/lib/dm/pc-attack-profile";
 import { hunterMultiattack } from "@/lib/dm/srd-attacks";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export function spendAttackEconomy(input: {
   sheet: CharacterSheet;
@@ -43,7 +45,7 @@ export function spendAttackEconomy(input: {
   enemyId: string;
 }):
   | { budget: TurnBudget | null; spendNote: string | undefined; notes: string[] }
-  | { refused: string } {
+  | { refused: ToolError } {
   const { sheet, args, profile, kind, atRange, weaponAttack, options, grantedBonusAction, bonusSwing, encounterId, enemyId } = input;
   // Once a turn, and only when the activation spent the bonus action.
   const ridesActivation = (budget: TurnBudget) =>
@@ -114,7 +116,7 @@ export function spendAttackEconomy(input: {
             { ok: true as const, budget }
           : spendAttack(budget, sheet.name, { unarmed: profile.weapon === "Unarmed strike" });
     if (!spend.ok) {
-      return { refused: spend.error };
+      return { refused: toolError(spend) };
     }
     flurryStrike = (spend.budget.flurryStrikes ?? 0) < flurryBefore;
     budget = spend.budget;
@@ -155,7 +157,7 @@ export function spendAttackEconomy(input: {
     if (usesAttackAction) {
       // Polearm Master's butt-end strike and Crossbow Expert's hand crossbow
       // shot follow the Attack action (pc-attack-options.ts).
-      if (holdsFeat(sheet, "Polearm Master") && isPolearm(profile.weapon) && !budget.oncePerTurn.includes(POLEARM_READY)) {
+      if (holdsFeat(sheet, "Polearm Master") && isPolearm(profile.base) && !budget.oncePerTurn.includes(POLEARM_READY)) {
         budget = { ...budget, oncePerTurn: [...budget.oncePerTurn, POLEARM_READY] };
       }
       if (holdsFeat(sheet, "Crossbow Expert") && !profile.twoHanded && !budget.oncePerTurn.includes(ONE_HANDED_ATTACKED)) {
@@ -172,4 +174,4 @@ export function spendAttackEconomy(input: {
   return { budget, spendNote, notes };
 }
 
-const holdsPistolAndBlade = (sheet: CharacterSheet) => sheet.features.some((feature) => feature.name.trim().toLowerCase() === "pistol and blade");
+const holdsPistolAndBlade = (sheet: CharacterSheet) => sheet.features.some((feature) => textKey(feature.name) === "pistol and blade");

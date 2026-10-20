@@ -28,13 +28,18 @@ import { applyDmMutation } from "@/lib/dm/mutations";
 import { READIED } from "@/lib/dm/object-actions";
 import { handlePcAttack } from "@/lib/dm/pc-attack";
 import { allyOf, noHit, settle, softenFall, spendReaction, type Ctx } from "@/lib/dm/reaction-tools";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { takeItemCast } from "@/lib/srd/item-cast-credit";
+import { spellHeldProblem } from "@/lib/dm/cast-rules";
+import { textKey } from "@/lib/language/text-logic";
 
 // ---- reaction spells ----
 
 // Shield is cast as the hit lands: the cast guard asks the reaction gate with
 // the spell's timing (src/lib/dm/reaction-kinds.ts), which judges a caster
-// that hit dropped as they stood before it, whatever tool casts the spell.
-function castReactionSpell(ctx: Ctx, spell: string): Record<string, unknown> | { error: string } {
+// that hit dropped as they stood before it. Every reaction spell is cast
+// here (the cast guard refuses one any other tool sends).
+function castReactionSpell(ctx: Ctx, spell: string): Record<string, unknown> | ToolError {
   return applyDmMutation(
     ctx.campaign,
     ctx.turn.id,
@@ -57,28 +62,37 @@ function spentLine(ctx: Ctx, cast: Record<string, unknown>): string {
   } spent.`;
 }
 
-export function reactionSpell(ctx: Ctx, spellName: string): Record<string, unknown> {
+export function reactionSpell(ctx: Ctx, spellName: string): ToolResult {
   const { sheet, campaign } = ctx;
   // Which reaction it is: the published spell a table's workshop copy runs
   // as ("Iron Ward" running as Shield). The copy is cast under its own name.
-  const name = spellEngineName(spellName, spellAuthorsFor(campaign)).toLowerCase();
+  const name = textKey(spellEngineName(spellName, spellAuthorsFor(campaign)));
+  // Whether they can cast it at all comes before what it answers: a caster
+  // without the spell is told so, not sent to name its target first. A cast
+  // an item just paid for (src/lib/srd/item-cast-credit.ts) needs no hold.
+  const fromItem = takeItemCast(sheet.id, spellName, { dryRun: true });
+  const unheld = fromItem ? null : spellHeldProblem(sheet, spellName, spellFactsFor(spellName, spellAuthorsFor(campaign)));
+  if (unheld) {
+    return { ...unheld, error: `${unheld.error} Nothing was spent.` };
+  }
 
   // Hellish Rebuke answers the creature that damaged the caster with a DEX
-  // save and fire, resolved as cast_at_enemy resolves it (the cast guard
-  // charges the reaction).
+  // save and fire, resolved as cast_at_enemy resolves it; the reaction is
+  // spent here, as for every reaction spell.
   if (name === "hellish rebuke") {
     const record = freshLastHit(campaign.id, sheet.id);
     const attackerId =
       ctx.args.targetEnemyId ?? (record?.attacker.kind === "enemy" ? (record.attacker.id ?? undefined) : undefined);
     if (!attackerId) {
-      return { error: "Hellish Rebuke answers the creature that damaged the caster: pass its targetEnemyId. Nothing was spent." };
+      return { error: "Hellish Rebuke answers the creature that damaged the caster: pass its targetEnemyId. Nothing was spent.", retry: true };
     }
     if (!record || record.attacker.id !== attackerId || record.swings.every((swing) => !swing.hit || swing.raw <= 0)) {
       return {
         error: `Hellish Rebuke is cast in response to being damaged by the creature, and the server has no damage to ${sheet.name} from it this turn. Nothing was spent.`,
+        refused: "rules",
       };
     }
-    return handleCastAtEnemy(
+    const rebuke = handleCastAtEnemy(
       campaign,
       ctx.turn,
       JSON.stringify({
@@ -92,7 +106,12 @@ export function reactionSpell(ctx: Ctx, spellName: string): Record<string, unkno
       }),
       ctx.sheets,
       ctx.sheetsById,
+      { asReaction: true },
     );
+    if (typeof rebuke.error !== "string") {
+      spendReaction(ctx);
+    }
+    return rebuke;
   }
 
   // Feather Fall saves a creature from a fall that has just landed.
@@ -100,7 +119,7 @@ export function reactionSpell(ctx: Ctx, spellName: string): Record<string, unkno
     const target = allyOf(ctx) ?? sheet;
     const record = freshLastHit(campaign.id, target.id);
     if (!record || record.source !== "fall") {
-      return { error: noHit(target.name, "Feather Fall", `a fall of ${target.name}'s (apply_hazard falling)`) };
+      return noHit(target.name, "Feather Fall", `a fall of ${target.name}'s (apply_hazard falling)`);
     }
     const cast = castReactionSpell(ctx, spellName);
     if ("error" in cast) {
@@ -124,6 +143,7 @@ export function reactionSpell(ctx: Ctx, spellName: string): Record<string, unkno
     if (!hit) {
       return {
         error: `Shield is cast when ${sheet.name} is hit by an attack (or targeted by Magic Missile), and the server has no hit on them this turn to answer. Nothing was spent.`,
+        refused: "rules",
       };
     }
   }
@@ -133,6 +153,7 @@ export function reactionSpell(ctx: Ctx, spellName: string): Record<string, unkno
     if (!record || !typed || record.answered.includes("absorb elements")) {
       return {
         error: `Absorb Elements is cast when ${sheet.name} takes acid, cold, fire, lightning or thunder damage, and the server has no such damage to them this turn to answer. Nothing was spent.`,
+        refused: "rules",
       };
     }
   }
@@ -142,6 +163,7 @@ export function reactionSpell(ctx: Ctx, spellName: string): Record<string, unkno
   if (!known.includes(name) && !(ctx.args.reason ?? "").trim()) {
     return {
       error: `${spellName} is a reaction: name what triggered it in reason (the creature and what it did). The server has no rule of its own for it, so it is cast as the spell's text. Nothing was spent.`,
+      retry: true,
     };
   }
 
@@ -253,39 +275,39 @@ type Counter = {
 // creature named, the spell its block lists, a spell not yet resolved (the
 // action, bonus action or reaction it costs not yet taken this round), a
 // caster who can see it, and 60 ft.
-function checkCounterspell(ctx: Ctx): Counter | { error: string } {
+function checkCounterspell(ctx: Ctx): Counter | ToolError {
   const { encounter, args, sheet } = ctx;
   const enemy = encounter && args.targetEnemyId ? resolveEnemyRef(encounter.id, args.targetEnemyId) : null;
   if (!encounter || !enemy || enemy.status !== "alive") {
-    return { error: "Counterspell answers a creature casting a spell: pass its targetEnemyId and the spell. Nothing was spent." };
+    return { error: "Counterspell answers a creature casting a spell: pass its targetEnemyId and the spell. Nothing was spent.", retry: true };
   }
   const wanted = (args.spell ?? "").trim();
   if (!wanted) {
-    return { error: `Counterspell needs the spell ${enemy.displayName} is casting (spell), so the server knows its level. Nothing was spent.` };
+    return { error: `Counterspell needs the spell ${enemy.displayName} is casting (spell), so the server knows its level. Nothing was spent.`, retry: true };
   }
   // Only a spell the creature can cast: its block's list.
   const casting = enemy.stats.spellcasting;
   const listed = findMonsterSpell(casting, wanted);
-  const innate = (enemy.stats.spells ?? []).find((name) => name.toLowerCase() === wanted.toLowerCase());
+  const innate = (enemy.stats.spells ?? []).find((name) => textKey(name) === textKey(wanted));
   if (!listed && !innate) {
-    return { error: `${enemy.displayName}'s stat block lists no ${wanted}; Counterspell answers a spell the creature is casting. Nothing was spent.` };
+    return { error: `${enemy.displayName}'s stat block lists no ${wanted}; Counterspell answers a spell the creature is casting. Nothing was spent.`, refused: "rules" };
   }
   const facts = spellFactsFor(wanted);
   const own = listed?.level ?? facts?.level ?? null;
   if (own === null) {
-    return { error: `The server does not know the level of "${wanted}"; name the spell as its stat block lists it. Nothing was spent.` };
+    return { error: `The server does not know the level of "${wanted}"; name the spell as its stat block lists it. Nothing was spent.`, retry: true };
   }
   // A caster who cannot see the creature cannot target it.
   if (sheet.conditions.some((entry) => entry.toLowerCase() === "blinded")) {
-    return { error: `${sheet.name} is blinded: Counterspell needs a creature they can see. Nothing was spent.` };
+    return { error: `${sheet.name} is blinded: Counterspell needs a creature they can see. Nothing was spent.`, refused: "rules" };
   }
   const unseen = enemy.conditions.some((entry) => entry.toLowerCase() === "invisible") && !seesInvisible(sheet);
   if (unseen) {
-    return { error: `${enemy.displayName} is invisible to ${sheet.name}: Counterspell needs a creature they can see. Nothing was spent.` };
+    return { error: `${enemy.displayName} is invisible to ${sheet.name}: Counterspell needs a creature they can see. Nothing was spent.`, refused: "rules" };
   }
   const apart = tilesBetween(encounter.id, sheet.id, enemy.id);
   if (apart !== null && apart > 12) {
-    return { error: `${enemy.displayName} is ${apart * 5} ft away; Counterspell reaches a creature within 60 ft. Nothing was spent.` };
+    return { error: `${enemy.displayName} is ${apart * 5} ft away; Counterspell reaches a creature within 60 ft. Nothing was spent.`, refused: "rules" };
   }
   // What the cast costs the creature, and whether it has already been paid
   // (a spell already resolved cannot be countered).
@@ -309,19 +331,20 @@ function checkCounterspell(ctx: Ctx): Counter | { error: string } {
   if (paid) {
     return {
       error: `${enemy.displayName} has already taken its ${timing === "bonus" ? "bonus action" : timing} this round; a spell already resolved cannot be countered. Call Counterspell before resolving the enemy's spell. Nothing was spent.`,
+      refused: "rules",
     };
   }
   let level = own;
   let spend: Counter["spend"] = (next) => next;
   if (listed?.perDay) {
     if (spellUsesLeft(ledger, listed) <= 0) {
-      return { error: `${enemy.displayName} has no use of ${wanted} left today; it cannot be casting it. Nothing was spent.` };
+      return { error: `${enemy.displayName} has no use of ${wanted} left today; it cannot be casting it. Nothing was spent.`, refused: "rules" };
     }
     spend = (next) => spendSpellUse(next, listed.name);
   } else if (own > 0 && listed && listed.level !== null && casting && Object.keys(casting.slots).length) {
     const slot = slotFor(casting, ledger, own);
     if (slot === null) {
-      return { error: `${enemy.displayName} has no spell slot left for ${wanted}; it cannot be casting it. Nothing was spent.` };
+      return { error: `${enemy.displayName} has no spell slot left for ${wanted}; it cannot be casting it. Nothing was spent.`, refused: "rules" };
     }
     level = slot;
     spend = (next) => spendSlot(next, slot);
@@ -411,19 +434,21 @@ function finishCounterspell(
 
 // ---- opportunity attacks ----
 
-export function opportunity(ctx: Ctx): Record<string, unknown> {
+export function opportunity(ctx: Ctx): ToolResult {
   const { campaign, encounter, sheet, args } = ctx;
   if (!encounter) {
-    return { error: "Opportunity attacks happen in a fight; there is no active encounter." };
+    return { error: "Opportunity attacks happen in a fight; there is no active encounter.", refused: "rules" };
   }
   if (getBattleMapForEncounter(encounter.id)) {
     return {
       error: `On the battle map the server rolls opportunity attacks itself the moment an enemy leaves ${sheet.name}'s reach (and reports them on the move). Nothing was spent; do not call pc_attack for one either.`,
+      retry: true,
     };
   }
   if (!args.targetEnemyId) {
     return {
       error: "Off the battle map, an opportunity attack needs the enemy leaving the character's reach: pass its targetEnemyId. Nothing was spent.",
+      retry: true,
     };
   }
   // One melee attack with the reaction, through pc_attack's own rules. The

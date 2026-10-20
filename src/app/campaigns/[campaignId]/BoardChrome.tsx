@@ -319,6 +319,7 @@ export function TokenPlate({
   health,
   conditions,
   edge,
+  anchor,
 }: {
   token: StageToken;
   boardWidth: number;
@@ -328,12 +329,14 @@ export function TokenPlate({
   health?: HealthWord;
   conditions?: Array<{ id: string; label: string; rounds?: number; note?: string }>;
   edge?: TargetEdge;
+  // Where an addon's board view drew the figure (TokenHud.tsx says how).
+  anchor?: [number, number, number];
 }) {
-  const cx = ((token.x + footprint / 2) / boardWidth) * 100;
+  const cx = anchor ? anchor[0] * 100 : ((token.x + footprint / 2) / boardWidth) * 100;
   // Below the figure in the top half, above it in the bottom half: the plate
   // is tall now, and either way it clears the figure rather than covering it.
-  const below = token.y + footprint / 2 < boardHeight / 2;
-  const cy = ((below ? token.y + footprint : token.y) / boardHeight) * 100;
+  const below = anchor ? (anchor[1] + anchor[2]) / 2 < 0.5 : token.y + footprint / 2 < boardHeight / 2;
+  const cy = anchor ? (below ? anchor[2] : anchor[1]) * 100 : ((below ? token.y + footprint : token.y) / boardHeight) * 100;
   return (
     <div
       role="tooltip"

@@ -6,6 +6,7 @@ import { getQuest, insertQuest, listQuests, updateQuest } from "@/lib/db/quests"
 import { normalizeObjectives, tickObjective, type QuestStatus } from "@/lib/dm/quest-logic";
 import { dismissHandout, publishHandout } from "@/lib/dm/scene-state";
 import { isUploadedImagePath } from "@/lib/uploads";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // The binder's tools (docs/vtt-parity-implementation-plan.md sections 5.2
 // and 5.7): put a handout in front of the table and take it away again,
@@ -92,21 +93,24 @@ const handoutSchema = z.object({
 
 // A person may show anything they can read; the model may show only what
 // the party may read, so a secret never lands on the table by mistake.
-export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawArguments: string): Record<string, unknown> {
+export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawArguments: string): ToolResult {
   let args: z.infer<typeof handoutSchema>;
   try {
     args = handoutSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: show_handout needs a loreId or an imagePath." };
+    return { error: "Invalid arguments: show_handout needs a loreId or an imagePath.", retry: true };
   }
   const human = turn?.actor === "human_dm";
   if (args.loreId) {
     const entry = getLoreEntry(args.loreId);
     if (!entry || entry.campaignId !== campaign.id) {
-      return { error: "No lore entry by that id." };
+      return { error: "No lore entry by that id.", retry: true };
     }
     if (entry.visibility === "dm" && !human) {
-      return { error: "That entry is the DM's secret; it cannot be shown to the table." };
+      return { error: "That entry is the DM's secret; it cannot be shown to the table.", retry: true };
+    }
+    if (entry.unpublished && !human) {
+      return { error: "That entry is not canon yet; it cannot be shown to the table.", retry: true };
     }
     const handout = publishHandout(campaign.id, {
       loreId: entry.id,
@@ -120,7 +124,7 @@ export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawAr
   }
   if (args.imagePath) {
     if (!isUploadedImagePath(args.imagePath)) {
-      return { error: "Not an uploaded picture." };
+      return { error: "Not an uploaded picture.", retry: true };
     }
     const handout = publishHandout(campaign.id, {
       imagePath: args.imagePath,
@@ -131,7 +135,7 @@ export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawAr
     });
     return { ok: true, shown: handout.title, handoutId: handout.id };
   }
-  return { error: "show_handout needs a loreId or an imagePath." };
+  return { error: "show_handout needs a loreId or an imagePath.", retry: true };
 }
 
 export function handleDismissHandout(campaign: Campaign, rawArguments: string): Record<string, unknown> {
@@ -158,17 +162,17 @@ const questSchema = z.object({
   visibility: z.enum(["party", "dm"]).optional(),
 });
 
-export function handleSetQuest(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleSetQuest(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof questSchema>;
   try {
     args = questSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: set_quest takes a title, objectives and a status." };
+    return { error: "Invalid arguments: set_quest takes a title, objectives and a status.", retry: true };
   }
   if (args.questId) {
     const quest = getQuest(args.questId);
     if (!quest || quest.campaignId !== campaign.id) {
-      return { error: "No quest by that id." };
+      return { error: "No quest by that id.", retry: true };
     }
     const updated = updateQuest(quest.id, {
       ...(args.title ? { title: args.title } : {}),
@@ -179,10 +183,10 @@ export function handleSetQuest(campaign: Campaign, rawArguments: string): Record
     return { ok: true, quest: updated };
   }
   if (!args.title) {
-    return { error: "A new quest needs a title." };
+    return { error: "A new quest needs a title.", retry: true };
   }
   if (listQuests(campaign.id).filter((quest) => quest.status === "active").length >= 40) {
-    return { error: "The quest log is full; finish or fail some first." };
+    return { error: "The quest log is full; finish or fail some first.", retry: true };
   }
   const quest = insertQuest({
     campaignId: campaign.id,
@@ -201,19 +205,19 @@ const tickSchema = z.object({
   done: z.boolean().optional(),
 });
 
-export function handleTickObjective(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleTickObjective(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof tickSchema>;
   try {
     args = tickSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: tick_objective needs a questId and an objectiveId." };
+    return { error: "Invalid arguments: tick_objective needs a questId and an objectiveId.", retry: true };
   }
   const quest = getQuest(args.questId);
   if (!quest || quest.campaignId !== campaign.id) {
-    return { error: "No quest by that id." };
+    return { error: "No quest by that id.", retry: true };
   }
   if (!quest.objectives.some((objective) => objective.id === args.objectiveId)) {
-    return { error: "No objective by that id on that quest." };
+    return { error: "No objective by that id on that quest.", retry: true };
   }
   const objectives = tickObjective(quest.objectives, args.objectiveId, args.done ?? true);
   const allDone = objectives.length > 0 && objectives.every((objective) => objective.done);

@@ -2,6 +2,7 @@ import { raceMechanics, type RaceMechanics } from "@/lib/content/mechanics";
 import { SRD_RACES, type SrdRace } from "@/lib/srd";
 import { srdRaceId } from "@/lib/srd/race-id";
 import { isEdition2024 } from "@/lib/content/edition";
+import { textKey } from "@/lib/language/text-logic";
 
 // The content pack's race rows, turned into the shape the character builder
 // works from. Three things happen here that raceMechanics alone cannot do:
@@ -34,6 +35,35 @@ import { isEdition2024 } from "@/lib/content/edition";
 // carry an "odm-" prefix; the bundled ids are snake_case.
 export function canonicalRaceId(raceId: string): string {
   return srdRaceId(raceId);
+}
+
+// A subrace card names its parent, the way the bundled rows already read:
+// "Halfling (Stoor)", "Darakhul (Drow Heritage)", "Gearforged (Dwarf
+// Chassis)". The parent's own word is dropped from the subrace's name
+// ("Stoor Halfling" -> "Stoor", "High Elf" -> "High") unless nothing would
+// be left.
+// A name that already carries its parent, or already has a parenthesis, is
+// left alone. Darakhul's Ravenfolk is a heritage named without the word.
+export function subraceLabel(name: string, parentName?: string | null): string {
+  const sub = String(name ?? "").trim();
+  const parent = String(parentName ?? "").trim();
+  if (!parent || !sub || textKey(sub) === textKey(parent) || sub.includes("(")) {
+    return sub;
+  }
+  const pieces = sub.split(/\s+/);
+  const length = parent.split(/\s+/).length;
+  const at = pieces.findIndex((_, index) => textKey(pieces.slice(index, index + length).join(" ")) === textKey(parent));
+  let rest = sub;
+  if (at >= 0) {
+    rest = [...pieces.slice(0, at), ...pieces.slice(at + length)].join(" ");
+    if (!rest) {
+      return sub;
+    }
+  }
+  if (/^darakhul$/i.test(parent) && !/heritage/i.test(rest)) {
+    rest = `${rest} Heritage`;
+  }
+  return `${parent} (${rest})`;
 }
 
 export function srdRaceFor(raceId: string): SrdRace | null {
@@ -221,7 +251,7 @@ export function packRaceOptions(rows: RaceRow[], keepIds: Iterable<string> = [])
     }
     return {
       id: idFor(row),
-      name: row.name,
+      name: subraceLabel(row.name, parent?.name),
       ...mechanics,
       note: mechanics.traitsSummary,
       slug: row.slug,

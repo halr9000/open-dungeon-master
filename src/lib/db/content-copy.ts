@@ -238,6 +238,7 @@ function factionFor(context: CopyContext, factionId: unknown): string {
   insertCopy("factions", row, {
     id,
     campaign_id: context.campaignId,
+    name: context.nameFor("factions", factionId, String(row.name ?? "")),
     created_at: context.now,
     updated_at: context.now,
   });
@@ -245,10 +246,17 @@ function factionFor(context: CopyContext, factionId: unknown): string {
 }
 
 // Every faction of the source, members or not, kept where an earlier import
-// brought it.
+// brought it: the Factions choice of an import (audit finding WF-07). With
+// the NPCs alone, each member brings its own faction through factionFor.
 export function copyFactions(context: CopyContext) {
   for (const row of sourceRows("factions", context.sourceId)) {
+    if (context.kept("factions", String(row.id))) {
+      context.counts.kept += 1;
+      continue;
+    }
+    if (context.resolve("factions", String(row.id))) continue;
     factionFor(context, row.id);
+    context.counts.copied += 1;
   }
 }
 

@@ -45,7 +45,7 @@ await test("Protection from Evil and Good keeps an undead's (or fiend's, fey's..
 await test("Each time the creature under Warding Bond takes damage, the caster takes the same amount.", async () => {
   const { world, sheets: [cleric, fighter] } = await table([caster("cleric", "wis", ["Warding Bond"]), FIGHTER]);
   // The pair of rings, carried (no buying them mid-fight).
-  world.patch(cleric.id, { equipment: [...world.sheet(cleric.id).equipment, { name: "Platinum ring (50 gp)", qty: 2 }] });
+  world.patch(cleric.id, { equipment: [...world.sheet(cleric.id).equipment, { name: "Platinum ring", qty: 2, worth: 50 }] });
   const cast = await world.invoke("cast_buff", { characterId: cleric.id, spell: "Warding Bond", targetCharacterIds: [fighter.id], level: 2 });
   assert.equal(cast.ok, true, cast.error);
   const before = world.sheet(cleric.id).currentHp;
@@ -68,7 +68,7 @@ await test("A creature within 5 feet that hits the holder of Fire Shield with a 
 
 await test("A fiend or undead that hits a creature under Holy Aura with a melee attack makes a Constitution save or is blinded until the spell ends.", async () => {
   const { world, sheets: [cleric], enemies: [imp] } = await table([caster("cleric", "wis", ["Holy Aura"], [], 15)], 1, { type: "fiend" });
-  world.patch(cleric.id, { equipment: [...world.sheet(cleric.id).equipment, { name: "Reliquary (1000 gp)", qty: 1 }] });
+  world.patch(cleric.id, { equipment: [...world.sheet(cleric.id).equipment, { name: "Reliquary", qty: 1, worth: 1000 }] });
   const cast = await world.invoke("cast_buff", { characterId: cleric.id, spell: "Holy Aura", targetCharacterIds: [cleric.id], level: 8 });
   assert.equal(cast.ok, true, cast.error);
   // The swing at disadvantage, its damage, the cleric's concentration save
@@ -338,18 +338,22 @@ await test("Heroes' Feast raises each diner's hit point maximum by 2d10 and make
 
 // ---- spells the audit left narrated that carry a state the engine holds ----
 
-await test("Lesser Restoration ends a blinded, deafened, paralyzed or poisoned condition on its target, and with none to end it is refused before the slot.", async () => {
+await test("Lesser Restoration ends a blinded, deafened, paralyzed or poisoned condition on its target, and with none to end it is cast all the same: the slot is spent and nothing ends.", async () => {
   const { world, sheets: [cleric, fighter] } = await table([caster("cleric", "wis", ["Lesser Restoration"]), FIGHTER]);
+  const before = world.sheet(fighter.id).conditions;
   const idle = await world.invoke("cast_buff", { characterId: cleric.id, spell: "Lesser Restoration", targetCharacterIds: [fighter.id], level: 2 });
-  assert.equal(idle.ok, false);
-  assert.equal(world.sheet(cleric.id).spellcasting.slots["2"].used, 0);
+  assert.equal(idle.ok, true, idle.error);
+  assert.deepEqual(idle.result.ended, []);
+  assert.match(idle.result.note, /nothing the server tracks ended/);
+  assert.equal(world.sheet(cleric.id).spellcasting.slots["2"].used, 1);
+  assert.deepEqual(world.sheet(fighter.id).conditions, before);
   await world.invoke("set_condition", { characterId: fighter.id, condition: "poisoned", rounds: 10 });
   const { freshTurn } = await import("./lib/enforce-spells.mjs");
   await freshTurn(world);
   const out = await world.invoke("cast_buff", { characterId: cleric.id, spell: "Lesser Restoration", targetCharacterIds: [fighter.id], level: 2 });
   assert.equal(out.ok, true, out.error);
   assert.ok(!world.sheet(fighter.id).conditions.includes("poisoned"));
-  assert.equal(world.sheet(cleric.id).spellcasting.slots["2"].used, 1);
+  assert.equal(world.sheet(cleric.id).spellcasting.slots["2"].used, 2);
 });
 
 await test("Greater Restoration takes away one level of exhaustion (or one charm, petrification or curse).", async () => {

@@ -328,7 +328,7 @@ await test("Prismatic Spray's violet ray blinds; a failed WIS save at the start 
 
 await test("Forcecage: a creature inside the cage cannot walk out of it, and one outside cannot walk in.", async () => {
   const { world, sheets: [wizard, fighter], enemies: [goblin] } = await board(
-    [caster("wizard", "int", ["Forcecage"], [], 13, { equipment: [{ name: "Ruby dust (1,500 gp)", qty: 1 }] }), FIGHTER],
+    [caster("wizard", "int", ["Forcecage"], [], 13, { equipment: [{ name: "Ruby dust", qty: 1, worth: 1500 }] }), FIGHTER],
     { 0: { x: 2, y: 8 }, 1: { x: 7, y: 4 }, e0: { x: 12, y: 4 } },
     { stats: { speed: "40 ft." } },
   );
@@ -367,7 +367,7 @@ await test("Gaseous Form: the creature's only movement is a 10-foot flying speed
   assert.ok(tokenOf(staged.world, fighter.id).x <= 6, `the mist drifted ${tokenOf(staged.world, fighter.id).x - 4} squares`);
 });
 
-await test("Antimagic Field: no spell is cast inside it, and a spell cast from outside has no effect on a creature inside.", async () => {
+await test("Antimagic Field: no spell is cast inside it, and a spell cast from outside is cast and has no effect on a creature inside.", async () => {
   const { world, sheets: [wizard, sorcerer], enemies: [goblin] } = await board(
     [caster("wizard", "int", ["Antimagic Field"], ["Fire Bolt"], 15), caster("sorcerer", "cha", [], ["Fire Bolt"], 5)],
     { 0: { x: 6, y: 4 }, 1: { x: 2, y: 4 }, e0: { x: 7, y: 4 } },
@@ -376,8 +376,14 @@ await test("Antimagic Field: no spell is cast inside it, and a spell cast from o
   assert.equal(cast.ok, true, cast.error);
   const inside = await world.invoke("pc_attack", { characterId: wizard.id, targetEnemyId: goblin.id, spell: "Fire Bolt", damage: "1d10" });
   assert.equal(inside.ok, false, "a spell was cast inside the field");
+  // SRD 5.1: a spell that targets a creature in the sphere has no effect on
+  // it, and the casting is spent.
+  const hp = world.enemies().find((enemy) => enemy.id === goblin.id).currentHp;
   const into = await world.invoke("pc_attack", { characterId: sorcerer.id, targetEnemyId: goblin.id, spell: "Fire Bolt", damage: "1d10" });
-  assert.equal(into.ok, false, "a spell from outside reached a creature inside the field");
+  assert.equal(into.ok, true, into.error);
+  assert.equal(into.result.hit, false, "a spell from outside reached a creature inside the field");
+  assert.match(String(into.result.note), /Antimagic Field/);
+  assert.equal(world.enemies().find((enemy) => enemy.id === goblin.id).currentHp, hp);
 });
 
 await test("Contact Other Plane: the caster makes a DC 15 INT save; on a failure 6d6 psychic and insanity (no actions) until a long rest.", async () => {

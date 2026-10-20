@@ -26,6 +26,8 @@ import { releaseGrapplesOutOfReach } from "@/lib/dm/grapple";
 import { resolveOpportunityAttacks } from "@/lib/dm/opportunity";
 import { resolveSheetRef } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The rules behind two board moves the model can make: a teleport, which
 // the AI makes only through the spell or ability that does it (cast and
@@ -47,7 +49,7 @@ const TELEPORT_FEET: Record<string, number> = {
 };
 
 export function teleportRangeFeet(spell: string): number | null {
-  const key = spell.trim().toLowerCase();
+  const key = textKey(spell);
   if (TELEPORT_FEET[key]) {
     return TELEPORT_FEET[key];
   }
@@ -76,22 +78,22 @@ export function payForTeleport(
   args: TeleportArgs,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): string | null {
+): ToolError | null {
   if (args.cause === "hazard") {
     return null;
   }
   const spell = (args.spell ?? "").trim();
   if (!spell) {
-    return "A teleport is a spell or an ability: pass spell with casterId (a character's, cast and paid for) or casterEnemyId (one on the enemy's block), or cause 'hazard' for a trap door or a portal. Walking is move_token or the player's own board.";
+    return { error: "A teleport is a spell or an ability: pass spell with casterId (a character's, cast and paid for) or casterEnemyId (one on the enemy's block), or cause 'hazard' for a trap door or a portal. Walking is move_token or the player's own board.", retry: true };
   }
   if (args.casterId) {
     const caster = resolveSheetRef(args.casterId, sheets, sheetsById);
     if (!caster) {
-      return "Unknown casterId; use one from GAME STATE.";
+      return { error: "Unknown casterId; use one from GAME STATE.", retry: true };
     }
     const facts = spellFactsFor(spell);
     if (facts?.range.kind === "self" && token.refId !== caster.id) {
-      return `${spell} moves only its caster, ${caster.name}.`;
+      return { error: `${spell} moves only its caster, ${caster.name}.`, retry: true };
     }
     const cast = applyDmMutation(
       campaign,
@@ -101,24 +103,24 @@ export function payForTeleport(
       sheets,
       sheetsById,
     ).result;
-    return "error" in cast ? String(cast.error) : null;
+    return typeof cast.error === "string" ? toolError(cast) : null;
   }
   if (args.casterEnemyId && encounter) {
-    const ref = args.casterEnemyId.trim().toLowerCase();
+    const ref = textKey(args.casterEnemyId);
     const enemy = listEnemies(encounter.id).find(
-      (entry) => entry.id === args.casterEnemyId || entry.displayName.toLowerCase() === ref,
+      (entry) => entry.id === args.casterEnemyId || textKey(entry.displayName) === ref,
     );
     if (!enemy || enemy.status !== "alive") {
-      return "Unknown or fallen casterEnemyId; use a living enemy from GAME STATE.";
+      return { error: "Unknown or fallen casterEnemyId; use a living enemy from GAME STATE.", retry: true };
     }
-    const key = spell.toLowerCase();
+    const key = textKey(spell);
     const listed =
-      (enemy.stats.spells ?? []).some((name) => name.toLowerCase() === key) ||
-      abilityNames(enemy.stats).some((name) => name.toLowerCase() === key) ||
-      (enemy.stats.traits ?? []).some((line) => line.toLowerCase().startsWith(key));
-    return listed ? null : `${enemy.displayName} has no ${spell} on its stat block, so it cannot teleport.`;
+      (enemy.stats.spells ?? []).some((name) => textKey(name) === key) ||
+      abilityNames(enemy.stats).some((name) => textKey(name) === key) ||
+      (enemy.stats.traits ?? []).some((line) => textKey(line).startsWith(key));
+    return listed ? null : { error: `${enemy.displayName} has no ${spell} on its stat block, so it cannot teleport. It may move with move_token or take another action.`, retry: true };
   }
-  return `${spell} needs its caster: casterId for a character, casterEnemyId for an enemy.`;
+  return { error: `${spell} needs its caster: casterId for a character, casterEnemyId for an enemy.`, retry: true };
 }
 
 // An enemy's Disengage before it walks: a bonus action with Nimble Escape
@@ -129,7 +131,7 @@ export function payForTeleport(
 export function spendEnemyDisengage(
   campaignId: string,
   enemy: EncounterEnemy,
-): { how: string; closesOwedTurn?: boolean } | { error: string } {
+): { how: string; closesOwedTurn?: boolean } | ToolError {
   const live = getActiveEncounter(campaignId);
   if (!live) {
     return { how: "no fight" };
@@ -137,7 +139,7 @@ export function spendEnemyDisengage(
   if (hasTrait(enemy.stats, "nimbleEscape")) {
     const used = live.legendary.bonus?.round === live.round ? live.legendary.bonus.ids : [];
     if (used.includes(enemy.id)) {
-      return { error: `${enemy.displayName} has already used its bonus action this round; to Disengage again it spends its action (move without disengage, or accept the opportunity attacks).` };
+      return { error: `${enemy.displayName} has already used its bonus action this round; to Disengage again it spends its action (move without disengage, or accept the opportunity attacks).`, retry: true };
     }
     live.legendary.bonus = { round: live.round, ids: [...used, enemy.id] };
     saveEncounter(live);
@@ -145,7 +147,7 @@ export function spendEnemyDisengage(
   }
   const allowed = canEnemyAct({ enemy, encounter: live, kind: "action" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   const closesOwedTurn = endsOwedTurn(live, enemy.id);
   markEnemyActed(live, enemy.id);
@@ -184,52 +186,52 @@ export function walkCharacter(
   token: BattleToken,
   destination: XY,
   options: { drag?: boolean } = {},
-): Record<string, unknown> {
+): ToolResult {
   // Off their turn, the move they readied (SRD 5.1, Ready): their reaction,
   // up to their full speed, their own turn's movement untouched.
   const readied = readiedReleaseFor(sheet, encounter, "move");
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (!readied) {
     const allowed = canAct({ sheet, encounter, kind: "move" });
     if (!allowed.ok) {
-      return { error: allowed.error };
+      return toolError(allowed);
     }
   }
   if (destination.x < 0 || destination.y < 0 || destination.x >= map.width || destination.y >= map.height) {
-    return { error: `(${destination.x},${destination.y}) is outside the ${map.width}x${map.height} map.` };
+    return { error: `(${destination.x},${destination.y}) is outside the ${map.width}x${map.height} map.`, retry: true };
   }
   const budget = pcMoveBudget(campaign.id, encounter, map, sheet, token);
   const speed = budget.speed;
   const fullTiles = readied ? speedToTiles(speed) : budget.fullTiles;
   if (speed <= 0 || fullTiles <= 0) {
-    return { error: `${sheet.name} has no movement left this turn.${stillAt(listTokens(map.id), token)}` };
+    return { error: `${sheet.name} has no movement left this turn.${stillAt(listTokens(map.id), token)}`, refused: "rules" };
   }
   // Prone: standing costs half the speed; without that much left it cannot
   // stand, and this walk does not crawl.
   const prone = sheet.conditions.find((entry) => entry.toLowerCase() === "prone");
   const standCost = prone ? standUpTiles(sheet, speedToTiles(speed)) : 0;
   if (prone && standCost > fullTiles) {
-    return { error: `${sheet.name} is prone and has too little movement left to stand.${stillAt(listTokens(map.id), token)}` };
+    return { error: `${sheet.name} is prone and has too little movement left to stand.${stillAt(listTokens(map.id), token)}`, refused: "rules" };
   }
   // A walk to the square they stand on is a prone character getting up.
   const here = destination.x === token.x && destination.y === token.y;
   if (here && !prone) {
-    return { error: `${sheet.name} already stands at (${token.x},${token.y}).` };
+    return { error: `${sheet.name} already stands at (${token.x},${token.y}).`, retry: true };
   }
   const enemiesById = new Map(listEnemies(encounter.id).map((enemy) => [enemy.id, enemy]));
   const tokens = listTokens(map.id);
   const footprintOf = footprintLookup(enemiesById);
   const occupied = occupiedTiles(map, tokens, token, footprintOf);
   if (occupied.has(tileIndex(map.width, destination.x, destination.y))) {
-    return { error: `(${destination.x},${destination.y}) is occupied by another combatant.` };
+    return { error: `(${destination.x},${destination.y}) is occupied by another combatant.`, retry: true };
   }
   // Dragging the creature they grapple doubles every square unless it is two
   // sizes smaller (drag-move.ts), as on the board.
   const drag = options.drag ? characterDrag(sheet, [...enemiesById.values()], tokens) : null;
   if (drag && "error" in drag) {
-    return { error: drag.error };
+    return toolError(drag);
   }
   const factor = drag?.factor ?? 1;
   // The board's own walking traits: allies' spaces, a swimming or climbing
@@ -249,7 +251,7 @@ export function walkCharacter(
   );
   const path = here ? [] : findPath(map.terrain, map.width, map.height, occupied, token, destination, 1, token.movement === "fly", traits);
   if (!path) {
-    return { error: `No path to (${destination.x},${destination.y}); walls block the way.` };
+    return { error: `No path to (${destination.x},${destination.y}); walls block the way.`, retry: true };
   }
   const fear = fearSourceAt(map.id, sheet.conditions, sheet.conditionMeta as Record<string, { source?: string }>);
   const steps = awayFromFear(token, path, fear);
@@ -258,7 +260,7 @@ export function walkCharacter(
     : walkPathWithBudget(map.terrain, map.width, steps, Math.floor((fullTiles - standCost) / factor), traits, token);
   if (!walk.at) {
     const why = fear ? `${sheet.name} is frightened and cannot move closer to what it fears.` : `${sheet.name} has no movement left for that.`;
-    return { error: `${why}${stillAt(listTokens(map.id), token)}` };
+    return { error: `${why}${stillAt(listTokens(map.id), token)}`, refused: "rules" };
   }
   const origin = { x: token.x, y: token.y };
   const walkedSquares = steps.slice(0, steps.findIndex((step) => step.x === walk.at?.x && step.y === walk.at?.y) + 1);
@@ -266,7 +268,7 @@ export function walkCharacter(
     ? dragLandings({ map, tokens, mover: token, landing: walk.at, walked: [origin, ...walkedSquares], held: drag.held, footprintOf })
     : [];
   if (!carried) {
-    return { error: `There is no room beside (${walk.at.x},${walk.at.y}) to set down the creature ${sheet.name} drags. Choose another square.` };
+    return { error: `There is no room beside (${walk.at.x},${walk.at.y}) to set down the creature ${sheet.name} drags. Choose another square.`, retry: true };
   }
   const spent = walk.spent * factor + standCost;
   moveToken(token.id, walk.at.x, walk.at.y, token.movedThisRound + (readied ? 0 : spent));

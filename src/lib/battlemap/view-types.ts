@@ -12,6 +12,7 @@ import type { MapSkin } from "@/lib/battlemap/skins";
 import type { AmbientLight, TokenKind } from "@/lib/battlemap/types";
 import type { TargetEdge } from "@/lib/battlemap/view-tactics";
 import type { ViewZone } from "@/lib/dm/zone-view";
+import type { MapAddonView } from "@/lib/addons/map-view";
 
 export type PlayerMapView = {
   mapId: string;
@@ -31,6 +32,8 @@ export type PlayerMapView = {
   // What the board is painted with when it has no backdrop; empty means the
   // setting and theme decide. Cosmetic, so it is the same for every viewer.
   skin: MapSkin;
+  // What a map addon left for its board view, or null (src/lib/addons/map-view.ts).
+  addonView?: MapAddonView | null;
   visible: number[];
   explored: number[];
   tokens: Array<{

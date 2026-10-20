@@ -15,12 +15,13 @@ import type { Footprint } from "@/lib/battlemap/footprint";
 import type { BattleToken, XY } from "@/lib/battlemap/types";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { dragCostFactor, dragPlacements, grappledBy } from "@/lib/dm/drag";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export type EnemyDrag = { factor: 1 | 2; held: BattleToken[] };
 
 // The characters this enemy holds on the board and what dragging them costs,
 // or the refusal when it holds nobody.
-export function enemyDrag(campaignId: string, enemy: EncounterEnemy, tokens: BattleToken[]): EnemyDrag | { error: string } {
+export function enemyDrag(campaignId: string, enemy: EncounterEnemy, tokens: BattleToken[]): EnemyDrag | ToolError {
   const sheets = listSheets(campaignId).filter((sheet) =>
     grappledBy({ id: sheet.id, conditions: sheet.conditions, conditionMeta: sheet.conditionMeta as ConditionMetaMap }, enemy.id),
   );
@@ -28,7 +29,7 @@ export function enemyDrag(campaignId: string, enemy: EncounterEnemy, tokens: Bat
     .map((sheet) => tokens.find((token) => token.refId === sheet.id))
     .filter((token): token is BattleToken => Boolean(token));
   if (!held.length) {
-    return { error: `${enemy.displayName} is not grappling anyone on the board, so there is nothing to drag. Move it without drag.` };
+    return { error: `${enemy.displayName} is not grappling anyone on the board, so there is nothing to drag. Move it without drag.`, retry: true };
   }
   const factor = dragCostFactor(
     enemy.stats.size,
@@ -39,13 +40,13 @@ export function enemyDrag(campaignId: string, enemy: EncounterEnemy, tokens: Bat
 
 // The enemies this character holds on the board and what dragging them
 // costs, as the move route prices it, or the refusal when they hold nobody.
-export function characterDrag(sheet: CharacterSheet, enemies: EncounterEnemy[], tokens: BattleToken[]): EnemyDrag | { error: string } {
+export function characterDrag(sheet: CharacterSheet, enemies: EncounterEnemy[], tokens: BattleToken[]): EnemyDrag | ToolError {
   const gripped = enemies.filter((enemy) => enemy.status === "alive" && grappledBy(enemy, sheet.id));
   const held = gripped
     .map((enemy) => tokens.find((token) => token.refId === enemy.id))
     .filter((token): token is BattleToken => Boolean(token));
   if (!held.length) {
-    return { error: `${sheet.name} is not grappling anyone on the board, so there is nothing to drag. Move them without drag.` };
+    return { error: `${sheet.name} is not grappling anyone on the board, so there is nothing to drag. Move them without drag.`, retry: true };
   }
   const factor = dragCostFactor(
     sizeForRace(sheet.race),
