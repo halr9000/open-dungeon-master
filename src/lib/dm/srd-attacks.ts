@@ -16,6 +16,7 @@ import type { AttackProfile } from "@/lib/dm/attack-logic";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
 import { holdsFeature } from "@/lib/srd/trait-rules";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
 
 const OPEN = "hunter-multiattack:";
 const STRUCK = "hunter-multiattack-target:";
@@ -31,34 +32,34 @@ export function hunterMultiattack(input: {
   atRange: boolean;
   encounterId: string;
   enemyId: string;
-}): { refused: string } | { budget: TurnBudget; note: string } {
+}): { refused: ToolError } | { budget: TurnBudget; note: string } {
   const { sheet, kind, budget } = input;
   const label = kind === "whirlwind" ? "Whirlwind Attack" : "Volley";
   if (!holdsFeature(sheet, `multiattack: ${label.toLowerCase()}`, label.toLowerCase())) {
-    return { refused: `${sheet.name} does not have ${label} (a Hunter ranger's Multiattack pick).` };
+    return { refused: { error: `${sheet.name} does not have ${label} (a Hunter ranger's Multiattack pick). They attack with the Attack action instead.`, refused: "rules" } };
   }
   if (!budget) {
-    return { refused: `${label} is the Attack action on ${sheet.name}'s own turn; it is not their turn.` };
+    return { refused: { error: `${label} is the Attack action on ${sheet.name}'s own turn; it is not their turn. What they declared waits for their turn.`, refused: "rules" } };
   }
   if (!input.weaponAttack) {
-    return { refused: `${label} is made with a weapon, not a spell.` };
+    return { refused: { error: `${label} is made with a weapon, not a spell. They cast the spell on its own, or attack with a weapon.`, refused: "rules" } };
   }
   if (kind === "whirlwind") {
     const apart = tilesBetween(input.encounterId, sheet.id, input.enemyId);
     if (input.profile.ranged || input.atRange || (apart !== null && apart > 1)) {
-      return { refused: "Whirlwind Attack makes melee weapon attacks against creatures within 5 feet of the ranger." };
+      return { refused: { error: "Whirlwind Attack makes melee weapon attacks against creatures within 5 feet of the ranger. They can make it without this creature.", retry: true } };
     }
   } else if (!input.profile.ranged && !input.atRange) {
-    return { refused: "Volley makes ranged weapon attacks; send the bow or crossbow as the weapon." };
+    return { refused: { error: "Volley makes ranged weapon attacks; send the bow or crossbow as the weapon.", retry: true } };
   }
   const open = budget.oncePerTurn.find((key) => key.startsWith(`${OPEN}${kind}:`));
   if (!open) {
     if (budget.attacksMade > 0 || budget.actionUsed) {
-      return { refused: `${label} takes the whole Attack action, and ${sheet.name} has already attacked or used their action this turn.` };
+      return { refused: { error: `${label} takes the whole Attack action, and ${sheet.name} has already attacked or used their action this turn. It waits for their next turn.`, refused: "rules" } };
     }
     const spent = spendAction(budget, "action", label, sheet.name);
     if (!spent.ok) {
-      return { refused: spent.error };
+      return { refused: toolError(spent) };
     }
     return {
       budget: {
@@ -70,13 +71,13 @@ export function hunterMultiattack(input: {
     };
   }
   if (budget.oncePerTurn.includes(`${STRUCK}${input.enemyId}`)) {
-    return { refused: `${label} makes one attack against each creature, and ${sheet.name} has already attacked this one with it.` };
+    return { refused: { error: `${label} makes one attack against each creature, and ${sheet.name} has already attacked this one with it. They can make it without this creature.`, retry: true } };
   }
   if (kind === "volley") {
     const first = open.slice(`${OPEN}volley:`.length);
     const apart = tilesBetween(input.encounterId, first, input.enemyId);
     if (apart !== null && apart > 2) {
-      return { refused: "Volley's targets stand within 10 feet of the point the first one marked; this creature is farther." };
+      return { refused: { error: "Volley's targets stand within 10 feet of the point the first one marked; this creature is farther. They can make it without this creature.", retry: true } };
     }
   }
   return {

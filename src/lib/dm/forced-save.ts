@@ -11,18 +11,21 @@
 import { diehardSaveAdvantage, shieldMasterSaveBonus } from "@/lib/srd/feat-combat";
 import { LUCK_SPEND } from "@/lib/dm/roll-riders";
 import { spendLuckCounter } from "@/lib/srd/class-resources";
-import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
+import { allocateSeq, getCampaignById, type Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import type { EncounterEnemy } from "@/lib/db/encounters";
 import { insertRoll } from "@/lib/db/rolls";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { d20Expression, rollExpression } from "@/lib/dice";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
-import { saveModFor, type SaveAbility } from "@/lib/bestiary/statblock";
+import { saveModFor } from "@/lib/bestiary/enemy-numbers";
+import type { SaveAbility } from "@/lib/bestiary/statblock";
 import { allySaveAura } from "@/lib/dm/aura";
 import { mergeAdvantage, removeConditions, rollDerivation } from "@/lib/dm/condition-logic";
 import { effectOutcome, rollEffectExtras } from "@/lib/dm/effect-tools";
 import { resolveRollExpression, type RollArgs } from "@/lib/dm/rolls";
+import { listedAgainst, type SaveAgainst } from "@/lib/dm/roll-about";
+import { isSheetFoe } from "@/lib/dm/combat-sides-logic";
 import { INSPIRATION_SPEND, spendInspirationCounter } from "@/lib/dm/roll-riders";
 import { inDirectSunlight } from "@/lib/dm/sunlight";
 import { obscuredFor } from "@/lib/dm/zone-rules";
@@ -181,7 +184,8 @@ export function rollCharacterSave(
   ability: SaveAbility,
   dc: number,
   detail: string,
-  against?: string,
+  // What the save resists, for the traits keyed to it (src/lib/dm/roll-about.ts).
+  resists?: SaveAgainst,
   // The creature forcing the save, for the features that answer it
   // (Supernatural Defense against the Monster Slayer's prey).
   from?: EncounterEnemy | null,
@@ -196,14 +200,14 @@ export function rollCharacterSave(
   const sheet = getSheetById(stale.id) ?? stale;
   const shieldSave = single && ability === "dex" ? shieldMasterSaveBonus(sheet) : 0;
   // Diehard: advantage against what would exhaust them.
-  const diehard = diehardSaveAdvantage(sheet, `${detail} ${against ?? ""}`);
+  const diehard = diehardSaveAdvantage(sheet, resists?.against);
   const claimed = claim ?? (diehard ? { advantage: "advantage" as const, reason: "Diehard: advantage against exhaustion" } : null);
   const resolved = resolveRollExpression(
     {
       kind: "saving_throw",
       ability,
       dc,
-      ...(against ? { against } : {}),
+      ...resists,
       ...(claimed ? { advantage: claimed.advantage, advantageReason: claimed.reason } : {}),
     } as RollArgs,
     sheet,
@@ -254,6 +258,26 @@ export function rollCharacterSave(
   };
 }
 
+// Black Flag prints resistance to a condition (advantage on a save against
+// it) and, for a giant's prone, vulnerability (disadvantage). The lean a
+// save against these conditions gets.
+export function conditionSaveLean(
+  stats: { conditionResist?: string; conditionVulnerable?: string },
+  against: string | string[] | undefined,
+): Array<"advantage" | "disadvantage"> {
+  const wanted = (Array.isArray(against) ? against : against ? [against] : []).map((name) => name.trim().toLowerCase().replace(/\s+\d+$/, "")).filter(Boolean);
+  if (!wanted.length) {
+    return [];
+  }
+  const listed = (line: string | undefined) => (line ?? "").toLowerCase().split(/\s*,\s*/).filter(Boolean);
+  const resisted = listed(stats.conditionResist);
+  const vulnerable = listed(stats.conditionVulnerable);
+  return [
+    ...(wanted.some((name) => resisted.includes(name)) ? ["advantage" as const] : []),
+    ...(wanted.some((name) => vulnerable.includes(name)) ? ["disadvantage" as const] : []),
+  ];
+}
+
 // A creature's save from its stat block, with its conditions honoured: a
 // paralyzed, stunned, unconscious or petrified creature fails Strength and
 // Dexterity saves with no die rolled, a restrained one rolls Dexterity saves
@@ -280,8 +304,33 @@ export function rollEnemySave(
     // (src/lib/dm/legendary-tools.ts). A save that only halves damage is
     // left to the creature's choice (legendary_resist).
     resist?: boolean;
+    // The conditions a failure lays, or the one the save ends: a block
+    // resistant to one rolls with advantage, vulnerable to one with
+    // disadvantage (Black Flag's condition resistances).
+    against?: string | string[];
   } = {},
 ): ForcedSave {
+  // A character fighting the party, seen as a foe (sheet-foe.ts), saves as
+  // the character it is: proficiency, auras, Bless and its dice card.
+  const asSheet = isSheetFoe(enemy) ? getSheetById(enemy.id) : null;
+  const campaign = asSheet ? getCampaignById(campaignId) : null;
+  if (asSheet && campaign) {
+    const against = listedAgainst((Array.isArray(options.against) ? options.against[0] : options.against)?.trim().toLowerCase());
+    return rollCharacterSave(
+      campaign,
+      options.record?.turn ?? null,
+      asSheet,
+      ability,
+      dc,
+      options.record?.detail ?? `${asSheet.name}: ${ability.toUpperCase()} save`,
+      {
+        ...(against ? { against } : {}),
+        ...(options.magical ? { magical: true } : {}),
+      },
+      null,
+      options.advantage ? { advantage: "advantage", reason: "the effect's own advantage" } : options.disadvantage ? { advantage: "disadvantage", reason: "the effect's own disadvantage" } : null,
+    );
+  }
   const derivation = rollDerivation(enemy.conditions, "saving_throw", ability);
   if (derivation.autoFail) {
     // Legendary Resistance answers a save failed outright as well.
@@ -298,13 +347,18 @@ export function rollEnemySave(
   // Authored subclass features (Magical Ambush, Hound of Ill Omen, Unsettling Words): authored-saves.ts.
   const authored = authoredEnemySave(campaignId, enemy, { magical: options.magical });
   const resistsMagic = options.magical === true && hasTrait(enemy.stats, "magicResistance");
+  const against = conditionSaveLean(enemy.stats, options.against);
+  // Sunlight Weakness: its saves are at disadvantage in sunlight.
+  const sunWeak = hasTrait(enemy.stats, "sunlightWeakness") && inDirectSunlight(campaignId);
   const worn = enemyExhaustion(enemy.conditions) >= 3;
   const advantage = mergeAdvantage([
     ...(worn ? ["disadvantage" as const] : []),
-    derivation.advantage,
+    ...derivation.sources,
     ...(effect.advantage ? ["advantage" as const] : []),
     ...(effect.disadvantage ? ["disadvantage" as const] : []),
     ...(resistsMagic ? ["advantage" as const] : []),
+    ...against,
+    ...(sunWeak ? ["disadvantage" as const] : []),
     ...(options.advantage ? ["advantage" as const] : []),
     ...(options.disadvantage ? ["disadvantage" as const] : []),
     ...riders.advantageSources,

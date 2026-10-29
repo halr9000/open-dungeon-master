@@ -33,7 +33,7 @@ export async function POST(
     return Response.json({ error: "Message not found." }, { status: 404 });
   }
   if (message.authorType !== "dm") {
-    return Response.json({ error: "Only the DM's narration can be voiced." }, { status: 400 });
+    return Response.json({ error: "Only the GM's narration can be voiced." }, { status: 400 });
   }
 
   if (ttsBackend().provider === "off") {
@@ -48,6 +48,8 @@ export async function POST(
     context.campaign.gameSettings,
     // A passage spoken as someone is read as them again, not as the narrator.
     message.speaker ?? null,
+    // Asked for by name: read even when narration has fallen behind.
+    { onDemand: true },
   );
 
   if (!existsSync(narrationAudioPath(campaignId, message.id))) {

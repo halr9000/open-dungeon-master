@@ -12,7 +12,7 @@ import { CONDITIONS, DAMAGE_TYPES } from "@/lib/bestiary/kit";
 import { BLOCK_LIMITS, SAVE_ABILITY_IDS } from "@/lib/bestiary/block-check";
 import type { MonsterDraft } from "@/lib/bestiary/monster-draft";
 import type { MonsterAbility } from "@/lib/dm/monster-abilities";
-import type { RoutineStep } from "@/lib/bestiary/attack-text";
+import type { RoutineStep } from "@/lib/bestiary/multiattack-text";
 import { Field, FieldLabel, OptionalStepper, addChip, chip, chipOn, chipRow, rowIcon } from "@/app/workshop/kit";
 
 // The actions with numbers the engine runs (src/lib/dm/enemy-casting.ts,
@@ -155,7 +155,7 @@ export function AbilitiesEditor({ draft, onChange }: Props) {
         </button>
       ) : null}
       <span className="text-[11px] text-stone-500">
-        The DM spends these through the monster&apos;s turn: the server rolls the save, the dice and the recharge, and a legendary one costs its actions.
+        The GM spends these through the monster&apos;s turn: the server rolls the save, the dice and the recharge, and a legendary one costs its actions.
       </span>
     </div>
   );

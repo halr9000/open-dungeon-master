@@ -6,15 +6,17 @@ import {
   listRunningAiTurns,
   saveDmTurn,
 } from "@/lib/db/dm-turns";
+import { failPendingLocationMaps } from "@/lib/db/locations";
 import { isAgentTurn } from "@/lib/dm/agent-turn";
 import { enqueueDmJob } from "@/lib/dm/queue";
 import { restoreXCardPauses } from "@/lib/dm/safety";
+import { restoreTableBreaks } from "@/lib/dm/table-break";
 import { haltDmTurn, resumeDmTurn } from "@/lib/dm/turn";
 
 // What a restart leaves wrong in the DM's state, put right once when a
 // server process starts (src/instrumentation.ts), before it answers its
-// first request. The queue, the status line and the X-card's pause live in
-// memory and die with a process; the turns and the safety events are in the
+// first request. The queue, the status line, the X-card's pause and a table
+// break live in memory and die with a process; the turns and the safety events are in the
 // database and outlive it, so the database is read for what the memory
 // held.
 //
@@ -30,11 +32,16 @@ declare global {
 }
 
 // What the table reads in the notice of a turn a restart cut short.
-export const RESTART_HALT = "The server restarted while the Dungeon Master was working on this turn.";
+export const RESTART_HALT = "The server restarted while the Game Master was working on this turn.";
+
+// What a place's map placeholder reads when a restart dropped its render.
+export const RESTART_MAP_FAILED = "The server restarted before this map was drawn.";
 
 export type RestartRecovery = {
   // Tables whose raised X-card was raised again.
   xCards: number;
+  // Tables on a break, paused again.
+  breaks: number;
   // Turns the last process was running, now failed with a Retry notice.
   halted: number;
   // Parked turns whose last roll was in, resumed through the queue.
@@ -42,6 +49,8 @@ export type RestartRecovery = {
   // Parked turns with every roll in that the story has moved past, or with
   // no model to hand the rolls to, closed.
   closed: number;
+  // Map renders the last process had queued or running, now failed.
+  maps: number;
 };
 
 export function recoverDmAfterRestart(): RestartRecovery | null {
@@ -51,14 +60,20 @@ export function recoverDmAfterRestart(): RestartRecovery | null {
   globalThis.__odmDmRecovered = true;
   // First, so anything queued below waits at the gate the table left up.
   const xCards = restoreXCardPauses().length;
+  const breaks = restoreTableBreaks().length;
   const halted = haltInterruptedTurns();
   const { resumed, closed } = resumeOrphanedParkedTurns();
-  const recovery = { xCards, halted, resumed, closed };
+  // The map queue was in memory too: a place still waiting on a render
+  // would chart forever under the narration that introduced it.
+  const maps = failPendingLocationMaps(RESTART_MAP_FAILED);
+  const recovery = { xCards, breaks, halted, resumed, closed, maps };
   const done = [
     xCards ? `${xCards} raised X-card(s) raised again` : "",
+    breaks ? `${breaks} table break(s) paused again` : "",
     halted ? `${halted} interrupted turn(s) halted for Retry` : "",
     resumed ? `${resumed} parked turn(s) resumed with the rolls already in` : "",
     closed ? `${closed} parked turn(s) the story has moved past closed` : "",
+    maps ? `${maps} interrupted map render(s) marked failed` : "",
   ].filter(Boolean);
   if (done.length) {
     console.log(`[dm] after the restart: ${done.join("; ")}`);
@@ -100,12 +115,12 @@ function haltInterruptedTurns(): number {
 }
 
 // The resume a table's last roll queued lived in the queue's memory, so a
-// restart before it ran (another job held the queue, or the X-card was up)
-// left the turn parked with every roll in and nothing left to enter:
-// submitting again is refused as already resolved, and Retry as waiting on
-// dice. The table's newest AI turn is resumed now, as the roll would have
-// resumed it, behind any X-card restored above; resumeDmTurn's own checks
-// make a second run a no-op. An older one the story has moved past (a newer
+// restart before it ran (another job held the queue, or the X-card or a
+// break was up) left the turn parked with every roll in and nothing left to
+// enter: submitting again is refused as already resolved, and Retry as
+// waiting on dice. The table's newest AI turn is resumed now, as the roll
+// would have resumed it, behind any X-card or break restored above;
+// resumeDmTurn's own checks make a second run a no-op. An older one the story has moved past (a newer
 // AI turn narrated since) is failed instead, with no model call and no
 // notice, the same "moved on" a retry is refused with: its roll was
 // published and applied when it was entered, and narrating it now would
@@ -124,7 +139,7 @@ function resumeOrphanedParkedTurns(): { resumed: number; closed: number } {
       continue;
     }
     if (turn.conversation.length && getLatestAiTurnId(orphan.campaignId) === orphan.id) {
-      enqueueDmJob(orphan.campaignId, () => resumeDmTurn(orphan.campaignId, orphan.id));
+      enqueueDmJob(orphan.campaignId, () => resumeDmTurn(orphan.campaignId, orphan.id), { kind: "turn" });
       resumed += 1;
       continue;
     }

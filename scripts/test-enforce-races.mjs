@@ -74,7 +74,10 @@ function buildRace(raceId, fields = {}) {
   const race = builder.races.find((entry) => entry.id === raceId);
   const taken = new Set(["athletics", "intimidation", ...(race.skills ?? [])]);
   const classSkills = ["acrobatics", "history", "insight", "perception", "survival"].filter((skill) => !taken.has(skill)).slice(0, 2);
-  const free = ["arcana", "deception", "medicine", "nature"];
+  // A race that names the skills it picks among (the Orc's Primal
+  // Intuition) picks from them.
+  const listed = race.skillChoice?.from ?? [];
+  const free = listed.length ? listed.filter((skill) => !taken.has(skill) && !classSkills.includes(skill)) : ["arcana", "deception", "medicine", "nature"];
   return builder.build({
     race: raceId,
     class: "fighter",
@@ -86,7 +89,7 @@ function buildRace(raceId, fields = {}) {
     racialAsi: ["str", "dex", "con"].slice(0, race.asiChoice?.count ?? 0),
     racialSkills: free.slice(0, race.skillChoice?.count ?? 0),
     racialTool: race.toolChoice?.from[0] ?? "",
-    racialCantrip: race.cantripChoice ? "Prestidigitation" : "",
+    racialCantrips: race.cantripChoice ? ["Prestidigitation"] : [],
     // A dragonborn chooses an ancestry; a race that repeats one of the
     // soldier's skills chooses another in its place.
     racialAncestry: raceId === "dragonborn" ? "red" : "",
@@ -136,8 +139,8 @@ await test("the bundled race table matches the rulebook: bonuses, speed, size, l
 });
 
 await test("every bundled race is well formed, and none lowers a score", () => {
-  assert.equal(srd.SRD_RACES.length, 31);
-  assert.equal(new Set(srd.SRD_RACES.map((race) => race.id)).size, 31);
+  assert.equal(srd.SRD_RACES.length, 32);
+  assert.equal(new Set(srd.SRD_RACES.map((race) => race.id)).size, 32);
   for (const race of srd.SRD_RACES) {
     assert.ok([25, 30, 35].includes(race.speed), `${race.id} speed ${race.speed}`);
     assert.ok(["Small", "Medium"].includes(race.size), `${race.id} size`);
@@ -261,7 +264,7 @@ await test("the builder asks for every choice the race offers", () => {
   assert.equal(buildRace("half_elf", { racialSkills: ["arcana"] }).blocker?.kind, "error");
   assert.equal(buildRace("half_elf", { bonusLanguages: [] }).blocker?.kind, "error");
   assert.equal(buildRace("hill_dwarf", { racialTool: "" }).blocker?.kind, "error");
-  assert.equal(buildRace("high_elf", { racialCantrip: "" }).blocker?.kind, "error");
+  assert.equal(buildRace("high_elf", { racialCantrips: [] }).blocker?.kind, "error");
   assert.equal(buildRace("variant_human", { racialSkills: [] }).blocker?.kind, "error");
   assert.equal(buildRace("human", { bonusLanguages: [] }).blocker?.kind, "error");
 });
@@ -293,6 +296,17 @@ await test("a racial skill also taken as a class skill is asked for again, not l
   const apart = buildRace("variant_human", { racialSkills: ["arcana"], chosenSkills: ["perception", "survival"] });
   assert.equal(apart.blocker, null, apart.blocker?.message);
   assert.equal(apart.sheet.proficiencies.skills.length, 5);
+});
+
+await test("the Orc's Primal Intuition picks two skills from its seven, never another", () => {
+  // An off-list pick is dropped, and the Orc's skills are asked for again.
+  const offList = buildRace("orc", { racialSkills: ["arcana", "medicine"] });
+  assert.equal(offList.blocker?.kind, "error");
+  assert.match(offList.blocker.message, /Orc heritage/);
+  assert.equal(offList.sheet?.proficiencies.skills.includes("arcana") ?? false, false);
+  const onList = buildRace("orc", { racialSkills: ["medicine", "nature"] });
+  assert.equal(onList.blocker, null, onList.blocker?.message);
+  assert.ok(["medicine", "nature"].every((skill) => onList.sheet.proficiencies.skills.includes(skill)));
 });
 
 await test("with the content pack, the SRD's races come through its rows unchanged", () => {
@@ -392,8 +406,8 @@ await test("A dragonborn's Breath Weapon deals its ancestry's damage type agains
       });
       const spent = await breathers.invoke("use_resource", { characterId: hero.id, resource: "Breath Weapon" });
       assert.equal(spent.ok, true, spent.error);
-      assert.equal(spent.result.dice, dice, `${ancestryId} at ${level}`);
-      assert.equal(spent.result.damageType, damageType, `${ancestryId} at ${level}`);
+      assert.equal(spent.result.damage, dice, `${ancestryId} at ${level}`);
+      assert.equal(spent.result.type, damageType, `${ancestryId} at ${level}`);
       assert.equal(spent.result.saveAbility, save, `${ancestryId} at ${level}`);
       assert.equal(spent.result.dc, 8 + 2 + proficiency, `${ancestryId} at ${level}`);
     }

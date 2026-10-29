@@ -20,6 +20,9 @@ import {
 import { isEmptyMapSkin, normalizeMapSkin, type MapSkin } from "@/lib/battlemap/skins";
 import { isUploadedImagePath } from "@/lib/uploads";
 import { dedupeName } from "@/lib/workshop/import";
+import { parseMapAddonView, type MapAddonView } from "@/lib/addons/map-view";
+import { writeMapAddonView } from "@/lib/db/map-addon-view";
+import { textKey } from "@/lib/language/text-logic";
 
 // The map library: maps a DM built before anybody needed them.
 //
@@ -68,6 +71,8 @@ export type PreparedMap = {
   // What it is painted with (src/lib/battlemap/skins.ts). Empty means the
   // default for the campaign's setting and this map's theme.
   skin: MapSkin;
+  // What a map addon left for its board view (src/lib/addons/map-view.ts).
+  addonView: MapAddonView | null;
   updatedAt: string;
 };
 
@@ -95,6 +100,7 @@ type Row = {
   outdoors: number | null;
   drawings_json: string | null;
   skin_json: string | null;
+  addon_view_json: string | null;
   updated_at: string;
 };
 
@@ -126,6 +132,7 @@ function mapRow(row: Row): PreparedMap {
     ambience: normalizeAmbience(parseJson<unknown>(row.ambience_json ?? "{}", {})),
     drawings: normalizeDrawings(parseJson<unknown>(row.drawings_json ?? "[]", []), row.width, row.height),
     skin: normalizeMapSkin(parseJson<unknown>(row.skin_json ?? "{}", {})),
+    addonView: parseMapAddonView(row.addon_view_json),
     updatedAt: row.updated_at,
   };
 }
@@ -170,6 +177,7 @@ export type PreparedMapInput = {
   scene?: PreparedScene;
   outdoors?: boolean | null;
   skin?: MapSkin | null;
+  addonView?: MapAddonView | null;
 };
 
 // Every scene column written through one normalizer, so a prepared map can
@@ -206,7 +214,7 @@ function setPreparedMapSkin(mapId: string, skin: unknown) {
 export function createPreparedMap(input: PreparedMapInput): PreparedMap {
   // dedupeName compares and records lowercased, which is the same collation
   // the table's UNIQUE constraint uses.
-  const taken = new Set(listPreparedMaps(input.campaignId).map((map) => map.name.toLowerCase()));
+  const taken = new Set(listPreparedMaps(input.campaignId).map((map) => textKey(map.name)));
   const name = dedupeName(input.name, taken);
   const backdrop = normalizeBackdrop(input.backdrop?.path ?? "", input.backdrop?.transform);
   const scene = sceneColumns(input.scene, input.terrain, input.width, input.height);
@@ -253,6 +261,9 @@ export function createPreparedMap(input: PreparedMapInput): PreparedMap {
   if (!isEmptyMapSkin(input.skin)) {
     setPreparedMapSkin(id, input.skin);
   }
+  if (input.addonView) {
+    writeMapAddonView("prepared_maps", id, input.addonView);
+  }
   return getPreparedMap(input.campaignId, id) as PreparedMap;
 }
 
@@ -263,8 +274,8 @@ export function normalizeTags(tags: string[]): string[] {
   const out: string[] = [];
   for (const tag of tags) {
     const clean = String(tag).trim().toLowerCase().slice(0, 24);
-    if (clean && !seen.has(clean)) {
-      seen.add(clean);
+    if (clean && !seen.has(textKey(clean))) {
+      seen.add(textKey(clean));
       out.push(clean);
     }
     if (out.length >= 8) {
@@ -316,7 +327,7 @@ export function updatePreparedMap(
           new Set(
             listPreparedMaps(campaignId)
               .filter((map) => map.id !== mapId)
-              .map((map) => map.name.toLowerCase()),
+              .map((map) => textKey(map.name)),
           ),
         )
       : existing.name;
@@ -409,7 +420,7 @@ export function copyPreparedMaps(fromCampaignId: string, toCampaignId: string): 
   if (!source.length) {
     return 0;
   }
-  const taken = new Set(listPreparedMaps(toCampaignId).map((map) => map.name.toLowerCase()));
+  const taken = new Set(listPreparedMaps(toCampaignId).map((map) => textKey(map.name)));
   const db = getDatabase();
   let copied = 0;
   db.transaction(() => {
@@ -458,15 +469,11 @@ export function copyPreparedMaps(fromCampaignId: string, toCampaignId: string): 
       if (!isEmptyMapSkin(map.skin)) {
         setPreparedMapSkin(copyId, map.skin);
       }
+      if (map.addonView) {
+        writeMapAddonView("prepared_maps", copyId, map.addonView);
+      }
       copied += 1;
     }
   })();
   return copied;
-}
-
-export function countPreparedMaps(campaignId: string): number {
-  const row = getDatabase()
-    .prepare(`SELECT COUNT(*) AS n FROM prepared_maps WHERE campaign_id = ?`)
-    .get(campaignId) as { n: number };
-  return row.n;
 }

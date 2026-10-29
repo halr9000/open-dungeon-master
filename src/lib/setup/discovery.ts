@@ -5,6 +5,8 @@
 // reading the answers are in discovery-logic.ts.
 import { comfyStatus, type ComfyStatus } from "@/lib/comfyui";
 import { hostAvailability } from "@/lib/harness/discover";
+import { describeMachine, machine, storytellerFit, type StorytellerFit } from "@/lib/model-registry/hardware";
+import { replyTimeout } from "@/lib/reply-timeout";
 import {
   COMFYUI_PORT,
   KOKORO_PORT,
@@ -19,10 +21,12 @@ import {
   readModelsAnswer,
   recommendedModel,
   scanHosts,
+  sameServer,
   textPorts,
   type ListedModel,
   type TextServerKind,
 } from "@/lib/setup/discovery-logic";
+import { serverEnv } from "@/lib/server-env";
 
 // Long enough for a busy llama-server (or a machine deep in swap) to answer
 // /models while it decodes; every port is asked at once, so the whole scan
@@ -39,6 +43,12 @@ export type FoundTextServer = {
   needsKey: boolean;
   models: ListedModel[];
   recommended: string;
+  // Ollama at the address the server's own Ollama provider uses
+  // (OLLAMA_BASE_URL). The wizard connects it through Ollama's native API,
+  // where every call carries the window (model-client.ts
+  // localContextTokens): its OpenAI-style endpoint ignores a window sent
+  // with the request and runs Ollama's own, 4K on a card under 24 GB.
+  ollamaNative?: boolean;
 };
 
 export type ScanResult = {
@@ -49,11 +59,14 @@ export type ScanResult = {
   comfyui: ({ url: string } & Pick<ComfyStatus, "checkpoints" | "models" | "hardware">) | null;
   kokoro: { url: string; voices: string[] } | null;
   whisper: { url: string } | null;
+  // This machine and the local storyteller it can run, for the wizard's
+  // hints when no model server answered.
+  machine?: { summary: string; fit: StorytellerFit };
 };
 
 async function getJson(url: string, timeoutMs: number, headers: Record<string, string> = {}) {
   try {
-    const response = await fetch(url, { cache: "no-store", headers, signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(url, { cache: "no-store", headers, signal: replyTimeout(timeoutMs) });
     const body = await response.json().catch(() => null);
     return { status: response.status, body };
   } catch {
@@ -74,6 +87,12 @@ async function findTextServer(host: string, port: number, guess: TextServerKind)
   if (verdict === "found" && !body) {
     return null;
   }
+  const ollamaBase = serverEnv("OLLAMA_BASE_URL", "http://127.0.0.1:11434");
+  const ollamaNative =
+    kind === "ollama" &&
+    verdict === "found" &&
+    sameServer(baseUrl, ollamaBase) &&
+    (await getJson(`${originOf(host, port)}/api/tags`, SCAN_TIMEOUT_MS)).status === 200;
   return {
     kind,
     label: TEXT_SERVER_LABEL[kind],
@@ -81,6 +100,7 @@ async function findTextServer(host: string, port: number, guess: TextServerKind)
     needsKey: verdict === "needs-key",
     models,
     recommended: recommendedModel(models),
+    ...(ollamaNative ? { ollamaNative } : {}),
   };
 }
 
@@ -120,11 +140,12 @@ export async function scanLocalServices(ownPort = process.env.PORT): Promise<Sca
   const inContainer = hostAvailability() === "container";
   const hosts = scanHosts(inContainer);
   const ports = textPorts(ownPort);
-  const [textResults, comfyui, kokoro, whisper] = await Promise.all([
+  const [textResults, comfyui, kokoro, whisper, here] = await Promise.all([
     Promise.all(hosts.flatMap((host) => ports.map(({ port, guess }) => findTextServer(host, port, guess)))),
     firstOf(hosts, findComfy),
     firstOf(hosts, findKokoro),
     firstOf(hosts, findWhisper),
+    machine(),
   ]);
   // Host networking answers the same server on both names; keep the first.
   const seenPorts = new Set<string>();
@@ -135,7 +156,7 @@ export async function scanLocalServices(ownPort = process.env.PORT): Promise<Sca
     seenPorts.add(port);
     return true;
   });
-  return { inContainer, text, comfyui, kokoro, whisper };
+  return { inContainer, text, comfyui, kokoro, whisper, machine: { summary: describeMachine(here), fit: storytellerFit(here) } };
 }
 
 export type ModelListing =

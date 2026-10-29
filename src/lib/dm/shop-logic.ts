@@ -1,10 +1,11 @@
-import { COPPER_PER_GOLD, formatCopper, parseCoins } from "@/lib/srd/currency";
-import { compareNames } from "@/lib/language/text-logic";
+import { COPPER_PER_GOLD, formatPrice, packCostCopper } from "@/lib/srd/currency";
+import { compareNames, textKey } from "@/lib/language/text-logic";
+import { lineNamed } from "@/lib/srd/item-row";
 
 // Shops (docs/vtt-parity-implementation-plan.md 11.1): pure pricing and
 // stocking. Prices come from the content pack's cost strings, marked up by
-// the settlement's size; a haggle moves the markup one step; the keeper
-// buys at half. Stock is a list of lines the DM or a preset writes.
+// the settlement's size; a haggle moves the price for the characters at
+// the counter, and only for them; the keeper buys at half. Stock is a list of lines the DM or a preset writes.
 //
 // A shelf a person wrote by hand is kept apart from the stock it starts
 // (#171): the stock is what is on the shelf now, after the table's
@@ -17,7 +18,9 @@ export type ShopSize = (typeof SHOP_SIZES)[number];
 export const SHOP_KINDS = ["general", "smith", "apothecary", "outfitter", "curiosities"] as const;
 export type ShopKind = (typeof SHOP_KINDS)[number];
 
-export type StockLine = { itemName: string; qty: number; priceCp: number; note: string };
+// srdName: the SRD or pack row a line named in the table's language is,
+// picked from the catalog, so what is bought is that row.
+export type StockLine = { itemName: string; qty: number; priceCp: number; note: string; srdName?: string };
 
 // The dearest a shelf line may be priced, in copper (a million gold): high
 // enough for any legendary item, low enough that a typed slip cannot put a
@@ -43,7 +46,10 @@ export type Shop = {
   // The clock instant of the last restock, so the next is due after
   // restockDays of in-world time.
   restockedAt: number;
-  // Characters who already haggled here; one try per visit.
+  // What each haggle here came to, and for whom; one try per character per
+  // visit (a restock is a new visit).
+  haggles: HaggleDeal[];
+  // Every character in those haggles: who has used their try.
   haggledBy: string[];
   createdAt: string;
   updatedAt: string;
@@ -55,6 +61,23 @@ export const MARKUP_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 2] as const;
 
 export const SIZE_MARKUP: Record<ShopSize, number> = { hamlet: 1.25, village: 1.1, town: 1, city: 1 };
 export const SIZE_STOCK_LINES: Record<ShopSize, number> = { hamlet: 6, village: 10, town: 16, city: 24 };
+
+// The skills a haggle may be made with. Persuasion is the ordinary one;
+// Intimidation leans on the keeper and Deception lies to them.
+export const HAGGLE_SKILLS = ["persuasion", "intimidation", "deception"] as const;
+export type HaggleSkill = (typeof HAGGLE_SKILLS)[number];
+
+// One haggle's outcome (Albert's rules, 2026-10-23): the characters who were
+// at the counter together, and how many rungs of the ladder their price sits
+// from the shop's own: -1 for a won haggle, 0 when the keeper held firm, +1
+// for a bad failure (+2 for a bad Intimidation). Anyone not named pays the
+// shop's own price and still has their try. Relative, so when the prep
+// holder changes a shop's prices each deal keeps its step from them.
+export type HaggleDeal = { ids: string[]; steps: number; skill: HaggleSkill };
+
+// A failure this far under the DC or more is a bad one, and only a bad one
+// raises the price.
+export const BAD_FAILURE_MARGIN = 5;
 
 export function normalizeShopSize(raw: unknown): ShopSize {
   return (SHOP_SIZES as readonly string[]).includes(String(raw)) ? (raw as ShopSize) : "village";
@@ -82,12 +105,27 @@ function markupRung(markup: number): number {
   return best;
 }
 
-// A won haggle drops the markup a step; a lost one raises it a step, which
-// is why a haggle is a gamble and not a free discount.
-export function haggleStep(markup: number, success: boolean): number {
+// The markup `steps` rungs from this one, never off the ladder. No step at
+// all leaves the markup exactly as it was, on the ladder or not.
+export function shiftMarkup(markup: number, steps: number): number {
+  if (!steps) {
+    return clampMarkup(markup);
+  }
   const rung = markupRung(clampMarkup(markup));
-  const next = success ? Math.max(0, rung - 1) : Math.min(MARKUP_STEPS.length - 1, rung + 1);
-  return MARKUP_STEPS[next];
+  return MARKUP_STEPS[Math.min(MARKUP_STEPS.length - 1, Math.max(0, rung + Math.round(steps)))];
+}
+
+// What a haggle check comes to, in rungs: a win drops the price a step; a
+// failure holds it firm; a failure by BAD_FAILURE_MARGIN or more raises it a
+// step, or two when the keeper was threatened.
+export function haggleSteps(skill: HaggleSkill, total: number, dc: number): number {
+  if (total >= dc) {
+    return -1;
+  }
+  if (dc - total < BAD_FAILURE_MARGIN) {
+    return 0;
+  }
+  return skill === "intimidation" ? 2 : 1;
 }
 
 // The haggle's DC: harder in a small place with fewer buyers to lose.
@@ -95,9 +133,68 @@ export function haggleDc(size: ShopSize): number {
   return size === "hamlet" ? 17 : size === "village" ? 15 : size === "town" ? 13 : 12;
 }
 
+export function normalizeHaggleSkill(raw: unknown): HaggleSkill | null {
+  const key = textKey(String(raw ?? ""));
+  return HAGGLE_SKILLS.find((skill) => skill === key) ?? null;
+}
+
+// The stored haggles. An entry written before these rules is a bare
+// character id: a try used, at the shop's own price.
+export function normalizeHaggles(raw: unknown): HaggleDeal[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((entry): HaggleDeal[] => {
+    if (typeof entry === "string") {
+      return entry ? [{ ids: [entry], steps: 0, skill: "persuasion" }] : [];
+    }
+    const record = (entry ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(record.ids) ? [...new Set(record.ids.filter((id): id is string => typeof id === "string" && id.length > 0))] : [];
+    const steps = Math.max(-1, Math.min(2, Math.round(Number(record.steps) || 0)));
+    return ids.length ? [{ ids, steps, skill: normalizeHaggleSkill(record.skill) ?? "persuasion" }] : [];
+  });
+}
+
+export function haggledIds(haggles: HaggleDeal[]): string[] {
+  return [...new Set(haggles.flatMap((deal) => deal.ids))];
+}
+
+// The haggle a character was at the counter for at this shop, or null.
+export function dealFor(shop: Pick<Shop, "haggles">, characterId: string | null | undefined): HaggleDeal | null {
+  return characterId ? shop.haggles.find((deal) => deal.ids.includes(characterId)) ?? null : null;
+}
+
+// What this character pays at this shop: the shop's own markup, moved by
+// the haggle they were at the counter for.
+export function markupFor(shop: Pick<Shop, "haggles" | "markup">, characterId?: string | null): number {
+  return shiftMarkup(shop.markup, dealFor(shop, characterId)?.steps ?? 0);
+}
+
+// Whether a deal's steps move this markup at all: at the bottom rung a step
+// down has nowhere to go, and at the top a step up.
+export function stepMoves(markup: number, steps: number): boolean {
+  return shiftMarkup(markup, steps) !== clampMarkup(markup);
+}
+
+// Where a deal's steps leave this markup, in words, for the DM's prompt, the
+// tool's reply and the Market. A step the ladder has no room for is said as
+// the end the price stopped at, never claimed.
+export function dealInWords(markup: number, steps: number): string {
+  if (!steps) {
+    return "unchanged";
+  }
+  if (!stepMoves(markup, steps)) {
+    return steps < 0 ? "already at their lowest" : "already at their highest";
+  }
+  if (steps > 1 && shiftMarkup(markup, steps - 1) === shiftMarkup(markup, steps)) {
+    return "a step higher, as high as they go";
+  }
+  return steps < 0 ? "a step lower" : steps === 1 ? "a step higher" : "two steps higher";
+}
+
 // A pack cost string ("15 gp", "2 sp", "5,000 gp") in copper, or null.
 export function costToCopper(cost: string): number | null {
-  const parsed = parseCoins(cost);
+  const parsed = packCostCopper(cost);
   return parsed === null || parsed <= 0 ? null : parsed;
 }
 
@@ -111,27 +208,12 @@ export function offerPriceCp(listCp: number): number {
   return Math.max(1, Math.floor(listCp / 2));
 }
 
-export function formatPriceCp(cp: number): string {
-  return formatCopper(cp);
-}
-
-export function goldFromCopper(cp: number): number {
-  return Math.round((cp / COPPER_PER_GOLD) * 100) / 100;
-}
-
-// Find a stock line by name, loosely: exact first, then a line that
-// contains the words asked for.
+// A stock line by the names a carried line answers to (lineNamed): its
+// whole name, else the row it is listed as, so "Longsword" buys the "Spada
+// lunga" picked from the catalog. A miss is refused with the shelf listed.
 export function findStockLine(stock: StockLine[], name: string): StockLine | null {
-  const wanted = name.trim().toLowerCase();
-  if (!wanted) {
-    return null;
-  }
-  const exact = stock.find((line) => line.itemName.toLowerCase() === wanted);
-  if (exact) {
-    return exact;
-  }
-  const loose = stock.filter((line) => line.itemName.toLowerCase().includes(wanted) || wanted.includes(line.itemName.toLowerCase()));
-  return loose.length === 1 ? loose[0] : null;
+  const rows = stock.map((line) => ({ name: line.itemName, srdName: line.srdName }));
+  return stock[lineNamed(rows, name)] ?? null;
 }
 
 // Take qty of a line out of the stock, dropping it at zero; null when the
@@ -144,56 +226,109 @@ export function takeStock(stock: StockLine[], itemName: string, qty: number): St
   return stock.map((entry) => (entry === line ? { ...entry, qty: entry.qty - qty } : entry)).filter((entry) => entry.qty > 0);
 }
 
-// Put qty of an item into stock at the keeper's list price, merging by name.
-export function addStock(stock: StockLine[], itemName: string, qty: number, priceCp: number, note = ""): StockLine[] {
-  const existing = stock.find((line) => line.itemName.toLowerCase() === itemName.toLowerCase());
+// Put qty of an item into stock at the keeper's list price, merging by name,
+// with the row it is.
+export function addStock(stock: StockLine[], itemName: string, qty: number, priceCp: number, srdName?: string): StockLine[] {
+  const existing = stock.find((line) => textKey(line.itemName) === textKey(itemName));
   if (existing) {
     return stock.map((line) => (line === existing ? { ...line, qty: line.qty + qty } : line));
   }
-  return [...stock, { itemName: itemName.slice(0, 80), qty, priceCp: Math.max(1, Math.round(priceCp)), note: note.slice(0, 120) }];
+  return [...stock, { itemName: itemName.slice(0, 80), qty, priceCp: Math.max(1, Math.round(priceCp)), note: "", ...(srdName ? { srdName } : {}) }];
 }
 
-// Stock from a pool of priced items: a fixed count of lines for the size,
-// chosen by the dice handed in, a few of each of the cheap things and one
-// of anything dear.
+// The magic a shelf stocks by chance, whatever the settlement's size (SRD
+// 5.1, Selling Treasure: "aside from a few common magic items, you won't
+// normally come across magic items or spells to purchase"). Anything rarer
+// reaches a shelf only when the DM puts it there (a prepared shelf in the
+// workshop's Market, or open_shop's stock), at its rarity's value.
+export const SHELF_RARITIES: Record<ShopSize, readonly string[]> = {
+  hamlet: ["common"],
+  village: ["common"],
+  town: ["common"],
+  city: ["common"],
+};
+
+// How much of a shelf each rarity takes, by weight, so a city's curiosity
+// shop is mostly things a party might afford beside a few to save for.
+// Goods with no rarity weigh as commons.
+const RARITY_WEIGHT: Record<string, number> = { "": 3, common: 3, uncommon: 2, rare: 1 };
+
+// One of the items left: a rarity by its weight when the pool mixes them,
+// then any item of it.
+function pickIndex(items: ReadonlyArray<{ rarity: string }>, random: () => number): number {
+  const tiers = [...new Set(items.map((item) => item.rarity))];
+  if (tiers.length < 2) {
+    return Math.floor(random() * items.length);
+  }
+  const weights = tiers.map((tier) => RARITY_WEIGHT[tier] ?? 1);
+  let roll = random() * weights.reduce((sum, weight) => sum + weight, 0);
+  const tier = tiers.find((_, index) => (roll -= weights[index]) < 0) ?? tiers[tiers.length - 1];
+  const inTier = items.flatMap((item, index) => (item.rarity === tier ? [index] : []));
+  return inTier[Math.floor(random() * inTier.length)];
+}
+
+// Stock from a pool of priced items: the staples the pool marks first, then
+// a fixed count of lines for the size, chosen by the dice handed in; a few of
+// each of the cheap things and one of anything dear. A magic item comes only
+// in the rarities the size sells.
 export function stockFromPool(
-  pool: Array<{ name: string; cost: string; category?: string }>,
+  pool: Array<{ name: string; cost: string; category?: string; staple?: boolean; rarity?: string }>,
   size: ShopSize,
   random: () => number = Math.random,
 ): StockLine[] {
   const priced = pool
-    .map((item) => ({ name: item.name, cp: costToCopper(item.cost) }))
-    .filter((item): item is { name: string; cp: number } => item.cp !== null);
+    .filter((item) => !item.rarity || SHELF_RARITIES[size].includes(item.rarity))
+    .map((item) => ({ name: item.name, cp: costToCopper(item.cost), staple: Boolean(item.staple), rarity: item.rarity ?? "" }))
+    .filter((item): item is { name: string; cp: number; staple: boolean; rarity: string } => item.cp !== null);
+  const line = (item: { name: string; cp: number }): StockLine => {
+    const qty = item.cp >= 50 * COPPER_PER_GOLD ? 1 : item.cp >= 5 * COPPER_PER_GOLD ? 1 + Math.floor(random() * 3) : 2 + Math.floor(random() * 6);
+    return { itemName: item.name, qty, priceCp: item.cp, note: "" };
+  };
+  const byName = (a: StockLine, b: StockLine) => compareNames(a.itemName, b.itemName);
+  const staples = priced.filter((item) => item.staple).map(line).sort(byName);
   const picked: StockLine[] = [];
-  const remaining = [...priced];
+  const remaining = priced.filter((item) => !item.staple);
   const want = Math.min(SIZE_STOCK_LINES[size], remaining.length);
   while (picked.length < want && remaining.length) {
-    const index = Math.floor(random() * remaining.length);
-    const [item] = remaining.splice(index, 1);
-    const qty = item.cp >= 50 * COPPER_PER_GOLD ? 1 : item.cp >= 5 * COPPER_PER_GOLD ? 1 + Math.floor(random() * 3) : 2 + Math.floor(random() * 6);
-    picked.push({ itemName: item.name, qty, priceCp: item.cp, note: "" });
+    const [item] = remaining.splice(pickIndex(remaining, random), 1);
+    picked.push(line(item));
   }
-  return picked.sort((a, b) => compareNames(a.itemName, b.itemName));
+  // Staples lead, so the twelve lines the prompt and the tool's reply show
+  // always hold them.
+  return [...staples, ...picked.sort(byName)];
 }
 
 // A restock of a prepared shelf: every prepared line back up to its
 // prepared count at its prepared price, in the author's order, and anything
 // the keeper bought from the party since still on the shelf after them.
 export function refillStock(stock: StockLine[], prepared: StockLine[]): StockLine[] {
-  const now = new Map(stock.map((line) => [line.itemName.toLowerCase(), line]));
+  const now = new Map(stock.map((line) => [textKey(line.itemName), line]));
   const refilled = prepared.map((line) => {
-    const current = now.get(line.itemName.toLowerCase());
+    const current = now.get(textKey(line.itemName));
     return { ...line, qty: Math.max(line.qty, current?.qty ?? 0) };
   });
-  const authored = new Set(prepared.map((line) => line.itemName.toLowerCase()));
-  return [...refilled, ...stock.filter((line) => !authored.has(line.itemName.toLowerCase()))];
+  const authored = new Set(prepared.map((line) => textKey(line.itemName)));
+  return [...refilled, ...stock.filter((line) => !authored.has(textKey(line.itemName)))];
 }
 
 // The item kinds each shop kind stocks, for the pool the tool draws from.
-export const KIND_POOL: Record<ShopKind, { kinds: Array<"weapon" | "armor" | "gear" | "magic_item">; match?: RegExp }> = {
-  general: { kinds: ["gear"] },
+// staples are what the kind always carries, one line each (the pool marks the
+// first name each one matches: the pack's two editions write "Rations" and
+// "Rations (1 day)"), beside the lines the dice pick. A general store drew
+// ten lines from some 300 pieces of gear, so a torch was on a village shelf
+// about one visit in thirty and "I buy a torch" was refused (2026-10-20).
+// skip names the pack's categories the kind never sells: a general store
+// offered camels, galleys, a cow and Assassin's Blood. Magic items are priced
+// by rarity (src/lib/srd/magic-item-value.ts); an apothecary's are its
+// potions and oils, not a Periapt of Proof against Poison.
+export const KIND_POOL: Record<ShopKind, { kinds: Array<"weapon" | "armor" | "gear" | "magic_item">; match?: RegExp; staples?: RegExp; skip?: readonly string[] }> = {
+  general: {
+    kinds: ["gear"],
+    staples: /^(torch|rations|rope|waterskin|tinderbox|bedroll|backpack|oil(?! of)|candle|blanket)\b/i,
+    skip: ["trade good", "poison", "waterborne vehicle", "land vehicle", "mount", "wondrous item"],
+  },
   smith: { kinds: ["weapon", "armor"] },
-  apothecary: { kinds: ["gear", "magic_item"], match: /potion|antitoxin|healer|herb|oil|vial|acid|poison/i },
+  apothecary: { kinds: ["gear", "magic_item"], match: /potion|antitoxin|healer|herb|oil|vial|acid|poison/i, skip: ["wondrous item", "ammunition"] },
   outfitter: { kinds: ["gear", "armor"], match: /pack|rope|tent|bedroll|rations|torch|lantern|cloak|boots|leather|climber|waterskin|backpack|tinder/i },
   curiosities: { kinds: ["magic_item"] },
 };
@@ -204,17 +339,26 @@ export function restockDue(shop: Pick<Shop, "restockDays" | "restockedAt">, inst
 }
 
 // The prompt's line per shop at the party's place: name, keeper, and what
-// is on the shelves with the asking price in coin.
-export function renderShopsForPrompt(shops: Array<Shop & { keeperName: string }>): string {
+// is on the shelves with the asking price in coin, then who has haggled
+// there and what it came to, so the DM narrates each buyer's own price.
+export function renderShopsForPrompt(shops: Array<Shop & { keeperName: string }>, nameOf: (characterId: string) => string = (id) => id): string {
   if (!shops.length) {
     return "";
   }
   const lines = shops.slice(0, 4).map((shop) => {
     const shelf = shop.stock
       .slice(0, 12)
-      .map((line) => `${line.itemName} x${line.qty} at ${formatCopper(askingPriceCp(line.priceCp, shop.markup))}`)
+      .map((line) => `${line.itemName} x${line.qty} at ${formatPrice(askingPriceCp(line.priceCp, shop.markup))}`)
       .join("; ");
-    return `- ${shop.name}${shop.keeperName ? ` (kept by ${shop.keeperName})` : ""}, ${shop.kind}${shop.buys ? ", buys at half" : ", does not buy"}: ${shelf || "bare shelves"}`;
+    const haggled = shop.haggles.map((deal) => {
+      const paid = !deal.steps
+        ? "pay these prices (the keeper held firm)"
+        : stepMoves(shop.markup, deal.steps)
+          ? `pay prices ${dealInWords(shop.markup, deal.steps)}`
+          : `pay these prices (${dealInWords(shop.markup, deal.steps)})`;
+      return `${deal.ids.map(nameOf).join(" and ")} ${paid}`;
+    });
+    return `- ${shop.name}${shop.keeperName ? ` (kept by ${shop.keeperName})` : ""}, ${shop.kind}${shop.buys ? ", buys at half" : ", does not buy"}: ${shelf || "bare shelves"}${haggled.length ? `. Haggled: ${haggled.join("; ")}` : ""}`;
   });
-  return `SHOPS HERE (prices are the server's; buy_item and sell_item move the coin and the goods, haggle moves the price one step):\n${lines.join("\n")}`;
+  return `SHOPS HERE (prices are the server's; purchase moves the coin and the goods at this shelf's prices; a haggle moves them only for the characters it names):\n${lines.join("\n")}`;
 }

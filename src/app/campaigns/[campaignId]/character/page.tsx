@@ -1,48 +1,42 @@
 "use client";
 
-import { ChevronLeft, Plus, UserRound } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import { GameIcon } from "@/components/ui/GameIcon";
-import { SectionHead } from "@/components/ui/SectionHead";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
-import { IconChip, PIXEL_ICONS, PixelTile, ui } from "@/lib/ui";
+import { PIXEL_ICONS, PixelTile, ui } from "@/lib/ui";
 import CharacterBuilder, {
   type BuilderResult,
 } from "@/app/characters/builder/CharacterBuilder";
 import type { Genre } from "@/lib/schemas/game-settings";
-import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { navigateTo } from "@/lib/navigation";
 import { refusalText } from "@/app/characters/builder/refusal";
+import { builderDraftKey, clearBuilderDraft } from "@/app/characters/builder/builderDraft";
+import { PregenPicker } from "@/app/campaigns/[campaignId]/PregenPicker";
+import { HeroChooser, type ChooserCharacter } from "@/app/campaigns/[campaignId]/HeroChooser";
+import { JoinConfirmDialog, type JoinHero } from "@/app/campaigns/[campaignId]/JoinConfirmDialog";
 
-type LibraryCharacter = {
-  id: string;
-  name: string;
-  // A character somebody plays, or an ally the DM plays; only the former
-  // takes a player's seat (issue 192).
-  role?: "pc" | "companion";
-  race: string;
-  class: string;
-  subclass: string;
-  level: number;
-  sheet?: CreateSheetInput;
-};
+// A hero in the player's library, as the chooser lists it.
+type LibraryCharacter = ChooserCharacter;
 
-function titleCase(value: string) {
-  return value.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-// Join a campaign with a character: pick one from your library (adapted to
-// the campaign's starting level) or build a new one (also saved to your
-// library). ?mode=edit reopens the builder prefilled with the current
+// Join a campaign with a character: pick one on the hero chooser (your
+// library adapted to the campaign's starting level, an adventure's pregens,
+// the ready-made heroes), confirmed before it seats, or build a new one
+// (also saved to your library). "Help me build" opens the builder on its
+// quiz, and the hero it makes is confirmed on the same sheet before it
+// seats. ?mode=edit reopens the builder prefilled with the current
 // character; ?mode=replace swaps it for another (both lobby-only, both
 // clearing the ready flag; an edit keeps the existing portrait unless the
 // builder's regenerate control cleared it).
 function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
   // join = first character; edit = rebuild the current one in place;
   // replace = switch to another or a brand-new one.
-  const requested = useSearchParams().get("mode");
+  const search = useSearchParams();
+  const requested = search.get("mode");
+  // "Or build a new one" in the lobby comes straight to the builder.
+  const startNew = search.get("start") === "new";
   const flow: "join" | "edit" | "replace" =
     requested === "edit" || requested === "replace" ? requested : "join";
   const [level, setLevel] = useState<number | null>(null);
@@ -53,7 +47,7 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
   // offered here, and the page says where they go instead.
   const [companionCount, setCompanionCount] = useState(0);
   const [mode, setMode] = useState<"choose" | "create">(
-    flow === "edit" ? "create" : "choose",
+    flow === "edit" || startNew ? "create" : "choose",
   );
   const [currentLibraryId, setCurrentLibraryId] = useState<string | null>(null);
   // The linked library character's level, from a host that keeps an edit at
@@ -61,6 +55,12 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
   const [libraryLevel, setLibraryLevel] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // The ready-made heroes, opened from above the builder.
+  const [quick, setQuick] = useState(false);
+  // The builder was opened by "Help me build": what it makes goes through
+  // the confirm sheet (backlog F1 and F6), held here until it seats.
+  const [helped, setHelped] = useState(false);
+  const [built, setBuilt] = useState<JoinHero | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,7 +89,10 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
         setCompanionCount(all.length - characters.length);
         setCurrentLibraryId(sheetData?.sheet?.libraryCharacterId ?? null);
         setLibraryLevel(typeof sheetData?.libraryLevel === "number" ? sheetData.libraryLevel : null);
-        if (!characters.length) {
+        // An empty library still opens on the chooser when joining: the
+        // ready-made heroes are there (backlog F5). A switch has nothing to
+        // switch to but a new build.
+        if (!characters.length && flow === "replace") {
           setMode("create");
         }
       })
@@ -97,7 +100,7 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [campaignId]);
+  }, [campaignId, flow]);
 
   const editCharacter =
     flow === "edit" && currentLibraryId
@@ -118,6 +121,8 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
         setError(refusalText(data, "Could not save the character."));
         return;
       }
+      // Seated: an unfinished character kept for this table is done with.
+      clearBuilderDraft(builderDraftKey("table", campaignId));
       navigateTo(`/campaigns/${campaignId}`);
     } catch {
       setError("Could not reach the server.");
@@ -126,11 +131,17 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
     }
   }
 
-  function pickFromLibrary(characterId: string) {
-    send({ libraryCharacterId: characterId }, flow === "join" ? "POST" : "PUT");
+  // A hero from the chooser has taken its seat (JoinConfirmDialog.tsx).
+  function seated() {
+    clearBuilderDraft(builderDraftKey("table", campaignId));
+    navigateTo(`/campaigns/${campaignId}`);
   }
 
   function submitNew(result: BuilderResult) {
+    if (helped && flow !== "edit") {
+      setBuilt({ kind: "built", id: String(Date.now()), name: result.sheet.name, sheet: result.sheet });
+      return;
+    }
     if (flow === "edit" && editCharacter) {
       send({ editLibraryCharacterId: editCharacter.id, sheet: result.sheet }, "PUT");
       return;
@@ -178,74 +189,58 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
       </header>
 
       {mode === "choose" ? (
-        <section className="reveal space-y-4">
-          <SectionHead title="From your library" glyph="tab-characters" level="h2" aside={<span className="text-xs text-stone-400">{library.length}</span>} />
+        <>
           {companionCount > 0 ? (
-            <p className="reveal text-xs text-stone-400">
-              {companionCount === 1 ? "One ally the DM plays is" : `${companionCount} allies the DM plays are`} not listed here: whoever runs the story brings them in from the party panel, under Build a companion.
+            <p className="reveal mb-4 text-xs text-stone-400">
+              {companionCount === 1 ? "One ally the GM plays is" : `${companionCount} allies the GM plays are`} not listed here: whoever runs the story brings them in from the party panel, under Build a companion.
             </p>
           ) : null}
-          <ul className="stagger-up grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {library.map((character) => (
-              <li key={character.id}>
-                <button
-                  type="button"
-                  disabled={busy} aria-busy={busy}
-                  onClick={() => pickFromLibrary(character.id)}
-                  className={cn(ui.cardHover, "w-full p-4 text-left disabled:opacity-50")}
-                >
-                  <div className="flex items-center gap-2">
-                    {character.sheet?.portrait?.url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={character.sheet.portrait.url}
-                        alt={character.name}
-                        className="size-8 shrink-0 rounded-lg border border-amber-500/30 object-cover"
-                      />
-                    ) : (
-                      <IconChip icon={UserRound} size="size-8" iconSize="size-4" />
-                    )}
-                    <span className="min-w-0 truncate font-display tracking-wide text-stone-100">{character.name}</span>
-                    <GameIcon icon={{ kind: "family", key: `class-${character.class.toLowerCase()}` }} size="size-7" className="ml-auto" />
-                    {character.id === currentLibraryId ? (
-                      <span className="rounded-full border border-amber-500/30 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-200">
-                        current
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-1 text-sm text-stone-400">
-                    Level {character.level} {titleCase(character.race)}{" "}
-                    {titleCase(character.class)}
-                    {character.subclass ? ` (${character.subclass})` : ""}
-                  </p>
-                  {character.level !== level ? (
-                    <p className="reveal mt-1 text-xs text-amber-200">
-                      Will be adapted to level {level}
-                    </p>
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            onClick={() => setMode("create")}
-            className={cn(ui.btnSecondary, "w-full border-dashed")}
-          >
-            <Plus className="size-4" /> Create a new character instead
-          </button>
-          {error ? <p className="motion-shake whitespace-pre-line text-sm text-red-400" role="alert">{error}</p> : null}
-        </section>
+          {/* Every hero this seat can take, on one screen, each through the
+              confirm sheet before it seats (backlog F5 and F6). */}
+          <HeroChooser
+            campaignId={campaignId}
+            flow={flow === "replace" ? "replace" : "join"}
+            level={level}
+            characters={library}
+            genre={genre}
+            worldPackId={worldPackId}
+            currentLibraryId={currentLibraryId}
+            onBuildNew={() => {
+              setHelped(false);
+              setMode("create");
+            }}
+            onHelpMeBuild={() => {
+              setHelped(true);
+              setMode("create");
+            }}
+            onSeated={seated}
+          />
+        </>
       ) : (
         <>
-          {library.length ? (
-            <button
-              type="button"
-              onClick={() => setMode("choose")}
-              className={cn(ui.btnSmall, "mb-4")}
-            >
-              <ChevronLeft className="size-3.5" /> Or pick one from your library
-            </button>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {flow !== "edit" ? (
+              <button type="button" onClick={() => setMode("choose")} className={ui.btnSmall}>
+                <ChevronLeft className="size-3.5" /> Back to every hero
+              </button>
+            ) : null}
+            {/* Building is the long way to a seat: the short one stays a tap
+                away for someone who came here by default. */}
+            {flow === "join" ? (
+              <button
+                type="button"
+                onClick={() => setQuick(!quick)}
+                aria-expanded={quick}
+                className={ui.btnSmall}
+              >
+                <GameIcon icon={{ kind: "glyph", key: "ui-quickstart" }} size="size-5" /> In a hurry? Take a ready-made hero
+              </button>
+            ) : null}
+          </div>
+          {flow === "join" && quick ? (
+            <div key="quick" className="reveal-height mb-4">
+              <PregenPicker campaignId={campaignId} heading={null} onSeated={() => navigateTo(`/campaigns/${campaignId}`)} />
+            </div>
           ) : null}
           <CharacterBuilder
             campaignId={campaignId}
@@ -264,7 +259,16 @@ function CampaignCharacterPageInner({ campaignId }: { campaignId: string }) {
             onSubmit={submitNew}
             busy={busy}
             error={error}
+            draftKey={flow === "edit" ? undefined : builderDraftKey("table", campaignId)}
             onCancel={() => navigateTo(`/campaigns/${campaignId}`)}
+            openQuiz={helped}
+          />
+          <JoinConfirmDialog
+            campaignId={campaignId}
+            hero={built}
+            flow={flow === "replace" ? "replace" : "join"}
+            onClose={() => setBuilt(null)}
+            onSeated={seated}
           />
         </>
       )}

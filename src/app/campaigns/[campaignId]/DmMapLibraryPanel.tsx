@@ -7,15 +7,17 @@ import { encodeImageForUpload } from "@/lib/image-encode";
 import { ui } from "@/lib/ui";
 import { backdropDataUrl, nameFromFilename } from "@/lib/battlemap/uvtt";
 import { Sheet } from "@/components/ui/Sheet";
-import { readLoad, useLoadStatus } from "@/lib/load-state";
+import { readLoad, readWrite, useLoadStatus } from "@/lib/load-state";
 import { useTourPrepare } from "@/lib/tours/prepare";
 import { DEFAULT_MAP_TOOLS, type MapTools } from "@/app/campaigns/[campaignId]/MapToolbox";
 import { useMapToasts } from "@/app/campaigns/[campaignId]/MapToasts";
-import { Listed } from "@/app/campaigns/[campaignId]/PanelKit";
+import { Listed, PanelError } from "@/app/campaigns/[campaignId]/PanelKit";
 import { MapCreateControls } from "@/app/workshop/maps/MapCreateControls";
+import { AddonMapGenerator } from "@/app/workshop/maps/AddonMapGenerator";
 import { MapEditor } from "@/app/workshop/maps/MapEditor";
 import { MapGallery } from "@/app/workshop/maps/MapGallery";
 import type { LibraryState, PreparedMap } from "@/app/workshop/maps/types";
+import { useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
 
 // The map library: maps built before anybody needed them.
 //
@@ -40,9 +42,19 @@ import type { LibraryState, PreparedMap } from "@/app/workshop/maps/types";
 export function DmMapLibraryPanel({
   campaignId,
   layout = "drawer",
+  openOnArrival,
+  only = false,
+  onClose,
 }: {
   campaignId: string;
   layout?: "drawer" | "gallery";
+  // The map to open in the editor on arrival, by id: a World place's "Open
+  // battle map" or "Create battle map" (src/app/workshop/world/PlaceBattleMaps.tsx).
+  openOnArrival?: string | null;
+  // The gallery's editor sheet for that one map and nothing else, calling
+  // onClose when it shuts: the table's World tab, which has no gallery.
+  only?: boolean;
+  onClose?: () => void;
 }) {
   const [state, setState] = useState<LibraryState>({
     maps: [],
@@ -103,11 +115,19 @@ export function DmMapLibraryPanel({
   }, [campaignId]);
 
   const selected = state.maps.find((map) => map.id === selectedId) ?? null;
-  const gallery = layout === "gallery";
+  const gallery = layout === "gallery" || only;
+  useOpenOnArrival(openOnArrival, loaded ? state.maps : null, (map) => select(map.id));
+
+  function showEditor(open: boolean) {
+    setEditorOpen(open);
+    if (!open && only) onClose?.();
+  }
 
   // The tour's "open the new-map controls" step.
   useTourPrepare((name) => {
-    if (name === "open-map-create") setCreating(true);
+    if (name !== "open-map-create") return;
+    setCreating(true);
+    return true;
   });
 
   // Selecting a map is the same act in both layouts; in the gallery it also
@@ -119,22 +139,29 @@ export function DmMapLibraryPanel({
     }
   }
 
+  // Every write goes through readWrite (WA-05): a refusal, or a request that
+  // never arrived, is said rather than thrown into the page. With no answer
+  // the server may have made the map all the same, so the library is read
+  // again before anyone makes it twice.
   async function post(body: Record<string, unknown>) {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/maps`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError((payload as { error?: string }).error ?? "That did not work.");
+      const sent = await readWrite<{ map?: PreparedMap; notes?: string[] }>(
+        fetch(`/api/campaigns/${campaignId}/dm/maps`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        "That did not work.",
+      );
+      if (sent.error !== null) {
+        setError(sent.unanswered ? `${sent.error} The library was read again; look for the map there before making it again.` : sent.error);
+        if (sent.unanswered) await load();
         return null;
       }
       await load();
-      return payload as { map?: PreparedMap; notes?: string[] };
+      return sent.payload;
     } finally {
       setBusy(false);
     }
@@ -162,15 +189,17 @@ export function DmMapLibraryPanel({
         return false;
       }
       setError("");
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/maps/${mapId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/maps/${mapId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        "That change was not saved.",
+      );
+      if (sent.error !== null) {
         // The server's own sentence, over the canvas where the eyes are.
-        push((payload as { error?: string }).error ?? "That was refused.");
+        push(sent.error);
         return false;
       }
       await load();
@@ -187,14 +216,18 @@ export function DmMapLibraryPanel({
     setError("");
     setNote("");
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/maps/${selected.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ do: action }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        push((payload as { error?: string }).error ?? "That did not work.");
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/maps/${selected.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ do: action }),
+        }),
+        "That did not work.",
+      );
+      if (sent.error !== null) {
+        // With no answer it may be on the table already; a second press
+        // would put it there twice.
+        push(sent.unanswered ? `${sent.error} It may have gone through; look at the table before trying again.` : sent.error);
         return;
       }
       push(action === "deploy" ? "It is on the table." : "The scene is open.", "done");
@@ -246,14 +279,17 @@ export function DmMapLibraryPanel({
         carry.backdropPath = original.backdrop.path;
         carry.backdropTransform = original.backdrop.transform;
       }
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/maps/${copy.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(carry),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        setError((payload as { error?: string }).error ?? "The copy could not be painted.");
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/maps/${copy.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(carry),
+        }),
+        "The copy could not be painted.",
+      );
+      if (sent.error !== null) {
+        setError(sent.error);
+        if (sent.unanswered) await load();
         return;
       }
       setSelectedId(copy.id);
@@ -268,10 +304,20 @@ export function DmMapLibraryPanel({
       return;
     }
     setBusy(true);
+    setError("");
+    setNote("");
     try {
-      await fetch(`/api/campaigns/${campaignId}/dm/maps/${selected.id}`, { method: "DELETE" });
+      // A refusal, or a request that never arrived, is said and the map
+      // stays open (WA-05); with no answer it may be gone all the same, so
+      // the library is read again.
+      const sent = await readWrite(fetch(`/api/campaigns/${campaignId}/dm/maps/${selected.id}`, { method: "DELETE" }), "That map could not be deleted.");
+      if (sent.error !== null) {
+        setError(sent.error);
+        if (sent.unanswered) await load();
+        return;
+      }
       setSelectedId("");
-      setEditorOpen(false);
+      showEditor(false);
       await load();
     } finally {
       setBusy(false);
@@ -351,9 +397,26 @@ export function DmMapLibraryPanel({
   const feedback = (
     <>
       {note ? <p className="text-[11px] text-emerald-400">{note}</p> : null}
-      {error ? <p className="text-[11px] text-red-400">{error}</p> : null}
+      {error ? <PanelError className="text-[11px]">{error}</PanelError> : null}
     </>
   );
+
+  const sheet = (
+    <Sheet
+      open={editorOpen && selected !== null}
+      onOpenChange={showEditor}
+      title={selected?.name ?? "Map"}
+      // The editor brings its own top bar, with the map's name in it.
+      hideTitle
+      className="top-0 h-dvh max-h-none rounded-none px-0 pb-0 pt-[env(safe-area-inset-top)] lg:top-1/2 lg:h-[94vh] lg:max-h-[94vh] lg:w-[min(98vw,110rem)] lg:rounded-xl lg:p-0"
+    >
+      <div className="h-full">{editor}</div>
+    </Sheet>
+  );
+
+  if (only) {
+    return sheet;
+  }
 
   if (gallery) {
     return (
@@ -384,6 +447,8 @@ export function DmMapLibraryPanel({
                 onCreate={create}
                 onImport={(file) => void importUvtt(file)}
               />
+              {/* Only drawn when an admin has switched a map addon on. */}
+              <AddonMapGenerator campaignId={campaignId} onCreated={(id) => void load().then(() => select(id))} />
             </div>
           ) : null}
         </section>
@@ -394,17 +459,7 @@ export function DmMapLibraryPanel({
           </Listed>
         </div>
         {feedback}
-
-        <Sheet
-          open={editorOpen && selected !== null}
-          onOpenChange={setEditorOpen}
-          title={selected?.name ?? "Map"}
-          // The editor brings its own top bar, with the map's name in it.
-          hideTitle
-          className="top-0 h-dvh max-h-none rounded-none px-0 pb-0 pt-[env(safe-area-inset-top)] lg:top-1/2 lg:h-[94vh] lg:max-h-[94vh] lg:w-[min(98vw,110rem)] lg:rounded-xl lg:p-0"
-        >
-          <div className="h-full">{editor}</div>
-        </Sheet>
+        {sheet}
       </div>
     );
   }
@@ -418,6 +473,7 @@ export function DmMapLibraryPanel({
         onCreate={create}
         onImport={(file) => void importUvtt(file)}
       />
+      <AddonMapGenerator campaignId={campaignId} onCreated={(id) => void load().then(() => setSelectedId(id))} />
 
       <Listed loaded={loaded} error={loadError} onRetry={() => void load()} loading="Opening the drawer...">
       {state.maps.length ? (

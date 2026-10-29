@@ -15,6 +15,8 @@ import { featOptionSlots } from "@/lib/srd/feat-combat";
 import optionsJson from "@/lib/srd/options.json";
 import subclassesJson from "@/lib/srd/subclasses.json";
 import { subclassNamed } from "@/lib/srd/subclass-name";
+import { textKey } from "@/lib/language/text-logic";
+import { choiceIn } from "@/lib/srd/feature-names";
 
 export type OptionKind =
   | "invocation"
@@ -41,10 +43,6 @@ type KindMeta = { label: string; prefix: string; grantedBy: string };
 const KINDS = (optionsJson as { kinds: Record<OptionKind, KindMeta> }).kinds;
 const OPTIONS = (optionsJson as { options: OptionDef[] }).options;
 
-export function optionKindMeta(kind: OptionKind): KindMeta {
-  return KINDS[kind];
-}
-
 export function optionsOfKind(kind: OptionKind): OptionDef[] {
   return OPTIONS.filter((option) => option.k === kind);
 }
@@ -55,25 +53,24 @@ export function optionFeatureName(kind: OptionKind, name: string): string {
   return `${KINDS[kind].prefix}${name}`;
 }
 
-const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
-
 // The picks of one kind already on a sheet, as bare option names.
 export function chosenOptions(features: Array<{ name: string }>, kind: OptionKind): string[] {
-  const prefix = normalize(KINDS[kind].prefix);
-  return features
-    .filter((feature) => normalize(feature.name).startsWith(prefix))
-    .map((feature) => feature.name.slice(KINDS[kind].prefix.length).trim());
+  return features.flatMap((feature) => choiceIn(feature.name, KINDS[kind].prefix) ?? []);
+}
+
+// Whether a bare name is an option of any kind ("Riposte", "Agonizing Blast").
+export function isOptionName(name: string): boolean {
+  const wanted = textKey(name);
+  return OPTIONS.some((option) => textKey(option.n) === wanted);
 }
 
 // Any option pick on a sheet, whatever its kind. Used by the help layer so
 // "Invocation: Agonizing Blast" can explain itself.
 export function findOptionByFeatureName(featureName: string): OptionDef | null {
-  const name = normalize(featureName);
   for (const [kind, meta] of Object.entries(KINDS) as Array<[OptionKind, KindMeta]>) {
-    const prefix = normalize(meta.prefix);
-    if (name.startsWith(prefix)) {
-      const bare = normalize(featureName.slice(meta.prefix.length));
-      return OPTIONS.find((option) => option.k === kind && normalize(option.n) === bare) ?? null;
+    const choice = choiceIn(featureName, meta.prefix);
+    if (choice) {
+      return OPTIONS.find((option) => option.k === kind && textKey(option.n) === textKey(choice)) ?? null;
     }
   }
   return null;
@@ -81,7 +78,19 @@ export function findOptionByFeatureName(featureName: string): OptionDef | null {
 
 // How many picks of a kind a character has earned. Descending [level, count]
 // tables, first match wins, exactly like the resource tables.
-type Grant = { kind: OptionKind; classId: string; subclass?: string; steps: Array<[number, number]> };
+// `opens`: the subclass feature that opens the picks, so a workshop subclass
+// that borrowed it (a fighter subclass with Combat Superiority) is granted
+// them too, by the level of the class that holds the feature. A name too
+// common to mean this subclass alone ("Multiattack") opens them only in the
+// grant's own class (`opensInClass`).
+type Grant = {
+  kind: OptionKind;
+  classId: string;
+  subclass?: string;
+  opens?: string[];
+  opensInClass?: boolean;
+  steps: Array<[number, number]>;
+};
 
 const GRANTS: Grant[] = [
   // Warlock invocations: 2 at level 2, then one at 5, 7, 9, 12, 15 and 18.
@@ -103,6 +112,7 @@ const GRANTS: Grant[] = [
     kind: "maneuver",
     classId: "fighter",
     subclass: "Battle Master",
+    opens: ["Combat Superiority", "Maneuvers"],
     steps: [
       [15, 9],
       [10, 7],
@@ -134,6 +144,7 @@ const GRANTS: Grant[] = [
     kind: "rune",
     classId: "fighter",
     subclass: "Rune Knight",
+    opens: ["Rune Carver"],
     steps: [
       [15, 5],
       [10, 4],
@@ -143,14 +154,15 @@ const GRANTS: Grant[] = [
   },
   // The Hunter ranger's one Hunter's Prey pick at 3rd level; Colossus Slayer
   // rides pc_attack (src/lib/dm/pc-attack-damage.ts).
-  { kind: "hunters_prey", classId: "ranger", subclass: "Hunter", steps: [[3, 1]] },
-  { kind: "defensive_tactics", classId: "ranger", subclass: "Hunter", steps: [[7, 1]] },
-  { kind: "hunter_multiattack", classId: "ranger", subclass: "Hunter", steps: [[11, 1]] },
-  { kind: "superior_hunters_defense", classId: "ranger", subclass: "Hunter", steps: [[15, 1]] },
+  { kind: "hunters_prey", classId: "ranger", subclass: "Hunter", opens: ["Hunter's Prey"], steps: [[3, 1]] },
+  { kind: "defensive_tactics", classId: "ranger", subclass: "Hunter", opens: ["Defensive Tactics"], steps: [[7, 1]] },
+  { kind: "hunter_multiattack", classId: "ranger", subclass: "Hunter", opens: ["Multiattack"], opensInClass: true, steps: [[11, 1]] },
+  { kind: "superior_hunters_defense", classId: "ranger", subclass: "Hunter", opens: ["Superior Hunter's Defense"], steps: [[15, 1]] },
   {
     kind: "discipline",
     classId: "monk",
     subclass: "Way of the Four Elements",
+    opens: ["Disciple of the Elements"],
     steps: [
       [17, 5],
       [11, 4],
@@ -175,23 +187,40 @@ function subclassMatches(stored: string, wanted: string): boolean {
   return subclassNamed(stored, wanted, SUBCLASS_ALIASES[wanted] ?? []);
 }
 
+// `held`: the features this class has granted the character (its own and
+// its subclass's, never another class's), for the grants a feature opens.
 export function optionSlotsFor(
   classId: string,
   subclass: string,
   level: number,
   kind: OptionKind,
+  held: ReadonlyArray<{ name: string }> = [],
 ): number {
+  const heldKeys = new Set(held.map((feature) => textKey(feature.name)));
   const grant = GRANTS.find(
     (entry) =>
       entry.kind === kind &&
-      entry.classId === normalize(classId) &&
-      (!entry.subclass || subclassMatches(subclass, entry.subclass)),
+      ((entry.classId === textKey(classId) && (!entry.subclass || subclassMatches(subclass, entry.subclass))) ||
+        (Boolean(entry.opens?.some((name) => heldKeys.has(textKey(name)))) &&
+          (!entry.opensInClass || entry.classId === textKey(classId)))),
   );
   if (!grant) {
     return 0;
   }
   const step = grant.steps.find(([atLevel]) => level >= atLevel);
   return step ? step[1] : 0;
+}
+
+// The pick-lists a subclass feature of this name opens in a class, by their
+// labels: the workshop's subclass editor says so beside a borrowed Combat
+// Superiority.
+export function optionLabelsOpenedBy(classId: string, name: string): string[] {
+  const key = textKey(name);
+  return GRANTS.filter(
+    (grant) =>
+      Boolean(grant.opens?.some((opening) => textKey(opening) === key)) &&
+      (!grant.opensInClass || grant.classId === textKey(classId)),
+  ).map((grant) => KINDS[grant.kind].label);
 }
 
 // Every pick-list this character currently has open, with how many are still
@@ -215,8 +244,13 @@ export function openOptionSlots(input: {
   feats?: string[];
 }): OptionSlot[] {
   const slots: OptionSlot[] = [];
+  // This class's own features: a feature another class granted opens no
+  // picks here.
+  const ownFeatures = input.features.filter(
+    (feature) => !(feature as { classId?: string }).classId || textKey((feature as { classId?: string }).classId ?? "") === textKey(input.classId),
+  );
   for (const kind of Object.keys(KINDS) as OptionKind[]) {
-    const total = optionSlotsFor(input.classId, input.subclass, input.level, kind) + featOptionSlots(input.feats, kind);
+    const total = optionSlotsFor(input.classId, input.subclass, input.level, kind, ownFeatures) + featOptionSlots(input.feats, kind);
     if (total <= 0) {
       continue;
     }

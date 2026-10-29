@@ -14,10 +14,12 @@ import { DisclosureHead, quietRow } from "@/app/campaigns/[campaignId]/DmConsole
 import { MONSTER_NAME_MAX, type MonsterDraft, type MonsterReadout } from "@/lib/bestiary/monster-draft";
 import { Sheet } from "@/components/ui/Sheet";
 import { useTourPrepare } from "@/lib/tours/prepare";
+import { LinkedEntries, linkedEntries, useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
 import { MonsterBuildControls } from "@/app/workshop/bestiary/MonsterBuildControls";
 import { MonsterEditor } from "@/app/workshop/bestiary/MonsterEditor";
 import { MonsterRows } from "@/app/workshop/bestiary/MonsterRows";
 import type { Found, Monster } from "@/app/workshop/bestiary/types";
+import { textKey } from "@/lib/language/text-logic";
 
 // The bestiary forge: build a monster, and see what it is actually worth.
 //
@@ -40,9 +42,15 @@ import type { Found, Monster } from "@/app/workshop/bestiary/types";
 export function DmBestiaryPanel({
   campaignId,
   layout = "list",
+  openOnArrival,
+  onWorldEntry,
 }: {
   campaignId: string;
   layout?: "list" | "rows";
+  // In the workshop only: the monster to open on arrival, by id, and the way
+  // to a World entry that links to it (src/app/workshop/world/WorldEntryLink.tsx).
+  openOnArrival?: string | null;
+  onWorldEntry?: (ref: string) => void;
 }) {
   const [monsters, setMonsters] = useState<Monster[]>([]);
   const [found, setFound] = useState<Found[]>([]);
@@ -53,7 +61,9 @@ export function DmBestiaryPanel({
   const [building, setBuilding] = useState(false);
   // The tour's "unfold the builder" step.
   useTourPrepare((name) => {
-    if (name === "open-monster-build") setBuilding(true);
+    if (name !== "open-monster-build") return;
+    setBuilding(true);
+    return true;
   });
   const [draft, setDraft] = useState<MonsterDraft | null>(null);
   const [desc, setDesc] = useState("");
@@ -111,7 +121,7 @@ export function DmBestiaryPanel({
       const body = (await fetch(`/api/content/monsters?${new URLSearchParams({ q: wanted, limit: "20" })}`).then((response) => (response.ok ? response.json() : null))) as
         | { results?: Array<{ slug: string; name: string; documentSlug?: string; source?: string }> }
         | null;
-      const rows = (body?.results ?? []).filter((entry) => entry.source !== "homebrew" && entry.name.toLowerCase() === wanted.toLowerCase());
+      const rows = (body?.results ?? []).filter((entry) => entry.source !== "homebrew" && textKey(entry.name) === textKey(wanted));
       const row = rows.find((entry) => entry.documentSlug === "wotc-srd") ?? rows[0];
       if (!live) return;
       if (row) {
@@ -127,6 +137,8 @@ export function DmBestiaryPanel({
     // The start parameter is read once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start]);
+
+  useOpenOnArrival(openOnArrival, loaded ? monsters : null, open);
 
   function open(monster: Monster) {
     setOpenId(monster.id);
@@ -218,9 +230,13 @@ export function DmBestiaryPanel({
   // it asks first, and a refusal says why instead of quietly doing nothing.
   async function remove(monster: Monster) {
     const id = monster.id;
+    // World entries that link to it keep the link: a forgotten monster still
+    // resolves, so they still fight as it.
+    const linked = onWorldEntry ? await linkedEntries(campaignId, "monster", `homebrew:${id}`) : [];
+    const worldLine = linked.length ? ` World entries that link to it keep the link: ${linked.map((entry) => entry.name).join(", ")}.` : "";
     if (
       !(await appConfirm(
-        `Forget ${monster.draft.name}? It leaves the bestiary and its pickers. An NPC, a prepared fight or a template that already names it still fights with its stat block as it is now.`,
+        `Forget ${monster.draft.name}? It leaves the bestiary and its pickers. An NPC, a prepared fight or a template that already names it still fights with its stat block as it is now.${worldLine}`,
         { title: "Forget this monster?", actionLabel: "Forget it" },
       ))
     ) {
@@ -303,6 +319,7 @@ export function DmBestiaryPanel({
           title={draft?.name || "Monster"}
           className="top-0 h-dvh max-h-none rounded-none pt-[max(0.5rem,env(safe-area-inset-top))] lg:top-1/2 lg:h-auto lg:max-h-[92vh] lg:w-[min(96vw,64rem)] lg:rounded-xl"
         >
+          {onWorldEntry && openId ? <LinkedEntries campaignId={campaignId} kind="monster" record={`homebrew:${openId}`} onWorldEntry={onWorldEntry} /> : null}
           {editor}
         </Sheet>
       </div>
@@ -350,6 +367,7 @@ export function DmBestiaryPanel({
                   cr={monster.draft.stats.cr}
                   genre={genre}
                   seed={monster.draft.name}
+                  slug={monster.slug}
                   name={monster.draft.name}
                   size="size-9"
                 />

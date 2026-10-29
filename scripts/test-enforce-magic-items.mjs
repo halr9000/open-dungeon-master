@@ -20,7 +20,7 @@ import { abilityMod, proficiencyBonus, suite } from "./lib/enforce-harness.mjs";
 import { gearKit, profs } from "./lib/enforce-equipment.mjs";
 
 const { test, finish } = suite("test-enforce-magic-items");
-const { matchMagicItem } = await import("../src/lib/srd/magic-items.ts");
+const { magicItemNamed } = await import("../src/lib/srd/magic-items.ts");
 const { computeSheetDerived, speedFor } = await import("../src/lib/srd/index.ts");
 
 const ac = (amount) => ({ kind: "ac_bonus", amount });
@@ -57,7 +57,7 @@ const BOOK = [
 
 await test("well-known SRD items carry the effects and the attunement the book gives them", () => {
   for (const [name, attunement, effects] of BOOK) {
-    const item = matchMagicItem(name);
+    const item = magicItemNamed(name);
     assert.ok(item, name);
     assert.equal(item.name, name);
     assert.equal(item.requiresAttunement, attunement, `${name} attunement`);
@@ -287,7 +287,9 @@ await test("an entry edited in the workshop reaches the sheet that carries it; a
 });
 
 await test("a magic bonus is read from +1 to +3: a '+20' in a name adds nothing", async () => {
-  carry([{ name: "+20 Longsword", qty: 1 }, { name: "+9 Plate", qty: 1 }], { str: 16 });
+  // No bonus is read from them, so they are no Longsword or Plate by name
+  // either: srdName names their rows.
+  carry([{ name: "+20 Longsword", srdName: "Longsword", qty: 1 }, { name: "+9 Plate", srdName: "Plate", qty: 1 }], { str: 16 });
   assert.equal(sheet().ac, 18);
   const swing = await kit.swing(hero.id, { weapon: "Longsword" }, 10, 5);
   assert.equal(swing.result.rolled, 10 + 3 + PB);

@@ -16,6 +16,7 @@ import type {
   ClassOption,
   RaceOption,
 } from "./useBuilderOptions";
+import { textKey } from "@/lib/language/text-logic";
 
 export const ALIGNMENTS = ["LG", "NG", "CG", "LN", "N", "CN", "LE", "NE", "CE"];
 
@@ -70,7 +71,7 @@ export const ALIGNMENT_LABELS: Record<string, { name: string; blurb: string }> =
 };
 
 const ALIGNMENT_INFO =
-  "Alignment is a two-word shorthand for how your character treats rules (lawful, neutral, chaotic) and other people (good, neutral, evil). It binds nothing: it is a note to yourself and to the DM about how this person tends to act, and characters drift over a campaign. Pick the one that sounds most like them and stop worrying about it.";
+  "Alignment is a two-word shorthand for how your character treats rules (lawful, neutral, chaotic) and other people (good, neutral, evil). It binds nothing: it is a note to yourself and to the GM about how this person tends to act, and characters drift over a campaign. Pick the one that sounds most like them and stop worrying about it.";
 
 // A pack's own heading for its recommended tier ("Peoples of Middle-earth"),
 // so the group reads like the world rather than like a filter.
@@ -351,9 +352,9 @@ export function usePickerGroups({
   }, [classTier, rawClasses, pack]);
 
   // The subclasses we have real feature tables for, offered once the chosen
-  // level reaches the class's subclass level. Content-pack archetypes are
-  // listed after them: those are prose only, so a player picking one gets no
-  // features, and these should be the obvious choice.
+  // level reaches the class's subclass level. The workshop's subclasses come
+  // next, granted feature by feature as their author wrote them; the content
+  // pack's archetypes last, granted what their prose names.
   // Below the class's subclass level nothing is offered, the pack's
   // archetypes included: reconcile drops a subclass picked early, so a menu
   // that listed them took a pick and showed "None yet" (issue #109). The
@@ -372,14 +373,14 @@ export function usePickerGroups({
     if (gate.locked) {
       return [];
     }
-    const known = new Set(builtInSubclasses.map((entry) => entry.toLowerCase()));
-    return archetypes.filter((entry) => !known.has(entry.name.toLowerCase()));
+    const known = new Set(builtInSubclasses.map((entry) => textKey(entry)));
+    return archetypes.filter((entry) => !known.has(textKey(entry.name)));
   }, [archetypes, builtInSubclasses, gate.locked]);
 
   // The pack row behind the chosen subclass, which carries its write-up.
   const chosenArchetype = useMemo(
     () =>
-      archetypes.find((entry) => entry.name.toLowerCase() === subclass.trim().toLowerCase()) ??
+      archetypes.find((entry) => textKey(entry.name) === textKey(subclass)) ??
       null,
     [archetypes, subclass],
   );
@@ -391,7 +392,7 @@ export function usePickerGroups({
         label: "Full features",
         options: builtInSubclasses.map((subclassName) => {
           const match = archetypes.find(
-            (entry) => entry.name.toLowerCase() === subclassName.toLowerCase(),
+            (entry) => textKey(entry.name) === textKey(subclassName),
           );
           return {
             id: subclassName,
@@ -406,10 +407,22 @@ export function usePickerGroups({
         }),
       });
     }
-    if (packOnlyArchetypes.length) {
+    const workshopArchetypes = packOnlyArchetypes.filter((entry) => entry.workshop);
+    if (workshopArchetypes.length) {
+      groups.push({
+        label: "From Homebrew",
+        options: workshopArchetypes.map((entry) => ({
+          id: entry.name,
+          name: entry.name,
+          infoText: [entry.desc, entry.features].filter(Boolean).join("\n\n") || undefined,
+        })),
+      });
+    }
+    const packArchetypes = packOnlyArchetypes.filter((entry) => !entry.workshop);
+    if (packArchetypes.length) {
       groups.push({
         label: "From the content pack",
-        options: packOnlyArchetypes.map((entry) => ({
+        options: packArchetypes.map((entry) => ({
           id: entry.name,
           name: entry.name,
           infoText: entry.desc,

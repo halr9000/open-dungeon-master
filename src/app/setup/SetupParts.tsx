@@ -4,13 +4,13 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { GameIcon } from "@/components/ui/GameIcon";
 import type { ListedModel } from "@/lib/setup/discovery-logic";
-import type { FoundTextServer, ScanResult } from "@/lib/setup/discovery";
+import type { ScanResult } from "@/lib/setup/discovery";
 import { Select } from "@/components/ui/Select";
 
 // The furniture every setup step shares: big pick-one cards, the status
 // lamp, the found-on-this-machine rows and a model picker.
 
-export type { FoundTextServer, ListedModel, ScanResult };
+export type { ListedModel, ScanResult };
 
 export type Tone = "ok" | "warn" | "bad" | "off" | "wait";
 
@@ -47,6 +47,7 @@ export function ChoiceCard({
   sub,
   badge,
   dim = false,
+  suggested = false,
 }: {
   picked: boolean;
   onPick: () => void;
@@ -55,6 +56,8 @@ export function ChoiceCard({
   sub: ReactNode;
   badge?: { text: string; tone: "ready" | "warn" | "off" } | null;
   dim?: boolean;
+  // The guided setup's suggestion (src/lib/setup/suggest.ts).
+  suggested?: boolean;
 }) {
   return (
     <button
@@ -72,9 +75,18 @@ export function ChoiceCard({
         <span className="text-sm font-semibold text-stone-100">{title}</span>
       </span>
       {/* In flow under the title, so a long title never runs under it. */}
-      {badge ? (
-        <span key={badge.text} className="hx-pill reveal-pop self-start" data-tone={badge.tone}>
-          {badge.text}
+      {badge || suggested ? (
+        <span className="flex flex-wrap gap-1.5 self-start">
+          {suggested ? (
+            <span className="hx-pill reveal-pop" data-tone="ready" data-suggested="">
+              Suggested
+            </span>
+          ) : null}
+          {badge ? (
+            <span key={badge.text} className="hx-pill reveal-pop" data-tone={badge.tone}>
+              {badge.text}
+            </span>
+          ) : null}
         </span>
       ) : null}
       <span className="text-xs leading-5 text-stone-400">{sub}</span>
@@ -141,4 +153,32 @@ export function host(url: string): string {
   } catch {
     return url;
   }
+}
+
+// The setup's suggestion for a step, said above its cards: why this one, and
+// a button to take it when another card is picked.
+export function SuggestionNote({
+  reason,
+  title,
+  taken,
+  onTake,
+}: {
+  reason: string;
+  // The suggested card's name, for the button; none when the suggestion is
+  // to leave the step for later.
+  title?: string;
+  taken: boolean;
+  onTake?: () => void;
+}) {
+  return (
+    <div className="su-suggest reveal" role="note">
+      <GameIcon icon={{ kind: "glyph", key: "quest-active" }} size="size-6" className="shrink-0" />
+      <span className="min-w-0 flex-1 text-xs leading-5 text-stone-300">{reason}</span>
+      {title && onTake && !taken ? (
+        <button type="button" onClick={onTake} className="motion-press shrink-0 rounded-md border border-amber-500/40 px-2 py-1 text-xs text-amber-200 hover:bg-amber-500/10">
+          Use {title}
+        </button>
+      ) : null}
+    </div>
+  );
 }

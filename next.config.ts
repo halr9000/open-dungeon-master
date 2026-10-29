@@ -72,6 +72,8 @@ const reportedCsp = [
   "manifest-src 'self'",
 ].join("; ");
 
+// Cross-origin isolation is not here: it depends on the addons a server has
+// (src/lib/page-isolation.ts), so src/proxy.ts adds it per request.
 export const securityHeaders = [
   { key: "Content-Security-Policy", value: enforcedCsp },
   { key: "Content-Security-Policy-Report-Only", value: reportedCsp },
@@ -93,7 +95,11 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [
-      { source: "/:path*", headers: securityHeaders },
+      // Everything but an addon's own web files and assets, which a board
+      // view frames or fetches from the table (and the desktop app from its
+      // own page): their routes send a sandboxing policy of their own instead
+      // (src/lib/addons/static-files.ts).
+      { source: "/:path((?!api/addons/[^/]+/(?:ui|assets)/).*)", headers: securityHeaders },
       // A session token or a password must never sit in a cache.
       { source: "/api/auth/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
       // HSTS only where the request really arrived over https (a TLS proxy in

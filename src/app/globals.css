@@ -17,6 +17,7 @@
 @import "./styles/campaign-creator.css";
 @import "./styles/creator.css";
 @import "./styles/session.css";
+@import "./styles/session-prep.css";
 @import "./styles/dm-console.css";
 @import "./styles/harness.css";
 @import "./styles/setup.css";
@@ -183,23 +184,6 @@
       transform: translateY(0);
     }
   }
-  /* Side drawers slide in from their own edge (Drawer.tsx). */
-  @keyframes drawer-in-left {
-    from {
-      transform: translateX(-100%);
-    }
-    to {
-      transform: translateX(0);
-    }
-  }
-  @keyframes drawer-in-right {
-    from {
-      transform: translateX(100%);
-    }
-    to {
-      transform: translateX(0);
-    }
-  }
   /* Die tumble: hold on six landed orientations, snapping quickly between so
      it reads as a d20 rolling and settling rather than a flat spin. */
   @keyframes d20-roll {
@@ -296,6 +280,58 @@
   --color-amber-200: #47350c;
   --color-amber-100: #352808;
   --color-amber-50: #241a05;
+  /* Romance's rose (issue 501: the advance card, Drawn to, the Bonds rung)
+     turns the same way: deep wine ink and pale tints on cream. */
+  --color-rose-950: #fdf0f2;
+  --color-rose-900: #fbdfe4;
+  --color-rose-800: #f5c2cc;
+  --color-rose-700: #e8919f;
+  --color-rose-600: #d0566d;
+  --color-rose-500: #be3555;
+  --color-rose-400: #a3243f;
+  --color-rose-300: #8a1a33;
+  --color-rose-200: #73142a;
+  --color-rose-100: #5c0f21;
+  --color-rose-50: #470b19;
+  /* Emerald (the Bonds tiers Close and Devoted, success and healing text)
+     turns too, or its pale ink sits on cream unread. */
+  --color-emerald-950: #ecf8f1;
+  --color-emerald-900: #d6f0e1;
+  --color-emerald-800: #b3e2c7;
+  --color-emerald-700: #7cc9a0;
+  --color-emerald-600: #3fa673;
+  --color-emerald-500: #23885a;
+  --color-emerald-400: #1a7049;
+  --color-emerald-300: #145a3b;
+  --color-emerald-200: #0f4a30;
+  --color-emerald-100: #0b3a26;
+  --color-emerald-50: #072b1c;
+  /* Violet (an NPC's act on the Bonds tab, issue 501, and the DM's
+     secrets in the facts list) turns too: deep ink on cream. */
+  --color-violet-950: #f4f0fd;
+  --color-violet-900: #e9e1fb;
+  --color-violet-800: #d6c8f6;
+  --color-violet-700: #b49deb;
+  --color-violet-600: #8b66d6;
+  --color-violet-500: #6f45c2;
+  --color-violet-400: #5a32a8;
+  --color-violet-300: #4a268f;
+  --color-violet-200: #3c1e76;
+  --color-violet-100: #2f175d;
+  --color-violet-50: #221045;
+  /* Red (the Bonds tiers Dislikes and Hostile, damage and danger text)
+     turns too: deep brick ink and pale tints on cream. */
+  --color-red-950: #fdf0ee;
+  --color-red-900: #fbdcd7;
+  --color-red-800: #f4bab1;
+  --color-red-700: #e68778;
+  --color-red-600: #cf4f3d;
+  --color-red-500: #b8382a;
+  --color-red-400: #9c2c20;
+  --color-red-300: #82231a;
+  --color-red-200: #6b1c15;
+  --color-red-100: #551510;
+  --color-red-50: #40100c;
   --shadow-elev-1: 0 1px 2px rgba(60, 40, 10, 0.12), 0 2px 8px rgba(60, 40, 10, 0.08);
   --shadow-elev-2: 0 2px 6px rgba(60, 40, 10, 0.14), 0 12px 32px rgba(60, 40, 10, 0.12);
   --shadow-glow-gold: 0 0 20px rgba(166, 132, 42, 0.18);
@@ -643,9 +679,9 @@ body::before {
   animation: overlay-in 200ms ease-out;
 }
 
-/* Sheets and drawers are Radix dialogs too, so they would inherit the
-   scale-in above. They slide instead: a bottom sheet rises from the fold,
-   a drawer enters from its edge. Closing plays the same keyframe backwards.
+/* Sheets are Radix dialogs too, so they would inherit the scale-in above.
+   They slide instead: a bottom sheet rises from the fold. Closing plays the
+   same keyframe backwards.
    From lg up the sheet becomes a regular dialog or popover and takes the
    scale animation back. */
 [role="dialog"].sheet[data-state="open"] {
@@ -661,18 +697,6 @@ body::before {
   [role="dialog"].sheet[data-state="closed"] {
     animation: scale-out 140ms var(--ease-snap) forwards;
   }
-}
-[role="dialog"].drawer-left[data-state="open"] {
-  animation: drawer-in-left 260ms var(--ease-snap);
-}
-[role="dialog"].drawer-left[data-state="closed"] {
-  animation: drawer-in-left 200ms var(--ease-snap) reverse forwards;
-}
-[role="dialog"].drawer-right[data-state="open"] {
-  animation: drawer-in-right 260ms var(--ease-snap);
-}
-[role="dialog"].drawer-right[data-state="closed"] {
-  animation: drawer-in-right 200ms var(--ease-snap) reverse forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -800,6 +824,57 @@ body::before {
 .token-move {
   transition: transform var(--dur-move) var(--ease-settle);
 }
+/* A creature changing sides re-rims in 300 ms (issue 503): its rim and
+   plate fade to the new side's colours, its side band (BoardStage.tsx) fades
+   in from the party's colour to the foes', and a ring of the new colour
+   pulses out once. Reduced motion keeps the colour and drops the pulse. */
+.token-rim,
+.side-band-ring {
+  transition:
+    stroke 300ms var(--ease-snap),
+    fill 300ms var(--ease-snap);
+}
+.side-band {
+  transition: opacity 300ms var(--ease-snap);
+}
+/* The same change in the panels (SideBadge.tsx): a side chip, a notice or a
+   tracker row's colour comes in over 300 ms when the server moves somebody;
+   reduced motion keeps the colour and the words and drops the movement. */
+@keyframes side-badge-in {
+  0% { opacity: 0; transform: scale(0.85); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.side-badge {
+  animation: side-badge-in 300ms var(--ease-snap) both;
+  transition:
+    background-color 300ms var(--ease-snap),
+    border-color 300ms var(--ease-snap),
+    color 300ms var(--ease-snap),
+    box-shadow 300ms var(--ease-snap);
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-badge {
+    animation: none;
+  }
+}
+[data-effects="low"] .side-badge {
+  animation: none;
+}
+@keyframes side-flip {
+  0% { transform: scale(1); opacity: 0.95; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+.side-flip {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: side-flip 300ms var(--ease-snap) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-flip {
+    animation: none;
+    opacity: 0;
+  }
+}
 @keyframes composer-pulse {
   0% { border-color: rgba(212, 171, 58, 0.9); box-shadow: var(--shadow-glow-gold-strong); }
   100% { border-color: rgba(87, 83, 78, 0.7); box-shadow: var(--shadow-elev-1); }
@@ -816,6 +891,10 @@ body::before {
 [data-effects="low"] .turn-ring,
 [data-effects="low"] .ken-burns {
   animation: none;
+}
+[data-effects="low"] .side-flip {
+  animation: none;
+  opacity: 0;
 }
 [data-effects="low"] .token-move,
 [data-effects="low"] .sky-wash {
@@ -1167,7 +1246,7 @@ optgroup {
   animation: scale-in 240ms var(--ease-spring) both;
   transform-origin: var(--radix-popper-transform-origin, center);
 }
-[role="dialog"]:not(.sheet):not(.drawer-left):not(.drawer-right)[data-state="open"],
+[role="dialog"]:not(.sheet)[data-state="open"],
 [role="alertdialog"][data-state="open"] {
   animation: scale-in 320ms var(--ease-spring) both;
 }
@@ -1395,8 +1474,28 @@ html[data-theme="light"] .skeleton-block {
 .kit-switch[aria-checked="true"]:active .kit-switch-knob { transform: translate(1.05rem, -50%); }
 html[data-theme="light"] .kit-switch { background: linear-gradient(180deg, #d9ccae, #e9dfc6); border-color: rgba(120, 96, 52, 0.4); }
 html[data-theme="light"] .kit-switch .kit-switch-knob { background: #a59877; }
+/* By day an "on" switch keeps its gold, or it reads the same as "off". */
+html[data-theme="light"] .kit-switch[aria-checked="true"] { background: linear-gradient(180deg, #a87a1c, #d1a640); border-color: rgba(111, 80, 15, 0.75); }
+html[data-theme="light"] .kit-switch[aria-checked="true"] .kit-switch-knob {
+  background: radial-gradient(circle at 35% 30%, #fffdf6, #f6e7bd 55%, #c99a33 100%);
+  border-color: #6f500f;
+}
 @media (prefers-reduced-motion: reduce) {
   .kit-switch-knob { transition: none; }
+}
+/* Forced colours drop the track's gradient, the knob's fill and the focus
+   glow: the knob is drawn in the system's text colour, on in its highlight,
+   and focus gets an outline (backlog F17). */
+@media (forced-colors: active) {
+  /* Each rule again under the day theme's own selector, which weighs more
+     than :root does: with :root alone a day-theme knob kept its colours. */
+  .kit-switch .kit-switch-knob,
+  html[data-theme="light"] .kit-switch .kit-switch-knob { forced-color-adjust: none; background: ButtonText; border-color: ButtonText; }
+  .kit-switch[aria-checked="true"],
+  html[data-theme="light"] .kit-switch[aria-checked="true"] { border-color: Highlight; }
+  .kit-switch[aria-checked="true"] .kit-switch-knob,
+  html[data-theme="light"] .kit-switch[aria-checked="true"] .kit-switch-knob { background: Highlight; border-color: Highlight; }
+  .kit-switch:focus-visible { outline: 2px solid CanvasText; outline-offset: 2px; }
 }
 
 /* A panel that replaces another (a session tab, a sub-tab, a workshop tool)

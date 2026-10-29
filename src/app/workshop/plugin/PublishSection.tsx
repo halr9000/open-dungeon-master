@@ -4,7 +4,7 @@ import { Select } from "@/components/ui/Select";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { AlertTriangle, CheckCircle2, Download, FileUp, Loader2, Server, Trash2 } from "lucide-react";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { UnofficialPackNotice } from "@/components/UnofficialPackNotice";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
@@ -12,7 +12,10 @@ import { draftBytes, draftFromPack, finishDraft, type WorldPackDraft } from "@/l
 import { checkDraft } from "@/lib/worlds/draft-check";
 import type { WorldPackSummary } from "@/lib/worlds/summary";
 import { MAX_MANIFEST_BYTES } from "@/lib/worlds/types";
-import type { SectionProps } from "@/app/workshop/plugin/types";
+import { notInDraft, type PackOmission, type SettingLists } from "@/lib/workshop/to-pack";
+import { OmissionReport } from "@/app/workshop/plugin/OmissionReport";
+import { PanelError } from "@/app/campaigns/[campaignId]/PanelKit";
+import type { Flushed, SectionProps } from "@/app/workshop/plugin/types";
 
 // The last tab: what is still missing, and the three ways out. Download
 // hands over the manifest as a file, the same file Admin, Campaign plugins
@@ -23,6 +26,13 @@ import type { SectionProps } from "@/app/workshop/plugin/types";
 // The checks run in the browser as the draft changes (src/lib/worlds/
 // draft-check.ts); the export route runs them again plus the content-pack
 // integrity checks, and its problems land in the same list.
+//
+// Above the ways out, what the pack leaves out of this workshop (WF-18),
+// read from the same compile Pull uses, so the author sees every Atlas map,
+// event, secret, fight and homebrew entry a table will not get before the
+// pack goes anywhere. What the draft does not hold of the workshop's
+// setting is worked out here against the draft on screen, so it follows an
+// edit without asking the server again.
 
 function download(name: string, payload: unknown) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -34,19 +44,26 @@ function download(name: string, payload: unknown) {
   URL.revokeObjectURL(url);
 }
 
+// Said when Download or Install stops for a save that did not land.
+const NOT_SAVED = "The draft on screen is not saved, so nothing was built from the older copy on the server. Your changes are kept here. Try again.";
+
 export function PublishSection({
   draft,
   onDraft,
   workshopId,
   isAdmin,
   flushSave,
+  saved,
   onClear,
 }: SectionProps & {
   workshopId: string;
   isAdmin: boolean;
   // Writes the draft now rather than after the autosave delay, so the
-  // export reads what is on screen.
-  flushSave: () => Promise<void>;
+  // export reads what is on screen, and says whether that landed.
+  flushSave: () => Promise<Flushed>;
+  // The draft on screen is the server's: a refusal for an unsaved draft is
+  // no longer true once a save lands.
+  saved: boolean;
   onClear: () => Promise<void>;
 }) {
   const check = checkDraft(draft);
@@ -58,6 +75,32 @@ export function PublishSection({
   const [installed, setInstalled] = useState<WorldPackSummary[]>([]);
   const [startFrom, setStartFrom] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const [report, setReport] = useState<{ pulled: SettingLists; omissions: PackOmission[] } | null>(null);
+  const [reportError, setReportError] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/workshops/${workshopId}/plugin/pull`)
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!live) return;
+        if (!response.ok) {
+          setReportError(data.error ?? "What the pack leaves out could not be read.");
+          return;
+        }
+        setReport({ pulled: data.pulled, omissions: data.omissions ?? [] });
+      })
+      .catch(() => live && setReportError("Could not reach the server to read what the pack leaves out."));
+    return () => {
+      live = false;
+    };
+  }, [workshopId]);
+
+  const omissions = useMemo(() => {
+    if (!report) return [];
+    const missing = notInDraft(report.pulled, draft);
+    return [...(missing ? [missing] : []), ...report.omissions.filter((omission) => omission.key !== "not-pulled")];
+  }, [report, draft]);
 
   useEffect(() => {
     fetch("/api/worlds")
@@ -72,11 +115,19 @@ export function PublishSection({
     setNotice("");
     setServerProblems([]);
     try {
-      await flushSave();
+      // The export builds from the server's copy (WA-04). A save that did
+      // not land leaves an older copy there, so nothing is built from it;
+      // and the export names the revision this save left, so a copy changed
+      // since (another tab) is refused rather than built.
+      const saved = await flushSave();
+      if (!saved.ok) {
+        setError(NOT_SAVED);
+        return;
+      }
       const response = await fetch(`/api/workshops/${workshopId}/plugin/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ install }),
+        body: JSON.stringify({ install, revision: saved.revision }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -159,6 +210,8 @@ export function PublishSection({
           `Started from "${data.pack.name}". Its pictures stay with the installed copy; give this one a new name so the two do not share an id.`,
         );
       }
+    } catch {
+      setError("Could not reach the server.");
     } finally {
       setBusy("");
       setStartFrom("");
@@ -206,6 +259,8 @@ export function PublishSection({
         ) : null}
       </section>
 
+      <OmissionReport omissions={omissions} loading={!report && !reportError} error={reportError} />
+
       <UnofficialPackNotice rightsHolder={draft.rightsHolder} inspiredBy={draft.inspiredBy.trim() || undefined} />
 
       <section className={ui.card + " p-4"}>
@@ -228,7 +283,7 @@ export function PublishSection({
             : "The file installs from Admin, Campaign plugins, Install from a file, on any server whose admin trusts it. Only an admin can install here."}
         </p>
         {notice ? <p className="live-in mt-2 text-xs text-amber-200/90">{notice}</p> : null}
-        {error ? <p className="motion-shake mt-2 text-xs text-red-300">{error}</p> : null}
+        {error && !(error === NOT_SAVED && saved) ? <PanelError className="mt-2">{error}</PanelError> : null}
       </section>
 
       <section className={ui.card + " p-4"}>

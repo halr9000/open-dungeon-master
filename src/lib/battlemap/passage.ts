@@ -12,12 +12,20 @@ import { climbsFreely } from "@/lib/srd/feat-combat";
 import { footprintIndexes, type Footprint } from "@/lib/battlemap/footprint";
 import { moveTraitsFrom, tileIndex, type BattleToken, type MoveTraits } from "@/lib/battlemap/types";
 import { sizeForRace } from "@/lib/srd";
+import { holdsFeature } from "@/lib/srd/feature-names";
 
 const SIZES = ["tiny", "small", "medium", "large", "huge", "gargantuan"];
 
 export function sizeIndex(size: string | undefined): number {
   const at = SIZES.indexOf((size ?? "").trim().toLowerCase());
   return at === -1 ? 2 : at;
+}
+
+// The side a token is on for passage: "prop" for a thing, else a side name.
+export type TokenSide = (token: Pick<BattleToken, "kind" | "refId">) => string;
+
+export function kindSide(token: Pick<BattleToken, "kind">): string {
+  return token.kind === "enemy" ? "foe" : token.kind === "prop" ? "prop" : "party";
 }
 
 export function passableTiles(input: {
@@ -28,12 +36,16 @@ export function passableTiles(input: {
   sizeOf: (token: BattleToken) => string | undefined;
   // Halfling Nimbleness: through the space of any creature larger than you.
   nimble?: boolean;
+  // The side each token's creature fights on, when a fight has sides other
+  // than its kinds' (src/lib/dm/combatant.ts tokenSides: a companion turned
+  // on the party is hostile to it). Absent: by kind.
+  sideOf?: TokenSide;
 }): Set<number> {
   const out = new Set<number>();
   const moverSize = sizeIndex(input.sizeOf(input.mover));
   // Characters and the DM's figures side with each other; enemies with each
   // other. A prop is a thing, not a creature, and blocks.
-  const side = (token: BattleToken) => (token.kind === "enemy" ? "enemy" : token.kind === "prop" ? "prop" : "party");
+  const side = input.sideOf ?? kindSide;
   const moverSide = side(input.mover);
   for (const token of input.tokens) {
     if (token.id === input.mover.id || side(token) === "prop") {
@@ -59,7 +71,7 @@ export function passableTiles(input: {
 
 // Halfling Nimbleness on a sheet.
 export function hasHalflingNimbleness(features: Array<{ name: string }> = []): boolean {
-  return features.some((feature) => /^halfling nimbleness\b/i.test(feature.name.trim()));
+  return holdsFeature({ features }, "Halfling Nimbleness");
 }
 
 // A character's walking traits on the board, with whose space they may pass
@@ -71,6 +83,7 @@ export function pcMoveTraits(input: {
   sheet: { race: string; features: Array<{ name: string }> };
   footprintOf: (token: BattleToken) => Footprint;
   enemySize: (refId: string) => string | undefined;
+  sideOf?: TokenSide;
 }): MoveTraits {
   const moverSize = sizeForRace(input.sheet.race);
   // Athlete: climbing costs no extra movement (src/lib/srd/feat-combat.ts).
@@ -85,6 +98,7 @@ export function pcMoveTraits(input: {
       footprintOf: input.footprintOf,
       sizeOf: (token) => (token.id === input.mover.id ? moverSize : token.kind === "enemy" ? input.enemySize(token.refId) : undefined),
       nimble: hasHalflingNimbleness(input.sheet.features),
+      ...(input.sideOf ? { sideOf: input.sideOf } : {}),
     }),
   };
 }

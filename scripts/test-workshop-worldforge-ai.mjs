@@ -13,7 +13,8 @@ import { openWorld } from "./lib/enforce-world.mjs";
 import { suite } from "./lib/enforce-harness.mjs";
 
 const { test, finish } = suite("test-workshop-worldforge-ai");
-const { replyJson, readForgeReply, paintPrompt, worldDigest } = await import("../src/lib/worldforge/forge.ts");
+const { replyJson, paintPrompt } = await import("../src/lib/worldforge/forge.ts");
+const { askPassages } = await import("../src/lib/worldforge/ask.ts");
 const { forgeFromNotes, askTheWorld, draftEntry } = await import("../src/lib/dm/world-ai.ts");
 const { applyForge, importWorldForge } = await import("../src/lib/db/world-forge-io.ts");
 const { worldView } = await import("../src/lib/db/world-forge.ts");
@@ -47,6 +48,12 @@ const server = http.createServer((req, res) => {
   const chunks = [];
   req.on("data", (chunk) => chunks.push(chunk));
   req.on("end", () => {
+    // The backend's /props is probed before the first call (model.ts); only
+    // a chat POST carries a body to read.
+    if (req.method !== "POST") {
+      res.writeHead(404).end();
+      return;
+    }
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     requests.push(body);
     if (failing) {
@@ -124,12 +131,14 @@ await test("Keeping the ticked rows makes the entries on their shelves, the link
   assert.equal(entity("Gullhaven").text.startsWith("A fishing town"), true, "an existing place was rewritten");
 });
 
-await test("Ask answers from the world, hidden truths marked as the DM's, and names the entries it uses.", async () => {
+await test("Ask answers from the world's passages, hidden truths marked as the DM's, and names the entries it uses.", async () => {
   const result = await askTheWorld(campaign(), "Who sold the codes?");
   assert.ok(result.answer, result.error);
   assert.deepEqual(result.refs.sort(), [entity("Ivo Brannock").ref, entity("Mira Fenn").ref].sort());
+  // The stand-in cites nothing, so nothing is shown as a source.
+  assert.deepEqual(result.sources, []);
   const sent = requests.at(-1).messages.at(-1).content;
-  assert.match(sent, /DM only: Ivo sold the sluice codes/);
+  assert.match(sent, /\] Ivo Brannock \(Character\), hidden truth, GM only\nIvo sold the sluice codes/);
   assert.match(sent, /# The question\nWho sold the codes\?/);
 });
 
@@ -152,11 +161,11 @@ await test("A model that fails is an error to show, never a crash, and writes no
   assert.equal(JSON.stringify(worldView(workshop.id)), before);
 });
 
-await test("The digest keeps to its budget, the asked entries first; paint prompts leave names out.", () => {
+await test("Ask's passages keep to their budget, the asked entry first; paint prompts leave names out.", () => {
   const { doc, entities } = worldView(workshop.id);
-  const digest = worldDigest(doc, entities, "Tell me about Mira Fenn", 600);
-  assert.ok(digest.length <= 700);
-  assert.ok(digest.startsWith("## Mira Fenn"));
+  const { passages } = askPassages(doc, entities, "Tell me about Mira Fenn", "english", 600);
+  assert.ok(passages.reduce((sum, passage) => sum + passage.text.length, 0) <= 600);
+  assert.equal(passages[0].name, "Mira Fenn");
   const prompt = paintPrompt("faction", "Faction", "A guild of salt-runners.", "oil painting");
   assert.match(prompt, /Heraldic sigil/);
   assert.doesNotMatch(paintPrompt("npc", "Character", "A warden.", ""), /Ivo/);

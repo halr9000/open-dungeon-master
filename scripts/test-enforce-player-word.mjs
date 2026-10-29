@@ -65,7 +65,7 @@ const WAITING = (name) =>
 const promptText = (request) => request.messages.map((message) => message.content ?? "").join("\n\n");
 
 const REFUSAL = (name) =>
-  `${name} has not acted: their player hasn't declared an action this turn, and nothing was spent. Don't narrate an attempt; wait for them to say what ${name} does, or narrate the moment and stop.`;
+  `${name} has not acted: their player hasn't declared an action this turn. Nothing was spent. Don't narrate an attempt; wait for them to say what ${name} does, or narrate the moment and stop.`;
 
 // A fight on `who`'s turn with Brom next, the goblin beside them, and the
 // DM's last line the newest in the transcript: nobody has spoken since.
@@ -122,7 +122,7 @@ const FAMILIES = [
     tool: "aoe_damage", who: mage, line: "Burning Hands on the goblin.", dice: [10, 1, 1, 1],
     args: (enemy) => ({ casterId: mage.id, spell: "Burning Hands", level: 1, enemyIds: [enemy.id], saveAbility: "dex", damage: "3d6", type: "fire", halfOnSave: true }),
   },
-  { tool: "teleport_token", who: mage, line: "I Misty Step away.", args: () => ({ tokenName: mage.id, x: 9, y: 5, spell: "Misty Step", casterId: mage.id }) },
+  { tool: "teleport_token", who: mage, line: "I Misty Step away.", args: () => ({ token: mage.id, x: 9, y: 5, spell: "Misty Step", casterId: mage.id }) },
   { tool: "cast_buff", who: sage, line: "I bless Kara.", setup: () => kit.place(kara.id, 4, 5), args: () => ({ characterId: sage.id, spell: "Bless", level: 1, targetCharacterIds: [kara.id] }) },
   {
     tool: "heal", who: sage, line: "Cure Wounds on Kara.", dice: [4],

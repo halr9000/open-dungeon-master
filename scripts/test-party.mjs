@@ -60,16 +60,16 @@ test("the pack has a ceiling", () => {
 
 test("taking removes part of a stack, or the row", () => {
   const inventory = addPartyItem([], { name: "Torch", qty: 5 }).inventory;
-  const partial = removePartyItem(inventory, "torch", 2);
+  const partial = removePartyItem(inventory, "torch", true, 2);
   assert.equal(partial.removed, 2);
   assert.equal(partial.inventory[0].qty, 3);
-  const all = removePartyItem(partial.inventory, "Torch", 99);
+  const all = removePartyItem(partial.inventory, "Torch", true, 99);
   assert.equal(all.removed, 3);
   assert.deepEqual(all.inventory, []);
 });
 
 test("taking what the pack does not hold says so", () => {
-  assert.ok("error" in removePartyItem([], "ladder"));
+  assert.ok("error" in removePartyItem([], "ladder", true));
 });
 
 test("the pack's weight is reported, not enforced", () => {

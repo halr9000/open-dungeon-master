@@ -42,11 +42,33 @@ const creationSurface = `${payload}\n${worldSetup}\n${rulesPanel}`;
 // the stand-in party a WORKSHOP budgets prep against, and a campaign has real
 // character sheets to read instead (docs/workshop-plan.md section 1.1). It
 // lives in gameSettingsSchema because a workshop is a campaigns row.
+//
+// `narrationLength` and `styleNotes` are absent because they answer a table's
+// first sessions, not its creation (issue 383): how long the AI DM runs and
+// what its prose needs is learned by hearing it on this model. Both start
+// as no change at all, and the AI group of GameSettingsPanel owns them.
+// `combatPace` (issue #432) is the same kind of choice: how often fights come
+// is learned in play, starts balanced, and sits beside them.
+//
+// `waitForTable` and `waitForTableSeconds` (PR #438) are too: whether the AI
+// DM waits for everyone before it answers is learned once the table plays,
+// has a safe default, and the Players group of GameSettingsPanel owns it as
+// one Pacing picker (AGENTS.md, settings rule 2).
+//
+// `companionConscience` (issue 503) is one more: Leave is a safe default,
+// and it matters only once a lasting companion travels with the party, so
+// the Bonds group of GameSettingsPanel owns it.
 const DELIBERATELY_OMITTED = new Set([
   "stages",
   "beatReminder",
   "dmAssist",
   "targetParty",
+  "narrationLength",
+  "styleNotes",
+  "combatPace",
+  "waitForTable",
+  "waitForTableSeconds",
+  "companionConscience",
 ]);
 
 let passed = 0;

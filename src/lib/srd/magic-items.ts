@@ -12,14 +12,23 @@
 //   - the row IS that item: its name or its pack slug, never a fragment of
 //     one ("Pouch" is not a Pouch of Runestones);
 //   - it is worn or held, unless its own text says it works from the pack
-//     ("while the sword is on your person");
+//     ("while the sword is on your person"), and its place on the body lets
+//     it count: one cloak, one pair of boots, one pair of bracers at a time
+//     (src/lib/srd/wear-slots.ts, issue 412);
 //   - if it asks for attunement, the wearer is attuned to it, and is someone
 //     its text lets attune (a Staff of Power: a sorcerer, warlock or wizard);
 //   - a second copy of the same item adds nothing.
 
 import magicItemsJson from "@/lib/classes/magic-items.json";
-import { ATTUNEMENT_SLOTS, attunementSlotsFor, isWorn } from "@/lib/srd/armor";
+import { ATTUNEMENT_SLOTS, attunementSlotsFor } from "@/lib/srd/armor";
+import { countsAsWorn } from "@/lib/srd/wear-slots";
 import type { Ability } from "@/lib/schemas/sheet";
+import type { ItemTag } from "@/lib/schemas/item-tags";
+import { textKey } from "@/lib/language/text-logic";
+import { rowName, type RowItem } from "@/lib/srd/item-row";
+import { compositeGearNamed } from "@/lib/srd/magic-gear";
+import { isNamed } from "@/lib/srd/feature-names";
+import { alignmentIs } from "@/lib/srd/alignment";
 
 // The minimal item shape the magic-item engine reads: a name and its worn
 // state. The full EquipmentItem satisfies this. `gear.magic` is a homebrew
@@ -29,11 +38,12 @@ import type { Ability } from "@/lib/schemas/sheet";
 export type WornMagicItem = {
   name: string;
   slug?: string;
+  srdName?: string;
   equipped?: boolean;
   attuned?: boolean;
   // Waiting on the short rest attuning takes; holds one of the three places.
   attuning?: boolean;
-  gear?: { magic?: { requiresAttunement: boolean; effects: MagicItemEffect[] } };
+  gear?: { magic?: { requiresAttunement: boolean; effects: MagicItemEffect[] }; tags?: readonly ItemTag[] };
 };
 
 export type MagicItemEffect =
@@ -92,19 +102,11 @@ const MAGIC_ITEMS = (magicItemsJson as { items: MagicItemDef[] }).items;
 
 // "Ring of Resistance (Fire)", "ring  of resistance fire" and the pack's
 // curly apostrophes all land on one key.
-function keyOf(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[‘’]/g, "'")
-    .replace(/[^a-z0-9'À-ɏ]+/g, " ")
-    .trim();
-}
-
 const byKey = new Map<string, MagicItemDef>();
 const bySlug = new Map<string, MagicItemDef>();
 for (const item of MAGIC_ITEMS) {
   for (const name of [item.name, ...(item.aliases ?? [])]) {
-    const key = keyOf(name);
+    const key = textKey(name);
     if (!byKey.has(key)) {
       byKey.set(key, item);
     }
@@ -114,24 +116,32 @@ for (const item of MAGIC_ITEMS) {
   }
 }
 
-// The magic item a sheet entry names, if any: by its pack slug, or by its
-// whole name, case and spacing aside. A "+1" in front and a note in brackets
-// behind ("Ring of Protection (spare)") are the owner's words about the
-// item and not part of its name. Nothing matches on a fragment.
-export function matchMagicItem(name: string, slug?: string | null): MagicItemDef | null {
-  if (slug) {
-    const known = bySlug.get(slug.trim().toLowerCase());
+// The magic item a sheet entry is, if any: by its pack slug, or by its row's
+// name (src/lib/srd/item-row.ts).
+export function matchMagicItem(item: RowItem): MagicItemDef | null {
+  if (item.slug) {
+    const known = bySlug.get(item.slug.trim().toLowerCase());
     if (known) {
       return known;
     }
   }
+  return magicItemNamed(rowName(item));
+}
+
+// The magic item a name names, if any: its whole name, case and spacing
+// aside, or a composite the magic gear table knows ("Chain Mail of Fire
+// Resistance" is Armor of Fire Resistance, src/lib/srd/magic-gear.ts). A "+1"
+// in front and a note in brackets behind ("Ring of Protection (spare)") are
+// the owner's words about the item and not part of its name. Nothing matches
+// on a fragment.
+export function magicItemNamed(name: string): MagicItemDef | null {
   const bare = name.trim().replace(/^\+\d\s+/, "");
-  const whole = byKey.get(keyOf(bare));
+  const whole = byKey.get(textKey(bare)) ?? byKey.get(textKey(compositeGearNamed(bare)?.def.name ?? ""));
   if (whole) {
     return whole;
   }
   const withoutNote = bare.replace(/\s*\([^()]*\)\s*$/, "");
-  return withoutNote !== bare ? (byKey.get(keyOf(withoutNote)) ?? null) : null;
+  return withoutNote !== bare ? (byKey.get(textKey(withoutNote)) ?? null) : null;
 }
 
 export type MagicItemRiders = {
@@ -145,8 +155,6 @@ export type MagicItemRiders = {
   sources: string[];
 };
 
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
-
 function isSpellcaster(wearer: Wearer): boolean {
   return Boolean(wearer.spellcasting);
 }
@@ -157,9 +165,9 @@ export function mayAttune(def: Pick<MagicItemDef, "attunedBy">, wearer: Wearer):
   if (!rule) {
     return true;
   }
-  const device = (wearer.features ?? []).some((f) => /^use magic device\b/i.test(f.name.trim()));
+  const device = (wearer.features ?? []).some((f) => isNamed(f.name, "Use Magic Device"));
   if (rule.classes?.length && !device) {
-    const held = [lower(wearer.class), ...(wearer.classes ?? []).map((entry) => lower(entry.id))];
+    const held = [textKey(wearer.class ?? ""), ...(wearer.classes ?? []).map((entry) => textKey(entry.id))];
     if (!rule.classes.some((name) => held.includes(name))) {
       return false;
     }
@@ -167,10 +175,10 @@ export function mayAttune(def: Pick<MagicItemDef, "attunedBy">, wearer: Wearer):
   if (rule.spellcaster && !device && !isSpellcaster(wearer)) {
     return false;
   }
-  if (rule.alignment && !lower(wearer.alignment).includes(rule.alignment)) {
+  if (rule.alignment && !alignmentIs(wearer.alignment, rule.alignment)) {
     return false;
   }
-  if (rule.race && !device && !lower(wearer.race).replace(/_/g, " ").includes(rule.race)) {
+  if (rule.race && !device && !textKey(wearer.race ?? "").includes(rule.race)) {
     return false;
   }
   return true;
@@ -178,8 +186,8 @@ export function mayAttune(def: Pick<MagicItemDef, "attunedBy">, wearer: Wearer):
 
 function defOf(item: WornMagicItem): MagicItemDef | null {
   return item.gear?.magic
-    ? { name: item.name, match: `homebrew ${keyOf(item.name)}`, ...item.gear.magic }
-    : matchMagicItem(item.name, item.slug);
+    ? { name: item.name, match: `homebrew ${textKey(item.name)}`, ...item.gear.magic }
+    : matchMagicItem(item);
 }
 
 // An item's effect counts when the item is worn (or, for the few whose text
@@ -193,7 +201,7 @@ function itemActive(
   equipment: WornMagicItem[],
   wearer: Wearer | undefined,
 ): boolean {
-  if (!def.carried && !isWorn(item, equipment)) {
+  if (!def.carried && !countsAsWorn(item, equipment)) {
     return false;
   }
   if (!def.requiresAttunement) {

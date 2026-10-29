@@ -1,4 +1,3 @@
-import { normalizeTradeOffer } from "@/lib/dm/trade-logic";
 import type { Campaign } from "@/lib/db/campaigns";
 import { allocateSeq } from "@/lib/db/campaigns";
 import {
@@ -12,7 +11,6 @@ import {
   duplicateOfferProblem,
   offerLineStatus,
   offerPrecheck,
-  parseOfferArgs,
   proposalSummary,
   SETTLED_OFFERS_MAX,
   SETTLED_OFFERS_WINDOW_MS,
@@ -22,6 +20,25 @@ import {
   type OfferLine,
 } from "@/lib/dm/proposal-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { listPriceCp, saleValueCp } from "@/lib/dm/trade-value";
+import { lineNamed } from "@/lib/srd/item-row";
+
+// What a purchase offered for approval will charge or pay each, in gold, as
+// purchase-math.ts settles it on approval: the list price to buy, the sale
+// value to sell, and the call's price only for a thing nothing prices. The
+// offer's line showed the call's own price, which the engine ignores for
+// anything the book lists (issue #471).
+function quotedPurchase(args: OfferArgs, sheet: CharacterSheet): OfferArgs | ToolError {
+  const name = String(args.item ?? "").trim();
+  const sold = args.action === "sell" ? sheet.equipment[lineNamed(sheet.equipment, name)] : undefined;
+  const item = sold ?? { name, srdName: typeof (args as { srdName?: unknown }).srdName === "string" ? String((args as { srdName?: unknown }).srdName) : undefined };
+  const listCp = listPriceCp(item);
+  if (listCp === null) {
+    return args.price === undefined ? { error: `Nothing prices "${name}": send price, the gold one is worth. No offer was made.`, retry: true } : args;
+  }
+  return { ...args, price: (args.action === "sell" ? saleValueCp(item, listCp) : listCp) / 100 };
+}
 
 // Interception for the inventoryApprovals and vitalsApprovals game
 // settings: a DM inventory, gold, damage, healing or condition mutation
@@ -29,24 +46,9 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 // answers, instead of applying immediately. Returns null when the normal
 // auto-apply path should run.
 
-// Inventory is party-visible, so the full proposal may ride the persisted
-// stream (unlike notes/whispers).
-export function publicItemProposal(proposal: ItemProposal) {
-  return {
-    id: proposal.id,
-    characterId: proposal.characterId,
-    userId: proposal.userId,
-    toolName: proposal.toolName,
-    summary: proposal.summary,
-    reason: proposal.reason,
-    status: proposal.status,
-    outcome: proposal.outcome,
-    createdAt: proposal.createdAt,
-    toCharacterId: proposal.toCharacterId,
-    // A trade carries its offer so the bar can lay out both sides.
-    ...(proposal.toolName === "trade" ? { offer: normalizeTradeOffer(parseOfferArgs(proposal.argsJson)) } : {}),
-  };
-}
+// The offer as a seat receives it (src/lib/dm/proposal-view.ts).
+export { publicItemProposal } from "@/lib/dm/proposal-view";
+import { publicItemProposal } from "@/lib/dm/proposal-view";
 
 export function maybeProposeItemChange(
   campaign: Campaign,
@@ -54,7 +56,7 @@ export function maybeProposeItemChange(
   toolName: string,
   rawArguments: string,
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> | null {
+): ToolResult | null {
   let args: OfferArgs & { characterId?: string; reason?: string };
   try {
     args = JSON.parse(rawArguments || "{}");
@@ -72,36 +74,36 @@ export function maybeProposeItemChange(
 
   // Light validation now, so a malformed offer fails while the model can
   // still fix it; the full check reruns in applyDmMutation on approval.
-  if ((toolName === "grant_item" || toolName === "remove_item") && !String(args.name ?? "").trim()) {
-    return { error: `${toolName} needs an item name.` };
+  if ((toolName === "grant_item" || toolName === "remove_item") && !String(args.item ?? "").trim()) {
+    return { error: `${toolName} needs an item name.`, retry: true };
   }
   if (toolName === "modify_gold" && !Number(args.delta ?? 0)) {
-    return { error: "modify_gold needs a nonzero delta." };
+    return { error: "modify_gold needs a nonzero delta.", retry: true };
   }
-  if (
-    toolName === "purchase" &&
-    (!String(args.item ?? args.name ?? "").trim() ||
-      args.price === undefined ||
-      (args.action !== "buy" && args.action !== "sell"))
-  ) {
-    return { error: "purchase needs item, price, and action buy|sell." };
+  if (toolName === "purchase" && (!String(args.item ?? "").trim() || (args.action !== "buy" && args.action !== "sell"))) {
+    return { error: "purchase needs item and action buy|sell.", retry: true };
   }
 
   if (toolName === "apply_damage" && !(Number(args.amount ?? 0) >= 1)) {
-    return { error: "apply_damage needs a positive amount." };
+    return { error: "apply_damage needs a positive amount.", retry: true };
   }
   if (toolName === "heal" && !(Number(args.amount ?? 0) >= 1) && !String(args.spell ?? "").trim()) {
-    return { error: "heal needs an amount or a spell." };
+    return { error: "heal needs an amount or a spell.", retry: true };
   }
   if ((toolName === "set_condition" || toolName === "clear_condition") && !String(args.condition ?? "").trim()) {
-    return { error: `${toolName} needs a condition.` };
+    return { error: `${toolName} needs a condition.`, retry: true };
   }
 
   // An offer that could not apply is refused now, before the player sees
   // an apparently valid one (issue 239): nothing to take, nothing to sell.
   const cannot = offerPrecheck(toolName, args, sheet!);
   if (cannot) {
-    return { error: cannot };
+    return cannot;
+  }
+  // A purchase's line names the price the engine will charge.
+  const quoted = toolName === "purchase" ? quotedPurchase(args, sheet!) : args;
+  if ("error" in quoted) {
+    return quoted;
   }
   // The same offer again, while the first waits or just after it was
   // accepted, is the same loot twice.
@@ -113,10 +115,10 @@ export function maybeProposeItemChange(
     Date.now(),
   );
   if (repeated) {
-    return { error: repeated };
+    return repeated;
   }
 
-  const summary = proposalSummary(toolName, args, sheet!.name);
+  const summary = proposalSummary(toolName, quoted, sheet!.name);
   const proposal = insertItemProposal({
     campaignId: campaign.id,
     turnId,
@@ -150,8 +152,10 @@ export function offerLinesForPrompt(
   nowMs = Date.now(),
 ): OfferLine[] {
   const nameOf = (proposal: ItemProposal) => sheetsById.get(proposal.characterId)?.name ?? "a character";
+  // An owner-only offer (a pact's approach, issue 503) is the storyteller's
+  // and its player's: it rides the storyteller's section, never this list.
   const open = listOpenItemProposals(campaignId)
-    .filter((proposal) => proposal.toolName !== "trade")
+    .filter((proposal) => proposal.toolName !== "trade" && !proposal.ownerOnly)
     .map((proposal) => ({
       summary: proposal.summary,
       characterName: nameOf(proposal),
@@ -161,7 +165,7 @@ export function offerLinesForPrompt(
     }));
   const settled = listRecentItemProposals(campaignId, SETTLED_OFFERS_MAX * 2)
     .filter((proposal) => {
-      if (proposal.toolName === "trade") return false;
+      if (proposal.toolName === "trade" || proposal.ownerOnly) return false;
       const at = Date.parse(proposal.resolvedAt ?? "");
       return !Number.isNaN(at) && nowMs - at <= SETTLED_OFFERS_WINDOW_MS;
     })

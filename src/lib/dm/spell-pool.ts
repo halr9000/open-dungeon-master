@@ -14,10 +14,11 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { SpellMech } from "@/lib/srd/spell-mechanics";
 import { addDice } from "@/lib/srd/spell-scaling";
 import type { TurnBudget } from "@/lib/dm/action-budget";
-import { spellKeyOf } from "@/lib/dm/cast-rules";
 import { publishEncounter } from "@/lib/dm/enemy-damage";
 import { laySpellConditionsOnEnemy, spellConditionMeta } from "@/lib/dm/spell-effects";
 import type { AoeSpellPlan } from "@/lib/dm/aoe-spell";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // Sleep and Color Spray roll one pool of hit points for the casting; what a
 // creature's hit points took out of it is gone for the next one. Kept on
@@ -26,7 +27,7 @@ import type { AoeSpellPlan } from "@/lib/dm/aoe-spell";
 const POOL = "cast-pool";
 
 export function poolLeftOf(budget: TurnBudget | null, spell: string): number | null {
-  const wanted = spellKeyOf(spell);
+  const wanted = textKey(spell);
   for (const entry of budget?.oncePerTurn ?? []) {
     const [tag, name, left] = entry.split("|");
     if (tag === POOL && name === wanted) {
@@ -37,7 +38,7 @@ export function poolLeftOf(budget: TurnBudget | null, spell: string): number | n
 }
 
 export function withPoolLeft(budget: TurnBudget, spell: string, left: number): TurnBudget {
-  const wanted = spellKeyOf(spell);
+  const wanted = textKey(spell);
   return {
     ...budget,
     oncePerTurn: [
@@ -133,10 +134,10 @@ export function aoePool(
   plan: AoeSpellPlan,
   enemies: EncounterEnemy[],
   corrections: string[],
-): Record<string, unknown> {
+): ToolResult {
   const pool = plan.mech?.hitPointPool;
   if (!pool) {
-    return { error: `${plan.spell} rolls no pool of hit points.` };
+    return { error: `${plan.spell} rolls no pool of hit points.`, retry: true };
   }
   const ordered = [...enemies].sort((a, b) => a.currentHp - b.currentHp);
   const results: Array<Record<string, unknown>> = [];

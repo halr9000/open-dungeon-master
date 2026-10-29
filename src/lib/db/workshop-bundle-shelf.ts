@@ -1,13 +1,21 @@
-import { getDatabase, parseJson } from "@/lib/db/core";
-import { createHomebrew, listHomebrew, type HomebrewEntry } from "@/lib/db/homebrew";
+import { getDatabase } from "@/lib/db/core";
+import { isWorkshopClassId, workshopClassId } from "@/lib/homebrew/class-data";
+import { renameSheetRefs, sheetRefNames, type SheetRenamer } from "@/lib/homebrew/sheet-refs";
+import { homebrewDataRefs, monsterStatsSpells, renameHomebrewDataRefs, renameMonsterStatsSpells } from "@/lib/homebrew/data-refs";
+import { renamePrepRefs } from "@/lib/db/prep-refs";
+import { createHomebrew, isPublishedGearName, listHomebrew, type HomebrewEntry } from "@/lib/db/homebrew";
+import { spellFactsFor } from "@/lib/characters/catalog";
+import { matchGear } from "@/lib/srd/adventuring-gear";
 import { createHomebrewMonster, listHomebrewMonsters, type HomebrewMonster } from "@/lib/bestiary/homebrew-monsters";
 import { draftFromData } from "@/lib/bestiary/monster-draft";
 import { resolveMonster } from "@/lib/bestiary";
 import type { SettingRef } from "@/lib/worlds/preset";
 import { normalizeHomebrewData } from "@/lib/homebrew/gear";
-import { allSpellNames } from "@/lib/srd/spell-lists";
+import { normalizeHomebrewForSave } from "@/lib/homebrew/species-choice-server";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import type { WorkshopBundle } from "@/lib/workshop/bundle";
+import { textKey } from "@/lib/language/text-logic";
+import { HOMEBREW_NAME_MAX } from "@/lib/schemas/homebrew";
 
 // A workshop bundle's share of its author's shelf (hand-built monsters, and
 // items, spells and options), both ways (docs/workshop-rulebook-audit-
@@ -41,7 +49,6 @@ export type ShelfReport = {
 
 export const PORTABLE_REF = "homebrew:@";
 
-const lower = (value: string) => value.trim().toLowerCase();
 const label = (kind: string, name: string) => `${kind === "archetype" ? "subclass" : kind === "race" ? "species" : kind} ${name}`;
 
 // The monster a fight's roster row names ("goblin", or {monster: "goblin"}).
@@ -63,6 +70,14 @@ export function portableStatBlock(ref: string): string {
   return row?.name ?? "";
 }
 
+// A workshop class's id ("homebrew-<entry id>", src/lib/homebrew/class-data.ts)
+// written by name, as another server can read it; anything else as it is.
+export function portableClassRef(classId: string, byId: Map<string, HomebrewEntry>): string {
+  if (!isWorkshopClassId(classId)) return classId;
+  const entry = byId.get(classId.slice("homebrew-".length));
+  return entry ? `${PORTABLE_REF}class:${entry.name}` : classId;
+}
+
 // A pregen's sheet with its homebrew ids written by kind and name.
 export function portableSheet(sheet: CreateSheetInput, byId: Map<string, HomebrewEntry>): CreateSheetInput {
   const portable = (ref: string | undefined) => {
@@ -74,30 +89,43 @@ export function portableSheet(sheet: CreateSheetInput, byId: Map<string, Homebre
   const equipment = Array.isArray(record.equipment)
     ? (record.equipment as Array<Record<string, unknown>>).map((item) => (typeof item.slug === "string" ? { ...item, slug: portable(item.slug) } : item))
     : record.equipment;
-  return { ...sheet, race: portable(sheet.race) ?? sheet.race, background: portable(sheet.background) ?? sheet.background, ...(equipment ? { equipment } : {}) } as CreateSheetInput;
+  const classes = Array.isArray(record.classes)
+    ? (record.classes as Array<Record<string, unknown>>).map((entry) => ({ ...entry, id: portableClassRef(String(entry.id ?? ""), byId) }))
+    : undefined;
+  return {
+    ...sheet,
+    class: portableClassRef(sheet.class, byId),
+    ...(classes ? { classes } : {}),
+    race: portable(sheet.race) ?? sheet.race,
+    background: portable(sheet.background) ?? sheet.background,
+    ...(equipment ? { equipment } : {}),
+  } as CreateSheetInput;
 }
 
-function sheetNames(sheet: CreateSheetInput): { ids: string[]; items: string[]; spells: string[]; feats: string[]; subclasses: string[] } {
+// The homebrew ids a pregen holds (species, background, workshop class, an
+// item by its slug) and everything it names (src/lib/homebrew/sheet-refs.ts).
+export function sheetUses(sheet: CreateSheetInput): { ids: string[]; names: ReturnType<typeof sheetRefNames> } {
   const record = sheet as unknown as Record<string, unknown>;
   const ids = [sheet.race, sheet.background].filter((ref): ref is string => typeof ref === "string" && ref.startsWith("homebrew:"));
+  // A workshop class the sheet holds, as the entry it is.
+  for (const classId of [sheet.class, ...(Array.isArray(record.classes) ? (record.classes as Array<{ id?: unknown }>).map((entry) => String(entry.id ?? "")) : [])]) {
+    if (typeof classId === "string" && isWorkshopClassId(classId)) ids.push(`homebrew:${classId.slice("homebrew-".length)}`);
+  }
   const equipment = Array.isArray(record.equipment) ? (record.equipment as Array<Record<string, unknown>>) : [];
   for (const item of equipment) {
     if (typeof item.slug === "string" && item.slug.startsWith("homebrew:")) ids.push(item.slug);
   }
-  const casting = record.spellcasting as Parameters<typeof allSpellNames>[0];
-  const casters = (casting as { casters?: unknown[] } | null)?.casters ?? [];
-  return {
-    ids: ids.map((ref) => ref.slice("homebrew:".length)),
-    items: equipment.map((item) => String(item.name ?? "")).filter(Boolean),
-    spells: [...allSpellNames(casting), ...casters.flatMap((caster) => allSpellNames(caster as Parameters<typeof allSpellNames>[0]))],
-    feats: Array.isArray(record.feats) ? (record.feats as unknown[]).map(String) : [],
-    subclasses: [record.subclass, ...(Array.isArray(record.classes) ? (record.classes as Array<{ subclass?: unknown }>).map((entry) => entry.subclass) : [])]
-      .map((value) => String(value ?? ""))
-      .filter(Boolean),
-  };
+  return { ids: ids.map((ref) => ref.slice("homebrew:".length)), names: sheetRefNames(sheet) };
 }
 
 // The shelf a bundle carries, and what it says about it.
+//
+// "Only what this workshop uses" is a closure, not a scan: what the
+// workshop's rows name (its Cast, fights, roll tables, shelves, pregens, World
+// links and prose) is kept, then whatever a kept entry names in turn (a
+// subclass's spells at every level, not only the ones a pregen holds today;
+// an item's spells; a background's kit; a monster's spells; a subclass's
+// class, and a kept class's other subclasses), until nothing new is named.
 export function shelfForBundle(input: {
   ownerUserId: string;
   setting: SettingRef;
@@ -105,47 +133,101 @@ export function shelfForBundle(input: {
   statBlocks: string[];
   rosters: unknown[][];
   sheets: CreateSheetInput[];
-  // The workshop's prepared words (beats, notes, places, lore): an entry they
-  // name is one the workshop uses.
+  // The workshop's prepared words (beats, notes, places, lore, rewards, the
+  // Cast's personalities, faction blurbs, map notes, house rules): an entry
+  // they name is one the workshop uses.
   texts: string[];
+  // Homebrew entries a World entry links to (src/lib/worldforge/model.ts
+  // Binding), by id: used, however little the prose names them.
+  boundIds?: string[];
+  // Roll-table rows that are a monster or an item, and the items its shops
+  // stock, by name.
+  tableRefs?: Array<{ kind: string; name: string }>;
+  stock?: string[];
 }): { monsters: HomebrewMonster[]; homebrew: HomebrewEntry[]; report: ShelfReport } {
   const monsters = listHomebrewMonsters(input.ownerUserId);
   const homebrew = listHomebrew(input.ownerUserId).filter((entry) => entry.kind !== "monster");
-  const refs = [...input.statBlocks.filter(Boolean), ...input.rosters.flatMap(rosterMonsters)];
-  const named = new Set(refs.map(lower));
-  const prose = input.texts.join("\n").toLowerCase();
-  const mentioned = (name: string) => name.trim().length >= 4 && prose.includes(name.trim().toLowerCase());
-  const usedMonster = (monster: HomebrewMonster) => named.has(lower(monster.draft.name)) || named.has(lower(monster.slug)) || mentioned(monster.draft.name);
-  const pregens = input.sheets.map(sheetNames);
-  const ids = new Set(pregens.flatMap((names) => names.ids));
-  const has = (list: string[], name: string) => list.some((entry) => lower(entry) === lower(name));
-  const usedEntry = (entry: HomebrewEntry) =>
-    ids.has(entry.id) ||
-    mentioned(entry.name) ||
-    pregens.some(
-      (names) =>
-        (entry.kind === "item" && has(names.items, entry.name)) ||
-        (entry.kind === "spell" && has(names.spells, entry.name)) ||
-        (entry.kind === "feat" && has(names.feats, entry.name)) ||
-        (entry.kind === "archetype" && has(names.subclasses, entry.name)),
-    );
+  const tableRefs = input.tableRefs ?? [];
+  const refs = [
+    ...input.statBlocks.filter(Boolean),
+    ...input.rosters.flatMap(rosterMonsters),
+    ...tableRefs.filter((ref) => ref.kind === "monster").map((ref) => ref.name),
+  ];
+  const named = new Set(refs.map(textKey));
+  const prose = textKey(input.texts.join("\n"));
+  const mentioned = (name: string) => name.trim().length >= 4 && prose.includes(textKey(name));
+  const usedMonster = (monster: HomebrewMonster) => named.has(textKey(monster.draft.name)) || named.has(textKey(monster.slug)) || mentioned(monster.draft.name);
   const keepMonsters = input.scope === "used" ? monsters.filter(usedMonster) : monsters;
-  const keepHomebrew = input.scope === "used" ? homebrew.filter(usedEntry) : homebrew;
-  const missing = [...new Set(refs)].filter((ref) => !resolveMonster(ref, input.setting, { userIds: [input.ownerUserId] }));
+
+  // What the rows name, by kind.
+  const pregens = input.sheets.map(sheetUses);
+  const wanted = {
+    spell: new Set([...pregens.flatMap((pregen) => pregen.names.spell), ...keepMonsters.flatMap((monster) => monsterStatsSpells(monster.draft.stats))].map(textKey)),
+    item: new Set(
+      [...pregens.flatMap((pregen) => pregen.names.item), ...tableRefs.filter((ref) => ref.kind === "item").map((ref) => ref.name), ...(input.stock ?? [])].map(textKey),
+    ),
+    feat: new Set(pregens.flatMap((pregen) => pregen.names.feat).map(textKey)),
+    archetype: new Set(pregens.flatMap((pregen) => pregen.names.archetype.map((entry) => entry.name)).map(textKey)),
+  };
+  const ids = new Set([...pregens.flatMap((pregen) => pregen.ids), ...(input.boundIds ?? [])]);
+  const seeded = (entry: HomebrewEntry) =>
+    ids.has(entry.id) || mentioned(entry.name) || (entry.kind in wanted && wanted[entry.kind as keyof typeof wanted].has(textKey(entry.name)));
+
+  const kept = new Set<HomebrewEntry>(input.scope === "used" ? homebrew.filter(seeded) : homebrew);
+  // Then what each kept entry names, until nothing new is named.
+  const queue = [...kept];
+  const keep = (entry: HomebrewEntry | undefined) => {
+    if (entry && !kept.has(entry)) {
+      kept.add(entry);
+      queue.push(entry);
+    }
+  };
+  const byName = (kind: HomebrewEntry["kind"], name: string) => homebrew.find((entry) => entry.kind === kind && textKey(entry.name) === textKey(name));
+  while (queue.length) {
+    const entry = queue.shift()!;
+    const named = homebrewDataRefs(entry.kind, entry.data);
+    for (const spell of named.spell) keep(byName("spell", spell));
+    for (const item of named.item) keep(byName("item", item));
+    // A kept subclass of a workshop class brings its class along, and a kept
+    // class its other subclasses: a pregen below the subclass level still
+    // has the choice to make on the other side.
+    const parent = entry.kind === "archetype" ? String(entry.data.classSlug ?? "") : "";
+    if (isWorkshopClassId(parent)) keep(homebrew.find((other) => other.kind === "class" && workshopClassId(other.id) === parent));
+    if (entry.kind === "class") {
+      for (const subclass of homebrew.filter((other) => other.kind === "archetype" && String(other.data.classSlug ?? "") === workshopClassId(entry.id))) keep(subclass);
+    }
+  }
+  const keepHomebrew = homebrew.filter((entry) => kept.has(entry));
+
+  // What nothing answers to, here or in the books: monsters by the name the
+  // rows use, and the spells and items a kept entry, a pregen or a shelf names.
+  const missingMonsters = [...new Set(refs)].filter((ref) => !resolveMonster(ref, input.setting, { userIds: [input.ownerUserId] }));
+  const shelfHas = (kind: HomebrewEntry["kind"], name: string) => Boolean(byName(kind, name));
+  const spellsNamed = new Set<string>();
+  for (const entry of keepHomebrew) for (const spell of homebrewDataRefs(entry.kind, entry.data).spell) spellsNamed.add(spell);
+  for (const monster of keepMonsters) for (const spell of monsterStatsSpells(monster.draft.stats)) spellsNamed.add(spell);
+  const itemsNamed = new Set<string>([...tableRefs.filter((ref) => ref.kind === "item").map((ref) => ref.name), ...(input.stock ?? [])]);
+  for (const entry of keepHomebrew) for (const item of homebrewDataRefs(entry.kind, entry.data).item) itemsNamed.add(item);
+  const missingSpells = [...spellsNamed].filter((name) => !shelfHas("spell", name) && !spellFactsFor(name, [input.ownerUserId]));
+  const missingItems = [...itemsNamed].filter((name) => !shelfHas("item", name) && !isPublishedGearName(name) && !matchGear(name));
   return {
     monsters: keepMonsters,
     homebrew: keepHomebrew,
     report: {
       included: [...keepMonsters.map((monster) => label("monster", monster.draft.name)), ...keepHomebrew.map((entry) => label(entry.kind, entry.name))],
-      unused: [...monsters.filter((monster) => !usedMonster(monster)).map((monster) => label("monster", monster.draft.name)), ...homebrew.filter((entry) => !usedEntry(entry)).map((entry) => label(entry.kind, entry.name))],
-      missing,
+      unused: [...monsters.filter((monster) => !keepMonsters.includes(monster)).map((monster) => label("monster", monster.draft.name)), ...homebrew.filter((entry) => !kept.has(entry)).map((entry) => label(entry.kind, entry.name))],
+      // Monsters by the name the rows use, as they always were; the rest
+      // say what kind of thing they are.
+      missing: [...missingMonsters, ...missingSpells.map((name) => label("spell", name)), ...missingItems.map((name) => label("item", name))],
     },
   };
 }
 
 // ---- in ----
 
-export type ShelfArrival = { copied: number; reused: string[]; renamed: string[] };
+// `refused`: an entry this server's checks refuse (a species whose choice
+// breaks a limit here), named with the reason, since it does not land.
+export type ShelfArrival = { copied: number; reused: string[]; renamed: string[]; refused: string[] };
 
 // The rules an entry carries, the same however its keys were ordered and
 // whether or not it was normalized when saved; where it was copied from is
@@ -163,52 +245,79 @@ const comparable = (kind: HomebrewEntry["kind"], name: string, data: Record<stri
   return stable(rest);
 };
 
-// A name the importer's shelf does not have yet for this kind.
-function freeName(taken: Set<string>, name: string, bundleName: string): string {
-  const base = `${name} [${bundleName}]`.slice(0, 80);
+// Whether two entries of a kind carry the same rules, however their data was
+// ordered or normalized, and wherever either was copied from: what a campaign
+// import asks before it brings an entry beside one of the same name.
+export function sameRules(kind: HomebrewEntry["kind"], a: { name: string; data: Record<string, unknown> }, b: { name: string; data: Record<string, unknown> }): boolean {
+  return comparable(kind, a.name, a.data) === comparable(kind, b.name, b.data);
+}
+
+// A name the importer's shelf does not have yet for this kind, held to the
+// letters an entry's name keeps. A subclass's, an item's and a monster's
+// spell lists keep as many (HOMEBREW_NAME_MAX), so the entries that name a
+// renamed spell still name it whole.
+export function freeName(taken: Set<string>, name: string, bundleName: string, max = HOMEBREW_NAME_MAX): string {
+  const base = `${name} [${bundleName}]`.slice(0, max);
   let candidate = base;
-  for (let attempt = 2; taken.has(lower(candidate)); attempt += 1) {
-    candidate = `${base.slice(0, 74)} ${attempt}`;
+  for (let attempt = 2; taken.has(textKey(candidate)); attempt += 1) {
+    candidate = `${base.slice(0, max - 6)} ${attempt}`;
   }
   return candidate;
 }
 
-export function writeShelfArrivals(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfArrival & { entryFor: (kind: string, name: string) => string | null; renames: Map<string, string> } {
+// Kinds land in this order, so an entry that names another lands after it
+// and names it as it is called here: spells before the subclasses, items and
+// monsters that cast them, items before the backgrounds that hand them out,
+// classes before their subclasses.
+const ARRIVAL_ORDER: HomebrewEntry["kind"][] = ["spell", "item", "feat", "race", "background", "hazard", "class", "archetype"];
+
+export type ShelfLanding = ShelfArrival & {
+  entryFor: (kind: string, name: string) => string | null;
+  renames: Map<string, string>;
+  // The reason an entry the bundle carried did not land, or null when it
+  // did (or the bundle never carried it).
+  refusal: (kind: string, name: string) => string | null;
+};
+
+// The shelf a bundle carries, written onto the importer's own: an entry the
+// importer already keeps with the same rules is reused, one with other rules
+// lands beside it under the bundle's name. Each arrival's own references
+// (a subclass's spells, an item's spells, a background's kit, a monster's
+// spells) are named as the entries they mean are called here before the two
+// are compared, so a subclass whose spell arrived renamed is not mistaken
+// for the importer's own, which grants their spell.
+export function writeShelfArrivals(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfLanding {
   const bundleName = bundle.manifest.name;
   const reused: string[] = [];
   const renamed: string[] = [];
+  const refused: string[] = [];
+  // kind:textKey(name in the bundle) -> why this server refused it.
+  const refusals = new Map<string, string>();
   let copied = 0;
-  // kind:lower(name in the bundle) -> the name it has here.
+  // kind:textKey(name in the bundle) -> the name it has here.
   const renames = new Map<string, string>();
+  const asHere: SheetRenamer = (kind, name) => renames.get(`${kind}:${textKey(name)}`) ?? name;
 
-  const mine = new Map(listHomebrewMonsters(userId).map((monster) => [lower(monster.draft.name), monster]));
-  const monsterNames = new Set(mine.keys());
-  for (const monster of bundle.monsters) {
-    const draft = draftFromData(monster.name, { desc: monster.desc, stats: monster.stats, extraDamagePerRound: monster.extraDamagePerRound });
-    const held = mine.get(lower(monster.name));
-    if (held && stable(held.draft.stats) === stable(draft.stats)) {
-      reused.push(label("monster", monster.name));
+  // Where each monster and entry of the bundle landed: "<kind>:<name>" to its id here.
+  const ids = new Map<string, string>();
+  const owned = listHomebrew(userId);
+  const byKey = new Map(owned.map((entry) => [`${entry.kind}:${textKey(entry.name)}`, entry]));
+  const names = new Map<string, Set<string>>();
+  for (const entry of owned) (names.get(entry.kind) ?? names.set(entry.kind, new Set()).get(entry.kind)!).add(textKey(entry.name));
+  const arrivals = [...bundle.homebrew].sort((a, b) => ARRIVAL_ORDER.indexOf(a.kind) - ARRIVAL_ORDER.indexOf(b.kind));
+  for (const arrival of arrivals) {
+    const parent = String(arrival.data.classSlug ?? "");
+    const parentId = arrival.kind === "archetype" && parent.startsWith(`${PORTABLE_REF}class:`) ? ids.get(`class:${textKey(parent.slice(`${PORTABLE_REF}class:`.length))}`) : undefined;
+    const withParent = parentId ? { ...arrival.data, classSlug: workshopClassId(parentId) } : arrival.data;
+    const entry = { ...arrival, data: renameHomebrewDataRefs(arrival.kind, withParent, asHere).data };
+    const normalized = normalizeHomebrewForSave(entry.kind, entry.data, entry.name);
+    if ("error" in normalized) {
+      // Said, not dropped in silence: the importer learns what to fix.
+      refused.push(`${label(entry.kind, entry.name)} did not come: ${normalized.error}`);
+      refusals.set(`${entry.kind}:${textKey(entry.name)}`, normalized.error);
       continue;
     }
-    const name = held ? freeName(monsterNames, monster.name, bundleName) : monster.name;
-    if (held) {
-      renames.set(`monster:${lower(monster.name)}`, name);
-      renamed.push(`${label("monster", monster.name)} is "${name}" here: your own ${monster.name} has other rules.`);
-    }
-    createHomebrewMonster(userId, { ...draft, name }, monster.desc);
-    monsterNames.add(lower(name));
-    copied += 1;
-  }
-
-  const owned = listHomebrew(userId);
-  const byKey = new Map(owned.map((entry) => [`${entry.kind}:${lower(entry.name)}`, entry]));
-  const names = new Map<string, Set<string>>();
-  for (const entry of owned) (names.get(entry.kind) ?? names.set(entry.kind, new Set()).get(entry.kind)!).add(lower(entry.name));
-  const ids = new Map<string, string>();
-  for (const entry of bundle.homebrew) {
-    const normalized = normalizeHomebrewData(entry.kind, entry.data, entry.name);
-    if ("error" in normalized) continue;
-    const key = `${entry.kind}:${lower(entry.name)}`;
+    const key = `${entry.kind}:${textKey(entry.name)}`;
     const held = byKey.get(key);
     if (held && comparable(entry.kind, held.name, held.data) === comparable(entry.kind, entry.name, normalized.data)) {
       reused.push(label(entry.kind, entry.name));
@@ -223,48 +332,74 @@ export function writeShelfArrivals(userId: string, workshopId: string, bundle: W
     }
     const created = createHomebrew(userId, { kind: entry.kind, name, data: normalized.data });
     ids.set(key, created.id);
-    taken.add(lower(name));
+    taken.add(textKey(name));
     names.set(entry.kind, taken);
     copied += 1;
   }
 
-  // The new workshop's Cast and fights point at the monsters as they are
-  // called here.
-  const db = getDatabase();
-  for (const [key, name] of renames) {
-    if (!key.startsWith("monster:")) continue;
-    const old = key.slice("monster:".length);
-    db.prepare(`UPDATE npcs SET stat_block = ? WHERE campaign_id = ? AND lower(stat_block) = ?`).run(name, workshopId, old);
-    const rows = db.prepare(`SELECT id, enemies_json FROM encounter_templates WHERE campaign_id = ?`).all(workshopId) as Array<{ id: string; enemies_json: string }>;
-    for (const row of rows) {
-      const enemies = parseJson<unknown[]>(row.enemies_json, []);
-      let changed = false;
-      const next = enemies.map((enemy) => {
-        if (typeof enemy === "string" && lower(enemy) === old) {
-          changed = true;
-          return name;
-        }
-        if (enemy && typeof enemy === "object" && lower(String((enemy as { monster?: unknown }).monster ?? "")) === old) {
-          changed = true;
-          return { ...(enemy as Record<string, unknown>), monster: name };
-        }
-        return enemy;
-      });
-      if (changed) db.prepare(`UPDATE encounter_templates SET enemies_json = ? WHERE id = ?`).run(JSON.stringify(next), row.id);
+  // Monsters after the spells they cast.
+  const mine = new Map(listHomebrewMonsters(userId).map((monster) => [textKey(monster.draft.name), monster]));
+  const monsterNames = new Set(mine.keys());
+  for (const monster of bundle.monsters) {
+    const stats = renameMonsterStatsSpells(monster.stats, asHere).stats;
+    const draft = draftFromData(monster.name, { desc: monster.desc, stats, extraDamagePerRound: monster.extraDamagePerRound });
+    const held = mine.get(textKey(monster.name));
+    if (held && stable(held.draft.stats) === stable(draft.stats)) {
+      reused.push(label("monster", monster.name));
+      ids.set(`monster:${textKey(monster.name)}`, held.id);
+      continue;
     }
+    const name = held ? freeName(monsterNames, monster.name, bundleName) : monster.name;
+    if (held) {
+      renames.set(`monster:${textKey(monster.name)}`, name);
+      renamed.push(`${label("monster", monster.name)} is "${name}" here: your own ${monster.name} has other rules.`);
+    }
+    ids.set(`monster:${textKey(monster.name)}`, createHomebrewMonster(userId, { ...draft, name }, monster.desc).id);
+    monsterNames.add(textKey(name));
+    copied += 1;
   }
+
+  // The new workshop's Cast, fights, roll tables and shelves point at the
+  // monsters and items as they are called here.
+  const prep = (kind: "monster" | "item") =>
+    [...renames].filter(([key]) => key.startsWith(`${kind}:`)).map(([key, to]) => [key.slice(kind.length + 1), to] as const);
+  renamePrepRefs(workshopId, { monster: new Map(prep("monster")), item: new Map(prep("item")) });
 
   return {
     copied,
     reused,
     renamed,
+    refused,
     renames,
-    entryFor: (kind, name) => ids.get(`${kind}:${lower(name)}`) ?? null,
+    // An entry the bundle did not carry (its homebrew left unticked) is the
+    // importer's own of that kind and name, when they keep one, rather than
+    // a reference nothing on this server can read. One it carried and this
+    // server refused is no one's here: the importer's own of that name has
+    // other rules.
+    entryFor: (kind, name) => {
+      const key = `${kind}:${textKey(name)}`;
+      return refusals.has(key) ? null : (ids.get(key) ?? byKey.get(key)?.id ?? null);
+    },
+    refusal: (kind, name) => refusals.get(`${kind}:${textKey(name)}`) ?? null,
   };
 }
 
+// Why a pregen does not land: the species its sheet names by portable ref
+// ("homebrew:@race:Scalekin") was carried by the bundle and refused here, so
+// the pregen could not be seated. Null when it may land.
+export function pregenRefusal(name: string, sheet: CreateSheetInput, landing: Pick<ShelfLanding, "refusal">): string | null {
+  const prefix = `${PORTABLE_REF}race:`;
+  if (typeof sheet.race !== "string" || !sheet.race.startsWith(prefix)) {
+    return null;
+  }
+  const species = sheet.race.slice(prefix.length);
+  return landing.refusal("race", species) ? `pregen ${name} did not come: its species, ${species}, was refused here.` : null;
+}
+
 // A pregen's sheet as it lands: its portable refs back to this server's ids,
-// and any renamed item, spell, feat or subclass under its name here.
+// and every renamed subclass, spell, feat or item under its name here
+// (src/lib/homebrew/sheet-refs.ts), the multiclass entries and the casters'
+// lists included.
 export function landedSheet(sheet: CreateSheetInput, arrival: { entryFor: (kind: string, name: string) => string | null; renames: Map<string, string> }): CreateSheetInput {
   const local = (ref: string | undefined) => {
     if (!ref?.startsWith(PORTABLE_REF)) return ref;
@@ -272,20 +407,25 @@ export function landedSheet(sheet: CreateSheetInput, arrival: { entryFor: (kind:
     const id = arrival.entryFor(kind, rest.join(":"));
     return id ? `homebrew:${id}` : ref;
   };
-  const rename = (kind: string, name: string) => arrival.renames.get(`${kind}:${lower(name)}`) ?? name;
+  // A workshop class written by name, back to its id here.
+  const localClass = (ref: string) => {
+    if (!ref.startsWith(`${PORTABLE_REF}class:`)) return ref;
+    const id = arrival.entryFor("class", ref.slice(`${PORTABLE_REF}class:`.length));
+    return id ? workshopClassId(id) : ref;
+  };
   const record = sheet as unknown as Record<string, unknown>;
   const equipment = Array.isArray(record.equipment)
-    ? (record.equipment as Array<Record<string, unknown>>).map((item) => ({
-        ...item,
-        ...(typeof item.slug === "string" ? { slug: local(item.slug) } : {}),
-        ...(typeof item.name === "string" ? { name: rename("item", item.name) } : {}),
-      }))
+    ? (record.equipment as Array<Record<string, unknown>>).map((item) => (typeof item.slug === "string" ? { ...item, slug: local(item.slug) } : item))
     : record.equipment;
-  return {
+  const ids = {
     ...sheet,
+    class: localClass(sheet.class),
+    ...(Array.isArray(record.classes)
+      ? { classes: (record.classes as Array<Record<string, unknown>>).map((entry) => ({ ...entry, id: localClass(String(entry.id ?? "")) })) }
+      : {}),
     race: local(sheet.race) ?? sheet.race,
     background: local(sheet.background) ?? sheet.background,
     ...(equipment ? { equipment } : {}),
-    ...(Array.isArray(record.feats) ? { feats: (record.feats as string[]).map((feat) => rename("feat", feat)) } : {}),
   } as CreateSheetInput;
+  return renameSheetRefs(ids, (kind, name) => arrival.renames.get(`${kind}:${textKey(name)}`) ?? name).sheet;
 }

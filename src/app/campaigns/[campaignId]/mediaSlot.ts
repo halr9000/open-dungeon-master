@@ -8,9 +8,12 @@ import type { CampaignLocation, MediaStatus } from "@/app/campaigns/[campaignId]
 //
 // The live media_status wins while this session has one. Without it (a
 // reload, a player who joined later) the durable record decides: an open
-// request or a mapless place still spins, and a recorded failure shows as
-// the same line the live failure did. Pure so scripts/test-media-failure.mjs
-// can check what a stored message and place will show.
+// request or a map render the place records as on its way still spins, and
+// a recorded failure shows as the same line the live failure did. A place
+// with no map and none on its way (taken back to the placeholder, or
+// waiting on a render from before the place recorded it) shows nothing.
+// Pure so scripts/test-media-failure.mjs can check what a stored message and
+// place will show.
 export type MediaSlot = { status?: MediaStatus };
 
 const failedStatus = (kind: MediaStatus["kind"], reason: string, at: string): MediaStatus => ({
@@ -38,7 +41,7 @@ export function scenePictureSlot(
 }
 
 export function locationMapSlot(
-  location: Pick<CampaignLocation, "mapImage" | "mapFailed"> | undefined,
+  location: Pick<CampaignLocation, "mapImage" | "mapFailed" | "mapPending"> | undefined,
   createdAt: string,
   live: MediaStatus | undefined,
 ): MediaSlot | null {
@@ -48,7 +51,10 @@ export function locationMapSlot(
   if (live) {
     return { status: live };
   }
-  return location.mapFailed ? { status: failedStatus("map", location.mapFailed, createdAt) } : {};
+  if (location.mapFailed) {
+    return { status: failedStatus("map", location.mapFailed, createdAt) };
+  }
+  return location.mapPending ? {} : null;
 }
 
 // The placeholder that waits, as opposed to nothing or a failure line.

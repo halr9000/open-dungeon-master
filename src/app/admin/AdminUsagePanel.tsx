@@ -3,11 +3,17 @@
 import { Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ui } from "@/lib/ui";
+import { AdminNarratorQualityCard } from "@/app/admin/AdminNarratorQualityCard";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { SectionHead } from "@/components/ui/SectionHead";
 import type { AccountUsage, CampaignUsage, UsageTotals } from "@/lib/usage/ledger";
+import type { ModelCallSummary } from "@/lib/usage/model-calls";
 
-type Overview = { campaigns: CampaignUsage[]; accounts: AccountUsage[]; generatedAt: string };
+type Overview = { campaigns: CampaignUsage[]; accounts: AccountUsage[]; generatedAt: string; modelCalls?: ModelCallSummary[] };
+
+function seconds(ms: number | null): string {
+  return ms === null ? "–" : `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
+}
 
 // 1234 -> "1.2k", 1234567 -> "1.2M"; whole numbers below a thousand.
 function compact(n: number): string {
@@ -204,7 +210,7 @@ export function AdminUsagePanel() {
                 <th className={th}>Lead</th>
                 <th className={th}>Members</th>
                 <th className={th}>Characters</th>
-                <th className={th}>DM turns</th>
+                <th className={th}>GM turns</th>
                 <th className={th}>Active days</th>
                 <th className={th}>Last activity</th>
                 <th className={th}>Storage</th>
@@ -221,7 +227,7 @@ export function AdminUsagePanel() {
                   <td className={td}>
                     <span className="text-stone-100">{campaign.title}</span>
                     <span className="ml-1 text-[10px] uppercase text-stone-500">
-                      {campaign.kind === "workshop" ? "workshop" : campaign.status}
+                      {campaign.kind === "workshop" ? "workshop" : campaign.kind === "playtest" ? "test fight" : campaign.status}
                     </span>
                   </td>
                   <td className={td}>{campaign.leadUsername || "–"}</td>
@@ -238,10 +244,67 @@ export function AdminUsagePanel() {
           </table>
         </div>
         <p className="mt-2 text-[11px] text-stone-500">
-          Active days are days with at least one DM turn, which is a count of play rather than hours. Storage is every
+          Active days are days with at least one GM turn, which is a count of play rather than hours. Storage is every
           picture and file the campaign&rsquo;s rows name, with the resized copies beside each.
         </p>
       </section>
+
+      {overview?.modelCalls?.length ? (
+        <section className="panel texture-noise rounded-xl p-5" data-testid="model-calls">
+          <SectionHead
+            level="h2"
+            title="Model calls, last 7 days"
+            glyph="tab-context"
+            aside={<span className="count-pop tabular-nums">{overview.modelCalls.reduce((sum, row) => sum + row.calls, 0)}</span>}
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] border-separate border-spacing-0">
+              <thead>
+                <tr>
+                  <th className={th}>For</th>
+                  <th className={th}>Calls</th>
+                  <th className={th}>Failed</th>
+                  <th className={th}>Fell back</th>
+                  <th className={th}>Median</th>
+                  <th className={th}>95th</th>
+                  <th className={th}>First words</th>
+                  <th className={th}>Input</th>
+                  <th className={th}>Cached</th>
+                  <th className={th}>Output</th>
+                  <th className={th}>Reasoning</th>
+                </tr>
+              </thead>
+              <tbody>
+                {overview.modelCalls.map((row) => (
+                  <tr key={row.task} className="border-t border-stone-800/60">
+                    <td className={td}>
+                      <span className="text-stone-100">{row.task.replaceAll("_", " ")}</span>
+                    </td>
+                    <td className={td}>{row.calls}</td>
+                    <td className={td}>{row.errors || "–"}</td>
+                    <td className={td}>{row.fallbacks || "–"}</td>
+                    <td className={td}>{seconds(row.p50Ms)}</td>
+                    <td className={td}>{seconds(row.p95Ms)}</td>
+                    <td className={td}>{seconds(row.p50FirstTokenMs)}</td>
+                    <td className={td}>{row.avgInputTokens === null ? "–" : compact(row.avgInputTokens)}</td>
+                    <td className={td}>{row.cachedShare === null ? "–" : `${Math.round(row.cachedShare * 100)}%`}</td>
+                    <td className={td}>{row.avgOutputTokens === null ? "–" : compact(row.avgOutputTokens)}</td>
+                    <td className={td}>{row.avgReasoningTokens === null ? "–" : compact(row.avgReasoningTokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px] text-stone-500">
+            One row per kind of call: the GM&rsquo;s turns, the reader, summaries, Ask and the rest. Times are medians and
+            the 95th percentile; input, output and reasoning are averages of what the backends reported; cached is the
+            share of input a backend said it served from its prompt cache, where it says. A dash is a figure no backend
+            reported. Kept 30 days, with no prompt or reply text.
+          </p>
+        </section>
+      ) : null}
+
+      <AdminNarratorQualityCard />
     </div>
   );
 }

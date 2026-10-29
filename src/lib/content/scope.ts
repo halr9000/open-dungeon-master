@@ -1,6 +1,7 @@
 import { getCampaignForUser } from "@/lib/db/campaigns";
 import { listHomebrew, tableAuthors } from "@/lib/db/homebrew";
 import type { HomebrewKind } from "@/lib/schemas/homebrew";
+import { textKey } from "@/lib/language/text-logic";
 
 // Whose homebrew a content request reads, the one rule every picker, the
 // builder, the Hand and play agree on.
@@ -39,6 +40,7 @@ export function contentScopeFor(url: URL, userId: string): ContentScope | { erro
 }
 
 const KIND_OF: Record<string, HomebrewKind> = {
+  classes: "class",
   spells: "spell",
   items: "item",
   feats: "feat",
@@ -50,18 +52,23 @@ const KIND_OF: Record<string, HomebrewKind> = {
 };
 
 // The asker's own entries of a kind that this table does not admit, by name,
-// matching the search; empty outside a table or for one of its authors.
-export function unadmittedNames(scope: ContentScope, userId: string, kind: string, q: string): string[] {
+// matching the search; empty outside a table or for one of its authors. A
+// subclass search names only the subclasses of the class it asked about
+// (`classSlug`), so a fighter's picker does not explain away a wizard's.
+export function unadmittedNames(scope: ContentScope, userId: string, kind: string, q: string, classSlug = ""): string[] {
   const homebrewKind = KIND_OF[kind];
   if (scope.admitted || !scope.campaignId || !homebrewKind) {
     return [];
   }
-  const needle = q.trim().toLowerCase();
+  const needle = textKey(q);
+  const ofClass = (entry: { data: Record<string, unknown> }) =>
+    homebrewKind !== "archetype" || !classSlug || String(entry.data.classSlug ?? "").toLowerCase() === classSlug.toLowerCase();
   const admitted = new Set(
-    scope.userIds.flatMap((author) => listHomebrew(author, homebrewKind).map((entry) => entry.name.trim().toLowerCase())),
+    scope.userIds.flatMap((author) => listHomebrew(author, homebrewKind).filter(ofClass).map((entry) => textKey(entry.name))),
   );
   return listHomebrew(userId, homebrewKind)
+    .filter(ofClass)
     .map((entry) => entry.name)
-    .filter((name) => (!needle || name.toLowerCase().includes(needle)) && !admitted.has(name.trim().toLowerCase()))
+    .filter((name) => (!needle || textKey(name).includes(needle)) && !admitted.has(textKey(name)))
     .slice(0, 12);
 }

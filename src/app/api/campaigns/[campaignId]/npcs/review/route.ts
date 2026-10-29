@@ -17,6 +17,8 @@ import {
   planMerge,
   planRename,
 } from "@/lib/dm/entity-review-logic";
+import { recordsChanged } from "@/lib/workshop/record-events";
+import { textKey } from "@/lib/language/text-logic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -105,9 +107,11 @@ export async function POST(
       return Response.json({ error: plan.error }, { status: 409 });
     }
     // A rename onto a name another NPC already holds would violate the
-    // UNIQUE (campaign_id, name) constraint; say so rather than 500.
+    // UNIQUE (campaign_id, name) constraint, and onto one it holds in another
+    // case or spelling ("ÉLODIE") would leave two NPCs answering to one name
+    // (getNpcByName compares by textKey); say so rather than 500.
     const clash = listNpcs(campaignId).find(
-      (other) => other.id !== npc.id && other.name === plan.name,
+      (other) => other.id !== npc.id && textKey(other.name) === textKey(plan.name),
     );
     if (clash) {
       return Response.json(
@@ -115,7 +119,9 @@ export async function POST(
         { status: 409 },
       );
     }
-    return Response.json({ npc: renameNpc(npc.id, plan.name, plan.aliases) });
+    const renamed = renameNpc(npc.id, plan.name, plan.aliases);
+    recordsChanged(campaignId, "npc", "world");
+    return Response.json({ npc: renamed });
   }
 
   const keep = getNpcById(body.keepId);
@@ -131,5 +137,6 @@ export async function POST(
   if (!merged) {
     return Response.json({ error: "Those two could not be merged." }, { status: 409 });
   }
+  recordsChanged(campaignId, "npc", "world");
   return Response.json({ npc: merged });
 }

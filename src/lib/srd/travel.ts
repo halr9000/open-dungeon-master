@@ -3,6 +3,8 @@
 // hour or the traveler gains a level of exhaustion. Pure so scripts/
 // test-world.mjs can exercise the save math without a database.
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+
 export type TravelPace = "fast" | "normal" | "slow";
 
 // The passive-Perception consequence and stealth allowance of each pace.
@@ -67,19 +69,20 @@ export function travelLeg(input: {
   hours?: number;
   miles?: number;
   weatherFactor?: number;
-}): { hours: number; minutes: number; miles: number } | { error: string } {
+}): { hours: number; minutes: number; miles: number } | ToolError {
   if (input.miles !== undefined && input.miles > 0) {
     const perHour = PACE_SPEED[input.pace].milesPerHour * (input.terrain === "difficult" ? 0.5 : 1) * (input.weatherFactor ?? 1);
     const minutes = Math.ceil((input.miles / perHour) * 60);
     if (minutes > 24 * 60) {
       return {
         error: `${input.miles} miles at a ${input.pace} pace takes ${Math.ceil(minutes / 60)} hours, more than one day's leg. Travel it a day at a time: call travel once per day (8 hours is a normal day; more is a forced march).`,
+        retry: true,
       };
     }
     return { hours: Math.ceil(minutes / 60), minutes, miles: input.miles };
   }
   if (input.hours === undefined) {
-    return { error: "travel needs the hours travelled or the miles to cover." };
+    return { error: "travel needs the hours travelled or the miles to cover.", retry: true };
   }
   return { hours: input.hours, minutes: input.hours * 60, miles: milesCovered({ ...input, hours: input.hours }) };
 }

@@ -12,8 +12,10 @@
 // Nothing magical and nothing without a listed price can be bought at
 // creation: such things are found or granted in play.
 import { gearPriceCopper } from "@/lib/srd/adventuring-gear";
-import { parseCoins } from "@/lib/srd/currency";
-import { matchMagicItem } from "@/lib/srd/magic-items";
+import { formatPrice, packCostCopper } from "@/lib/srd/currency";
+import { magicItemNamed } from "@/lib/srd/magic-items";
+import { textKey } from "@/lib/language/text-logic";
+import { magicItemBonus } from "@/lib/srd/item-row";
 
 export const STARTING_WEALTH_METHODS = ["equipment", "rolled"] as const;
 export type StartingWealthMethod = (typeof STARTING_WEALTH_METHODS)[number];
@@ -71,8 +73,10 @@ export function wealthCeilingGold(level: number): number {
 }
 
 // SRD 5.1 prices in gold pieces, for the weapons and armor the bundled
-// tables carry. The setting gear is priced beside its nearest SRD kin.
-const PRICES_GP: Record<string, number> = {
+// tables carry. The setting gear is priced beside its nearest SRD kin. Each
+// name is also spelled with "armor" after it ("Plate Armor"), on the table:
+// the name a buyer writes is looked up as written.
+const PRICES_GP: Record<string, number> = Object.fromEntries(Object.entries({
   club: 0.1, dagger: 2, greatclub: 0.2, handaxe: 5, javelin: 0.5, "light hammer": 2, mace: 5,
   quarterstaff: 0.2, sickle: 1, spear: 1, "light crossbow": 25, dart: 0.05, shortbow: 25,
   sling: 0.1, battleaxe: 10, flail: 10, glaive: 20, greataxe: 30, greatsword: 50, halberd: 20,
@@ -88,19 +92,17 @@ const PRICES_GP: Record<string, number> = {
   "chain mail": 75, splint: 200, plate: 1500, shield: 10,
   "armorweave vest": 10, "kevlar vest": 45, "riot plating": 75, "brass carapace": 50,
   "scrap plate": 50, "ballistic shield": 10,
-};
+}).flatMap(([name, gold]) => [[textKey(name), gold], [`${textKey(name)} armor`, gold]]));
 
-const key = (name: string) =>
-  name
-    .trim()
-    .toLowerCase()
-    .replace(/\(\s*\d+\s*\)\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
+// The key the purse matches gear by: the Unicode text key, without a
+// trailing count ("Arrows (20)" is arrows). The builder's receipt counts
+// free copies by the same key (src/app/characters/builder/receiptMath.ts).
+export const gearNameKey = (name: string) => textKey(name.replace(/\(\s*\d+\s*\)\s*$/, ""));
+const key = gearNameKey;
 
 export function bundledPriceCopper(name: string): number | null {
   const wanted = key(name);
-  const gold = PRICES_GP[wanted] ?? PRICES_GP[wanted.replace(/ armor$/, "")] ?? null;
+  const gold = PRICES_GP[wanted] ?? null;
   if (gold !== null) {
     return Math.round(gold * 100);
   }
@@ -116,11 +118,7 @@ export type PriceLookup = (name: string) => ItemPrice;
 // Whether a name reads as a magic item: a bonus in the name, or one of the
 // items the magic item engine knows by that name.
 export function looksMagical(name: string): boolean {
-  if (/(^|\s)\+\d/.test(name)) {
-    return true;
-  }
-  const known = matchMagicItem(name);
-  return Boolean(known) && key(name).includes(known!.match);
+  return magicItemBonus(name) > 0 || magicItemNamed(name) !== null;
 }
 
 // The price lookup with no content pack behind it.
@@ -136,7 +134,7 @@ export function packRowPrice(row: { kind: string; cost: string }): ItemPrice {
   if (row.kind === "magic_item") {
     return { copper: null, magic: true };
   }
-  const copper = parseCoins(row.cost ?? "");
+  const copper = packCostCopper(row.cost ?? "");
   return { copper: copper === null || copper <= 0 ? null : copper, magic: false };
 }
 
@@ -165,10 +163,6 @@ export type GearVerdict = {
   spentCopper: number;
 };
 
-const gp = (copper: number) => {
-  const gold = copper / 100;
-  return `${Number.isInteger(gold) ? gold : gold.toFixed(2)} gp`;
-};
 
 // Holds a new character's pack to what its coin could buy. `freeKit` is the
 // gear that costs nothing (the class's and the background's, under
@@ -218,7 +212,7 @@ export function judgeStartingGear(input: {
   }
   if (!problems.length && spentCopper > input.coinCopper) {
     problems.push(
-      `That gear costs ${gp(spentCopper)} beyond the starting kit and the character has ${gp(input.coinCopper)} to spend; remove ${gp(spentCopper - input.coinCopper)} of it.`,
+      `That gear costs ${formatPrice(spentCopper)} beyond the starting kit and the character has ${formatPrice(input.coinCopper)} to spend; remove ${formatPrice(spentCopper - input.coinCopper)} of it.`,
     );
   }
   return { problems, spentCopper };

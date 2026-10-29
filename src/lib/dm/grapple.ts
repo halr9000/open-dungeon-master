@@ -19,6 +19,7 @@
 //     contest (SRD 5.1, Monsters: Grapple Rules for Monsters). A restraint
 //     that lasts "until this grapple ends" ends with it.
 
+import { characterTrapEscape, trapHoldOn } from "@/lib/dm/trap-escape";
 import type { Campaign } from "@/lib/db/campaigns";
 import { getBattleMapForEncounter, getTokenByRef } from "@/lib/db/battle-maps";
 import { tilesApart } from "@/lib/dm/board-reach";
@@ -40,9 +41,10 @@ import { canEnemyAct } from "@/lib/dm/can-act";
 import { spendEnemyAction } from "@/lib/dm/enemy-approach";
 import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { rollCharacterCheck } from "@/lib/dm/contest-roll";
-import { publishEncounter, resolveEnemyRef } from "@/lib/dm/enemy-damage";
+import { publishEncounter, resolveEnemyRef, unknownEnemyRef } from "@/lib/dm/enemy-damage";
 import { enemyAttackProfile } from "@/lib/dm/enemy-profile";
 import { characterSpellEscape, characterSpellHold, enemySpellEscape, enemySpellHold } from "@/lib/dm/spell-escape";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 const GRAPPLED = "grappled";
 
@@ -85,22 +87,26 @@ export function characterEscape(
   turn: DmTurn,
   sheet: CharacterSheet,
   spend: () => void,
-): Record<string, unknown> {
+): ToolResult {
   const held = sheet.conditions.some((entry) => entry.toLowerCase() === GRAPPLED)
     ? grappleOf(sheet.conditionMeta as ConditionMetaMap)
     : null;
   if (!held) {
-    // A spell's hold (Entangle, Web): src/lib/dm/spell-escape.ts.
+    // A spell's hold (Entangle, Web): src/lib/dm/spell-escape.ts. A trap's
+    // (a falling net): src/lib/dm/trap-escape.ts.
     return characterSpellHold(campaign, sheet)
       ? characterSpellEscape(campaign, turn, sheet, spend)
-      : { error: `${sheet.name} is not grappled; there is nothing to escape.` };
+      : trapHoldOn(campaign, sheet)
+        ? characterTrapEscape(campaign, turn, sheet, spend)
+        : { error: `${sheet.name} is not grappled; there is nothing to escape.`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
   const enemyHolder = held.source && encounter ? resolveEnemyRef(encounter.id, held.source) : null;
   const sheetHolder = held.source && !enemyHolder ? getSheetById(held.source) : null;
   if (!enemyHolder && !sheetHolder) {
     return {
-      error: `${sheet.name}'s grapple names no grappler the server can find, so there is no contest to roll. The DM or the party lead ends it with clear_condition.`,
+      error: `${sheet.name}'s grapple names no grappler the server can find, so there is no contest to roll. The GM or the party lead ends it with clear_condition.`,
+      retry: true,
     };
   }
   spend();
@@ -159,14 +165,14 @@ export function enemyEscape(
   campaign: Campaign,
   turn: DmTurn,
   enemyRef: string,
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: an enemy escapes a grapple only in a fight.", retry: true };
   }
   const enemy = resolveEnemyRef(encounter.id, enemyRef);
   if (!enemy) {
-    return { error: "Unknown enemyId; use one from GAME STATE." };
+    return unknownEnemyRef(encounter.id, "escapingEnemyId", enemyRef);
   }
   const held = enemy.conditions.some((entry) => entry.toLowerCase() === GRAPPLED)
     ? grappleOf(enemy.conditionMeta)
@@ -174,35 +180,40 @@ export function enemyEscape(
   if (!held) {
     return enemySpellHold(campaign, enemy)
       ? enemySpellEscape(campaign, turn, enemy)
-      : { error: `${enemy.displayName} is not grappled; there is nothing to escape.` };
+      : { error: `${enemy.displayName} is not grappled; there is nothing to escape.`, retry: true };
   }
   const allowed = canEnemyAct({ enemy, encounter, kind: "action" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   const holder = held.source ? getSheetById(held.source) : null;
   if (!holder) {
     return {
-      error: `${enemy.displayName}'s grapple names no grappler the server can find; end it with set_enemy_condition instead of a contest.`,
+      error: `${enemy.displayName}'s grapple names no grappler the server can find; end it with clear_condition and its enemyId instead of a contest.`,
+      retry: true,
     };
   }
   spendEnemyAction(encounter, enemy.id);
   saveEncounter(encounter);
   const theirs = rollEnemyContest(campaign, turn, enemy, "either", `${enemy.displayName}: escape the grapple`);
-  const hold = rollCharacterCheck(campaign, holder, { skill: "athletics" }, `${holder.name}: Athletics to hold the grapple`);
-  if (hold.rollId) {
+  // A natural grapple prints its escape DC (a beast-shaped druid's
+  // crocodile bite, a summoned constrictor's coils): the escape is a check
+  // against it, not a contest.
+  const hold = held.escapeDc ? null : rollCharacterCheck(campaign, holder, { skill: "athletics" }, `${holder.name}: Athletics to hold the grapple`);
+  if (hold?.rollId) {
     turn.rollIds.push(hold.rollId);
   }
-  const escaped = theirs > hold.total;
+  const escaped = hold ? theirs > hold.total : theirs >= (held.escapeDc ?? 0);
   if (escaped) {
-    const cleared = removeConditions(enemy.conditions, enemy.conditionMeta, [held.name]);
+    // The restraint the same hold brought ends with it.
+    const cleared = withoutGrapple(enemy.conditions, enemy.conditionMeta, held);
     patchEnemyConditions(enemy.id, cleared.conditions, cleared.meta);
     publishEncounter(campaign.id);
   }
   return {
     ok: true,
     action: "escape",
-    contest: `${theirs} vs ${hold.total}`,
+    ...(hold ? { contest: `${theirs} vs ${hold.total}` } : { check: `${theirs} vs escape DC ${held.escapeDc}` }),
     success: escaped,
     note: escaped
       ? `${enemy.displayName} breaks free of ${holder.name}'s grapple; it used its action to do it.`
@@ -210,11 +221,17 @@ export function enemyEscape(
   };
 }
 
-// The grappler's reach in tiles: 1 for a character, a stat block's longest
-// melee reach for an enemy (an otyugh's tentacle holds from 10 feet).
-function reachOf(enemy: EncounterEnemy | null): number {
+// The grappler's reach in tiles: a stat block's longest melee reach for an
+// enemy (an otyugh's tentacle holds from 10 feet), and for a character the
+// natural attacks of the form they wear or the creature they are (a giant
+// octopus's tentacles hold from 15 feet, a giant constrictor snake from 10),
+// 1 otherwise.
+function reachOf(enemy: EncounterEnemy | null, holderId: string): number {
   if (!enemy) {
-    return 1;
+    const sheet = getSheetById(holderId);
+    const natural = sheet?.wildShape?.attacks ?? sheet?.summon?.attacks ?? [];
+    const reaches = natural.filter((attack) => !attack.range || attack.thrown).map((attack) => Math.floor((attack.reach ?? 5) / 5));
+    return Math.max(1, ...reaches);
   }
   const reaches = enemy.stats.attacks
     .map((attack) => enemyAttackProfile(attack, enemy.stats.traits ?? []))
@@ -248,8 +265,8 @@ export function releaseGrapplesOutOfReach(campaign: Campaign): string[] {
       continue;
     }
     const gap = apart(enemy.id, held.source);
-    if (gap !== null && gap > reachOf(enemies.find((entry) => entry.id === held.source) ?? null)) {
-      const cleared = removeConditions(enemy.conditions, enemy.conditionMeta, [held.name]);
+    if (gap !== null && gap > reachOf(enemies.find((entry) => entry.id === held.source) ?? null, held.source)) {
+      const cleared = withoutGrapple(enemy.conditions, enemy.conditionMeta, held);
       patchEnemyConditions(enemy.id, cleared.conditions, cleared.meta);
       released.push(enemy.displayName);
     }
@@ -260,7 +277,7 @@ export function releaseGrapplesOutOfReach(campaign: Campaign): string[] {
       continue;
     }
     const gap = apart(sheet.id, held.source);
-    if (gap !== null && gap > reachOf(enemies.find((entry) => entry.id === held.source) ?? null)) {
+    if (gap !== null && gap > reachOf(enemies.find((entry) => entry.id === held.source) ?? null, held.source)) {
       const cleared = withoutGrapple(sheet.conditions, sheet.conditionMeta as ConditionMetaMap, held);
       const updated = patchSheet(sheet.id, { conditions: cleared.conditions, conditionMeta: cleared.meta });
       if (updated) {

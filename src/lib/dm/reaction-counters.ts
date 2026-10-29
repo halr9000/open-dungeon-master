@@ -28,6 +28,7 @@ import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
 import { computeSheetDerived } from "@/lib/srd";
 import { classLevelFor } from "@/lib/srd/multiclass";
+import { isConditionNamed } from "@/lib/srd/feature-names";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { rollCard } from "@/lib/dm/roll-card";
 import { freshLastHit, type LastHit, type SwingRecord } from "@/lib/dm/last-hit";
@@ -38,6 +39,7 @@ import { tilesBetween } from "@/lib/dm/attack-spatial";
 import { applyEnemyDamage, publishEncounter } from "@/lib/dm/enemy-damage";
 import { acBreakdownFor } from "@/lib/srd";
 import { matchWeapon } from "@/lib/srd/weapons";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export const MANIFEST_MIND = "manifest mind";
 // The marker a use that recharges over several long rests leaves, with the
@@ -97,20 +99,21 @@ function droppedByFreshHit(campaignId: string, sheet: CharacterSheet): boolean {
   return Boolean(record && record.before.currentHp > 0 && sheet.currentHp <= 0 && !sheet.deathSaves?.dead);
 }
 
-export function planCounterReaction(input: Input): Plan | { error: string } | null {
+export function planCounterReaction(input: Input): Plan | ToolError | null {
   const { campaign, sheet } = input;
   const turn = getDmTurn(input.turnId);
   if ((input.defId === "sub_necrotic_husk" || input.defId === "sub_strength_before_death") && !droppedByFreshHit(campaign.id, sheet)) {
     const name = input.defId === "sub_necrotic_husk" ? "Necrotic Husk" : "Strength before Death";
     return {
       error: `${name} is taken as the damage that reduces ${sheet.name} to 0 hit points lands, and the server has no such hit on them just now${sheet.currentHp > 0 ? " (they are not down)" : ""}. Nothing was spent.`,
+      refused: "rules",
     };
   }
   switch (input.defId) {
     case "race_stones_endurance": {
       const record = damageOn(campaign.id, sheet, "stone's endurance");
       if (!record) {
-        return { error: `Stone's Endurance answers damage ${sheet.name} has just taken, and the server has none on record to reduce. Nothing was spent.` };
+        return { error: `Stone's Endurance answers damage ${sheet.name} has just taken, and the server has none on record to reduce. Nothing was spent.`, refused: "rules" };
       }
       return {
         apply: () => {
@@ -125,7 +128,7 @@ export function planCounterReaction(input: Input): Plan | { error: string } | nu
     case "sub_swarming_dispersal": {
       const record = damageOn(campaign.id, sheet, "swarming dispersal");
       if (!record) {
-        return { error: `Swarming Dispersal answers damage ${sheet.name} has just taken, and the server has none on record. Nothing was spent.` };
+        return { error: `Swarming Dispersal answers damage ${sheet.name} has just taken, and the server has none on record. Nothing was spent.`, refused: "rules" };
       }
       const resisted = pcResistances(sheet).toLowerCase();
       return {
@@ -140,11 +143,11 @@ export function planCounterReaction(input: Input): Plan | { error: string } | nu
     }
     case "sub_one_with_the_word": {
       if (!has(sheet.conditions, MANIFEST_MIND)) {
-        return { error: `One with the Word works while ${sheet.name}'s Manifest Mind is summoned, and it is not (use_resource Manifest Mind summons it). Nothing was spent.` };
+        return { error: `One with the Word works while ${sheet.name}'s Manifest Mind is summoned, and it is not (use_resource Manifest Mind summons it). Nothing was spent.`, refused: "rules" };
       }
       const record = damageOn(campaign.id, sheet, "one with the word");
       if (!record) {
-        return { error: `One with the Word prevents damage ${sheet.name} has just taken, and the server has none on record. Nothing was spent.` };
+        return { error: `One with the Word prevents damage ${sheet.name} has just taken, and the server has none on record. Nothing was spent.`, refused: "rules" };
       }
       return {
         apply: () => {
@@ -164,23 +167,23 @@ export function planCounterReaction(input: Input): Plan | { error: string } | nu
     case "sub_warding_maneuver": {
       const target = input.targetCharacterId ? (getSheetById(input.targetCharacterId) ?? null) : sheet;
       if (!target) {
-        return { error: "Warding Maneuver protects the fighter or a creature within 5 feet: pass that creature's targetCharacterId. Nothing was spent." };
+        return { error: "Warding Maneuver protects the fighter or a creature within 5 feet: pass that creature's targetCharacterId. Nothing was spent.", retry: true };
       }
       const encounter = getActiveEncounter(campaign.id);
       const apart = encounter && target.id !== sheet.id ? tilesBetween(encounter.id, sheet.id, target.id) : null;
       if (apart !== null && apart > 1) {
-        return { error: `${target.name} is ${apart * 5} ft from ${sheet.name}; Warding Maneuver covers a creature within 5 feet. Nothing was spent.` };
+        return { error: `${target.name} is ${apart * 5} ft from ${sheet.name}; Warding Maneuver covers a creature within 5 feet. Nothing was spent.`, refused: "rules" };
       }
-      const armed = Boolean(acBreakdownFor(sheet).shieldName) || sheet.equipment.some((item) => item.equipped && matchWeapon(item.name)?.kind === "melee");
+      const armed = Boolean(acBreakdownFor(sheet).shieldName) || sheet.equipment.some((item) => item.equipped && matchWeapon(item)?.kind === "melee");
       if (!armed) {
-        return { error: `Warding Maneuver needs ${sheet.name} wielding a melee weapon or a shield. Nothing was spent.` };
+        return { error: `Warding Maneuver needs ${sheet.name} wielding a melee weapon or a shield. Nothing was spent.`, refused: "rules" };
       }
       const record = freshLastHit(campaign.id, target.id);
       const index = record && record.source === "attack" && !record.answered.includes("warding maneuver")
         ? record.swings.reduce((best, swing, at) => (swing.hit && (best < 0 || swing.raw > record.swings[best].raw) ? at : best), -1)
         : -1;
       if (!record || index < 0) {
-        return { error: `Warding Maneuver answers an attack that has just hit ${target.name}, and the server has none on record. Nothing was spent.` };
+        return { error: `Warding Maneuver answers an attack that has just hit ${target.name}, and the server has none on record. Nothing was spent.`, refused: "rules" };
       }
       return {
         apply: () => {
@@ -213,7 +216,7 @@ export function planCounterReaction(input: Input): Plan | { error: string } | nu
           const marker = `${HUSK_RECOVERING} (${rests})`;
           patchSheet(sheet.id, {
             ...(tired ?? {}),
-            conditions: [...after.conditions.filter((entry) => !entry.toLowerCase().startsWith(HUSK_RECOVERING)), marker],
+            conditions: [...after.conditions.filter((entry) => !isConditionNamed(entry, HUSK_RECOVERING)), marker],
           });
           publishSheet(campaign, sheet.id);
           const burst = huskBurst(campaign, input, level);

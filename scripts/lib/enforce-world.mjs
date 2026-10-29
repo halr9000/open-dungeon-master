@@ -19,6 +19,7 @@ import { register, syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { removeTempDir } from "./remove-temp-dir.mjs";
+import { standInStoryteller } from "./stand-in-storyteller.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const packPath = path.join(repoRoot, "data", "content", "open5e.sqlite");
@@ -35,6 +36,8 @@ if (!process.env.CONTENT_DB_PATH && fs.existsSync(packPath)) {
 }
 export const hasPack = fs.existsSync(process.env.CONTENT_DB_PATH ?? "");
 process.chdir(dir);
+// A plain node run. Under Vitest this never fires and the run's scratch
+// root takes the directory with it (scripts/lib/test-temp-root.mjs).
 process.on("exit", () => removeTempDir(dir));
 
 register("./register-routes.mjs", import.meta.url);
@@ -49,6 +52,20 @@ globalThis.__odmEmbedderPromise = Promise.resolve((texts) =>
 // audio on a machine that runs one. A provider set in the environment, or
 // saved in the admin settings by a suite, still wins.
 process.env.TTS_PROVIDER ??= "off";
+// Nor the next turn's prompt sent ahead after a fight starts or ends
+// (src/lib/dm/turn-warmup.ts): a scripted model answers in request order,
+// and the warm-up would take the reply written for the next turn.
+process.env.DM_TURN_WARMUP ??= "0";
+// Nor a storyteller dialled by accident (issue 414): with nothing named, a
+// campaign copies the shipped default backend, the llama-server address
+// 127.0.0.1:8001, so a suite that queued a DM turn without a fake model of
+// its own (enforce-narrator.mjs fakeModel) sent it to whatever this machine
+// runs there. The stand-in is set up but never answers. A provider set in
+// the environment, enforce-campaign.mjs's "none", or a fake model pointed at
+// the world still wins.
+if (!process.env.DEFAULT_TEXT_PROVIDER) {
+  standInStoryteller();
+}
 
 // ---- dice ----
 //
@@ -341,7 +358,8 @@ export async function openWorld(options = {}) {
     },
     route: (name) => import(new URL(`../../src/app/api/${name}/route.ts`, import.meta.url).href),
     // The scratch directory is shared by every world this process opens, so
-    // it goes when the process does, not when one world is done.
+    // it goes when the process does (or the Vitest run sweeps it), not when
+    // one world is done.
     close: () => {
       clearDice();
     },

@@ -3,7 +3,7 @@
 // the route answers (the seeded one, or a turn another scenario ran on this
 // table since): one row an entry, kept rows plain, held-back close matches
 // red, near matches muted, secrets marked, counts matching.
-import { check, eventually } from "../lib.mjs";
+import { check, eventually, openPanelTab } from "../lib.mjs";
 
 export default {
   name: "lore-trace",
@@ -14,9 +14,7 @@ export default {
     const lore = answer.trace?.lore;
     check(Boolean(lore), "the quiet table's last turn left a lore trace");
     await t.open(`/campaigns/${ids.quietId}`);
-    const tab = page.locator(`${root}[data-tour="tab-context"]`).locator("visible=true").first();
-    await eventually(() => tab.count(), { timeoutMs: 30_000, label: "the Context tab" });
-    await t.tap(tab);
+    await openPanelTab(t, "context");
     const panel = page.locator(`${root}[data-testid="lore-trace"]`).locator("visible=true").first();
     await eventually(() => panel.count(), { timeoutMs: 30_000, label: "the World lore section" });
     await panel.scrollIntoViewIfNeeded();

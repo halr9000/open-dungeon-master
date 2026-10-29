@@ -1,7 +1,9 @@
 import { isErrorResponse, requireStoryAuthority } from "@/lib/campaign-api";
 import { deleteWorldEntity, updateWorldEntity } from "@/lib/db/world-forge";
+import { forgetPaintJobs } from "@/lib/db/world-paint-jobs";
 import { publishEphemeral } from "@/lib/events";
 import { parseRef } from "@/lib/worldforge/model";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,9 +29,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ ca
   const raw = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const result = updateWorldEntity(campaignId, ref, raw);
   if ("error" in result) {
-    return Response.json({ error: result.error }, { status: result.status ?? 400 });
+    // A conflict carries the fields and the entry as it is now, so the
+    // editor can show what changed and keep the author's draft.
+    return Response.json(
+      result.conflicts ? { error: result.error, conflicts: result.conflicts, entity: result.entity } : { error: result.error },
+      { status: result.status ?? 400 },
+    );
   }
   publishEphemeral(campaignId, result.entity.shelf === "faction" ? "factions_updated" : "world_updated", { at: Date.now() });
+  recordsChanged(campaignId, result.entity.shelf, "world");
   return Response.json(result);
 }
 
@@ -43,6 +51,8 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   if (!ref || !deleteWorldEntity(campaignId, ref)) {
     return Response.json({ error: "No such entry." }, { status: 404 });
   }
+  forgetPaintJobs(campaignId, ref);
   publishEphemeral(campaignId, "world_updated", { at: Date.now() });
+  recordsChanged(campaignId, parseRef(ref)!.shelf, "world");
   return Response.json({ ok: true });
 }

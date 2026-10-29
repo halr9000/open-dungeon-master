@@ -1,0 +1,28 @@
+import type { MemberContext } from "@/lib/campaign-api";
+import { JOIN_NOTE_PREFIX } from "@/lib/campaign-types";
+import { allocateSeq } from "@/lib/db/campaigns";
+import { insertCampaignMessage } from "@/lib/db/messages";
+import { publishWithSeq } from "@/lib/events";
+import type { CharacterSheet } from "@/lib/schemas/sheet";
+
+// A character arriving after the adventure started gets a table note so the
+// DM writes them into the story on its next turn. Every door that seats a
+// new hero calls it: one the builder made (POST /sheet) and a ready-made one
+// (POST /sheet/pregen), which a player who joins a table in play can now
+// take from the composer's gate.
+export function announceMidGameJoin(context: MemberContext, sheet: CharacterSheet) {
+  if (context.campaign.status !== "active") {
+    return;
+  }
+  const campaignId = context.campaign.id;
+  const seq = allocateSeq(campaignId);
+  const backstoryHint = sheet.backstory ? ` Their backstory: ${sheet.backstory.slice(0, 200)}` : "";
+  const message = insertCampaignMessage({
+    campaignId,
+    seq,
+    authorType: "system",
+    glyph: "system-party",
+    content: `${JOIN_NOTE_PREFIX}${context.user.username} has joined the party as ${sheet.name}, a ${sheet.race.replaceAll("_", " ")} ${sheet.class}.${backstoryHint} Introduce them into the scene at the next natural moment.`,
+  });
+  publishWithSeq(campaignId, seq, "message_added", { message });
+}

@@ -135,15 +135,13 @@ await test("Misty Escape and Hellish Rebuke follow the damage: a warlock the hit
   assert.equal(world.sheet(undead.id).spellcasting.slots["5"].used, 0);
 });
 
-await test("Shield after a dropping hit is judged the same through use_reaction and a cast tool.", async () => {
+await test("Shield after a dropping hit is cast through use_reaction, judged as the caster stood before it; a cast tool is pointed there and spends nothing.", async () => {
   const enemy = await stage();
   await struck(wizard, 31, enemy);
   const viaSlot = await world.invoke("use_spell_slot", { characterId: wizard.id, spell: "Shield", level: 1 });
-  assert.equal(viaSlot.ok, true, viaSlot.error);
-  assert.equal(world.sheet(wizard.id).spellcasting.slots["1"].used, 1);
-  // The same hit, answered through use_reaction.
-  await stage();
-  await struck(wizard, 31, enemy);
+  assert.equal(viaSlot.ok, false);
+  assert.match(String(viaSlot.error), /Shield is cast as a reaction: use_reaction/);
+  assert.equal(world.sheet(wizard.id).spellcasting.slots["1"].used, 0);
   const viaReaction = await world.invoke("use_reaction", { characterId: wizard.id, feature: "Shield" });
   assert.equal(viaReaction.ok, true, viaReaction.error);
   assert.equal(world.sheet(wizard.id).spellcasting.slots["1"].used, 1);

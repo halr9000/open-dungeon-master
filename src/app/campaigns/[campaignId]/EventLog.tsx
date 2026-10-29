@@ -5,6 +5,7 @@ import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { Loader2, RotateCcw, ScrollText, Star } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
+import { offerCorrectionReason } from "@/lib/correction-offer";
 import { ui } from "@/lib/ui";
 import type { CharacterEvent } from "@/lib/db/character-events";
 import type { AuditEntry } from "@/app/campaigns/[campaignId]/useCampaignStream";
@@ -59,7 +60,7 @@ function describeEntry(entry: AuditEntry, name: string): string {
         : `${name} learns the spell ${delta.spell}`;
     case "update_sheet": {
       const changed = Object.keys(delta);
-      return `The DM rewrites ${name}'s sheet${changed.length ? ` (${changed.join(", ")})` : ""}`;
+      return `The GM rewrites ${name}'s sheet${changed.length ? ` (${changed.join(", ")})` : ""}`;
     }
     case "undo":
       return `Party lead undid a change to ${name}`;
@@ -203,6 +204,8 @@ export function EventLog({
             setConfirming(null);
             if (!retry.response?.ok) {
               noteError(busyKey, refusal(retry.response, retry.data));
+            } else {
+              offerCorrectionReason(campaignId, retry.data);
             }
           },
         });
@@ -210,6 +213,8 @@ export function EventLog({
       }
       if (!response?.ok) {
         noteError(busyKey, refusal(response, data));
+      } else {
+        offerCorrectionReason(campaignId, data);
       }
     } finally {
       setBusyId("");
@@ -228,7 +233,7 @@ export function EventLog({
 
   if (!feed.length) {
     return (
-      <EmptyState size="sm" art="scrolls" title="No stat changes yet. Damage, loot, XP, conditions, and milestones the DM applies will show here." />
+      <EmptyState size="sm" art="scrolls" title="No stat changes yet. Damage, loot, XP, conditions, and milestones the GM applies will show here." />
     );
   }
 
@@ -277,7 +282,7 @@ export function EventLog({
                   type="button"
                   disabled={busyId === `turn:${turnId}`}
                   onClick={() => revertTurn(turnId)}
-                  title="Undo every sheet change from this DM turn (stats only)"
+                  title="Undo every sheet change from this GM turn (stats only)"
                   className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-stone-700 py-0.5 text-[10px] text-stone-500 hover:bg-stone-900 hover:text-amber-300"
                 >
                   {busyId === `turn:${turnId}` ? (

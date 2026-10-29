@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hello Dungeon: isometric board</title>
+    <style>
+      /* Transparent: the table's own board frame shows through, in either theme. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        font: 12px/1.3 system-ui, sans-serif;
+        color: #e8dcc0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+        touch-action: none;
+      }
+      #badge {
+        position: absolute;
+        left: 8px;
+        bottom: 8px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgb(0 0 0 / 0.45);
+        color: #f3e2b3;
+        pointer-events: none;
+      }
+      #badge:empty {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="board" aria-label="Isometric board"></canvas>
+    <div id="badge"></div>
+    <script src="board.js"></script>
+  </body>
+</html>

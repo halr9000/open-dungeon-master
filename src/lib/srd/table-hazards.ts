@@ -6,8 +6,9 @@
 // src/lib/db/core.ts); the SRD's own come first, so a workshop "Wyvern
 // Poison" never shadows the book's.
 
-import { POISONS, findDisease, findPoison, type DiseaseSpec, type Poison } from "@/lib/srd/afflictions";
+import { findDisease, findPoison, type DiseaseSpec, type Poison } from "@/lib/srd/afflictions";
 import { findSampleTrap, type TrapSpec } from "@/lib/srd/trap-specs";
+import { textKey } from "@/lib/language/text-logic";
 
 export type HazardKind = "trap" | "poison" | "disease";
 
@@ -22,8 +23,6 @@ export function registerTableHazardReader(next: (campaignId: string) => Readonly
   reader = next;
 }
 
-const key = (name: string) => name.trim().toLowerCase().replace(/\s+/g, " ");
-
 export function tableHazards(campaignId: string | null | undefined): WorkshopHazard[] {
   return campaignId && reader ? [...reader(campaignId).values()] : [];
 }
@@ -32,7 +31,7 @@ function tableHazard<K extends HazardKind>(name: string, campaignId: string | nu
   if (!campaignId || !reader) {
     return null;
   }
-  const found = reader(campaignId).get(key(name));
+  const found = reader(campaignId).get(textKey(name));
   return found && found.hazardKind === kind ? (found as Extract<WorkshopHazard, { hazardKind: K }>) : null;
 }
 
@@ -75,5 +74,3 @@ export function hazardNamesAt(campaignId: string | null | undefined): Record<Haz
     disease: own.filter((entry) => entry.hazardKind === "disease").map((entry) => entry.name),
   };
 }
-
-export const SRD_POISON_NAMES = POISONS.map((poison) => poison.name);

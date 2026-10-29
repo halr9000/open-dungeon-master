@@ -8,6 +8,8 @@ import { removeFile } from "@/lib/image-files";
 // What the server keeps, and for how long (audit P13). The story is kept
 // forever: messages, notes, rolls, sheets and their audit trail, chapter
 // snapshots, and every DM turn's conversation, which re-narrate replays.
+// So is the correction ledger (turn_corrections, turn_quality; issue
+// #460), which holds counts and ids, not text.
 // What goes is what nothing reads back past a point:
 //
 //   - The event log past the replay window. A page that reconnects more
@@ -22,6 +24,8 @@ import { removeFile } from "@/lib/image-files";
 //     reads the latest turn only.
 //   - Usage rows older than 90 days, merged into one row per month and kind
 //     of call. The ledger shows totals, which come out the same.
+//   - Model-call diagnostics (src/lib/usage/model-calls.ts) older than 30
+//     days: they explain a slow turn while it is still remembered.
 //
 // The pages those deletes free go back to the disk a little at a time
 // (incremental vacuum), so play never waits on it. A database made before
@@ -36,6 +40,7 @@ const EVENTS_KEPT_PER_TYPE = 100;
 const TRACE_MIN_AGE_MS = 7 * DAY_MS;
 const TRACES_KEPT_PER_CAMPAIGN = 5;
 const USAGE_MIN_AGE_MS = 90 * DAY_MS;
+const MODEL_CALL_MIN_AGE_MS = 30 * DAY_MS;
 const ORPHAN_GRACE_MS = DAY_MS;
 // Deletes per transaction, and pages handed back per step, between which
 // the event loop gets a turn.
@@ -62,6 +67,7 @@ export type RetentionReport = {
   eventsRemoved: number;
   tracesCleared: number;
   usageRowsMerged: number;
+  modelCallsRemoved: number;
   bytesReclaimed: number;
   ms: number;
 };
@@ -147,6 +153,11 @@ export function clearOldContextTraces(now = Date.now()): number {
     .run(cutoff, TRACES_KEPT_PER_CAMPAIGN).changes;
 }
 
+export function pruneModelCalls(now = Date.now()): number {
+  const cutoff = new Date(now - MODEL_CALL_MIN_AGE_MS).toISOString();
+  return getDatabase().prepare(`DELETE FROM model_calls WHERE at < ?`).run(cutoff).changes;
+}
+
 // Returns how many rows were folded into others.
 export async function rollUpUsage(now = Date.now()): Promise<number> {
   const db = getDatabase();
@@ -174,9 +185,11 @@ export async function rollUpUsage(now = Date.now()): Promise<number> {
     const merged = db
       .prepare(
         `INSERT INTO usage_events
-           (at, campaign_id, user_id, kind, role, backend, model, paid, input_tokens, output_tokens, units, duration_ms, calls)
+           (at, campaign_id, user_id, kind, role, backend, model, paid, input_tokens, output_tokens, units, duration_ms, calls,
+            cached_input_tokens, reasoning_tokens)
          SELECT MAX(at), campaign_id, user_id, kind, role, backend, model, paid,
-                SUM(input_tokens), SUM(output_tokens), SUM(units), SUM(duration_ms), SUM(calls)
+                SUM(input_tokens), SUM(output_tokens), SUM(units), SUM(duration_ms), SUM(calls),
+                SUM(cached_input_tokens), SUM(reasoning_tokens)
          FROM usage_events WHERE ${MATCH}`,
       )
       .run(...keys);
@@ -223,8 +236,9 @@ export function runRetention(now = Date.now()): Promise<RetentionReport> {
       const eventsRemoved = await pruneEventLog(now);
       const tracesCleared = clearOldContextTraces(now);
       const usageRowsMerged = await rollUpUsage(now);
+      const modelCallsRemoved = pruneModelCalls(now);
       const bytesReclaimed = await reclaimSpace();
-      const report = { at: nowIso(), eventsRemoved, tracesCleared, usageRowsMerged, bytesReclaimed, ms: Date.now() - started };
+      const report = { at: nowIso(), eventsRemoved, tracesCleared, usageRowsMerged, modelCallsRemoved, bytesReclaimed, ms: Date.now() - started };
       current.report = report;
       return report;
     } finally {

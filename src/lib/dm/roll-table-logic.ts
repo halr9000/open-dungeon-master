@@ -9,6 +9,8 @@
 //
 // Pure and dependency-free so scripts/test-roll-tables.mjs can import it.
 
+import { textKey } from "../language/text-logic.ts";
+
 export type RollTableEntry = {
   // Inclusive range of die results this row covers.
   min: number;
@@ -76,6 +78,34 @@ export function parseRollTable(raw: string): RollTableEntry[] {
     next += weight;
   }
   return entries.sort((a, b) => a.min - b.min || a.max - b.max);
+}
+
+// Rows from anywhere but the editor (a bundle written by hand, or stored by
+// an older server), read the way the editor reads a paste: an entry with its
+// range keeps it, a string or an entry without one is a bare line numbered
+// in order, and the table holds what the editor would (TABLE_MAX_ENTRIES
+// rows of TABLE_TEXT_MAX characters). A row with no number for its range,
+// which no die can land on, is never kept.
+export function normalizeRollEntries(raw: unknown): RollTableEntry[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const lines = raw
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return entry;
+      }
+      const row = (entry ?? {}) as Partial<RollTableEntry>;
+      const ref = row.ref && (ROLL_REF_KINDS as readonly string[]).includes(row.ref.kind) && typeof row.ref.name === "string" ? row.ref : null;
+      const text = ref ? `@${ref.kind}: ${ref.name}` : String(row.text ?? "");
+      const min = Number(row.min);
+      const max = Number(row.max ?? row.min);
+      const ranged = [min, max].every((value) => Number.isInteger(value) && value >= 1 && value <= 999);
+      return ranged ? `${min === max ? min : `${Math.min(min, max)}-${Math.max(min, max)}`}. ${text}` : text;
+    })
+    .map((line) => line.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean);
+  return parseRollTable(lines.join("\n"));
 }
 
 // The die a table wants, from the highest result it covers. A 12-row table
@@ -181,15 +211,15 @@ export function followTableRefs(
   roll: (sides: number) => number,
 ): RollStep[] {
   const chain: RollStep[] = [first];
-  const visited = new Set<string>([first.table.toLowerCase()]);
+  const visited = new Set<string>([textKey(first.table)]);
   let current = first;
   while (chain.length < MAX_NESTED_ROLLS + 1) {
     const ref = current.entry?.ref;
     if (!ref || ref.kind !== "table") {
       break;
     }
-    const wanted = ref.name.trim().toLowerCase();
-    const next = tables.find((table) => table.name.trim().toLowerCase() === wanted);
+    const wanted = textKey(ref.name);
+    const next = tables.find((table) => textKey(table.name) === wanted);
     if (!next || visited.has(wanted)) {
       chain.push({ table: ref.name, die: 0, total: 0, entry: null });
       break;

@@ -1,5 +1,5 @@
 {
-  "_license": "Original content for Open Dungeon Master. The open datasets carry almost no 5e feats (two rows), so these describe the widely played ones in our own wording. Mechanics are not copyrightable, expression is; no publisher's text is reproduced here.",
+  "_license": "Original content for Open Game Master. The open datasets carry almost no 5e feats (two rows), so these describe the widely played ones in our own wording. Mechanics are not copyrightable, expression is; no publisher's text is reproduced here.",
   "_shape": "feats[] = { name, prerequisite, desc }. Imported as document_slug 'odm-expanded' by scripts/import-open5e.mjs. Feats with a server-enforced effect must also appear in src/lib/srd/feature-effects.ts.",
   "feats": [
     {
@@ -271,6 +271,11 @@
       "name": "Skilled",
       "prerequisite": "",
       "desc": "Pick any three skills or tools, in any combination, and gain proficiency with each. This feat raises no ability score."
+    },
+    {
+      "name": "Savage Attacker",
+      "prerequisite": "",
+      "desc": "Once on each of your turns, when you roll damage for a melee weapon attack, you can roll the weapon's damage dice a second time and keep whichever total you like."
     }
   ]
 }

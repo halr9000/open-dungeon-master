@@ -2,14 +2,15 @@
 // purchase, use_resource). Kept apart from the handlers in resource-tools.ts:
 // mutations.ts spreads this list while it loads, and the handlers' imports
 // reach back to mutations.ts through the clock, so the list must not wait on
-// them.
+// them. purchase is every trade (issue #471): a shop's sale reaches the shop
+// (src/lib/dm/shop-tools.ts tradeCall).
+
+import { waypointProperty } from "@/lib/dm/waypoint-logic";
 
 export type ToolDef = {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
 };
-
-export const RESOURCE_TOOL_NAMES = ["use_item", "purchase", "use_resource"] as const;
 
 export const resourceTools: ToolDef[] = [
   {
@@ -17,7 +18,7 @@ export const resourceTools: ToolDef[] = [
     function: {
       name: "use_item",
       description:
-        "Resolve a character using up ONE consumable they carry (potion, scroll, thrown flask, ration, torch); in a fight it is the Use an Object action. Weapons, armor and other kept items (a Bag of Holding, a ring) are refused, since they are not used up. Never narrate a consumable's use without calling it.",
+        "Resolve a character using up ONE consumable they carry (potion, scroll, thrown flask, ration, torch); one taken in the same action (from a chest, off a fallen foe) is given with grant_item first. In a fight it is the Use an Object action. Weapons, armor and other kept items (a Bag of Holding, a ring) are refused, since they are not used up. Never narrate a consumable's use without calling it.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -31,6 +32,7 @@ export const resourceTools: ToolDef[] = [
           charges: {
             type: "integer",
             minimum: 1,
+            maximum: 50,
             description:
               "For an item with charges (a wand, a staff, a once-a-day power): how many this use spends. The server keeps the count and refuses a use the item cannot pay for.",
           },
@@ -50,24 +52,33 @@ export const resourceTools: ToolDef[] = [
     function: {
       name: "purchase",
       description:
-        "Resolve a character buying or selling an item outside a shop, in one audited step.",
+        "Resolve a character buying or selling an item in one audited step. A shop standing here that stocks the item (or buys it) trades it from its own shelf at its own prices; anywhere else the list price is paid, and a seller gets half. Loot no list has, or a spell scroll, is granted with grant_item (its tags, its spell) and paid for with modify_gold.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
+          ...waypointProperty,
           characterId: { type: "string", description: "Exact characterId from GAME STATE." },
-          item: { type: "string", description: "Item name; a treasure with its value ('Ruby (1000 gp)')." },
+          action: { type: "string", enum: ["buy", "sell"] },
+          item: { type: "string", description: "Item name, without its worth: price carries that." },
+          qty: { type: "integer", minimum: 1, maximum: 99 },
+          shop: {
+            type: "string",
+            description: "A shop in SHOPS HERE the party picks; omit it and the server picks one that stocks (or buys) it.",
+          },
+          srdName: {
+            type: "string",
+            description: "Only when item is in the table's own words: the SRD or pack item's English name ('Longsword'). Send it with the first call, as grant_item does; omit it when item already is that English name.",
+          },
           price: {
-            type: "integer",
+            type: "number",
             minimum: 0,
             maximum: 100000,
-            description: "Gold per unit, used only for an item the table has no list price for.",
+            description: "Gold each, for a thing no shelf or list prices.",
           },
-          qty: { type: "integer", minimum: 1, maximum: 99 },
-          action: { type: "string", enum: ["buy", "sell"] },
           reason: { type: "string", description: "Short in-fiction cause." },
         },
-        required: ["characterId", "item", "price", "action"],
+        required: ["characterId", "action", "item"],
       },
     },
   },
@@ -90,18 +101,18 @@ export const resourceTools: ToolDef[] = [
           amount: {
             type: "integer",
             minimum: 1,
-            maximum: 50,
-            description: "Uses or points to spend. Default 1. Lay on Hands spends HP from its pool.",
+            maximum: 100,
+            description: "Uses or points to spend. Default: 1. Lay on Hands spends HP from its pool.",
           },
           targetCharacterId: {
             type: "string",
             description:
-              "Who the feature is aimed at, for features that touch someone else (Lay on Hands, Bardic Inspiration): exact characterId from GAME STATE. Default: the user.",
+              "Who a feature that touches someone else is aimed at: exact characterId from GAME STATE. E.g. Lay on Hands, Bardic Inspiration. Default: the user.",
           },
           targetEnemyId: {
             type: "string",
             description:
-              "The creature a feature is aimed at, exact enemyId from GAME STATE: Intimidating Presence (the server rolls its WIS save against the barbarian's DC and frightens it until the end of the barbarian's next turn; a later use on a creature already frightened by it extends that). Also the subclass features aimed at a creature (Touch of the Long Death, Psychic Blades, Unsettling Words, Hound of Ill Omen, Versatile Trickster, Mighty Impel, Elemental Fury, Storm Aura's sea, Insightful Fighting, Cauterizing Flames' burn): the server rolls their saves and damage.",
+              "The creature a feature is aimed at: exact enemyId from GAME STATE. Intimidating Presence uses it (the server rolls its WIS save against the barbarian's DC and frightens it until the end of the barbarian's next turn; a later use on a creature already frightened by it extends that), and so do the subclass features aimed at a creature (Touch of the Long Death, Psychic Blades, Unsettling Words, Hound of Ill Omen, Versatile Trickster, Mighty Impel, Elemental Fury, Storm Aura's sea, Insightful Fighting, Cauterizing Flames' burn): the server rolls their saves and damage.",
           },
           form: {
             type: "string",
@@ -110,13 +121,13 @@ export const resourceTools: ToolDef[] = [
           variant: {
             type: "string",
             description:
-              "For features with a choice (Starry Form's archer/chalice/dragon, Spirit Totem's bear/hawk/unicorn; Totem Spirit or Transmuter's Stone, outside a fight): the chosen option. Ki Points: 'flurry of blows' (after the Attack action: two bonus-action unarmed strikes, each resolved with pc_attack), 'patient defense' (Dodge as a bonus action), 'step of the wind' (Disengage as a bonus action; 'step of the wind dash' to Dash); the server spends the ki and the bonus action and applies the effect.",
+              "The chosen option; Ki Points: 'flurry of blows', 'patient defense', 'step of the wind'. Features with a choice: Starry Form's archer/chalice/dragon, Spirit Totem's bear/hawk/unicorn; Totem Spirit or Transmuter's Stone, outside a fight. Flurry of blows: after the Attack action, two bonus-action unarmed strikes, each resolved with pc_attack; patient defense: Dodge as a bonus action; step of the wind: Disengage as a bonus action ('step of the wind dash' to Dash). The server spends the ki and the bonus action and applies the effect.",
           },
           formHp: {
             type: "integer",
             minimum: 1,
             maximum: 300,
-            description: "Wild Shape only: the beast form's hit points from its stat block.",
+            description: "Wild Shape only: the beast form's HP from its stat block.",
           },
           formAc: {
             type: "integer",
@@ -129,15 +140,15 @@ export const resourceTools: ToolDef[] = [
             minimum: 0,
             maximum: 30,
             description:
-              "Wild Shape only, for a beast the server does not know: its challenge rating from its stat block (0.25 for 1/4). The druid's level caps it.",
+              "Wild Shape only, for a beast the server lacks: its challenge rating (0.25 for 1/4). Take it from its stat block. The druid's level caps it.",
           },
           formFlies: {
             type: "boolean",
-            description: "Wild Shape only, for a beast the server does not know: it has a flying speed.",
+            description: "Wild Shape only, for a beast the server lacks: it has a flying speed.",
           },
           formSwims: {
             type: "boolean",
-            description: "Wild Shape only, for a beast the server does not know: it has a swimming speed.",
+            description: "Wild Shape only, for a beast the server lacks: it has a swimming speed.",
           },
           reason: { type: "string", description: "Short in-fiction cause." },
         },

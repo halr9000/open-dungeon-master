@@ -1,6 +1,7 @@
 "use client";
 
 import type { Gender } from "@/lib/gender";
+import { normalizeAttraction, type Attraction } from "@/lib/attraction";
 import { authoredFeatDesc } from "@/lib/srd/feat-effects";
 import { toolChoiceOf } from "@/lib/srd/tool-choices";
 import { useEffect, useRef, useState } from "react";
@@ -14,6 +15,7 @@ import { earnedAsiCount, removeAsiChoices } from "@/lib/srd/asi";
 import { halfFeatPicks, halfFeatPoints } from "@/lib/srd/legality/half-feats";
 import { withoutFeatPicks, type FeatChoices, type FeatPicks } from "@/lib/srd/feat-grants";
 import { racialFeatCount } from "@/lib/srd/race-id";
+import { racialCantripsOf } from "@/lib/srd/racial-cantrips";
 import { holdsFeature, reachesPrimalChampion, withoutPrimalChampion } from "@/lib/srd/trait-rules";
 import type { KitChoices } from "@/lib/srd/starting-kit";
 import { findOptionByFeatureName } from "@/lib/srd/options";
@@ -23,10 +25,15 @@ import {
   type FightingStyleId,
 } from "@/lib/srd/feature-effects";
 import { canonicalRaceId } from "@/lib/content/race-options";
+import { withHeldVariant } from "@/lib/content/species-variants";
 import type { AbilityMethod, AbilityState } from "./AbilityEditor";
 import type { PoolEntry, PoolSlots } from "./abilityDice";
 import { reconcilePicks, type BuilderPicks, type DroppedPick } from "./reconcile";
+import { undoOutcome, type BuildUndo, type UndoBecause } from "./buildUndo";
 import type { BackgroundOption, ClassOption, RaceOption } from "./useBuilderOptions";
+import { keyedFeatChoices, withFeatChoice } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
+import { revisedSpecies } from "@/lib/srd/race-id";
 
 // `priceCp` is the listed price of one, in copper, as the catalog row it was
 // picked from gave it; it is what the purse is charged, and the server
@@ -40,6 +47,55 @@ export type EquipmentItem = { name: string; qty: number; slug?: string; priceCp?
 // the player has seen it, or when nothing was dropped.
 export type DroppedNotice = { because: string; drops: DroppedPick[] };
 
+// Every pick a new character's draft keeps on this device (builderDraft.ts):
+// the builder's own fields, without the notices and one-shot acknowledgements.
+export type BuilderDraftFields = {
+  name: string;
+  alignment: string;
+  level: number;
+  raceId: string;
+  classId: string;
+  subclass: string;
+  backgroundId: string;
+  method: AbilityMethod;
+  scores: AbilityState;
+  rollPool: PoolEntry[] | null;
+  rollSlots: PoolSlots<Ability>;
+  chosenSkills: string[];
+  expertisePicks: string[];
+  stylePicks: FightingStyleId[];
+  spells: string[];
+  bookPrepared: string[];
+  cantrips: string[];
+  equipment: EquipmentItem[];
+  removedAutoNames: string[];
+  kitChoices: KitChoices;
+  feats: string[];
+  featChoices: FeatChoices;
+  asiChoices: Array<AsiChoice | null>;
+  bonusLanguages: string[];
+  racialAsi: Array<Ability | "">;
+  racialSkills: string[];
+  racialCantrips: string[];
+  racialTool: string;
+  racialAncestry: string;
+  racialVariant: string;
+  racialFeatAbility: Ability | "";
+  toolPicks: string[];
+  repeatSkills: string[];
+  backgroundSkills: string[];
+  backgroundGearPicks: string[];
+  optionPicks: string[];
+  backstory: string;
+  gender: Gender;
+  attraction: Attraction;
+  appearance: string;
+  portrait: SheetAttachment | null;
+  gold: number;
+  hpOverride: number | null;
+  acOverride: number | null;
+};
+
 // Every field the character builder edits, in one hook so the wizard steps
 // can share it without the orchestrator re-declaring forty useStates. The
 // shape of each value is exactly what the old single-file builder held; the
@@ -49,6 +105,7 @@ export function useBuilderState({
   initialFeatDescs,
   initialLevel,
   fixedLevel,
+  startLevel,
   races,
   classes,
   backgrounds,
@@ -61,6 +118,12 @@ export function useBuilderState({
   // The level the stored character reached (its library row's level).
   initialLevel?: number;
   fixedLevel?: number;
+  // "Level up" from the library: the stored character opens one level up,
+  // and each step asks for what the new level brings. Ignored for a
+  // multiclass split, whose level the builder does not move. A new
+  // character opens at it when the door that opened the builder knows its
+  // level (door.ts), and can still change it.
+  startLevel?: number;
   races: RaceOption[];
   classes: ClassOption[];
   backgrounds: BackgroundOption[];
@@ -69,7 +132,9 @@ export function useBuilderState({
   const [name, setName] = useState(initial?.name ?? "");
   const [alignment, setAlignment] = useState(initial?.alignment ?? "N");
   // A stored character opens at its own level, never at 1.
-  const [level, setLevel] = useState(fixedLevel ?? (initial ? storedLevel : 1));
+  const [level, setLevel] = useState(
+    fixedLevel ?? (initial ? (startLevel && !levelLocked ? Math.max(storedLevel, startLevel) : storedLevel) : (startLevel ?? 1)),
+  );
   const [raceId, setRaceId] = useState(initial?.race ?? "");
   const [classId, setClassId] = useState(initial?.class ?? "");
   const [subclass, setSubclass] = useState(initial?.subclass ?? "");
@@ -144,17 +209,13 @@ export function useBuilderState({
     return (initial.feats ?? []).filter((feat) => !asiFeats.has(feat));
   });
   // The picks a feat leaves open (Linguist's three languages, Skill Expert's
-  // skill and expertise), keyed by the feat's name in lower case
-  // (src/lib/srd/feat-grants.ts). Kept for every feat ever picked here, so
+  // skill and expertise), keyed by featChoice (src/lib/srd/feat-grants.ts),
+  // a stored draft's map re-keyed so. Kept for every feat ever picked here, so
   // a feat dropped and taken again finds its picks; the payload sends only
   // the feats on the sheet.
-  const [featChoices, setFeatChoices] = useState<FeatChoices>(() =>
-    Object.fromEntries(
-      Object.entries(initial?.featChoices ?? {}).map(([feat, picks]) => [feat.trim().toLowerCase(), picks]),
-    ),
-  );
+  const [featChoices, setFeatChoices] = useState<FeatChoices>(() => keyedFeatChoices(initial?.featChoices));
   function setFeatPicks(feat: string, picks: FeatPicks) {
-    setFeatChoices((current) => ({ ...current, [feat.trim().toLowerCase()]: picks }));
+    setFeatChoices((current) => withFeatChoice(current, feat, picks));
   }
   // One slot per ASI threshold the effective level has earned; kept full
   // length so lowering and re-raising the level restores earlier picks.
@@ -173,10 +234,15 @@ export function useBuilderState({
   const [racialSkills, setRacialSkills] = useState<string[]>(
     initial?.racialChoices?.skills ?? [],
   );
-  const [racialCantrip, setRacialCantrip] = useState(initial?.racialChoices?.cantrip ?? "");
+  // Every cantrip the race let them pick; a sheet from before there could
+  // be more than one holds its pick in `cantrip`.
+  const [racialCantrips, setRacialCantrips] = useState<string[]>(() => racialCantripsOf(initial?.racialChoices));
   const [racialTool, setRacialTool] = useState(initial?.racialChoices?.tool ?? "");
   // A dragonborn's draconic ancestry ("red").
   const [racialAncestry, setRacialAncestry] = useState(initial?.racialChoices?.ancestry ?? "");
+  // The option of a workshop species' choice ("ashen"), checked like the
+  // other racial picks (reconcile.ts).
+  const [racialVariant, setRacialVariant] = useState(initial?.racialChoices?.variant ?? "");
   // The score a variant human's half-feat raises, where the feat offers a
   // choice (Resilient, Athlete).
   const [racialFeatAbility, setRacialFeatAbility] = useState<Ability | "">(
@@ -214,6 +280,8 @@ export function useBuilderState({
   const [spellWarningAck, setSpellWarningAck] = useState(false);
   const [backstory, setBackstory] = useState(initial?.backstory ?? "");
   const [gender, setGender] = useState<Gender>(initial?.gender ?? "");
+  // Who they are drawn to (issue 501), kept through an edit like the gender.
+  const [attraction, setAttraction] = useState<Attraction>(() => normalizeAttraction(initial?.attraction));
   const [appearance, setAppearance] = useState(initial?.appearance ?? "");
   // An uploaded photo here means the creation routes skip the ComfyUI render
   // entirely (they only queue one when the sheet arrives without a portrait).
@@ -223,6 +291,9 @@ export function useBuilderState({
   // (useBuilderDerived), not a number typed here.
   const [gold, setGold] = useState(initial?.gold ?? 0);
   const [hpOverride, setHpOverride] = useState<number | null>(initial?.maxHp ?? null);
+  // The level and Constitution the stored hit points (hpOverride) stand on.
+  // The server keeps them only while both stand (builderHp.ts).
+  const [storedHp] = useState(() => (initial ? { level: storedLevel, con: initial.abilities.con } : null));
   // Only a pinned AC comes back pinned. A derived one re-derives from the
   // gear, or saving an edit would pin it and armour changed in play would
   // stop moving it.
@@ -234,20 +305,35 @@ export function useBuilderState({
   // notice or the next change replaces it (issue #124: reconcilePicks named
   // them and nothing showed the list).
   const [dropped, setDropped] = useState<DroppedNotice | null>(null);
+  // The fields as they stood before the last class, race, subclass or level
+  // change that set picks aside (backlog F12), until "Put it back", another
+  // pick, or the player leaving the step (CharacterBuilder.tsx) ends it.
+  const [undo, setUndo] = useState<BuildUndo | null>(null);
+  const undoCount = useRef(0);
+  // Kept from an event handler, before the change's own setters run: the
+  // render's fields are the ones the change is about to replace.
+  function keepUndo(because: UndoBecause, from: string, to: string) {
+    undoCount.current += 1;
+    setUndo({ id: undoCount.current, because, from, to, fields: draftFields, dropped, after: null });
+  }
+  const raceName = (id: string) => findRace(races, id)?.name ?? id;
+  const className = (id: string) => classes.find((entry) => entry.id === id)?.name ?? id;
 
   // The picks that depend on an earlier choice, gathered so one call can
   // check them all against the current race, class, background and level
   // (reconcile.ts). Read from the render's values: every caller is an event
   // handler or an effect of this render.
   const picks: BuilderPicks = {
-    chosenSkills, racialSkills, racialAsi, racialCantrip, racialTool, backgroundSkills, bonusLanguages,
+    racialVariant, chosenSkills, racialSkills, racialAsi, racialCantrips, racialTool, repeatSkills, backgroundSkills, bonusLanguages,
     subclass, expertisePicks, stylePicks, optionPicks, spells, bookPrepared, cantrips,
   };
   function applyPicks(next: BuilderPicks) {
+    setRacialVariant(next.racialVariant);
     setChosenSkills(next.chosenSkills);
     setRacialSkills(next.racialSkills);
+    setRepeatSkills(next.repeatSkills);
     setRacialAsi(next.racialAsi);
-    setRacialCantrip(next.racialCantrip);
+    setRacialCantrips(next.racialCantrips);
     setRacialTool(next.racialTool);
     setBackgroundSkills(next.backgroundSkills);
     setBonusLanguages(next.bonusLanguages);
@@ -261,11 +347,9 @@ export function useBuilderState({
   }
   type Selection = { raceId: string; classId: string; backgroundId: string; level: number };
   const selection: Selection = { raceId, classId, backgroundId, level };
-  // The rows the builder shows for these ids. A race or class not yet
-  // picked is none at all (CharacterBuilder.tsx does the same); until the
-  // background is picked the list's first row stands in, and the picks have
-  // to be checked against what is shown, or an unpicked background's
-  // language slots would be trimmed away by the next change.
+  // The rows the builder shows for these ids. A race, class or background
+  // not yet picked is none at all (CharacterBuilder.tsx does the same), so
+  // the picks are checked against what is shown.
   function reconciled(
     next: Partial<Selection>,
     current: BuilderPicks,
@@ -275,16 +359,17 @@ export function useBuilderState({
     const { picks, drops } = reconcilePicks(current, {
       race: findRace(races, ids.raceId),
       klass: classes.find((entry) => entry.id === ids.classId),
-      background: background ?? backgrounds[0],
+      background,
       level: fixedLevel ?? ids.level,
     });
     // A stored content-pack background is not in the bundled list the
-    // builder opens with; its skill pick waits for the pack's rows rather
-    // than being checked against the stand-in and lost.
+    // builder opens with; its skill pick, and the skill picked in place of
+    // one it repeats, wait for the pack's rows rather than being checked
+    // against no background and lost.
     if (ids.backgroundId && !background) {
       return {
-        picks: { ...picks, backgroundSkills: current.backgroundSkills },
-        drops: drops.filter((drop) => drop.target !== "backgroundSkills"),
+        picks: { ...picks, backgroundSkills: current.backgroundSkills, repeatSkills: current.repeatSkills },
+        drops: drops.filter((drop) => drop.target !== "backgroundSkills" && drop.target !== "repeatSkills"),
       };
     }
     return { picks, drops };
@@ -330,8 +415,8 @@ export function useBuilderState({
     ...(initial?.feats ?? []),
     ...(initial?.asiChoices ?? []).flatMap((choice) => (choice.mode === "feat" ? [choice.feat] : [])),
   ];
-  const storedFeatDescOf = (feat: string) => initialFeatDescs?.[feat.trim().toLowerCase()] ?? authoredFeatDesc(feat) ?? "";
-  const storedFeatsKnown = storedFeats.every((feat) => authoredFeatDesc(feat) || initialFeatDescs?.[feat.trim().toLowerCase()] !== undefined);
+  const storedFeatDescOf = (feat: string) => initialFeatDescs?.[textKey(feat)] ?? authoredFeatDesc(feat) ?? "";
+  const storedFeatsKnown = storedFeats.every((feat) => authoredFeatDesc(feat) || initialFeatDescs?.[textKey(feat)] !== undefined);
   useEffect(() => {
     if (!races.length || !classes.length || !backgrounds.length || !storedFeatsKnown) {
       return;
@@ -344,7 +429,11 @@ export function useBuilderState({
     const ids = { ...selection };
     if (initial && !hydratedInitial.current) {
       hydratedInitial.current = true;
-      const initialRace = findRace(races, ids.raceId) ?? races[0];
+      // With what the stored option of the species' choice gave, as the
+      // sheet records it (the workshop may since have changed the option or
+      // removed it): its +1 sits in the stored scores, and its skills and
+      // languages are not picks.
+      const initialRace = withHeldVariant(findRace(races, ids.raceId) ?? races[0], initial.racialChoices);
       const initialBackground = backgrounds.find((entry) => entry.id === initial.background) ?? backgrounds[0];
       const withoutAsi = removeAsiChoices(initial.abilities, initial.asiChoices ?? []);
       const base: Record<Ability, number> = { ...withoutAsi };
@@ -423,15 +512,21 @@ export function useBuilderState({
   // skill the new race grants outright, a language it already speaks).
   // The race's own picks are cleared first, so they are not reported as
   // dropped: the new race asks for its own. The feat is the race's too.
+  // Choosing the race already chosen (a second tap on its card) is no change.
   function changeRace(id: string) {
+    if (id === raceId) {
+      return;
+    }
+    if (raceId) {
+      keepUndo("race", raceName(raceId), raceName(id));
+    }
     setRaceId(id);
     applyChange(
       "race",
       { raceId: id },
-      { ...picks, racialAsi: [], racialSkills: [], racialCantrip: "", racialTool: "" },
+      { ...picks, racialVariant: "", racialAsi: [], racialSkills: [], racialCantrips: [], racialTool: "", repeatSkills: [] },
     );
     setRacialAncestry("");
-    setRepeatSkills([]);
     // The old race's own feats lead the list (submit.ts reads the racial
     // feat as the first); they go with it. Feats granted in play, which an
     // edit carries after them, stay.
@@ -442,9 +537,24 @@ export function useBuilderState({
     setRacialFeatAbility("");
   }
 
+  // The species' own choice (a Half-Dragon's ancestry). What the new option
+  // gives is checked against the racial picks already made, so a +1 of the
+  // player's choice on the ability it now raises is set aside, and said so.
+  function chooseRacialVariant(id: string) {
+    const label = findRace(races, raceId)?.variants?.label.toLowerCase() ?? "species choice";
+    applyChange(label, {}, { ...picks, racialVariant: id });
+  }
+
   // Same for the class: skills, subclass, spells, loadout edits and the
-  // class option picks all belong to the old class.
+  // class option picks all belong to the old class. Choosing the class
+  // already chosen keeps them all.
   function changeClass(id: string) {
+    if (id === classId) {
+      return;
+    }
+    if (classId) {
+      keepUndo("class", className(classId), className(id));
+    }
     setClassId(id);
     setRemovedAutoNames([]);
     setKitChoices({ options: [], picks: [] });
@@ -475,11 +585,34 @@ export function useBuilderState({
     applyChange("background", { backgroundId: id }, { ...picks, backgroundSkills: [] });
   }
   function changeSubclass(name: string) {
+    if (subclass && textKey(name) !== textKey(subclass)) {
+      keepUndo("subclass", subclass, name || "no subclass");
+    }
     applyChange("subclass", {}, { ...picks, subclass: name });
   }
+  // A level change keeps every pick that still fits, so only one that sets
+  // some aside (a 3rd-level spell at level 1) is kept to put back.
   function changeLevel(next: number) {
+    const result = reconciled({ level: next }, picks);
+    if (result.drops.length && next !== level) {
+      keepUndo("level", `level ${level}`, `level ${next}`);
+    }
     setLevel(next);
-    applyChange("level", { level: next }, picks);
+    applyReconciled("level", result);
+  }
+  // "Put it back": the old choice and every pick that went with it, set as
+  // they were (no reconcile: they were checked against each other then),
+  // with the notice that was showing before the change.
+  function putBack() {
+    if (!undo) {
+      return;
+    }
+    setFields(undo.fields);
+    setDropped(undo.dropped);
+    setUndo(null);
+  }
+  function clearUndo() {
+    setUndo(null);
   }
   function dismissDropped() {
     setDropped(null);
@@ -498,13 +631,162 @@ export function useBuilderState({
   const keepsStoredGear =
     Boolean(initial) && classId === initial?.class && backgroundId === initial?.background;
 
+  // Every draft field's setter, so a draft put back (restoreDraft) and a
+  // quick-build fill (applyFill) set the same fields the same way.
+  const setters: { [K in keyof BuilderDraftFields]: (value: BuilderDraftFields[K]) => void } = {
+    name: setName,
+    alignment: setAlignment,
+    level: (value) => setLevel(fixedLevel ?? value),
+    raceId: setRaceId,
+    classId: setClassId,
+    subclass: setSubclass,
+    backgroundId: setBackgroundId,
+    method: setMethod,
+    scores: setScores,
+    rollPool: setRollPool,
+    rollSlots: setRollSlots,
+    chosenSkills: setChosenSkills,
+    expertisePicks: setExpertisePicks,
+    stylePicks: setStylePicks,
+    spells: setSpells,
+    bookPrepared: setBookPrepared,
+    cantrips: setCantrips,
+    equipment: setEquipment,
+    removedAutoNames: setRemovedAutoNames,
+    kitChoices: setKitChoices,
+    feats: setFeats,
+    featChoices: (value) => setFeatChoices(keyedFeatChoices(value)),
+    asiChoices: setAsiChoices,
+    bonusLanguages: setBonusLanguages,
+    racialAsi: setRacialAsi,
+    racialSkills: setRacialSkills,
+    racialCantrips: setRacialCantrips,
+    racialTool: setRacialTool,
+    racialAncestry: setRacialAncestry,
+    racialVariant: setRacialVariant,
+    racialFeatAbility: setRacialFeatAbility,
+    toolPicks: setToolPicks,
+    repeatSkills: setRepeatSkills,
+    backgroundSkills: setBackgroundSkills,
+    backgroundGearPicks: setBackgroundGearPicks,
+    optionPicks: setOptionPicks,
+    backstory: setBackstory,
+    gender: setGender,
+    attraction: setAttraction,
+    appearance: setAppearance,
+    portrait: setPortrait,
+    gold: setGold,
+    hpOverride: setHpOverride,
+    acOverride: setAcOverride,
+  };
+  // A field this builder no longer keeps (an older draft's) is passed over.
+  function setFields(fields: Partial<BuilderDraftFields>) {
+    for (const key of Object.keys(fields) as Array<keyof BuilderDraftFields>) {
+      const set = setters[key] as ((value: unknown) => void) | undefined;
+      set?.(fields[key]);
+    }
+  }
+
+  // Put back an unfinished character saved on this device, or the fields
+  // as they were before a quick-build fill (its Undo). Every pick is set as
+  // it was, without the reconcile a change runs: they were checked against
+  // each other when they were made. The table's level wins over the
+  // draft's.
+  function restoreDraft(draft: Partial<BuilderDraftFields>) {
+    setFields(draft);
+    setUndo(null);
+  }
+
+  // What one round of a quick-build fill wrote (quickBuild.ts). The fill
+  // writes only blank slots, so a race, class or background it picks has
+  // no picks of its own yet to clear; the rest of the picks are checked
+  // against the new ones, as a change by hand would be.
+  function applyFill(patch: Partial<BuilderDraftFields>) {
+    const ids: Partial<Selection> = {};
+    if (patch.raceId !== undefined) ids.raceId = patch.raceId;
+    if (patch.classId !== undefined) ids.classId = patch.classId;
+    if (patch.backgroundId !== undefined) ids.backgroundId = patch.backgroundId;
+    setFields(patch);
+    if (Object.keys(ids).length) {
+      const current = Object.fromEntries(
+        Object.entries(picks).map(([key, value]) => [key, key in patch ? patch[key as keyof BuilderDraftFields] : value]),
+      ) as BuilderPicks;
+      applyChange("quick build", ids, current);
+    }
+  }
+  const draftFields: BuilderDraftFields = {
+    name,
+    alignment,
+    level,
+    raceId,
+    classId,
+    subclass,
+    backgroundId,
+    method,
+    scores,
+    rollPool,
+    rollSlots,
+    chosenSkills,
+    expertisePicks,
+    stylePicks,
+    spells,
+    bookPrepared,
+    cantrips,
+    equipment,
+    removedAutoNames,
+    kitChoices,
+    feats,
+    featChoices,
+    asiChoices,
+    bonusLanguages,
+    racialAsi,
+    racialSkills,
+    racialCantrips,
+    racialTool,
+    racialAncestry,
+    racialVariant,
+    racialFeatAbility,
+    toolPicks,
+    repeatSkills,
+    backgroundSkills,
+    backgroundGearPicks,
+    optionPicks,
+    backstory,
+    gender,
+    attraction,
+    appearance,
+    portrait,
+    gold,
+    hpOverride,
+    acOverride,
+  };
+  // The undo ends with the next pick: the change's first render records the
+  // fields it left, and any later difference clears it. Set while
+  // rendering, React's pattern for state that follows other state.
+  if (undo) {
+    const outcome = undoOutcome(undo, JSON.stringify(draftFields));
+    if (outcome === "record") {
+      setUndo({ ...undo, after: JSON.stringify(draftFields) });
+    } else if (outcome === "clear") {
+      setUndo(null);
+    }
+  }
+
   return {
+    draftFields,
+    restoreDraft,
+    applyFill,
     keepsStoredGear,
     levelFloor,
     levelLocked,
     asiRecorded,
     asiReachedLevel,
     primalChampionHeld: initialHoldsPrimalChampion(initial, initialLevel),
+    // A stored character made as a 2024 species (src/lib/content/edition.ts).
+    revisedSpecies: initial
+      ? revisedSpecies(initial.race, (initial.features ?? []).filter((feature) => feature.source === "race").map((feature) => feature.name))
+      : null,
+    storedHp,
     name, setName,
     alignment, setAlignment,
     level, changeLevel,
@@ -531,9 +813,10 @@ export function useBuilderState({
     bonusLanguages, setBonusLanguages,
     racialAsi, setRacialAsi,
     racialSkills, setRacialSkills,
-    racialCantrip, setRacialCantrip,
+    racialCantrips, setRacialCantrips,
     racialTool, setRacialTool,
     racialAncestry, setRacialAncestry,
+    racialVariant, chooseRacialVariant,
     racialFeatAbility, setRacialFeatAbility,
     toolPicks, setToolPicks,
     repeatSkills, setRepeatSkills,
@@ -543,6 +826,7 @@ export function useBuilderState({
     spellWarningAck, setSpellWarningAck,
     backstory, setBackstory,
     gender, setGender,
+    attraction, setAttraction,
     appearance, setAppearance,
     portrait, setPortrait,
     gold, setGold,
@@ -550,6 +834,7 @@ export function useBuilderState({
     acOverride, setAcOverride,
     localError, setLocalError,
     dropped, dismissDropped,
+    undo, putBack, clearUndo,
   };
 }
 

@@ -3,6 +3,9 @@
 
 import { getContentDb } from "@/lib/content/db";
 import { legacyPackWeightLb, packWeightLb } from "@/lib/content/weight";
+import { textKey } from "@/lib/language/text-logic";
+import { pluralForms } from "@/lib/srd/name-forms";
+import { PLAYED_DOCUMENTS_SQL } from "@/lib/content/edition";
 
 type Mistake = { wrong: number; right: number };
 
@@ -22,6 +25,18 @@ let weightIndex: Map<string, number> | null = null;
 // or the party's pack that copied it is put right on read (repairedWeight).
 let mistakeIndex: Map<string, Mistake> | null = null;
 
+// The English plurals of the pack's names, after every name, so "Torches"
+// weighs what a Torch does and no plural shadows another item's name.
+function addPlurals<V>(table: Map<string, V>): void {
+  for (const [key, value] of [...table]) {
+    for (const plural of pluralForms(key)) {
+      if (!table.has(plural)) {
+        table.set(plural, value);
+      }
+    }
+  }
+}
+
 function buildIndexes(): void {
   const index = new Map<string, number>();
   const mistakes = new Map<string, Mistake>();
@@ -30,7 +45,7 @@ function buildIndexes(): void {
     const rows = db
       .prepare(
         `SELECT name, weight, json_extract(data_json, '$.weight') AS source, json_extract(data_json, '$.weight_unit') AS unit
-         FROM items WHERE kind != 'magic_item'`,
+         FROM items WHERE kind != 'magic_item' AND ${PLAYED_DOCUMENTS_SQL}`,
       )
       .all() as Array<{ name: string; weight: number; source: unknown; unit: unknown }>;
     for (const row of rows) {
@@ -50,6 +65,8 @@ function buildIndexes(): void {
       }
     }
   }
+  addPlurals(index);
+  addPlurals(mistakes);
   weightIndex = index;
   mistakeIndex = mistakes;
 }
@@ -65,12 +82,10 @@ function itemWeightIndex(): Map<string, number> {
 // trailing count dropped so "Arrows (20)" finds "Arrows". A magic bonus goes
 // too, so "+1 Longsword" weighs what a longsword weighs.
 function itemWeightKey(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\(\s*\d+\s*\)\s*$/, " ")
-    .replace(/[+-]\d+/g, " ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+  return textKey(name.replace(/\(\s*\d+\s*\)\s*$/, " "))
+    .split(" ")
+    .filter((part) => !/^[+-]/.test(part))
+    .join(" ");
 }
 
 // Pounds per unit for a free-text item name, or null when the content pack
@@ -82,7 +97,7 @@ export function itemWeightByName(name: string): number | null {
     return null;
   }
   const index = itemWeightIndex();
-  return index.get(key) ?? index.get(key.replace(/s$/, "")) ?? null;
+  return index.get(key) ?? null;
 }
 
 // A per-unit weight stored for `name`, put right when it is exactly the
@@ -100,7 +115,7 @@ export function repairedWeight(name: string, weight: number | undefined): number
   if (!mistakeIndex) {
     buildIndexes();
   }
-  const mistake = mistakeIndex?.get(key) ?? mistakeIndex?.get(key.replace(/s$/, ""));
+  const mistake = mistakeIndex?.get(key);
   if (!mistake || Math.abs(mistake.wrong - weight) > 1e-9) {
     return weight;
   }

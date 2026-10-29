@@ -1,6 +1,7 @@
 // Money in more than one denomination: what a purse is worth, how it reads,
-// and what a person typing "340 silver" gets.
+// and what a person typing "340 sp" gets.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { register } from "node:module";
 
 register("./lib/register-alias.mjs", import.meta.url);
@@ -11,11 +12,14 @@ const {
   COPPER_PER_GOLD,
   DENOMINATION_COPPER,
   formatCopper,
+  formatPrice,
   formatPurse,
   fromCopper,
+  packCostCopper,
   parseCoins,
   purseCopper,
   splitCopper,
+  unreadCoins,
 } = await import("../src/lib/srd/currency.ts");
 
 let passed = 0;
@@ -23,6 +27,32 @@ function test(name, fn) {
   fn();
   passed += 1;
 }
+
+test("a price reads in gold, with silver and copper only for the remainder", () => {
+  assert.equal(formatPrice(5500), "55 gp");
+  assert.equal(formatPrice(150), "1 gp 5 sp");
+  assert.equal(formatPrice(105), "1 gp 5 cp");
+  assert.equal(formatPrice(22), "2 sp 2 cp");
+  assert.equal(formatPrice(150000), "1500 gp");
+  assert.equal(formatPrice(1234), "12 gp 3 sp 4 cp");
+  assert.equal(formatPrice(7), "7 cp");
+  assert.equal(formatPrice(0), "0 gp");
+  // Coins in a purse still count out in platinum.
+  assert.equal(formatCopper(5500), "5 pp 5 gp");
+  // And a price written out reads back as the same price.
+  for (const copper of [5500, 150, 105, 22, 1234, 7]) assert.equal(parseCoins(formatPrice(copper)), copper);
+});
+
+test("the Market shows prices in gold and the purse in its coins", () => {
+  // Windows CI checks the files out with CRLF line endings.
+  const read = (file) => fs.readFileSync(new URL(`../${file}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const panel = read("src/app/campaigns/[campaignId]/MarketPanel.tsx");
+  assert.match(panel, /label: `Buy for \$\{formatPrice\(line\.askingCp\)\}`/);
+  assert.match(panel, /\{formatPrice\(line\.askingCp\)\}/);
+  assert.match(panel, /coin-purse" \}\} size="size-5" \/> \{formatCopper\(purse\)\}/);
+  assert.doesNotMatch(panel, /formatCopper\(line\./, "a price still counts out in platinum");
+  assert.match(read("src/app/campaigns/[campaignId]/MarketShopEditor.tsx"), /value=\{draft \?\? formatPrice\(value\)\}/);
+});
 
 test("the denominations are the PHB's", () => {
   assert.equal(DENOMINATION_COPPER.cp, 1);
@@ -69,11 +99,30 @@ test("a bare number is gold, because every price in the pack is", () => {
   assert.equal(parseCoins("12gp"), 1200);
 });
 
-test("denominations parse by name and by code", () => {
-  assert.equal(parseCoins("340 silver"), 3400);
+test("denominations parse by their codes", () => {
+  assert.equal(parseCoins("340 sp"), 3400);
   assert.equal(parseCoins("2 pp 5 sp"), 2050);
-  assert.equal(parseCoins("6 copper pieces"), 6);
+  assert.equal(parseCoins("6 cp"), 6);
   assert.equal(parseCoins("1,200 gp"), 120000);
+  assert.equal(parseCoins("1.200 gp"), 120000);
+});
+
+test("a part of a coin is refused, naming the mark, never read as one table's decimal", () => {
+  for (const text of ["1.5 gp", "1,5 gp", "2,50 sp"]) {
+    assert.equal(parseCoins(text), null, text);
+    assert.match(unreadCoins(text), /whole numbers.*"1 gp 5 sp"/, text);
+  }
+});
+
+test("the pack's own costs keep their English notation", () => {
+  assert.equal(packCostCopper("0.05 gp"), 5);
+  assert.equal(packCostCopper("5,000 gp"), 500000);
+});
+
+test("a coin's name in any language is no code, never a guessed amount", () => {
+  for (const text of ["340 silver", "12 gold pieces", "50 mo", "5 monete d'argento", "50 pièces d'or", "50 monedas de oro", "50 Goldmünzen", "3 gp 5 mo"]) {
+    assert.equal(parseCoins(text), null, text);
+  }
 });
 
 test("nothing said parses to null, so a caller can tell it apart from free", () => {

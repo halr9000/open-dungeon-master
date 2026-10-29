@@ -28,19 +28,17 @@ import {
   costGate,
   gated,
   signed,
-  spellKey,
   standingGate,
   type Gate,
   type HandAttackOption,
   type HandCard,
   type HandTurn,
 } from "@/lib/battlemap/hand-core";
+import { textKey } from "@/lib/language/text-logic";
+import { subclassNamed } from "@/lib/srd/subclass-name";
 
 const holds = (sheet: CharacterSheet, name: string) =>
-  sheet.features.some((feature) => {
-    const lowered = feature.name.trim().toLowerCase();
-    return lowered === name || lowered.startsWith(`${name} (`);
-  });
+  sheet.features.some((feature) => [feature.name, feature.name.replace(/\s*\(.*$/, "")].some((held) => textKey(held) === name));
 
 type OptionArgs = { stunningStrike?: boolean; reckless?: boolean; nonlethal?: boolean; bonusAttack?: AnyBonusAttack };
 
@@ -73,7 +71,7 @@ function optionRefusal(
     derived,
     budget: turn.myTurn ? budgetOf(turn, sheet) : null,
   });
-  return "refused" in verdict ? verdict.refused : null;
+  return "refused" in verdict ? verdict.refused.error : null;
 }
 
 // The toggles an attack card offers: only the ones the sheet could ever use
@@ -96,7 +94,7 @@ export function attackOptionsFor(
       id: "useInspiration",
       label: "Inspiration",
       note: "Spend your Inspiration: advantage on this attack roll.",
-      disabled: inspirationProblem(sheet, true),
+      disabled: inspirationProblem(sheet, true)?.error ?? null,
     });
   }
   // Stroke of Luck (rogue 20): a miss becomes a hit; spent only on a miss.
@@ -105,17 +103,17 @@ export function attackOptionsFor(
       id: "strokeOfLuck",
       label: "Stroke of Luck",
       note: "If this attack misses, it hits instead. Spent only on a miss; back on a short or long rest.",
-      disabled: strokeOfLuckProblem(sheet, true),
+      disabled: strokeOfLuckProblem(sheet, true)?.error ?? null,
     });
   }
   // Hurl Through Hell (Fiend 14): the hit creature is gone until the end of
   // your next turn, then 10d10 psychic unless it is a fiend.
-  if (holdsFeature(sheet, "hurl through hell") || (classLevelOf(sheet, "warlock") >= 14 && /fiend/i.test(sheet.subclass ?? ""))) {
+  if (holdsFeature(sheet, "hurl through hell") || (classLevelOf(sheet, "warlock") >= 14 && subclassNamed(sheet.subclass ?? "", "The Fiend"))) {
     options.push({
       id: "hurlThroughHell",
       label: "Hurl Through Hell",
       note: "On a hit: gone through the lower planes until the end of your next turn, then 10d10 psychic unless a fiend. Once a long rest.",
-      disabled: hurlProblem(sheet, true),
+      disabled: hurlProblem(sheet, true)?.error ?? null,
     });
   }
   // Rapid Strike (Samurai 15): this swing's advantage traded for one more
@@ -138,7 +136,7 @@ export function attackOptionsFor(
     const spend = spendAttack(budgetOf(turn, sheet, swing.allowed), sheet.name, { unarmed: true });
     const flurry = spend.ok && (spend.budget.flurryStrikes ?? 0) < before;
     for (const option of OPEN_HAND_OPTIONS) {
-      options.push({ ...option, group: "openHand", disabled: flurry ? null : OPEN_HAND_NOT_FLURRY });
+      options.push({ ...option, group: "openHand", disabled: flurry ? null : OPEN_HAND_NOT_FLURRY.error });
     }
   }
   if (holds(sheet, "reckless attack") && melee) {
@@ -212,7 +210,7 @@ export function bonusStrikeCards(
     );
     const refused = optionRefusal(sheet, turn, profile, derived, { bonusAttack });
     const card: HandCard = {
-      id: `attack:${spellKey(weapon)}:${bonusAttack.replace(/\s+/g, "-")}${key ? `:${key}` : ""}`,
+      id: `attack:${textKey(weapon)}:${bonusAttack.replace(/\s+/g, "-")}${key ? `:${key}` : ""}`,
       type: "attack",
       name,
       cost: "bonus",
@@ -222,7 +220,7 @@ export function bonusStrikeCards(
       rules,
       resource: "",
       condition: "",
-      icon: srd ? { kind: "item", key: srd.name, family: "item-weapon" } : { kind: "action", key: "attack" },
+      icon: srd ? { kind: "item", key: srd.name, family: "item-weapon" } : { kind: "action", key: "unarmed-strike" },
       target: "enemy",
       toHit: profile.toHit,
       damage: profile.damageExpression,
@@ -305,7 +303,7 @@ export function bonusStrikeCards(
   }
   for (const entry of own) {
     cards.push(
-      strike("feature", entry.weapon?.name ?? "Unarmed strike", entry.weapon?.srd ?? null, `${entry.feature} attack`, entry.rules, spellKey(entry.feature).replace(/\s+/g, "-")),
+      strike("feature", entry.weapon?.name ?? "Unarmed strike", entry.weapon?.srd ?? null, `${entry.feature} attack`, entry.rules, textKey(entry.feature).replace(/\s+/g, "-")),
     );
   }
   return cards;
@@ -377,6 +375,7 @@ export function kiCards(sheet: CharacterSheet, turn: HandTurn): HandCard[] {
     disabled: null,
     spent: false,
     compose: false,
+    pool: "ki",
     intent: { card: "feature", resourceId: "ki", variant: "flurry of blows" },
   };
   const afterAttack: Gate =

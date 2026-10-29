@@ -6,7 +6,7 @@ import { register } from "node:module";
 
 register("./lib/register-alias.mjs", import.meta.url);
 
-const { EMPTY_TURN_LINE, emptyTurnLine } = await import("../src/lib/dm/empty-turn.ts");
+const { EMPTY_TURN_LINE, RESOLVED_TURN_LINE, emptyTurnLine } = await import("../src/lib/dm/empty-turn.ts");
 const { notReadyReason } = await import("../src/lib/srd/spell-prep.ts");
 
 let passed = 0;
@@ -35,9 +35,10 @@ test("a refused spell says why, first sentence only", () => {
     call("a", "cast_buff"),
     result("a", {
       error: 'No content pack knows "Guardian Angel". If it grants an effect, apply it with set_condition.',
+      refused: "rules",
     }),
   ]);
-  assert.match(line, /^The DM could not resolve that: No content pack knows "Guardian Angel"\. You can/);
+  assert.match(line, /^The GM could not resolve that: No content pack knows "Guardian Angel"\. You can/);
   assert.ok(!line.includes("set_condition"));
 });
 
@@ -45,9 +46,9 @@ test("the last refusal wins, and beats reading the message", () => {
   const line = emptyTurnLine(
     [
       call("a", "use_spell_slot"),
-      result("a", { error: "No level 3 slot left." }),
+      result("a", { error: "No level 3 slot left.", refused: "rules" }),
       call("b", "cast_buff"),
-      result("b", { error: "Bless is not on Ada's spell list; they cannot cast it." }),
+      result("b", { error: "Bless is not on Ada's spell list; they cannot cast it.", refused: "rules" }),
     ],
     mage("use the ambush spell"),
   );
@@ -78,7 +79,37 @@ test("a message naming no spell on the sheet gets the plain hint, which says wha
 
 test("a spell waiting for the long rest says so", () => {
   const player = { ...mage("cast ambush"), notReady: (spell) => `${spell} is chosen but not prepared yet.` };
-  assert.equal(emptyTurnLine([], player), "The DM could not resolve that: Ambush is chosen but not prepared yet.");
+  assert.equal(emptyTurnLine([], player), "The GM could not resolve that: Ambush is chosen but not prepared yet.");
+});
+
+test("only a rules refusal reaches the table: a retry or a limit is the model's to answer", () => {
+  const refused = (body) => emptyTurnLine([call("a", "pc_attack"), result("a", body)]);
+  assert.match(refused({ error: "Kara is at 0 HP and cannot attack.", refused: "rules" }), /Kara is at 0 HP/);
+  assert.equal(refused({ error: "Unknown targetEnemyId; use one from GAME STATE.", retry: true }), EMPTY_TURN_LINE);
+  assert.equal(refused({ error: "Encounter action limit reached for this turn.", refused: "limit" }), EMPTY_TURN_LINE);
+});
+
+test("an action that went through and was never narrated says so, never 'try again'", () => {
+  const hit = { attacker: "Avery", target: "Goblin 3", hit: true, damage: 4, ok: true };
+  // Out of reach, a move, then the swing lands: the latest action wins.
+  const line = emptyTurnLine(
+    [
+      call("a", "pc_attack"),
+      result("a", { error: "Avery is 30 ft from Goblin 3, out of melee reach (5 ft).", refused: "rules" }),
+      call("b", "pc_attack"),
+      result("b", hit),
+    ],
+    mage("I attack the goblin"),
+  );
+  assert.equal(line, RESOLVED_TURN_LINE);
+  assert.equal(emptyTurnLine([call("a", "buy_item"), result("a", { ok: true, item: "Torch" })], mage("I buy a torch")), RESOLVED_TURN_LINE);
+  // A refusal after the swing is the latest word.
+  assert.match(
+    emptyTurnLine([call("a", "pc_attack"), result("a", hit), call("b", "pc_attack"), result("b", { error: "Avery has already made all 1 of their attack this turn.", refused: "rules" })]),
+    /already made all 1 of their attack/,
+  );
+  // The DM's own tools going through are not the player's action.
+  assert.equal(emptyTurnLine([call("a", "set_npc"), result("a", { ok: true })]), EMPTY_TURN_LINE);
 });
 
 test("anything else gets a plain hint, and no player keeps the old line", () => {
@@ -96,8 +127,8 @@ test("a spell waiting for the rest or only in the book is named as such", () => 
     pending: ["Sleep"],
     spellbook: ["Shield", "Sleep", "Identify"],
   };
-  assert.match(notReadyReason(casting, "sleep"), /after the next long rest/);
-  assert.match(notReadyReason(casting, "Identify"), /in the spellbook but not prepared/);
+  assert.match(notReadyReason(casting, "sleep")?.error, /after the next long rest/);
+  assert.match(notReadyReason(casting, "Identify")?.error, /in the spellbook but not prepared/);
   assert.equal(notReadyReason(casting, "Fireball"), null);
   // Shield is written in the book AND prepared: it is ready, not blocked.
   assert.equal(notReadyReason(casting, "shield"), null);

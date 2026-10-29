@@ -7,7 +7,9 @@
 // says so, carried), attuned if it asks for attunement, and a second copy
 // adds nothing.
 
-import { isWorn } from "@/lib/srd/armor";
+import { countsAsWorn } from "@/lib/srd/wear-slots";
+import { textKey } from "@/lib/language/text-logic";
+import { rowName, type RowItem } from "@/lib/srd/item-row";
 
 type Skill = string;
 
@@ -73,18 +75,24 @@ const ROWS: CheckRiderRow[] = [
   },
 ];
 
-const keyOf = (name: string) =>
-  name.trim().toLowerCase().replace(/^\+\d\s+/, "").replace(/\s+/g, " ");
+const keyOf = (name: string) => textKey(name.trim().replace(/^\+\d\s+/, ""));
 
-// What a published item adds to checks, in the workshop's words, for a copy
-// to start from (src/lib/workshop/catalog-mechanics.ts).
-export function checkRidersOf(name: string): {
+type NamedRiders = {
   bonus?: number;
   skillBonus?: Record<string, number>;
   advantage?: string[];
   requiresAttunement: boolean;
   carried: boolean;
-} | null {
+};
+
+// What a carried item adds to checks, by its row (src/lib/srd/item-row.ts).
+export function checkRidersOf(item: RowItem): NamedRiders | null {
+  return checkRidersNamed(rowName(item));
+}
+
+// What a published item adds to checks, in the workshop's words, for a copy
+// to start from (src/lib/workshop/catalog-mechanics.ts).
+export function checkRidersNamed(name: string): NamedRiders | null {
   const row = rowFor(name);
   if (!row) {
     return null;
@@ -100,11 +108,11 @@ export function checkRidersOf(name: string): {
 
 function rowFor(name: string): CheckRiderRow | null {
   const key = keyOf(name);
-  const bare = key.replace(/\s*\([^()]*\)\s*$/, "");
-  return ROWS.find((row) => row.names.includes(key) || row.names.includes(bare)) ?? null;
+  const bare = keyOf(name.replace(/\s*\([^()]*\)\s*$/, ""));
+  return ROWS.find((row) => row.names.some((entry) => textKey(entry) === key || textKey(entry) === bare)) ?? null;
 }
 
-type CarriedItem = { name: string; equipped?: boolean; attuned?: boolean; gear?: unknown };
+type CarriedItem = { name: string; srdName?: string; equipped?: boolean; attuned?: boolean; gear?: unknown };
 
 type RowGear = {
   checks?: { bonus?: number; skillBonus?: Record<string, number>; advantage?: string[] };
@@ -151,11 +159,13 @@ export function itemCheckRiders(
   const out: ItemCheckRiders = { bonus: 0, advantage: false, notes: [] };
   const counted = new Set<CheckRiderRow>();
   for (const item of equipment ?? []) {
-    const row = homebrewRow(item) ?? rowFor(item.name);
+    const row = homebrewRow(item) ?? rowFor(rowName(item));
     if (!row || counted.has(row) || [...counted].some((seen) => seen.names[0] === row.names[0] && seen.effect === row.effect)) {
       continue;
     }
-    if (!row.carried && !isWorn(item, equipment ?? [])) {
+    // Worn, and in a place that lets it count: a second cloak's advantage
+    // is not a first cloak's (src/lib/srd/wear-slots.ts).
+    if (!row.carried && !countsAsWorn(item, equipment ?? [])) {
       continue;
     }
     if (row.requiresAttunement && !item.attuned) {

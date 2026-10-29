@@ -1,11 +1,12 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
+import { returnFocus } from "@/components/ui/return-focus";
 import { Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GoldTitle } from "@/components/ui/GoldTitle";
 import { Wizard, type WizardStep } from "@/components/ui/Wizard";
-import { submitWorldSetup } from "@/app/WorldSetupFields";
+import { submitWorldSetup, worldSetupProblems, type WorldSetupLeft } from "@/app/WorldSetupFields";
 import { submitContentImport } from "@/app/workshop/ContentImportPicker";
 import type { CampaignDefaults, CampaignDefaultSettings } from "@/lib/campaign-defaults";
 import { groupByFranchise, type WorldPackSummary } from "@/lib/worlds/summary";
@@ -72,12 +73,17 @@ export function CreateCampaignDialog({
   const [openGroups, setOpenGroups] = useState<ReadonlySet<GroupId>>(() => new Set());
   // Arrived at a step from the review's Edit, so the way back is offered.
   const [fromReview, setFromReview] = useState(false);
+  // The campaign is made but part of what was chosen for it did not land
+  // (workshop import audit F03): which campaign, what is left to send, and
+  // what to tell the person. Until it clears, the button sends only that.
+  const [followUp, setFollowUp] = useState<{ campaignId: string; left: WorldSetupLeft; importDone: boolean; problems: string[] } | null>(null);
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
       setStep(0);
       setFromReview(false);
+      setFollowUp(null);
     }
   }
   const [packs, setPacks] = useState<WorldPackSummary[]>([]);
@@ -322,25 +328,46 @@ export function CreateCampaignDialog({
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/campaigns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(campaignPayload(latest.current, { solo, aiNarrates: latest.current.dmMode !== "human" })),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(data.error || "Could not create the campaign.");
-        return;
+      // A campaign this dialog already made is not made twice: pressing the
+      // button again sends only what did not land the first time.
+      let campaignId = followUp?.campaignId ?? null;
+      let left: WorldSetupLeft = followUp?.left ?? { houseRules: latest.current.houseRules, loreDrafts: latest.current.loreDrafts };
+      let importDone = followUp?.importDone ?? false;
+      if (!campaignId) {
+        const response = await fetch("/api/campaigns", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(campaignPayload(latest.current, { solo, aiNarrates: latest.current.dmMode !== "human" })),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setError(data.error || "Could not create the campaign.");
+          return;
+        }
+        campaignId = String(data.campaign.id);
       }
       // House rules and starting lore land right after the campaign row
-      // exists; anything that fails to post can be re-entered in the lobby.
-      const { houseRules, loreDrafts, contentImport } = latest.current;
-      await submitWorldSetup(data.campaign.id, houseRules, loreDrafts);
+      // exists.
+      left = await submitWorldSetup(campaignId, left.houseRules, left.loreDrafts);
+      const problems = worldSetupProblems(left);
       // The workshop import goes last so its house rules win over the ones
       // typed in this dialog: choosing a prepared workshop is the more
-      // deliberate of the two, and the picker says which it will do.
-      await submitContentImport(data.campaign.id, contentImport);
-      onCreated(data.campaign.id);
+      // deliberate of the two, and the picker says which it will do. What it
+      // brought is kept by the campaign, so asking again after a failure
+      // brings only what is still missing.
+      if (!importDone) {
+        const imported = await submitContentImport(campaignId, latest.current.contentImport);
+        importDone = !imported || imported.ok;
+        if (imported && !imported.ok) {
+          problems.push(`${prep?.title ?? "The prep you chose"} did not come in: ${imported.error}`);
+        }
+      }
+      if (problems.length) {
+        setFollowUp({ campaignId, left, importDone, problems });
+        return;
+      }
+      setFollowUp(null);
+      onCreated(campaignId);
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -425,6 +452,19 @@ export function CreateCampaignDialog({
           selectedPack={selectedPack}
           prep={prep}
           error={error}
+          followUp={
+            followUp
+              ? {
+                  problems: followUp.problems,
+                  busy,
+                  onOpen: () => {
+                    const id = followUp.campaignId;
+                    setFollowUp(null);
+                    onCreated(id);
+                  },
+                }
+              : null
+          }
           onEdit={editFrom}
           defaultsPanel={<DefaultsPanel actions={defaultsActions} />}
         />
@@ -452,7 +492,7 @@ export function CreateCampaignDialog({
             sheet on a phone; the rem cap keeps it a dialog on a monitor.
             Wide at lg so the eight portals sit four across; on a phone the
             panel takes nearly the whole width so they still fit two. */}
-        <Dialog.Content
+        <Dialog.Content {...returnFocus}
           ref={shell}
           className="cc-shell panel fixed left-1/2 top-1/2 z-50 flex h-[min(90vh,46rem)] w-[min(96vw,34rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl p-4 sm:p-6 lg:w-[min(96vw,60rem)]"
         >
@@ -479,7 +519,7 @@ export function CreateCampaignDialog({
             doneLabel={
               <>
                 {busy ? <Loader2 className="size-4 animate-spin" /> : null}
-                {solo ? "Create adventure" : "Create campaign"}
+                {followUp ? "Try again" : solo ? "Create adventure" : "Create campaign"}
               </>
             }
             className="[&>header]:pr-9"

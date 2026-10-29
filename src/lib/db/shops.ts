@@ -1,14 +1,18 @@
 import { z } from "zod";
-import { compareNames } from "@/lib/language/text-logic";
+import { compareNames, findNamed, textKey } from "@/lib/language/text-logic";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import {
   clampMarkup,
+  haggledIds,
   MAX_STOCK_PRICE_CP,
+  normalizeHaggles,
   normalizeShopKind,
   normalizeShopSize,
+  type HaggleDeal,
   type Shop,
   type StockLine,
 } from "@/lib/dm/shop-logic";
+import { srdNameFor } from "@/lib/dm/item-logic";
 
 // Shops (docs/vtt-parity-implementation-plan.md 11.1): one row per shop,
 // tied to a campaign location by id and remembered by name so a place
@@ -41,6 +45,13 @@ export const stockLineSchema = z.object({
   qty: z.number().int().min(0).max(999),
   priceCp: z.number().int().min(1).max(MAX_STOCK_PRICE_CP),
   note: z.string().max(120).default(""),
+  // The row a catalog pick named, as the lists spell it.
+  srdName: z
+    .string()
+    .trim()
+    .max(80)
+    .refine((name) => !("error" in srdNameFor(name, "stock")), "srdName is no SRD or pack item's name")
+    .optional(),
 });
 
 export function normalizeStock(raw: unknown): StockLine[] {
@@ -50,18 +61,21 @@ export function normalizeStock(raw: unknown): StockLine[] {
   return raw
     .map((line) => {
       const record = (line ?? {}) as Record<string, unknown>;
+      // A row the lists hold, as they spell it; anything else is no row.
+      const listed = typeof record.srdName === "string" ? srdNameFor(record.srdName, "stock") : {};
       return {
         itemName: String(record.itemName ?? record.name ?? "").trim().slice(0, 80),
         qty: Math.max(0, Math.min(999, Math.round(Number(record.qty) || 0))),
         priceCp: Math.min(MAX_STOCK_PRICE_CP, Math.max(1, Math.round(Number(record.priceCp) || 1))),
         note: String(record.note ?? "").slice(0, 120),
+        ...("srdName" in listed && listed.srdName ? { srdName: listed.srdName } : {}),
       };
     })
     .filter((line) => line.itemName && line.qty > 0)
     .reduce<StockLine[]>((shelf, line) => {
       // One line per item: a second "Lantern" line would never be found by
       // name, and could never be bought.
-      const same = shelf.find((entry) => entry.itemName.toLowerCase() === line.itemName.toLowerCase());
+      const same = shelf.find((entry) => textKey(entry.itemName) === textKey(line.itemName));
       if (same) {
         same.qty = Math.min(999, same.qty + line.qty);
       } else {
@@ -73,6 +87,7 @@ export function normalizeStock(raw: unknown): StockLine[] {
 }
 
 function map(row: Row): Shop {
+  const haggles = normalizeHaggles(parseJson<unknown>(row.haggled_json, []));
   return {
     id: row.id,
     campaignId: row.campaign_id,
@@ -88,7 +103,8 @@ function map(row: Row): Shop {
     buys: row.buys === 1,
     restockDays: Math.max(0, Number(row.restock_days) || 0),
     restockedAt: Number(row.restocked_at) || 0,
-    haggledBy: parseJson<string[]>(row.haggled_json, []),
+    haggles,
+    haggledBy: haggledIds(haggles),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -98,12 +114,31 @@ export function listShops(campaignId: string): Shop[] {
   return (getDatabase().prepare(`SELECT * FROM shops WHERE campaign_id = ?`).all(campaignId) as Row[]).map(map).sort((a, b) => compareNames(a.name, b.name));
 }
 
-// The shops at a place, by id first and by name for a place that was
-// written before it had an id.
+// Whether a shop stands at a place: by id, or by name for a shop written
+// before its place had an id. A party that is nowhere stands with the shops
+// that are nowhere too, as open_shop opens one when the table has no place
+// (src/lib/dm/shop-tools.ts handleOpenShop), and at no other. The Market
+// lists by this and its counter trades by it (table audit 2026-10-26, T07),
+// so a shop a player cannot see there is one they cannot trade at.
+export function shopStandsAt(
+  shop: Pick<Shop, "locationId" | "locationName">,
+  place: { id: string; name: string } | null,
+): boolean {
+  if (!place) {
+    return !shop.locationId && textKey(shop.locationName) === "";
+  }
+  if (shop.locationId) {
+    return shop.locationId === place.id;
+  }
+  // A shop with no name for its place is not at every place whose name has
+  // no letters in it.
+  const key = textKey(shop.locationName);
+  return key !== "" && key === textKey(place.name);
+}
+
+// The shops at a place, by the rule above.
 export function listShopsAt(campaignId: string, locationId: string, locationName: string): Shop[] {
-  return listShops(campaignId).filter(
-    (shop) => (shop.locationId && shop.locationId === locationId) || (!shop.locationId && shop.locationName.toLowerCase() === locationName.toLowerCase()),
-  );
+  return listShops(campaignId).filter((shop) => shopStandsAt(shop, { id: locationId, name: locationName }));
 }
 
 export function getShop(shopId: string): Shop | null {
@@ -112,8 +147,7 @@ export function getShop(shopId: string): Shop | null {
 }
 
 function byName(shops: Shop[], name: string): Shop | null {
-  const wanted = name.trim().toLowerCase();
-  return shops.find((shop) => shop.name.toLowerCase() === wanted) ?? shops.filter((shop) => shop.name.toLowerCase().includes(wanted)).at(0) ?? null;
+  return findNamed(shops, name, (shop) => [shop.name]);
 }
 
 export function findShopByName(campaignId: string, name: string): Shop | null {
@@ -155,8 +189,17 @@ export type ShopInput = {
   buys?: boolean;
   restockDays?: number;
   restockedAt?: number;
+  // The haggles at this shop. haggledBy is the older form: each id a try
+  // used at the shop's own price ([] clears them, as a restock does).
+  haggles?: HaggleDeal[];
   haggledBy?: string[];
 };
+
+// The haggles a patch writes, newest kept when there are too many.
+function hagglesColumn(patch: Partial<ShopInput>, current: Shop): string {
+  const haggles = patch.haggles ?? (patch.haggledBy ? normalizeHaggles(patch.haggledBy) : current.haggles);
+  return JSON.stringify(haggles.slice(-40));
+}
 
 export function insertShop(campaignId: string, input: ShopInput): Shop {
   const id = crypto.randomUUID();
@@ -213,7 +256,7 @@ export function updateShop(shopId: string, patch: ShopInput | Partial<ShopInput>
       (patch.buys ?? current.buys) ? 1 : 0,
       Math.max(0, Math.round(patch.restockDays ?? current.restockDays)),
       Math.max(0, Math.round(patch.restockedAt ?? current.restockedAt)),
-      JSON.stringify((patch.haggledBy ?? current.haggledBy).slice(0, 40)),
+      hagglesColumn(patch, current),
       nowIso(),
       shopId,
     );

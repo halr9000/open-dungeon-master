@@ -15,9 +15,11 @@ import {
   type KitOption,
   type KitSlot,
 } from "@/lib/srd/starting-kit-data";
+import { subclassNamed } from "@/lib/srd/subclass-name";
 import { SRD_WEAPONS, defaultLoadout } from "@/lib/srd/weapons";
+import { textKey } from "@/lib/language/text-logic";
 
-export type { ClassKit, KitItem, KitLine, KitOption, KitSlot } from "@/lib/srd/starting-kit-data";
+export type { ClassKit, KitItem, KitOption, KitSlot } from "@/lib/srd/starting-kit-data";
 
 // The choices a request makes, stored on the sheet so the builder reopens
 // with them: for each line of the class's kit, in order, the option taken
@@ -25,10 +27,8 @@ export type { ClassKit, KitItem, KitLine, KitOption, KitSlot } from "@/lib/srd/s
 // order, the item named for it.
 export type KitChoices = { options: number[]; picks: string[] };
 
-const lower = (value: string) => value.trim().toLowerCase();
-
 export function classKitFor(classId: string): ClassKit | null {
-  const id = lower(classId).replace(/-/g, "_");
+  const id = textKey(classId).replace(/ /g, "_");
   return CLASS_KITS[id] ?? GENRE_KITS[id] ?? null;
 }
 
@@ -73,19 +73,18 @@ const MARTIAL_DOMAINS = ["tempest", "war", "twilight"];
 export type KitTraining = { armor: string[]; weapons: string[]; subclass?: string };
 
 function domainOf(subclass: string | undefined, list: string[]): boolean {
-  const name = lower(subclass ?? "").replace(/\s*domain\s*/g, "");
-  return list.includes(name);
+  return list.some((domain) => subclassNamed(subclass ?? "", `${domain} domain`));
 }
 
 // Whether a character may take an option: false only for an "(if
 // proficient)" option it lacks the training for.
 export function optionAllowed(option: KitOption, who: KitTraining): boolean {
   if (option.requires === "heavy-armor") {
-    return who.armor.some((term) => lower(term).includes("heavy")) || domainOf(who.subclass, HEAVY_DOMAINS);
+    return who.armor.some((term) => textKey(term).includes("heavy")) || domainOf(who.subclass, HEAVY_DOMAINS);
   }
   if (option.requires === "warhammer") {
     return (
-      who.weapons.some((term) => /martial|warhammer/.test(lower(term))) ||
+      who.weapons.some((term) => /martial|warhammer/.test(textKey(term))) ||
       domainOf(who.subclass, MARTIAL_DOMAINS)
     );
   }
@@ -104,7 +103,7 @@ export type ResolvedKit = {
 export function mergeItems(into: KitItem[], items: KitItem[]): KitItem[] {
   const out = into.map((item) => ({ ...item }));
   for (const item of items) {
-    const held = out.find((entry) => lower(entry.name) === lower(item.name));
+    const held = out.find((entry) => textKey(entry.name) === textKey(item.name));
     if (held) {
       held.qty += item.qty;
     } else {
@@ -150,7 +149,7 @@ export function resolveKit(
     for (const slot of option.slots ?? []) {
       const named = (sentPicks[picks.length] ?? "").trim();
       const allowed = slotChoices(slot);
-      const match = named ? allowed.find((name) => lower(name) === lower(named)) : slot.default;
+      const match = named ? allowed.find((name) => textKey(name) === textKey(named)) : slot.default;
       if (!match) {
         problems.push(
           `${named} is not ${describeSlot(slot)}, which is what the ${className}'s "${option.label}" gives; choose one from the weapon table.`,
@@ -162,12 +161,6 @@ export function resolveKit(
     }
   });
   return { items, choices: { options, picks }, problems };
-}
-
-// The book's first option of every line and every slot's default: what a
-// companion the engine drafts carries.
-export function firstChoicesKit(kit: ClassKit): KitItem[] {
-  return resolveKit(kit, null, { armor: ["heavy"], weapons: ["martial"] }).items;
 }
 
 // The kit a class starts with for a caller that holds a class row: its
@@ -228,4 +221,39 @@ export function pickKitSlot(current: KitChoices, index: number, name: string): K
   const picks = current.picks.slice();
   picks[index] = name;
   return { options: current.options.slice(), picks };
+}
+
+// The item names one line of the kit gives for the choices taken: the
+// option's own items and the weapons named for its open slots.
+export function kitLineNames(kit: ClassKit, current: Partial<KitChoices> | null | undefined, line: number): string[] {
+  const { options, picks } = resolveKit(kit, current, { armor: [], weapons: [] }).choices;
+  const option = kit.lines[line]?.options[options[line]];
+  if (!option) {
+    return [];
+  }
+  const { start, slots } = kitSlotsByLine(kit, options)[line];
+  return [...option.items.map((item) => item.name), ...picks.slice(start, start + slots.length)];
+}
+
+// The line an open slot belongs to, by its place in `picks`; -1 if none.
+export function kitLineOfSlot(kit: ClassKit, current: Partial<KitChoices> | null | undefined, index: number): number {
+  const { options } = resolveKit(kit, current, { armor: [], weapons: [] }).choices;
+  return kitSlotsByLine(kit, options).findIndex(({ start, slots }) => index >= start && index < start + slots.length);
+}
+
+// The kit items a player removed, after one line's choice changes: that
+// line's items come back, from before the change and after it, since the
+// choice is about them. Every other removal stands.
+export function removedAfterKitChange(
+  kit: ClassKit,
+  before: Partial<KitChoices> | null | undefined,
+  after: Partial<KitChoices> | null | undefined,
+  line: number,
+  removed: string[],
+): string[] {
+  if (line < 0) {
+    return removed;
+  }
+  const restored = new Set([...kitLineNames(kit, before, line), ...kitLineNames(kit, after, line)].map(textKey));
+  return removed.filter((name) => !restored.has(textKey(name)));
 }

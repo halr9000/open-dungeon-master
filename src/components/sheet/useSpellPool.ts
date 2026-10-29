@@ -4,7 +4,7 @@ import { scopedParams, useContentCampaign } from "@/lib/content-scope";
 import { useEffect, useRef, useState } from "react";
 import spellManifest from "@/lib/srd/manifest/spells.json";
 import { spellLevelOf } from "@/lib/srd/spell-lists";
-import { compareNames } from "@/lib/language/text-logic";
+import { compareNames, textKey } from "@/lib/language/text-logic";
 
 // Every spell a class can take up to a spell level, for the spell book's
 // "available" tiles: the content pack (homebrew included) when installed,
@@ -42,7 +42,7 @@ function checklistPool(classSlug: string, maxLevel: number): PoolSpell[] {
 function uniqueByName(rows: PoolSpell[]): PoolSpell[] {
   const seen = new Set<string>();
   return rows.filter((row) => {
-    const key = row.name.trim().toLowerCase();
+    const key = textKey(row.name);
     if (seen.has(key)) {
       return false;
     }
@@ -57,7 +57,7 @@ function uniqueByName(rows: PoolSpell[]): PoolSpell[] {
 // each have a homebrew spell of one name. Names the checklist knows never
 // cost a request.
 const lookups = new Map<string, PoolSpell | null>();
-const scoped = (campaignId: string | null, name: string) => `${campaignId ?? "library"}|${name.toLowerCase()}`;
+const scoped = (campaignId: string | null, name: string) => `${campaignId ?? "library"}|${textKey(name)}`;
 
 export function useSpellLookups(names: string[]): Map<string, PoolSpell> {
   const campaignId = useContentCampaign();
@@ -97,7 +97,7 @@ export function useSpellLookups(names: string[]): Map<string, PoolSpell> {
   for (const name of wanted) {
     const row = lookups.get(scoped(campaignId, name));
     if (row) {
-      found.set(name.toLowerCase(), row);
+      found.set(textKey(name), row);
     }
   }
   return found;
@@ -108,7 +108,7 @@ const inFlight = new Map<string, Promise<void>>();
 
 function lookUp(name: string, campaignId: string | null): Promise<void> {
   const key = scoped(campaignId, name);
-  const wantedName = name.toLowerCase();
+  const wantedName = textKey(name);
   if (lookups.has(key)) {
     return Promise.resolve();
   }
@@ -120,10 +120,13 @@ function lookUp(name: string, campaignId: string | null): Promise<void> {
     try {
       const params = new URLSearchParams(scopedParams({ q: name, limit: "10" }, campaignId));
       const response = await fetch(`/api/content/spells?${params}`);
-      const body = response.ok
-        ? ((await response.json()) as { results?: Array<PoolSpell & { slug: string }> })
-        : {};
-      const row = (body.results ?? []).find((entry) => entry.name.trim().toLowerCase() === wantedName);
+      if (!response.ok) {
+        // Refused is not "no such spell": nothing is remembered, and the
+        // next render asks again.
+        return;
+      }
+      const body = (await response.json()) as { results?: Array<PoolSpell & { slug: string }> };
+      const row = (body.results ?? []).find((entry) => textKey(entry.name) === wantedName);
       lookups.set(
         key,
         row
@@ -167,6 +170,10 @@ export function useSpellPool(
     void (async () => {
       const rows: PoolSpell[] = [];
       let fallback = false;
+      // A refused page or a dropped connection: the bundled list stands in,
+      // but is not remembered, so the next time the pool is asked for the
+      // server is asked again. A missing pack is remembered as it is.
+      let failed = false;
       try {
         for (let offset = 0; offset < 2000; offset += PAGE) {
           const params = new URLSearchParams(
@@ -175,6 +182,7 @@ export function useSpellPool(
           const response = await fetch(`/api/content/spells?${params}`);
           if (!response.ok) {
             fallback = true;
+            failed = true;
             break;
           }
           const body = (await response.json()) as {
@@ -202,11 +210,12 @@ export function useSpellPool(
         }
       } catch {
         fallback = true;
+        failed = true;
       }
       const pool = uniqueByName(
         fallback ? [...rows, ...checklistPool(classSlug, maxLevel)] : rows,
       );
-      cache.set(key, pool);
+      if (!failed) cache.set(key, pool);
       if (!cancelled) {
         setLoaded({ key, pool });
       }
@@ -218,4 +227,27 @@ export function useSpellPool(
 
   const pool = loaded?.key === key ? loaded.pool : (cache.get(key) ?? null);
   return { pool: pool ?? [], loading: enabled && Boolean(classSlug) && pool === null };
+}
+
+// The class's pool widened by what its subclass adds (src/lib/srd/spell-prep.ts
+// widerListOf): another class's list (a Divine Soul's cleric spells) and named
+// spells (a warlock patron's expanded list), up to the same spell level.
+export function useWiderSpellPool(
+  classSlug: string,
+  maxLevel: number,
+  enabled: boolean,
+  wider: { spells: string[]; lists: string[] },
+): { pool: PoolSpell[]; loading: boolean } {
+  const own = useSpellPool(classSlug, maxLevel, enabled);
+  // One borrowed list is the most any subclass adds.
+  const borrowed = useSpellPool(wider.lists[0] ?? "", maxLevel, enabled && wider.lists.length > 0);
+  const lookedUp = useSpellLookups(enabled ? wider.spells : []);
+  const named = wider.spells.flatMap((name): PoolSpell[] => {
+    const level = spellLevelOf(name) ?? lookedUp.get(textKey(name))?.level ?? null;
+    return level !== null && level <= maxLevel ? [{ name, level }] : [];
+  });
+  const pool = uniqueByName([...own.pool, ...borrowed.pool, ...named]).sort(
+    (a, b) => a.level - b.level || compareNames(a.name, b.name),
+  );
+  return { pool, loading: own.loading || borrowed.loading };
 }

@@ -9,7 +9,7 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import { FileUp, Loader2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { AvatarCropDialog } from "@/app/settings/AvatarCropDialog";
 import { AppHeader } from "@/components/AppHeader";
@@ -17,8 +17,16 @@ import { KebabMenu } from "@/components/KebabMenu";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { Ribbon } from "@/components/ui/Ribbon";
 import { cn } from "@/lib/cn";
-import { CharacterPortrait, ui } from "@/lib/ui";
+import { ui } from "@/lib/ui";
 import { navigateTo } from "@/lib/navigation";
+import { prefersReducedMotion, useLowEffects } from "@/lib/effects-mode";
+import { PortraitToast, RosterPortraitSlot, RosterPortraitStatus } from "@/app/characters/RosterPortrait";
+import {
+  PORTRAIT_TOAST_MS,
+  portraitPhases,
+  portraitsReady,
+  type PortraitPhase,
+} from "@/app/characters/portrait-arrival";
 
 // Where a character is playing. A library character is a template and each
 // campaign holds its own copy, so one entry can be at several tables at once
@@ -35,6 +43,8 @@ type LibraryCharacter = {
   name: string;
   race: string;
   class: string;
+  // A workshop class's name (the class holds its id).
+  className?: string;
   subclass: string;
   background: string;
   level: number;
@@ -62,15 +72,51 @@ export default function CharactersPage() {
   const [authed, setAuthed] = useState(true);
   // A refused or failed read is shown in the server's words with a way to
   // ask again, never as "nothing here yet" (issue 140).
-  const { loaded, loadError, settle } = useLoadStatus();
+  const { loadError, settle } = useLoadStatus();
   const [reloads, setReloads] = useState(0);
   const [croppingId, setCroppingId] = useState("");
   const [cloningId, setCloningId] = useState("");
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
+  // What a file's Homebrew did on arrival (src/lib/db/character-file.ts):
+  // copied onto this shelf, the same as one already here, or kept beside
+  // one of the same name.
+  const [importShelf, setImportShelf] = useState("");
+  // A portrait, copy or delete that did not go through.
+  const [actionError, setActionError] = useState("");
+  // A file older than a rule that asks for a pick comes in without it; the
+  // library says what is still to choose and where (issue #430).
+  const [importOwed, setImportOwed] = useState<{ id: string; name: string; owed: string[] } | null>(null);
   const cropping = characters.find((character) => character.id === croppingId);
   const pollCount = useRef(0);
   const importInput = useRef<HTMLInputElement>(null);
+  // F25: each portrait's phase at the last read, so a painting that lands
+  // between two reads fades in and is announced once, by the toast.
+  const phases = useRef<Record<string, PortraitPhase>>({});
+  const [arriving, setArriving] = useState<string[]>([]);
+  const [toasts, setToasts] = useState<{ id: string; name: string }[]>([]);
+  const [retryingId, setRetryingId] = useState("");
+  const [retryErrors, setRetryErrors] = useState<Record<string, string>>({});
+  const lowEffects = useLowEffects();
+  const still = lowEffects || prefersReducedMotion();
+
+  // A fresh read of the library: what finished painting since the last one.
+  const receive = useCallback((next: LibraryCharacter[]) => {
+    const ready = portraitsReady(phases.current, next);
+    phases.current = portraitPhases(next);
+    if (ready.length) {
+      setArriving((current) => [...current, ...ready.map((entry) => entry.id)]);
+      setToasts((current) => [...current, ...ready]);
+    }
+    setCharacters(next);
+  }, []);
+
+  const toast = toasts[0] ?? null;
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToasts((current) => current.slice(1)), PORTRAIT_TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     readLoad<{ characters?: LibraryCharacter[] }>(fetch("/api/characters"), "Your characters").then((outcome) => {
@@ -82,11 +128,11 @@ export default function CharactersPage() {
       }
       settle(outcome);
       if (outcome.payload?.characters) {
-        setCharacters(outcome.payload.characters);
+        receive(outcome.payload.characters);
       }
       setLoading(false);
     });
-  }, [reloads, settle]);
+  }, [reloads, settle, receive]);
 
   // While a portrait renders in the background, re-fetch until it lands (or
   // fails); the finished image then appears without a reload.
@@ -100,28 +146,62 @@ export default function CharactersPage() {
         .then((response) => (response.ok ? response.json() : null))
         .then((data) => {
           if (data?.characters) {
-            setCharacters(data.characters);
+            receive(data.characters);
           }
+        })
+        .catch(() => {
+          // The next tick asks again.
         });
     }, 2500);
     return () => clearTimeout(id);
-  }, [characters]);
+  }, [characters, receive]);
+
+  // "Try again" on a failed painting: the same route as the sheet's "Paint
+  // one". The card waits on the new painting as it did on the first.
+  async function repaint(id: string) {
+    setRetryingId(id);
+    setRetryErrors((current) => ({ ...current, [id]: "" }));
+    try {
+      const response = await fetch(`/api/characters/${id}/portrait`, { method: "POST" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setRetryErrors((current) => ({ ...current, [id]: data.error || "The portrait could not be queued." }));
+        return;
+      }
+      phases.current = { ...phases.current, [id]: "painting" };
+      pollCount.current = 0;
+      setCharacters((current) =>
+        current.map((character) =>
+          character.id === id
+            ? { ...character, portraitStatus: "queued", sheet: { ...character.sheet, portrait: null } }
+            : character,
+        ),
+      );
+    } catch {
+      setRetryErrors((current) => ({ ...current, [id]: "Could not reach the server." }));
+    } finally {
+      setRetryingId("");
+    }
+  }
 
   async function setPortrait(id: string, url: string) {
+    setActionError("");
     const response = await fetch(`/api/characters/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ portrait: { url } }),
-    });
-    if (response.ok) {
-      setCharacters((current) =>
-        current.map((character) =>
-          character.id === id
-            ? { ...character, sheet: { ...character.sheet, portrait: { url } } }
-            : character,
-        ),
-      );
+    }).catch(() => null);
+    if (!response?.ok) {
+      setActionError("The portrait was not saved. Check the connection and try again.");
+      return;
     }
+    setCharacters((current) =>
+      current.map((character) =>
+        character.id === id
+          ? { ...character, sheet: { ...character.sheet, portrait: { url } } }
+          : character,
+      ),
+    );
   }
 
   // A second copy under a numbered name, sheet and portrait verbatim. The
@@ -129,9 +209,12 @@ export default function CharactersPage() {
   // "Duplicate and edit" opens the copy in the build editor (issue 229).
   async function duplicate(id: string, edit = false) {
     setCloningId(id);
+    setActionError("");
     try {
-      const response = await fetch(`/api/characters/${id}/clone`, { method: "POST" });
-      if (!response.ok) {
+      const response = await fetch(`/api/characters/${id}/clone`, { method: "POST" }).catch(() => null);
+      if (!response?.ok) {
+        const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+        setActionError(data?.error ?? "No copy was made. Check the connection and try again.");
         return;
       }
       const data = await response.json().catch(() => ({}));
@@ -154,6 +237,8 @@ export default function CharactersPage() {
   async function importFile(file: File) {
     setImporting(true);
     setImportError("");
+    setImportOwed(null);
+    setImportShelf("");
     try {
       let parsed: unknown;
       try {
@@ -174,6 +259,10 @@ export default function CharactersPage() {
       }
       if (data.character) {
         setCharacters((current) => [data.character, ...current]);
+        if (Array.isArray(data.owed) && data.owed.length) {
+          setImportOwed({ id: data.character.id, name: data.character.name, owed: data.owed });
+        }
+        setImportShelf(importShelfNote(data.character.name, data.homebrew));
       }
     } catch {
       setImportError("Import failed.");
@@ -189,10 +278,14 @@ export default function CharactersPage() {
     if (!await appConfirm(`Delete ${name} from your library? This cannot be undone.`)) {
       return;
     }
-    const response = await fetch(`/api/characters/${id}`, { method: "DELETE" });
-    if (response.ok) {
-      setCharacters((current) => current.filter((character) => character.id !== id));
+    setActionError("");
+    const response = await fetch(`/api/characters/${id}`, { method: "DELETE" }).catch(() => null);
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setActionError(data?.error ?? `${name} was not deleted. Check the connection and try again.`);
+      return;
     }
+    setCharacters((current) => current.filter((character) => character.id !== id));
   }
 
   if (!authed) {
@@ -251,10 +344,42 @@ export default function CharactersPage() {
           </Link>
         </div>
       </header>
-      {importError ? (
+      {importError || actionError ? (
         <p role="alert" className="motion-shake mb-4 rounded-lg border border-red-500/30 bg-red-950/30 px-3 py-2 text-sm text-red-300">
-          {importError}
+          {importError || actionError}
         </p>
+      ) : null}
+      {importShelf ? (
+        <p role="status" className="reveal mb-4 rounded-lg border border-stone-700/60 bg-stone-950/40 px-3 py-2 text-sm text-stone-300">
+          {importShelf}
+        </p>
+      ) : null}
+      {importOwed ? (
+        <div role="status" className="reveal mb-4 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-sm text-amber-100">
+          <p>
+            {importOwed.name} came from a file made before these choices were asked for, so they are still to make:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-amber-200/90">
+            {importOwed.owed.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          <p className="mt-2 flex flex-wrap items-center gap-2">
+            <Link
+              href={`/characters/${importOwed.id}/edit`}
+              className="inline-flex min-h-10 items-center rounded-lg border border-amber-600/60 px-3 font-medium text-amber-100 hover:bg-amber-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400"
+            >
+              Choose them now
+            </Link>
+            <button
+              type="button"
+              onClick={() => setImportOwed(null)}
+              className="inline-flex min-h-10 items-center rounded-lg px-3 text-stone-400 hover:text-stone-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400"
+            >
+              Later
+            </button>
+          </p>
+        </div>
       ) : null}
 
       {loading ? (
@@ -285,6 +410,11 @@ export default function CharactersPage() {
                 key={character.id}
                 character={character}
                 cloning={cloningId === character.id}
+                arriving={arriving.includes(character.id)}
+                still={still}
+                retrying={retryingId === character.id}
+                retryError={retryErrors[character.id] ?? ""}
+                onRetryPortrait={() => void repaint(character.id)}
                 onDelete={() => remove(character.id, character.name)}
                 onUploadPortrait={() => setCroppingId(character.id)}
                 onDuplicate={() => duplicate(character.id)}
@@ -304,6 +434,7 @@ export default function CharactersPage() {
           onClose={() => setCroppingId("")}
         />
       ) : null}
+      <PortraitToast toast={toast} />
     </main>
   );
 }
@@ -316,6 +447,11 @@ export default function CharactersPage() {
 function CharacterCard({
   character,
   cloning,
+  arriving,
+  still,
+  retrying,
+  retryError,
+  onRetryPortrait,
   onDelete,
   onUploadPortrait,
   onDuplicate,
@@ -323,6 +459,11 @@ function CharacterCard({
 }: {
   character: LibraryCharacter;
   cloning: boolean;
+  arriving: boolean;
+  still: boolean;
+  retrying: boolean;
+  retryError: string;
+  onRetryPortrait: () => void;
   onDelete: () => void;
   onUploadPortrait: () => void;
   onDuplicate: () => void;
@@ -354,38 +495,7 @@ function CharacterCard({
       <Link href={`/characters/${character.id}`} className="block">
         <div className="flex items-center gap-3">
           <span className="relative shrink-0">
-          {character.sheet?.portrait?.url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={character.sheet.portrait.url}
-              alt={character.name}
-              className="size-12 shrink-0 rounded-lg border border-amber-500/30 object-cover shadow-glow-gold"
-            />
-          ) : portraitPending(character) ? (
-            <span
-              title="Painting portrait..."
-              className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-stone-900"
-            >
-              <Loader2 className="size-4 animate-spin text-amber-200" />
-            </span>
-          ) : (
-            <span
-              title={
-                character.portraitStatus === "failed" ? "Portrait generation failed" : undefined
-              }
-            >
-              <CharacterPortrait
-                look={{
-                  race: character.race,
-                  class: character.class,
-                  gender: character.sheet?.gender,
-                }}
-                alt={character.name}
-                size="size-12"
-                className="border-amber-500/30 shadow-glow-gold"
-              />
-            </span>
-          )}
+            <RosterPortraitSlot character={character} arriving={arriving} still={still} />
             <GameIcon
               icon={{ kind: "family", key: `class-${character.class}` }}
               size="size-6"
@@ -397,7 +507,7 @@ function CharacterCard({
               {character.name}
             </span>
             <span className="inline-flex rounded-full border border-amber-500/30 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-200">
-              Level {character.level} {titleCase(character.class)}
+              Level {character.level} {character.className ?? titleCase(character.class)}
             </span>
           </div>
         </div>
@@ -409,6 +519,12 @@ function CharacterCard({
           <p className="reveal text-xs text-stone-500">{titleCase(character.background)}</p>
         ) : null}
       </Link>
+      <RosterPortraitStatus
+        character={character}
+        retrying={retrying}
+        retryError={retryError}
+        onRetry={onRetryPortrait}
+      />
       {character.campaigns?.length ? (
         <div className="reveal mt-2 flex flex-wrap gap-1.5 border-t border-stone-700/40 pt-2">
           {character.campaigns.map((assignment) => (
@@ -443,4 +559,18 @@ function CharacterCard({
       />
     </ContextMenu>
   );
+}
+
+// What a character file's Homebrew did on arrival, in one line.
+function importShelfNote(name: string, shelf: { copied?: number; reused?: string[]; renamed?: string[]; refused?: string[] } | undefined): string {
+  if (!shelf) {
+    return "";
+  }
+  const lines = [
+    shelf.copied ? `${name}'s Homebrew came with the file and is on your shelf now (${shelf.copied} entr${shelf.copied === 1 ? "y" : "ies"}).` : "",
+    shelf.reused?.length ? `Already on your shelf, the same: ${shelf.reused.join(", ")}.` : "",
+    ...(shelf.renamed ?? []),
+    ...(shelf.refused ?? []),
+  ];
+  return lines.filter(Boolean).join(" ");
 }

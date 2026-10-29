@@ -6,19 +6,28 @@ import { scopeQuery, useContentCampaign } from "@/lib/content-scope";
 import { authoredFeatDesc, registerBrowserTableFeats } from "@/lib/srd/feat-effects";
 import { packFeatText } from "@/lib/srd/feat-text";
 import { registerFeatRules } from "@/lib/srd/feature-effects";
+import { textKey } from "@/lib/language/text-logic";
 
-// The text of the feats on the sheet, by lower-case name, for what each
+// The text of the feats on the sheet, by the textKey of the name, for what each
 // grants (src/lib/srd/feat-grants.ts). ODM's own feats are bundled; a
 // content pack's is fetched once from the content API and kept.
 export function useFeatDescs(names: string[]): Record<string, string> {
+  return useFeatTexts(names).descs;
+}
+
+// The same fetch, with each feat's prerequisite beside its text, by the
+// textKey of the name, for the feat pickers' check (src/lib/srd/legality/
+// features.ts checkPrerequisite). ODM's own are bundled and not here.
+export function useFeatTexts(names: string[]): { descs: Record<string, string>; prerequisites: Record<string, string> } {
   // The table the character is built for: its DMs' workshop feats, read the
   // way that table reads them (src/lib/content/scope.ts).
   const campaignId = useContentCampaign();
   const [fetched, setFetched] = useState<Record<string, string>>({});
+  const [prerequisites, setPrerequisites] = useState<Record<string, string>>({});
   const wanted = names
     .map((name) => name.trim())
-    .filter((name) => name && !authoredFeatDesc(name) && fetched[name.toLowerCase()] === undefined);
-  const key = wanted.map((name) => name.toLowerCase()).sort().join("|");
+    .filter((name) => name && !authoredFeatDesc(name) && fetched[textKey(name)] === undefined);
+  const key = [...new Map(wanted.map((name) => [textKey(name), name])).values()].sort().join("|");
   // Each feat is asked for once per table, and its answer is kept however
   // the list changes meanwhile. The key shrinks as each answer lands, and
   // the effect used to drop every answer still on its way at that point and
@@ -36,7 +45,7 @@ export function useFeatDescs(names: string[]): Record<string, string> {
       return;
     }
     for (const name of key.split("|")) {
-      const flight = `${campaignId ?? ""}|${name}`;
+      const flight = `${campaignId ?? ""}|${textKey(name)}`;
       if (inFlight.current.has(flight)) {
         continue;
       }
@@ -45,7 +54,9 @@ export function useFeatDescs(names: string[]): Record<string, string> {
       // closed, is dropped.
       const stale = () => !live.current.mounted || live.current.campaignId !== campaignId;
       fetch(`/api/content/feats/${encodeURIComponent(contentSlug(name))}${scopeQuery(campaignId)}`)
-        .then((response) => (response.ok ? response.json() : null))
+        // An unknown feat (404) is an answer; any other refusal is not, and
+        // is neither remembered nor taken to mean the table has no such feat.
+        .then((response) => (response.ok ? response.json() : response.status === 404 ? null : Promise.reject(new Error(String(response.status)))))
         .then((body: { entry?: { source?: string; data?: Record<string, unknown> } } | null) => {
           if (stale()) {
             return;
@@ -54,7 +65,8 @@ export function useFeatDescs(names: string[]): Record<string, string> {
           // reads it (src/lib/srd/feat-text.ts). An unknown feat is
           // remembered as empty, so it is asked for once.
           const data = body?.entry?.data;
-          const desc = data ? packFeatText(data).desc : "";
+          const text = data ? packFeatText(data) : { desc: "", prerequisite: "" };
+          const desc = text.desc;
           // The builder's own numbers (speed, initiative, passive scores)
           // read the feat through the same table the server does.
           if (body?.entry?.source === "homebrew") {
@@ -69,15 +81,15 @@ export function useFeatDescs(names: string[]): Record<string, string> {
               registerFeatRules(name, desc);
             }
           }
-          setFetched((current) => ({ ...current, [name]: desc }));
+          setFetched((current) => ({ ...current, [textKey(name)]: desc }));
+          setPrerequisites((current) => ({ ...current, [textKey(name)]: text.prerequisite }));
         })
         .catch(() => {
-          if (!stale()) {
-            setFetched((current) => ({ ...current, [name]: "" }));
-          }
+          // Unreachable now: nothing is remembered, so the next change of
+          // the feats asks again.
         })
         .finally(() => inFlight.current.delete(flight));
     }
   }, [key, campaignId]);
-  return fetched;
+  return { descs: fetched, prerequisites };
 }

@@ -8,7 +8,7 @@ import {
 } from "@/lib/agents/grants";
 import { recentAgentActivity } from "@/lib/agents/activity";
 import { assistantRelayUrl } from "@/lib/agents/assistant-relay";
-import { playerWebhooksEnabled } from "@/lib/agents/webhooks";
+import { playerWebhooksEnabled, pollLinksAllowed } from "@/lib/agents/webhooks";
 import { getCampaignForUser } from "@/lib/db/campaigns";
 import { getSheetForUser } from "@/lib/db/sheets";
 import { publicOrigin } from "@/lib/discord-oauth";
@@ -44,6 +44,9 @@ export async function GET(request: Request) {
     // the end, and ChatGPT, Claude, Grok or Muse save the whole URL.
     assistantUrl: assistantRelayUrl(),
     recent: recentAgentActivity({ userId: user.id, limit: 20 }),
+    // Whether a connection that can play one campaign may get a poll link,
+    // so Settings offers one (or a replacement) on each such row.
+    pollLinks: pollLinksAllowed(),
   });
 }
 
@@ -100,5 +103,6 @@ function receiverFor(grant: ConnectionGrant, userId: string) {
     campaignId: grant.campaignId,
     character: sheet ? { id: sheet.id, name: sheet.name } : null,
     webhooksEnabled: playerWebhooksEnabled(),
+    pollLinks: pollLinksAllowed(),
   };
 }

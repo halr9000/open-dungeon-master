@@ -41,7 +41,6 @@ export type HudAction = {
 };
 
 export function playerActions(
-  token: StageToken,
   compose: (text: string) => void,
   pickTarget: (mode: "attack" | "cast") => void,
   // hudGates (src/lib/battlemap/hand-hud.ts): canAct, the turn's spends and
@@ -112,6 +111,7 @@ export function TokenHud({
   actions,
   hint,
   onClose,
+  anchor,
 }: {
   token: StageToken;
   boardWidth: number;
@@ -121,11 +121,14 @@ export function TokenHud({
   // A line under the arc: "tap an enemy" while a target is being chosen.
   hint?: string;
   onClose: () => void;
+  // Where an addon's board view drew the figure, as fractions of the board
+  // (centre across, top, bottom), when it is not on the grid's square.
+  anchor?: [number, number, number];
 }) {
-  const cx = ((token.x + footprint / 2) / boardWidth) * 100;
-  const cy = ((token.y + footprint / 2) / boardHeight) * 100;
+  const cx = anchor ? anchor[0] * 100 : ((token.x + footprint / 2) / boardWidth) * 100;
+  const cy = anchor ? ((anchor[1] + anchor[2]) / 2) * 100 : ((token.y + footprint / 2) / boardHeight) * 100;
   // The arc opens upward, or downward near the top edge so it stays on the board.
-  const flip = token.y < boardHeight / 3;
+  const flip = anchor ? cy < 100 / 3 : token.y < boardHeight / 3;
   const radius = 56;
   const spread = Math.min(Math.PI, actions.length * 0.52);
   const start = (flip ? Math.PI / 2 : -Math.PI / 2) - spread / 2;

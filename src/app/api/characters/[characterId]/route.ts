@@ -11,7 +11,9 @@ import {
 import { listEventsForLibraryCharacter } from "@/lib/db/character-events";
 import { mirrorToCampaignSheets, portraitStatus, queueLibraryPortrait } from "@/lib/portrait";
 import { admitSheet, refusal } from "@/lib/characters/admit";
+import { olderBuilderOf } from "@/lib/srd/legality/older-builder";
 import { attachmentSchema, createSheetSchema } from "@/lib/schemas/sheet";
+import { workshopClassDefs } from "@/lib/classes/workshop-registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,6 +50,8 @@ export async function GET(
       campaigns: listAssignmentsForCharacter(user.id, characterId),
     },
     events: listEventsForLibraryCharacter(characterId),
+    // The workshop classes it holds, read in the browser as on the server.
+    workshopClasses: workshopClassDefs([character.class, ...((character.sheet as { classes?: Array<{ id: string }> } | undefined)?.classes ?? []).map((entry) => entry.id)]),
   });
 }
 
@@ -109,6 +113,7 @@ export async function PATCH(
     sheet: parsed.data.sheet,
     userId: user.id,
     baseline: { sheet: stored.sheet, level: stored.level },
+    olderBuilder: olderBuilderOf((raw as { sheet?: unknown } | null)?.sheet),
   });
   if (!admitted.ok) {
     return refusal(admitted.problems);

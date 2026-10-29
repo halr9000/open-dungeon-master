@@ -1,22 +1,48 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { PageSkeleton } from "@/components/PageSkeleton";
 import { GoldTitle } from "@/components/ui/GoldTitle";
 import { PIXEL_ICONS, PixelTile } from "@/lib/ui";
 import CharacterBuilder, { type BuilderResult } from "../builder/CharacterBuilder";
 import { navigateTo } from "@/lib/navigation";
 import { refusalText } from "@/app/characters/builder/refusal";
+import { builderDraftKey, clearBuilderDraft } from "@/app/characters/builder/builderDraft";
+import { readBuilderDoor } from "@/app/characters/builder/door";
+import { afterFirstSave } from "@/lib/characters/hero-tips";
 
-export default function NewCharacterPage() {
+const DRAFT_KEY = builderDraftKey("library");
+
+function NewCharacterInner() {
+  // What the link that opened the builder already decided (door.ts): it is
+  // set here and not asked again.
+  const door = readBuilderDoor(useSearchParams());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // The same sheet either way, and the same adaptation on the way into a
   // campaign (src/lib/characters/adapt.ts). What the role decides is which
   // door they come through: a player character joins a table as yours, a
-  // companion joins it as an ally the DM plays. The wizard's first step
-  // holds the toggle.
-  const [role, setRole] = useState<"pc" | "companion">("pc");
+  // companion joins it as an ally the DM plays. A new character starts as
+  // a player character; the Finish step holds the toggle, unless the door
+  // already said which.
+  const [role, setRole] = useState<"pc" | "companion">(door.role ?? "pc");
+  // Whether the player asked never to see the hero page again, read from
+  // the account once while they build. Unknown or unreachable means show it.
+  const skipHeroPage = useRef(false);
+  useEffect(() => {
+    let live = true;
+    fetch("/api/profile", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (live) skipHeroPage.current = data?.settings?.skipHeroPage === true;
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function submit(result: BuilderResult) {
     setBusy(true);
@@ -32,7 +58,11 @@ export default function NewCharacterPage() {
         setError(refusalText(data, "Could not save the character."));
         return;
       }
-      navigateTo("/characters");
+      clearBuilderDraft(DRAFT_KEY);
+      // A new character's first save lands on its hero page (F23); the
+      // roster when the player turned that off, or the reply had no id.
+      const id = typeof data?.character?.id === "string" ? data.character.id : "";
+      navigateTo(id ? afterFirstSave(id, skipHeroPage.current) : "/characters");
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -61,9 +91,27 @@ export default function NewCharacterPage() {
         onSubmit={submit}
         busy={busy}
         error={error}
-        role={{ value: role, onChange: setRole }}
+        role={door.role ? undefined : { value: role, onChange: setRole }}
+        startLevel={door.level}
+        levelNote={door.levelNote}
+        draftKey={DRAFT_KEY}
         onCancel={() => navigateTo("/characters")}
       />
     </main>
+  );
+}
+
+// useSearchParams needs a Suspense boundary during prerender in Next 16.
+export default function NewCharacterPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto w-full max-w-3xl flex-1 p-4 sm:p-6">
+          <PageSkeleton kind="flat" className="px-0 py-2" />
+        </main>
+      }
+    >
+      <NewCharacterInner />
+    </Suspense>
   );
 }

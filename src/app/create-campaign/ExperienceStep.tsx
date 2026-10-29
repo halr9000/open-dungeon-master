@@ -22,6 +22,8 @@ import {
   voiceChatSummary,
 } from "@/app/create-campaign/summaries";
 import { countableRows, featuresOn } from "@/app/create-campaign/table-sheet";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import type { CampaignDraft } from "@/app/create-campaign/draft";
 
 // The switches only describe themselves on hover, which a finger never
 // makes; this is the same text, reachable by tap and keyboard.
@@ -40,19 +42,19 @@ export function ExperienceStep(props: StepProps & { active: boolean; groups: Gro
   const rows = { ...props, onFlip };
   return (
     <div className={cn("space-y-4 text-sm", active && "cc-live")}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="cc-note min-w-0 flex-1 basis-40 leading-relaxed">
-          Every group below is optional. A gold dot marks a switch the total counts.
+      {/* What each group holds leads; the count is a quiet aside, since
+          switching more on is not a goal (a gold dot marks a counted one). */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <p className="cc-note min-w-0 flex-1 basis-48 leading-relaxed">
+          Every group below is optional and says what is set inside. Leave any of them as they are; all of it can be
+          changed in the lobby or during play.
         </p>
-        <div className="cc-counter" aria-live="polite">
-          <span ref={counter} className="cc-count">
+        <span className="cc-note shrink-0" aria-live="polite">
+          <span ref={counter} className="inline-block font-semibold text-amber-200">
             {featuresOn(draft, gates)}
-          </span>
-          <span className="flex flex-col">
-            <span className="cc-eyebrow text-amber-300">features on</span>
-            <span className="cc-note">of {countableRows(gates)} counted</span>
-          </span>
-        </div>
+          </span>{" "}
+          of {countableRows(gates)} switches on
+        </span>
       </div>
 
       <section className="cc-field" aria-labelledby="cc-voices-head">
@@ -98,13 +100,8 @@ export function ExperienceStep(props: StepProps & { active: boolean; groups: Gro
           glyph="tab-party"
           summary={playersSummary(draft, gates)}
         >
-          <SheetRows
-            {...rows}
-            keys={["multiCharacter", "midGameJoinOpen", "holdSubmissions", "inventoryApprovals", "vitalsApprovals"]}
-          />
-          <p className="cc-note leading-relaxed">
-            Characters per player is a three-way switch: press it again to go from one at a time to all at once.
-          </p>
+          <MultiCharacterField draft={draft} patch={props.patch} />
+          <SheetRows {...rows} keys={["midGameJoinOpen", "holdSubmissions", "inventoryApprovals", "vitalsApprovals"]} />
         </DetailGroup>
         <DetailGroup {...groupProps(groups, "board")} title="The battle board" glyph="tab-battle" summary={boardSummary(draft)}>
           <SheetRows {...rows} keys={["boardDrawing", "enemyIntent"]} />
@@ -124,6 +121,36 @@ export function ExperienceStep(props: StepProps & { active: boolean; groups: Gro
           </DetailGroup>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+// Characters per player, as its three answers side by side rather than a
+// switch that cycles through them.
+const MULTI_HINTS: Record<CampaignDraft["multiCharacter"], string> = {
+  off: "Each player brings one character.",
+  one_active: "A player may build several and plays one at a time; the others wait out fights.",
+  all_active: "A player fields all of theirs at once, usually one person running a whole party at a solo table.",
+};
+
+function MultiCharacterField({ draft, patch }: Pick<StepProps, "draft" | "patch">) {
+  return (
+    <div data-sheet-row="multiCharacter">
+      <span className="mb-1 block text-xs text-stone-400">Characters per player</span>
+      <SegmentedControl<CampaignDraft["multiCharacter"]>
+        size="sm"
+        label="Characters per player"
+        value={draft.multiCharacter}
+        onChange={(multiCharacter) => patch({ multiCharacter })}
+        options={[
+          { value: "off", label: "One each" },
+          { value: "one_active", label: "Several, one at a time" },
+          { value: "all_active", label: "Several, all at once" },
+        ]}
+      />
+      <p key={draft.multiCharacter} className="live-in mt-1 text-[11px] text-stone-500">
+        {MULTI_HINTS[draft.multiCharacter]}
+      </p>
     </div>
   );
 }

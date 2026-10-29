@@ -23,6 +23,8 @@ import { rollEnemySave } from "@/lib/dm/forced-save";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { rollCard, sheetAttacker } from "@/lib/dm/roll-card";
 import { rollAgainst } from "@/lib/roll-labels";
+import { isConditionNamed, nameChoice } from "@/lib/srd/feature-names";
+import { textKey } from "@/lib/language/text-logic";
 
 // The riders of the attacker's next swing, with what this one spent taken
 // off the creature (the spent condition leaves its row).
@@ -96,16 +98,16 @@ export function spellRetort(
     return null;
   }
   const lines: string[] = [];
-  const shield = target.conditions.find((entry) => entry.toLowerCase().startsWith("fire shield"));
+  const shield = target.conditions.find((entry) => isConditionNamed(entry, "fire shield"));
   if (shield && withinFive) {
     // The warm shield resists cold and burns; the chill shield resists fire
     // and freezes.
-    const type = /\(fire\)/i.test(shield) ? "cold" : "fire";
+    const type = textKey(nameChoice(shield) ?? "") === "fire" ? "cold" : "fire";
     const live = getEnemy(attacker.id);
     if (live?.status === "alive") {
       // The shield's bearer deals it.
       const rolled = rollCard(campaign, turn, target.id, "damage", rollAgainst("Fire Shield", live.displayName), "2d8", sheetAttacker(target)).total;
-      const applied = applyEnemyDamage(campaign, turn, encounter, live, rolled, sheets, sheetsById, type, { magical: true });
+      const applied = applyEnemyDamage(campaign, turn, encounter, live, rolled, sheets, sheetsById, type, { magical: true, spell: true });
       lines.push(`${target.name}'s Fire Shield sears ${live.displayName} for ${applied.damageApplied ?? rolled} ${type} damage.`);
     }
   }
@@ -119,6 +121,7 @@ export function spellRetort(
       const save = rollEnemySave(campaign.id, live, "con", dc, {
         magical: true,
         resist: true,
+        against: "blinded",
         record: { turn, detail: `${live.displayName}: CON save against Holy Aura` },
       });
       if (!save.success && !live.conditions.includes("blinded")) {
@@ -167,6 +170,6 @@ export function curseBurn(
   }
   const caster = getSheetById(casterId);
   const rolled = rollCard(campaign, turn, caster?.id ?? null, "damage", rollAgainst("Bestow Curse", enemy.displayName), rider.dice, caster ? sheetAttacker(caster) : null).total;
-  applyEnemyDamage(campaign, turn, encounter, enemy, rolled, sheets, sheetsById, rider.type, { magical: true });
+  applyEnemyDamage(campaign, turn, encounter, enemy, rolled, sheets, sheetsById, rider.type, { magical: true, spell: true });
   return `Bestow Curse: ${rolled} necrotic more to ${enemy.displayName}.`;
 }

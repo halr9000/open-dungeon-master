@@ -2,14 +2,16 @@
 //
 // The AI's turn loop (turn.ts) used to carry its own copy of this, and the
 // two drifted: the copy skipped the table's strictness and rolled for the
-// dead. There is one now. The model's call differs in two things only, both
-// passed in: a parked roll remembers the tool call it answers, so the model
-// can be resumed with the result, and the refusals are worded for a model.
+// dead. There is one now. The model's call differs in three things only:
+// a parked roll remembers the tool call it answers, so the model can be
+// resumed with the result, the refusals are worded for a model, and a field
+// it leaves unnamed that the character's traits would read is asked for.
 // Everything else is shared: the expression comes from the sheet, conditions
 // can decide the roll outright, an inspiration die is spent whether the
 // dice are physical or digital, an initiative roll feeds the encounter, and
 // a damage roll aimed at an enemy applies itself.
 import { claimedAdvantage } from "@/lib/dm/pc-attack-options";
+import { askedFields, unnamedTraitFields } from "@/lib/dm/roll-feature-riders";
 import { rollExpression } from "@/lib/dice";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import { insertRoll } from "@/lib/db/rolls";
@@ -20,7 +22,7 @@ import { allocateSeq } from "@/lib/db/campaigns";
 import { rollExtrasFor, spendRollCarriers } from "@/lib/dm/forced-save";
 import { redactRoll } from "@/lib/dm/viewer";
 import { autoApplyDamageRoll } from "@/lib/dm/enemy-damage";
-import { recordInitiativeRoll } from "@/lib/dm/encounter-tools";
+import { heldInitiative, recordInitiativeRoll } from "@/lib/dm/encounter-tools";
 import { applyInitiativeRefills } from "@/lib/dm/feature-hooks";
 import {
   resolveRollExpression,
@@ -34,6 +36,7 @@ import type { Campaign } from "@/lib/db/campaigns";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { moteAfterRoll, moteOf } from "@/lib/dm/authored-mote";
 import { applyRollGates } from "@/lib/dm/roll-gates";
+import { invalidArguments, toolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 export function handleRequestRoll(
   campaign: Campaign,
@@ -46,28 +49,31 @@ export function handleRequestRoll(
   realDiceUserIds: Set<string>,
   // Set by the AI's turn loop: the tool call a parked roll answers.
   model?: { toolCallId: string | null },
-): Record<string, unknown> {
+): ToolResult {
   const campaignId = campaign.id;
-  let args: RollArgs;
+  const needs = model
+    ? "Invalid request_roll arguments. Send JSON with kind, and skill/ability/dc or expression as documented."
+    : "Pick a roll kind, and a skill, ability or DC to go with it.";
+  let raw: unknown;
   try {
-    const raw = JSON.parse(rawArguments || "{}");
-    args = rollArgsSchema.parse(raw);
-    args = {
-      ...args,
-      dc: rollDcFor(args, raw, strictnessShift(campaign.gameSettings.gm?.strictness ?? "standard")),
-    };
+    raw = JSON.parse(rawArguments || "{}");
   } catch {
-    return {
-      error: model
-        ? "Invalid request_roll arguments. Send JSON with kind, and skill/ability/dc or expression as documented."
-        : "Pick a roll kind, and a skill, ability or DC to go with it.",
-    };
+    return { error: needs, retry: true };
   }
+  const parsed = rollArgsSchema.safeParse(raw);
+  if (!parsed.success) {
+    return model ? invalidArguments(needs, parsed.error) : { error: needs, retry: true };
+  }
+  let args: RollArgs = parsed.data;
+  args = {
+    ...args,
+    dc: rollDcFor(args, raw, strictnessShift(campaign.gameSettings.gm?.strictness ?? "standard")),
+  };
 
   // The AI's advantage stands only on a circumstance the server cannot see
   // (the same rule as pc_attack's); the DM console rules freely.
   if (turn.actor === "ai" && args.advantage && args.advantage !== "none") {
-    const claim = claimedAdvantage({ requested: args.advantage, reason: args.advantageReason, byAi: true });
+    const claim = claimedAdvantage({ requested: args.advantage, source: args.advantageSource, reason: args.advantageReason, byAi: true });
     args = { ...args, advantage: claim.requested };
   }
   const sheet = resolveSheetRef(args.characterId, sheets, sheetsById);
@@ -77,6 +83,7 @@ export function handleRequestRoll(
     if (fresh.deathSaves?.dead) {
       return {
         error: `${fresh.name} is dead and makes no rolls. Only magic that raises the dead brings them back.`,
+        refused: "rules",
       };
     }
   }
@@ -84,7 +91,7 @@ export function handleRequestRoll(
   // creature's own check for the DC (src/lib/dm/roll-gates.ts).
   const gated = applyRollGates(campaign, turn, args);
   if ("error" in gated) {
-    return { error: gated.error };
+    return toolError(gated);
   }
   args = gated.args;
   // In combat a character's attack belongs to the attack engine, which
@@ -94,6 +101,18 @@ export function handleRequestRoll(
       error: model
         ? "Character attacks in combat go through pc_attack: call it with characterId, targetEnemyId, and the weapon (or an attack-roll spell by name). The server rolls to-hit from their sheet, adjudicates against the enemy's AC, and applies damage itself."
         : "Use Player attacks for a swing in combat: it rolls to hit from their sheet, compares it to the enemy's AC and applies the damage.",
+      retry: true,
+    };
+  }
+  // Out of a fight there is no one on the board to swing at: the AI's attack
+  // roll with no fight running rolled a bare d20 that hit nobody, and
+  // gpt-oss-20b and Qwen3.6-35B, each rolling one after the last goblin fell,
+  // narrated a hit on a goblin already dead. A person at the console rolls
+  // what they rule.
+  if (args.kind === "attack" && sheet && model && !getActiveEncounter(campaignId)) {
+    return {
+      error: "No fight is running, so there is nobody to attack: every enemy of the last fight is down or gone. If the character attacks someone who stands, start the fight with start_encounter and resolve the swing with pc_attack; otherwise narrate what they do instead.",
+      refused: "rules",
     };
   }
   // The same holds for the damage: a party character's damage on an enemy
@@ -105,18 +124,36 @@ export function handleRequestRoll(
       error: model
         ? `${sheet.name}'s damage on an enemy comes from pc_attack (or the spell tools), which roll the hit first and apply the damage themselves; request_roll does not apply a party character's damage to an enemy.`
         : `${sheet.name}'s damage on an enemy comes from Player attacks or a cast form, which roll the hit first; a bare damage roll does not land on an enemy.`,
+      retry: true,
     };
   }
 
-  const resolved = resolveRollExpression(
-    args,
-    sheet,
-    sheet
-      ? rollExtrasFor(campaign, sheet, args.kind)
-      : { encumbrance: campaign.gameSettings.variantRules.encumbrance },
-  );
+  // An initiative roll for a character the fight already ordered rolls
+  // nothing (src/lib/dm/encounter-tools.ts heldInitiative): it would change
+  // no count and only throw dice in front of the table.
+  if (args.kind === "initiative" && sheet) {
+    const held = heldInitiative(campaignId, sheet.id);
+    if (held) {
+      return { error: held, refused: "rules" };
+    }
+  }
+
+  const extras = sheet ? rollExtrasFor(campaign, sheet, args.kind) : { encumbrance: campaign.gameSettings.variantRules.encumbrance };
+  // A trait of the character's that a field the model left unnamed would
+  // call on (src/lib/dm/roll-about.ts): it names the field, or 'none', before
+  // anything is rolled, so the trait is never lost to an omission.
+  if (turn.actor === "ai" && sheet) {
+    const asked = unnamedTraitFields(sheet, args);
+    if (asked.length) {
+      return {
+        error: `${sheet.name} holds a trait this roll can call on. Name ${askedFields(asked)}, as the fiction is, and send the roll again. Nothing was rolled.`,
+        retry: true,
+      };
+    }
+  }
+  const resolved = resolveRollExpression(args, sheet, extras);
   if ("error" in resolved) {
-    return { error: resolved.error };
+    return toolError(resolved);
   }
   if ("autoFail" in resolved) {
     return {
@@ -219,6 +256,6 @@ export function handleRequestRoll(
       ...(applied ? { applied } : {}),
     };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "Invalid dice expression." };
+    return { error: error instanceof Error ? error.message : "Invalid dice expression.", retry: true };
   }
 }

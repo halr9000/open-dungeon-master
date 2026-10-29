@@ -1,4 +1,5 @@
 import { readiedReleaseFor } from "@/lib/dm/readied-release";
+import { tokenSides } from "@/lib/dm/combatant";
 import { z } from "zod";
 import { actingSheetFor } from "@/lib/character-seat";
 import { capsFor, isErrorResponse, requireMember } from "@/lib/campaign-api";
@@ -11,7 +12,8 @@ import {
   listTokens,
   moveToken,
 } from "@/lib/db/battle-maps";
-import { buildPlayerMapView, footprintLookup, occupiedTiles, pcMoveBudget } from "@/lib/battlemap/view";
+import { buildPlayerMapView, footprintLookup, occupiedTiles, pcMoveBudget, type PlayerMapView } from "@/lib/battlemap/view";
+import { boardState, forgetMoves, keepMove, revealedSince, sightOf, stepFeet, type MoveStep } from "@/lib/battlemap/move-undo";
 import { findPath, reachableTiles, speedToTiles } from "@/lib/battlemap/movement";
 import { pcMoveTraits } from "@/lib/battlemap/passage";
 import { tileIndex } from "@/lib/battlemap/types";
@@ -21,6 +23,7 @@ import { planDoorFx } from "@/lib/battlemap/fx-plan";
 import { getCampaignById } from "@/lib/db/campaigns";
 import { budgetApplies } from "@/lib/dm/action-budget";
 import { resolveOpportunityAttacks } from "@/lib/dm/opportunity";
+import { riskyOrderGate } from "@/lib/dm/party-conduct";
 import { canAct } from "@/lib/dm/can-act";
 import { removeConditions } from "@/lib/dm/condition-logic";
 import { awayFromFear, fearSourceAt } from "@/lib/dm/enemy-approach";
@@ -34,6 +37,7 @@ import { jumpMove } from "@/lib/dm/jump-move";
 import { jumpLine } from "@/lib/srd/jump";
 import { sizeForRace } from "@/lib/srd";
 import { proneCharge } from "@/lib/battlemap/board-move";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
 
 export const runtime = "nodejs";
 
@@ -83,6 +87,11 @@ export async function POST(
     return context;
   }
   const { user } = context;
+  // Tokens stay where they stood while the table is on a break.
+  const paused = refuseDuringBreak(campaignId);
+  if (paused) {
+    return paused;
+  }
 
   // The board, which is a fight or an exploration scene. Every combat rule
   // below is written against a fight and is skipped on a scene.
@@ -158,6 +167,26 @@ export async function POST(
     !scene && budgetApplies(encounter.turnBudget, sheet.id, encounter.round)
       ? encounter.turnBudget
       : null;
+  // What the mover sees before the walk, and whether the walk can be taken
+  // back afterwards (src/lib/battlemap/move-undo.ts): only a fight's own
+  // walk on its own turn is kept, and only when nothing answered it.
+  const undoable = !scene && !readied;
+  const sightBefore = undoable ? sightOf(buildPlayerMapView(campaignId, user.id)) : null;
+  const settle = (view: PlayerMapView | null, lasting: boolean, step: Omit<MoveStep, "sheetId" | "tokenId" | "state">) => {
+    if (!undoable) {
+      return;
+    }
+    const live = getActiveBoard(campaignId);
+    const revealed = sightBefore !== null && revealedSince(sightBefore, view);
+    if (lasting || revealed || !live || live.id !== encounter.id) {
+      forgetMoves(encounter.id);
+      return;
+    }
+    keepMove(encounter.id, { ...step, sheetId: sheet.id, tokenId: token.id, state: boardState(live, map.id, sheet.id) });
+    if (view) {
+      view.undoMove = { feet: step.feet };
+    }
+  };
   // Frightened: a jump may not carry them closer to what they fear either.
   const feared = scene ? null : fearSourceAt(map.id, sheet.conditions, sheet.conditionMeta as Record<string, { source?: string }>);
   if (parsed.data.jump && campaign) {
@@ -172,8 +201,14 @@ export async function POST(
     if ("error" in leap) {
       return Response.json({ error: leap.error }, { status: leap.status });
     }
+    const leapt = buildPlayerMapView(campaignId, user.id, { enemyNumbers: capsFor(context).enemyNumbers });
+    settle(
+      leapt,
+      leap.lasting || leap.opportunity.notes.length > 0 || leap.zoneEffects.length > 0 || Boolean(leap.opportunity.downedAt),
+      { from: { x: token.x, y: token.y }, movedBefore: token.movedThisRound, carried: [], stood: null, feet: leap.jump.feet },
+    );
     return Response.json({
-      view: buildPlayerMapView(campaignId, user.id, { enemyNumbers: capsFor(context).enemyNumbers }),
+      view: leapt,
       jump: leap.jump,
       ...(leap.opportunity.notes.length ? { opportunityAttacks: leap.opportunity.notes } : {}),
       ...(leap.zoneEffects.length ? { zoneEffects: leap.zoneEffects } : {}),
@@ -193,6 +228,7 @@ export async function POST(
     sheet,
     footprintOf: footprintLookup(enemiesById),
     enemySize: (refId) => enemiesById.get(refId)?.stats.size,
+    sideOf: tokenSides(encounter),
   }), map, "pc", sheet.id);
   const reach = reachableTiles(
     map.terrain,
@@ -264,6 +300,12 @@ export async function POST(
   // Dragging the creature they grapple (src/lib/dm/drag.ts): every square
   // costs double unless it is two sizes smaller, and it is set down beside
   // them where they stop, so the grapple holds.
+  // A companion wary of its commander will not walk out of a foe's reach
+  // on their word (issue 503, src/lib/dm/party-conduct.ts).
+  const refusedOrder = campaign && path && !readied ? riskyOrderGate(campaign, sheet, user.id, [from, ...path], turnState?.disengaged ?? false) : null;
+  if (refusedOrder) {
+    return Response.json({ error: refusedOrder }, { status: 409 });
+  }
   let spend = cost;
   let carried: Array<{ token: (typeof tokens)[number]; at: { x: number; y: number } }> = [];
   if (parsed.data.drag && !scene) {
@@ -301,10 +343,8 @@ export async function POST(
   for (const entry of carried) {
     moveToken(entry.token.id, entry.at.x, entry.at.y, entry.token.movedThisRound);
   }
-  if (campaign) {
-    // Walking away from a grapple ends it (src/lib/dm/grapple.ts).
-    releaseGrapplesOutOfReach(campaign);
-  }
+  // Walking away from a grapple ends it (src/lib/dm/grapple.ts).
+  const letGo = campaign ? releaseGrapplesOutOfReach(campaign) : [];
   if (stands) {
     const stood = removeConditions(sheet.conditions, sheet.conditionMeta, ["prone"]);
     const updated = patchSheet(sheet.id, {
@@ -342,8 +382,16 @@ export async function POST(
   }
 
   // Fresh self view in the response saves the mover a follow-up fetch.
+  const view = buildPlayerMapView(campaignId, user.id, { enemyNumbers: capsFor(context).enemyNumbers });
+  settle(view, opportunity.notes.length > 0 || zoneEffects.length > 0 || letGo.length > 0 || Boolean(opportunity.downedAt), {
+    from,
+    movedBefore: token.movedThisRound,
+    carried: carried.map((entry) => ({ tokenId: entry.token.id, from: { x: entry.token.x, y: entry.token.y }, movedThisRound: entry.token.movedThisRound })),
+    stood: stands ? { conditions: sheet.conditions, conditionMeta: sheet.conditionMeta } : null,
+    feet: stepFeet(spend),
+  });
   return Response.json({
-    view: buildPlayerMapView(campaignId, user.id, { enemyNumbers: capsFor(context).enemyNumbers }),
+    view,
     ...(released ? { released: true } : {}),
     ...(opportunity.notes.length ? { opportunityAttacks: opportunity.notes } : {}),
     ...(zoneEffects.length ? { zoneEffects } : {}),

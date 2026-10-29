@@ -29,6 +29,7 @@ import {
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { finishEncounter } from "@/lib/dm/enemy-damage";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export const BLINK = "blink";
 export const BLINKED = "blinked";
@@ -38,32 +39,32 @@ export const BLINKED = "blinked";
 export function spellAttackHold(
   attacker: { name: string; conditions: string[] },
   target: { name: string; conditions: string[] },
-): string | null {
+): ToolError | null {
   const held = conditionBlocksAttacks(attacker.conditions);
   if (held) {
-    return `${attacker.name} is ${held} and makes no attacks while it lasts. It may take another action (a calmed or fleeing creature may Dash).`;
+    return { error: `${attacker.name} is ${held} and makes no attacks while it lasts. It may take another action (a calmed or fleeing creature may Dash).`, retry: true };
   }
   return outOfReach(target);
 }
 
 // The refusal a spell cast at `target` meets when a spell has put it out of
 // reach, or null.
-export function outOfReach(target: { name: string; conditions: string[] }): string | null {
+export function outOfReach(target: { name: string; conditions: string[] }): ToolError | null {
   const gone = conditionUntargetable(target.conditions);
   return gone
-    ? `${target.name} is ${gone}: out of reach of attacks and spells from the Material Plane until it ends. Choose another target.`
+    ? { error: `${target.name} is ${gone}: out of reach of attacks and spells from the Material Plane until it ends. Choose another target.`, refused: "rules" }
     : null;
 }
 
 // The refusal a creature's spell meets while a spell stops its casting, or
 // the caster is off on another plane, or null.
-export function castingHold(caster: { name: string; conditions: string[] }): string | null {
+export function castingHold(caster: { name: string; conditions: string[] }): ToolError | null {
   const held = conditionBlocksCasting(caster.conditions);
   if (held) {
-    return `${caster.name} is ${held} and cannot cast spells while it lasts. Nothing was spent.`;
+    return { error: `${caster.name} is ${held} and cannot cast spells while it lasts. Nothing was spent.`, refused: "rules" };
   }
   const away = conditionUntargetable(caster.conditions);
-  return away ? `${caster.name} is ${away} and cannot affect creatures on the Material Plane. Nothing was spent.` : null;
+  return away ? { error: `${caster.name} is ${away} and cannot affect creatures on the Material Plane. Nothing was spent.`, refused: "rules" } : null;
 }
 
 const holds = (conditions: string[], name: string) => conditions.some((entry) => entry.trim().toLowerCase() === name);

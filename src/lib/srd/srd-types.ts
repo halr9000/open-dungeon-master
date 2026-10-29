@@ -24,6 +24,10 @@ export type SrdClass = {
   // One line for the class picker, so a new player can tell a warlock from
   // a wizard before opening the full write-up.
   blurb?: string;
+  // The class's job in a fight, in words a gamer knows (src/lib/srd/class-roles.ts),
+  // and which of the core four it plays like ("Fighter + Cleric").
+  roles?: string[];
+  playsLike?: string;
 };
 export type SrdRace = {
   id: string;
@@ -39,7 +43,8 @@ export type SrdRace = {
   // Structured grants behind the trait prose, so the builder can put them on
   // the sheet instead of leaving them as flavor text.
   skills?: string[];
-  skillChoice?: { count: number };
+  // The skills it picks among (the Orc's Primal Intuition); unset, any skill.
+  skillChoice?: { count: number; from?: string[] };
   cantripChoice?: { list: string; count: number };
   tools?: string[];
   toolChoice?: { count: number; from: string[] };

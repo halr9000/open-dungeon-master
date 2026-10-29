@@ -1,17 +1,18 @@
 "use client";
 
 import { Eye, EyeOff, Hand, Loader2, Send } from "lucide-react";
-import { memo, useId, type ReactNode } from "react";
+import { memo, useEffect, useId, useRef, type ReactNode } from "react";
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from "react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
-import { D20Spinner } from "@/components/ui/D20Spinner";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { Switch } from "@/components/ui/Switch";
 import { MODE_GLYPHS } from "@/app/campaigns/[campaignId]/sessionGlyphs";
 import { useLingeringEncounter } from "@/app/campaigns/[campaignId]/useLingeringEncounter";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { FloorBanners } from "@/app/campaigns/[campaignId]/FloorBanners";
+import { SideNotice } from "@/app/campaigns/[campaignId]/SideBadge";
+import { TableWaitBanner } from "@/app/campaigns/[campaignId]/TableWaitBanner";
 import { Hand as CombatHand } from "@/app/campaigns/[campaignId]/Hand";
 import { MonsterHand } from "@/app/campaigns/[campaignId]/MonsterHand";
 import { NewAdventurerBanner } from "@/app/campaigns/[campaignId]/NewAdventurerBanner";
@@ -20,6 +21,7 @@ import {
   DirectorPresets,
 } from "@/app/campaigns/[campaignId]/DirectorPanel";
 import { PendingRollCard } from "@/app/campaigns/[campaignId]/PendingRollCard";
+import { DmStatusLine } from "@/app/campaigns/[campaignId]/DmStatusLine";
 import { PushToTalk } from "@/app/campaigns/[campaignId]/PushToTalk";
 import { StoryNudge } from "@/app/campaigns/[campaignId]/StoryNudge";
 import { SpeakerPicker } from "@/app/campaigns/[campaignId]/SpeakerPicker";
@@ -27,6 +29,7 @@ import type { CastMember } from "@/lib/dm/cast";
 import type { Speaker } from "@/lib/dm/speech";
 import type { BeatCadence } from "@/lib/dm/beat-cadence";
 import type { TargetEdge } from "@/lib/battlemap/view-tactics";
+import type { PlayerMapView } from "@/lib/battlemap/view-types";
 import type { CampaignState } from "@/app/campaigns/[campaignId]/useCampaignStream";
 
 import type { InputKind } from "@/lib/campaign-types";
@@ -36,11 +39,11 @@ import { composerLimit, textLength } from "@/lib/text-limits";
 export type { InputKind };
 
 const KIND_TIPS: Record<InputKind, string> = {
-  do: "Act in the world. The DM narrates what happens.",
+  do: "Act in the world. The GM narrates what happens.",
   say: "Speak in character. Sent as dialogue in quotes.",
-  ooc: "Table talk. The DM does not respond, and it works even when the floor is locked.",
-  lead: "Party lead only. Send the DM an authoritative story direction.",
-  narrate: "Dungeon Master only. Write the passage the table reads.",
+  ooc: "Table talk. The GM does not respond, and it works even when the floor is locked.",
+  lead: "Party lead only. Send the GM an authoritative story direction.",
+  narrate: "Game Master only. Write the passage the table reads.",
 };
 
 // The action composer at the bottom of the game chat: pending-roll cards,
@@ -67,9 +70,11 @@ function ComposerInner({
   inputBlocked,
   placeholder,
   dmStatus,
+  dmJob,
   pendingRolls,
   members,
   floor,
+  tableWait,
   spotlighted,
   heldSpotlightNames,
   encounter,
@@ -84,7 +89,10 @@ function ComposerInner({
   onXCard,
   composerRef,
   trackAmmo,
+  romanceCue = true,
   edges,
+  drops,
+  mounts,
   highlight = false,
   directorArm,
   storyCadence,
@@ -109,10 +117,12 @@ function ComposerInner({
   inputBlocked: boolean;
   placeholder: string;
   dmStatus: CampaignState["dmStatus"];
+  dmJob: CampaignState["dmJob"];
   pendingRolls: CampaignState["pendingRolls"];
   // For the pending cards: who holds their own rolls (shake to roll).
   members: CampaignState["members"];
   floor: Parameters<typeof FloorBanners>[0]["floor"];
+  tableWait?: CampaignState["tableWait"];
   spotlighted: CampaignState["sheets"];
   heldSpotlightNames: string[];
   encounter: CampaignState["encounter"];
@@ -133,9 +143,14 @@ function ComposerInner({
   composerRef: RefObject<HTMLTextAreaElement | null>;
   // The ammunition variant rule, for the Hand's ranged cards.
   trackAmmo?: boolean;
+  // The Director's Romance cue is offered (issue 501).
+  romanceCue?: boolean;
   // The board's cover and flanking from this character to each enemy, for
   // the Hand's hit preview (src/lib/battlemap/view-tactics.ts).
   edges?: Record<string, TargetEdge>;
+  // What lies on the board and who rides what, for the Hand's gear cards.
+  drops?: PlayerMapView["drops"];
+  mounts?: PlayerMapView["mounts"];
   // A gold pulse on the frame: the board says it is this player's turn.
   highlight?: boolean;
   directorArm: CampaignState["directorArm"];
@@ -148,6 +163,28 @@ function ComposerInner({
 }) {
   // The Hand outlives the fight by one beat so its fold-away can play.
   const hand = useLingeringEncounter(encounter);
+  // A DM who plays characters too (a test fight a person runs, issue 553):
+  // on one of theirs the party's Hand and its Do and Say, on every other turn
+  // the monsters'. At any other table the DM holds no character, so this is
+  // never true there.
+  const current = hand.encounter?.orderReady ? hand.encounter.order[hand.encounter.turnIndex] : undefined;
+  const heroUp =
+    isDm &&
+    !hand.encounter?.enemyTurns &&
+    current?.kind === "pc" &&
+    sheets.some((sheet) => sheet.id === current.id && sheet.userId === meUserId && !sheet.isCompanion);
+  const partyHand = !isDm || heroUp;
+  // The box speaks for whoever's turn it is: the hero's coming up (or the
+  // table opening on it) turns it to Do, and the turn passing on turns Do or
+  // Say back to Narrate, so text typed after the turn moved is never sent in
+  // the wrong voice.
+  const heroWasUp = useRef(false);
+  useEffect(() => {
+    if (heroWasUp.current === heroUp) return;
+    heroWasUp.current = heroUp;
+    if (heroUp) onKindChange("do");
+    else if (kind === "do" || kind === "say") onKindChange("narrate");
+  }, [heroUp, kind, onKindChange]);
   // Each mode's limit, counted as its route counts it. The count shows once
   // a draft nears it, and a draft over it is held here, marked, rather than
   // refused after the send or cut short on the server (issue 207).
@@ -157,7 +194,8 @@ function ComposerInner({
   const tooLong = length > maxChars;
   return (
     <form onSubmit={onSubmit} className="glass session-desk cine-desk border-t border-stone-700/40 px-3 pb-3 pt-2.5">
-      <div className="mx-auto max-w-3xl sm:px-3">
+      <div className="session-desk-body mx-auto max-w-3xl sm:px-3">
+        <div className="session-compose-notices">
         {pendingRolls.map((pending) => (
           <PendingRollCard
             // Inspiration rewrites the parked roll's dice: the card starts
@@ -181,6 +219,16 @@ function ComposerInner({
           meUserId={meUserId}
           onRelease={onReleaseFloor}
         />
+        <SideNotice encounter={encounter ?? null} sheets={sheets} meUserId={meUserId} />
+        {floor.mode === "open" && dmStatus === "idle" ? (
+          <TableWaitBanner
+            campaignId={campaignId}
+            wait={tableWait ?? null}
+            meUserId={meUserId}
+            steersStory={steersStory}
+            onGoOn={onReleaseFloor}
+          />
+        ) : null}
         <DirectorArmedBanner campaignId={campaignId} steersStory={steersStory} armed={directorArm} />
         <StoryNudge
           cadence={storyCadence}
@@ -196,13 +244,15 @@ function ComposerInner({
             onDismiss={joinBanner.onDismiss}
           />
         ) : null}
+        </div>
+        <div className="session-compose-hand">
         {/* The Hand (docs/visual-overhaul-plan.md 5.2): a player's combat options
             as cards, only while a fight is on. It adds to everything below and
             takes nothing away: the pills, the box, the mic and the send button
             work exactly as they do without it. */}
         {/* The DM's hand (issue #108): the monsters' attacks and abilities
             as the same cards, played through the console's invoke route. */}
-        {isDm && hand.encounter ? (
+        {!partyHand && hand.encounter ? (
           <MonsterHand
             campaignId={campaignId}
             sheets={sheets}
@@ -210,7 +260,7 @@ function ComposerInner({
             leaving={hand.leaving}
           />
         ) : null}
-        {!isDm && hand.encounter ? (
+        {partyHand && hand.encounter ? (
           <CombatHand
             activeSheetId={activeSheetId}
             campaignId={campaignId}
@@ -227,14 +277,20 @@ function ComposerInner({
             composerRef={composerRef}
             trackAmmo={trackAmmo}
             edges={edges}
+            drops={drops}
+            mounts={mounts}
           />
         ) : null}
+        </div>
+        <div className="session-compose-entry">
         <div data-pill-group="" className="mb-2 flex flex-wrap items-center gap-1.5" data-tour="composer-modes">
           {/* The DM authors and talks out of character; they have no
               character to act or speak as, and the story directions exist to
               steer an AI narrator they have replaced. */}
           {(isDm
-            ? (["narrate", "ooc"] as const)
+            ? heroUp
+              ? (["do", "say", "narrate", "ooc"] as const)
+              : (["narrate", "ooc"] as const)
             : ([
                 "do",
                 "say",
@@ -262,22 +318,7 @@ function ComposerInner({
               </Tooltip>
             ),
           )}
-          {dmStatus !== "idle" ? (
-            <span className="session-status live-in">
-              <D20Spinner className="size-4 shrink-0 text-amber-500" />
-              {dmStatus === "rolling"
-                ? "DM rolling dice..."
-                : dmStatus === "awaiting_rolls"
-                  ? "Waiting on real dice..."
-                  : dmStatus === "narrating"
-                    ? "DM narrating..."
-                    : dmStatus === "writing_chapter"
-                      ? "DM writing the chapter..."
-                      : dmStatus === "plotting_arc"
-                        ? "DM plotting the story arc..."
-                        : "DM at work..."}
-            </span>
-          ) : null}
+          <DmStatusLine campaignId={campaignId} dmStatus={dmStatus} dmJob={dmJob} canStop={steersStory} />
         </div>
         {/*
           Direct's own controls, and the reason there is no second row of
@@ -294,12 +335,12 @@ function ComposerInner({
         ) : null}
         {kind === "lead" && steersStory ? (
           <div className="reveal mb-2 flex flex-wrap items-center gap-1.5">
-            <DirectorPresets campaignId={campaignId} />
+            <DirectorPresets campaignId={campaignId} romance={romanceCue} />
             <Tooltip
               content={
                 leadPrivate
-                  ? "Only the DM sees this. It steers the next turn and never enters the transcript."
-                  : "The table sees this direction, and the DM acts on it now."
+                  ? "Only the GM sees this. It steers the next turn and never enters the transcript."
+                  : "The table sees this direction, and the GM acts on it now."
               }
             >
               <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-stone-300">
@@ -365,6 +406,7 @@ function ComposerInner({
         </div>
         <LengthNote id={noteId} length={length} max={maxChars} from={0.8} className="mt-1" />
         {error ? <p className="motion-shake mt-1.5 text-sm text-red-400">{error}</p> : null}
+        </div>
       </div>
     </form>
   );

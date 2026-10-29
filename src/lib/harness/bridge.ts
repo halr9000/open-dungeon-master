@@ -23,6 +23,7 @@
 // tool handling, and there is no second copy of the rules to drift.
 
 import { agentSpeedEligibility } from "@/lib/speed-tier";
+import { acceptsCall } from "@/lib/dm/tool-merge-logic";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -176,6 +177,15 @@ export class BridgeSession {
       this.waiter?.onDelta?.(event.text);
       return;
     }
+    if (event.type === "tool_round") {
+      // The text so far came before a tool call, so it is not the message:
+      // a draft, which stands only if nothing is written after.
+      if (this.text.trim()) {
+        this.draft = this.text;
+      }
+      this.clearText();
+      return;
+    }
     if (event.type === "turn_end") {
       this.finished = true;
       this.lastUsage = event.usage;
@@ -230,7 +240,9 @@ export class BridgeSession {
     if (this.narrateOnly) {
       return Promise.resolve({ text: this.refuseToNarrate(), isError: true });
     }
-    if (!this.allowed.has(name)) {
+    // A retired name (issue #471) runs while the tool that took its place is
+    // offered: a program that learned the old names still plays.
+    if (!acceptsCall((offered) => this.allowed.has(offered), name)) {
       return Promise.resolve({
         text: `${name} is not available at this point in the game. Use another tool or narrate.`,
         isError: true,
@@ -772,7 +784,8 @@ async function completeWithHarness(
         binary,
         system: rendered.system,
         model,
-        effort: config.effort,
+        // The bookkeeping model's own effort when the admin set one.
+        effort: context.role === "utility" ? config.utilityEffort || config.effort : config.effort,
         ...(speed ? { speed } : {}),
         mcp: null,
         cwd,

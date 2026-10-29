@@ -16,6 +16,9 @@ const { previewRows, composeSentence, intentBody, afterCommit, targetFromCompose
   await import("../src/lib/battlemap/hand-play.ts");
 const { attackOdds, asPercent } = await import("../src/lib/srd/odds.ts");
 const { populateResources } = await import("../src/lib/srd/class-resources.ts");
+const { BEAST_FORMS } = await import("../src/lib/srd/beast-forms.ts");
+const { beastAttackIcon } = await import("../src/lib/battlemap/attack-art.ts");
+const { iconCandidates } = await import("../src/lib/icons.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -219,6 +222,79 @@ test("a beast form swings with its own statblock", () => {
   assert.match(byId(cards, "spell:fire bolt").disabled, /wild shaped as a Brown Bear/);
 });
 
+test("every beast attack has painted art or a neutral fallback and preserves its statblock", () => {
+  for (const form of BEAST_FORMS) {
+    const character = sheet({ class: "druid", equipment: [item("Quarterstaff")], wildShape: {
+      form: form.name, beastHp: form.hp, beastMaxHp: form.hp, beastAc: form.ac, attacks: form.attacks,
+    } });
+    const attacks = deriveHand(character).filter(card => card.type === "attack");
+    assert.equal(attacks.length, form.attacks.length, form.name);
+    for (const attack of form.attacks) {
+      const card = attacks.find(card => card.name === attack.name);
+      assert.match(card.icon.key, /^(?:strike-|natural-attack$)/, `${form.name}: ${attack.name}`);
+      assert.equal(iconCandidates(card.icon).length, 1, form.name);
+      assert.equal(card.toHit, attack.toHit);
+      assert.equal(card.damage, attack.damage);
+      assert.equal(card.damageType, attack.type);
+      assert.deepEqual(card.intent, { card: "attack", weapon: attack.name });
+    }
+    const reverted = deriveHand({ ...character, wildShape: null });
+    assert.equal(byId(reverted, "attack:unarmed strike").icon.key, "unarmed-strike");
+    assert.equal(byId(reverted, "attack:quarterstaff").icon.kind, "item");
+  }
+});
+
+test("attack artwork distinguishes actions and shares compatible anatomy", () => {
+  assert.equal(beastAttackIcon("  WOLF  ", " Bite ").key, "strike-bite-mammal");
+  assert.equal(beastAttackIcon("Dire Wolf", "Bite").key, "strike-bite-mammal");
+  assert.equal(beastAttackIcon("Brown Bear", "Bite").key, "strike-bite-mammal");
+  assert.equal(beastAttackIcon("Brown Bear", "Claws").key, "strike-claw-mammal");
+  assert.equal(beastAttackIcon("Panther", "Claw").key, "strike-claw-mammal");
+  assert.equal(beastAttackIcon("Giant Ape", "Fist").key, "strike-fist-primate");
+  assert.equal(beastAttackIcon("Crocodile", "Bite").key, "strike-bite-reptile");
+  assert.equal(beastAttackIcon("Tyrannosaurus Rex", "Bite").key, "strike-bite-reptile");
+  assert.equal(beastAttackIcon("Tyrannosaurus Rex", "Tail").key, "strike-tail-reptile");
+  assert.equal(beastAttackIcon("Giant Spider", "Bite").key, "strike-bite-arachnid");
+  assert.equal(beastAttackIcon("Giant Constrictor Snake", "Bite").key, "strike-bite-serpent");
+  assert.equal(beastAttackIcon("Giant Constrictor Snake", "Constrict").key, "strike-constrict");
+  assert.equal(beastAttackIcon("Elk", "Ram").key, "strike-ram-antlers");
+  assert.equal(beastAttackIcon("Mammoth", "Gore").key, "strike-tusks");
+  assert.equal(beastAttackIcon("Boar", "Tusk").key, "strike-tusks");
+  assert.equal(beastAttackIcon("Polar Bear", "Claws").key, "strike-claw-mammal");
+  assert.equal(beastAttackIcon("Giant Crocodile", "Tail").key, "strike-tail-reptile");
+  for (const [form, first, second] of [["Brown Bear", "Bite", "Claws"], ["Giant Eagle", "Beak", "Talons"], ["Giant Constrictor Snake", "Bite", "Constrict"], ["Tyrannosaurus Rex", "Bite", "Tail"]]) {
+    assert.notEqual(beastAttackIcon(form, first).key, beastAttackIcon(form, second).key, form);
+  }
+});
+
+test("unknown anatomy stays neutral unless the attack identifies its body part", () => {
+  for (const form of ["Werewolf", "Moon Wolf Construct", "", "constructor", "Unknown form"]) {
+    const icon = beastAttackIcon(form, "Bite");
+    assert.equal(icon.key, "natural-attack");
+    assert.equal(iconCandidates(icon).length, 1);
+  }
+  assert.equal(beastAttackIcon("Brown Bear", "Unknown strike").key, "natural-attack");
+  assert.equal(beastAttackIcon("Unknown form", "Gore").key, "natural-attack");
+  assert.equal(beastAttackIcon("Unknown form", "Constrict").key, "natural-attack");
+  assert.equal(beastAttackIcon("Unknown form", "Talons").key, "strike-talons");
+  assert.equal(beastAttackIcon("Unknown form", "Tentacle").key, "strike-tentacles");
+  assert.equal(beastAttackIcon("Unknown form", "Beak").key, "strike-beak");
+  for (const [form, attack] of [["Giant Crab", "Claw"], ["Rhinoceros", "Gore"], ["Poisonous Snake", "Bite"], ["Reef Shark", "Bite"], ["Deer", "Bite"], ["Giant Ape", "Rock"]]) {
+    assert.equal(beastAttackIcon(form, attack).key, "natural-attack", `${form}: ${attack}`);
+  }
+});
+
+test("bonus unarmed strikes also use fist artwork", () => {
+  for (const [className, feature, id] of [
+    ["monk", "Martial Arts", "attack:unarmed strike:martial-arts"],
+    ["barbarian", "Frenzy", "attack:unarmed strike:frenzy"],
+  ]) {
+    const cards = deriveHand(sheet({ class: className, features: [{ name: feature, source: "class" }] }));
+    assert.equal(byId(cards, id).icon.key, "unarmed-strike");
+    assert.equal(iconCandidates(byId(cards, id).icon).length, 1);
+  }
+});
+
 // ---- riders ----
 
 test("Divine Smite rides the lowest slot with the engine's dice, and dims with no slot", () => {
@@ -292,7 +368,7 @@ test("a spent slot level upcasts to the next one, and no slots dims the card", (
   assert.equal(word.intent.slotLevel, 2);
   const dry = caster({ spellcasting: { ability: "int", slots: { 1: { max: 4, used: 4 } }, prepared: ["Healing Word", "Fire Bolt"], known: [] } });
   const cards = deriveHand(dry, FRESH_TURN, { spells: FACTS });
-  assert.match(byId(cards, "spell:healing word").disabled, /no free level 1 spell slot/);
+  assert.match(byId(cards, "spell:healing word").disabled, /no spell slot of level 1 or higher left for Healing Word/);
   assert.equal(byId(cards, "spell:healing word").spent, true);
   assert.equal(byId(cards, "spell:fire bolt").disabled, null);
 });
@@ -390,7 +466,7 @@ test("a condition that forbids acting stops every card but End turn", () => {
 test("it is somebody else's turn: the hand can be read, not played", () => {
   const cards = deriveHand(sheet({ equipment: [item("Longsword")] }), { ...FRESH_TURN, myTurn: false, currentName: "Talia" });
   // canAct's own sentence (src/lib/dm/can-act.ts).
-  assert.ok(cards.every((card) => /^It is Talia's turn, not Kael's\. Off their own turn a character can only use their reaction\.$/.test(card.disabled)));
+  assert.ok(cards.every((card) => /^It is Talia's turn, not Kael's\. Off their own turn a character can only use their reaction\. What they declared waits for their turn\.$/.test(card.disabled)));
 });
 
 test("a character at 0 hit points cannot act", () => {

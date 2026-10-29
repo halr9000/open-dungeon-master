@@ -3,6 +3,7 @@
 import { owedChoices } from "@/lib/srd/owed-choices";
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { returnFocus } from "@/components/ui/return-focus";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { FileDown, Minus, Plus, PawPrint, Wrench, X } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -17,9 +18,10 @@ import {
   sizeForRace,
   type DerivedPart,
 } from "@/lib/srd";
-import { attunementSlotsFor, matchArmor } from "@/lib/srd/armor";
+import { attunementSlotsFor } from "@/lib/srd/armor";
 import { encumbranceFor } from "@/lib/srd/encumbrance";
-import { matchMagicItem, magicItemRiders } from "@/lib/srd/magic-items";
+import { magicItemRiders } from "@/lib/srd/magic-items";
+import type { WearConflict } from "@/lib/srd/wear-slots";
 import { RESOURCE_DEFS } from "@/lib/srd/class-resources";
 import { GameTerm } from "@/components/ui/GameTerm";
 import {
@@ -36,12 +38,13 @@ import {
 import { SheetSpells } from "@/components/sheet/SheetSpells";
 import { DefensesLine, HitDiceSpend, StateTags } from "@/components/sheet/SheetState";
 import { SheetBetween } from "@/components/sheet/SheetBetween";
-import { conditionDetail, hitDiceLine, itemStatus, maxHpView, otherSpeedsLine, speedView } from "@/components/sheet/sheet-state";
+import { conditionDetail, hitDiceLine, itemStatus, maxHpView, otherSpeedsLine, speedView, wearableGear } from "@/components/sheet/sheet-state";
 import { FeatureChoicePicker, OtherSpeeds } from "@/components/sheet/SheetChoices";
-import { SheetGearRow } from "@/components/sheet/SheetGearRow";
+import { SheetGearRows, type PendingWear } from "@/components/sheet/SheetGearRow";
 import { LoadBreakdown } from "@/components/sheet/LoadBreakdown";
 import { ResourceRow, SlotRow, STEP_BUTTON } from "@/components/sheet/SheetCounters";
 import { namesLookup } from "@/lib/battlemap/condition-notes";
+import { workshopClassName } from "@/lib/classes/workshop-registry";
 
 function titleCase(value: string) {
   return value.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -107,14 +110,9 @@ export function CharacterSheetDialog({
   const derived = computeSheetDerived(sheet);
   const armor = acBreakdownFor(sheet);
   const attunedCount = sheet.equipment.filter((item) => item.attuned).length;
-  // Only gear worth a toggle: armor and shields can be worn, and anything
-  // whose name declares a magic bonus can be attuned.
-  const wearable = sheet.equipment.filter(
-    (item) =>
-      matchArmor(item.name) !== null ||
-      /\+[123]\b/.test(item.name) ||
-      matchMagicItem(item.name) !== null,
-  );
+  // Only gear worth a toggle: armor, shields, magic and anything with a
+  // place on the body (src/components/sheet/sheet-state.ts wearableGear).
+  const wearable = wearableGear(sheet.equipment);
   const magic = magicItemRiders(sheet.equipment, sheet);
   // Carried weight is always worth showing once the pack has weights on it;
   // the thresholds and their penalties only mean something when the table
@@ -138,7 +136,6 @@ export function CharacterSheetDialog({
     size: sizeForRace(sheet.race),
     wearer: sheet,
   });
-  const anyEquipped = sheet.equipment.some((item) => item.equipped);
   const speedNote = speedState.notes.length ? speedState.notes.join(" ") : "Their walking speed.";
   const [busy, setBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -152,6 +149,9 @@ export function CharacterSheetDialog({
   // The route's line after armor went on or off outside a fight: the minutes
   // it took, already on the clock.
   const [timeNote, setTimeNote] = useState<string | null>(null);
+  // Putting on what fills a full place (a second cloak) asks first: the swap,
+  // or for the DM and the lead the SRD's exception (issue 412).
+  const [pendingWear, setPendingWear] = useState<PendingWear | null>(null);
   const spends = mine || corrects;
   // The usage route's own refusal for a dead character's spend.
   const deadNote = dead && !corrects ? `${sheet.name} is dead and spends nothing.` : null;
@@ -179,7 +179,11 @@ export function CharacterSheetDialog({
         body: JSON.stringify({ ...body, characterId: sheet.id }),
       });
       const data = await response.json().catch(() => null);
-      if (!response.ok) {
+      const conflict = data?.wearConflict as WearConflict | undefined;
+      if (!response.ok && conflict?.item) {
+        // The server saw a fuller place than this sheet did: ask the same way.
+        setPendingWear({ name: conflict.item, conflict, change: { equipped: true } });
+      } else if (!response.ok) {
         setRefusal({ text: typeof data?.error === "string" ? data.error : "That change was refused.", at });
       } else if (typeof data?.timePassed === "string") {
         // Out of a fight armor takes minutes to put on or take off, and the
@@ -197,7 +201,7 @@ export function CharacterSheetDialog({
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay fixed inset-0 z-50 bg-[#05030d]/70 backdrop-blur-sm" />
-        <Dialog.Content
+        <Dialog.Content {...returnFocus}
           className={cn(
             ui.dialog,
             "fixed left-1/2 top-1/2 z-50 max-h-[88dvh] w-[min(52rem,94vw)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto",
@@ -230,15 +234,19 @@ export function CharacterSheetDialog({
                   Level {sheet.level} {sheet.raceLabel ?? titleCase(sheet.race)}{" "}
                   {(sheet.classes?.length ?? 0) > 1
                     ? (sheet.classes ?? [])
-                        .map((entry) => `${titleCase(entry.id)} ${entry.level}`)
+                        .map((entry) => `${workshopClassName(entry.id) ?? titleCase(entry.id)} ${entry.level}`)
                         .join(" / ")
-                    : `${titleCase(sheet.class)}${sheet.subclass ? ` (${titleCase(sheet.subclass)})` : ""}`}
+                    : `${workshopClassName(sheet.class) ?? titleCase(sheet.class)}${sheet.subclass ? ` (${titleCase(sheet.subclass)})` : ""}`}
                   {sheet.background ? ` · ${titleCase(sheet.background)}` : ""}
                   {sheet.alignment ? ` · ${sheet.alignment}` : ""}
                 </p>
               </div>
             </div>
-            <Dialog.Close className="text-stone-500 hover:text-stone-300">
+            {/* The kit's own close button: a 40px target on phones. */}
+            <Dialog.Close
+              aria-label="Close"
+              className="pk-tap -m-1 flex shrink-0 items-center justify-center rounded-md p-2 text-stone-500 transition-colors hover:bg-stone-800 hover:text-stone-300"
+            >
               <X className="size-4" />
             </Dialog.Close>
           </div>
@@ -428,9 +436,9 @@ export function CharacterSheetDialog({
                     available, empty ones are spent. They all come back after a long rest
                     {sheet.class === "warlock" || sheet.spellcasting.pact ? " (a warlock's pact slots after a short rest too)" : ""}.
                     {corrects
-                      ? " The DM marks them as spells are cast; the buttons correct the count."
+                      ? " The GM marks them as spells are cast; the buttons correct the count."
                       : mine
-                        ? " The DM marks them as you cast; the button marks one the count missed."
+                        ? " The GM marks them as you cast; the button marks one the count missed."
                         : ""}
                   </p>
                 </div>
@@ -496,7 +504,7 @@ export function CharacterSheetDialog({
                 <p className="reveal mt-1.5 text-[11px] text-stone-500">
                   {corrects
                     ? "Minus spends, plus hands a use back as a correction."
-                    : "Minus marks a use spent. Uses come back at rests; the DM or the party lead corrects a wrong count."}{" "}
+                    : "Minus marks a use spent. Uses come back at rests; the GM or the party lead corrects a wrong count."}{" "}
                   Changes are logged to the session event log.
                 </p>
               ) : null}
@@ -517,10 +525,10 @@ export function CharacterSheetDialog({
                   return item ? itemStatus(sheet, item).charges : null;
                 }}
               />
-              {mine && wearable.length ? (
+              {(mine || corrects) && wearable.length ? (
                 <div className="reveal mt-2 space-y-1">
                   <p className="text-[11px] text-stone-500">
-                    Worn gear sets your AC ({sheet.acOverride ? "pinned by hand" : armor.parts.join(" + ")}
+                    Worn gear sets {mine ? "your" : "their"} AC ({sheet.acOverride ? "pinned by hand" : armor.parts.join(" + ")}
                     ). Attuned {attunedCount}/{attunementSlotsFor(sheet)}.
                   </p>
                   {magic.sources.length ? (
@@ -538,19 +546,19 @@ export function CharacterSheetDialog({
                         .join(" \u00b7 ") || "worn"}
                     </p>
                   ) : null}
-                  {wearable.map((item) => (
-                    <SheetGearRow
-                      key={item.name}
-                      sheet={sheet}
-                      item={item}
-                      worn={item.equipped ?? !anyEquipped}
-                      inCombat={inCombat}
-                      myTurn={myTurn}
-                      dead={dead}
-                      busy={busy}
-                      onGear={(change) => adjustUsage({ gear: { [item.name]: change } }, "gear")}
-                    />
-                  ))}
+                  <SheetGearRows
+                    sheet={sheet}
+                    items={wearable}
+                    armor={armor}
+                    corrects={corrects}
+                    inCombat={inCombat}
+                    myTurn={myTurn}
+                    dead={dead}
+                    busy={busy}
+                    pending={pendingWear}
+                    onPending={setPendingWear}
+                    onGear={(gear) => void adjustUsage({ gear }, "gear")}
+                  />
                   {refusal?.at === "gear" ? (
                     <p role="alert" className="reveal text-[11px] text-amber-300">
                       {refusal.text}

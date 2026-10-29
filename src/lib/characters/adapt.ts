@@ -1,5 +1,5 @@
 import { spellSlotsFor } from "@/lib/srd";
-import { slotTableFor } from "@/lib/srd/multiclass";
+import { progressionForClass, slotTableFor } from "@/lib/srd/multiclass";
 import { earnedAsiCountFor, removeAsiChoices } from "@/lib/srd/asi";
 import { legacyAsiTaken, readAsiLedger, withAsiLedger } from "@/lib/srd/asi-ledger";
 import { derivedMaxHp, hpBonusPerLevelFor } from "@/lib/srd/hit-points";
@@ -12,11 +12,10 @@ import {
   withoutPrimalChampion,
 } from "@/lib/srd/trait-rules";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
-import { suggestedCantripCount } from "@/lib/content/mechanics";
-import { spellClassFor } from "@/lib/classes";
 import { findClass } from "@/lib/srd";
 import { spellLevelOf, spellsAgainstLimit } from "@/lib/srd/spell-lists";
 import {
+  cantripCapOf,
   casterViewsOf,
   dedupeNames,
   grantedSpellsOf,
@@ -27,6 +26,7 @@ import {
   withCasterViews,
   type CasterView,
 } from "@/lib/srd/spell-prep";
+import { textKey } from "@/lib/language/text-logic";
 
 // Taking a stored sheet into a campaign that runs at a different level.
 //
@@ -128,10 +128,7 @@ export function adaptSheetToLevel(
   // whenever the level changes, because the table's check reads a sheet with
   // no count as having taken what the table's level gives.
   const held = readAsiLedger(sheet.features ?? []);
-  const taken = Math.min(
-    keptChoiceCount,
-    held ?? Math.max(sheet.asiChoices?.length ?? 0, legacyAsiTaken(fromLevel)),
-  );
+  const taken = takenWhereBuilt(sheet, fromLevel, keptChoiceCount);
   if (held !== null ? held !== taken : level !== fromLevel && (level >= 4 || taken > 0)) {
     sheet.features = withAsiLedger(sheet.features ?? [], taken);
   }
@@ -175,7 +172,7 @@ export function adaptSheetToLevel(
       const klass = findClass(entry.id);
       return klass
         ? (klass.casterType !== "none" && Boolean(klass.spellAbility)) ||
-            (isThirdCaster(entry.id, entry.subclass) && entry.level >= 3)
+            (isThirdCaster(entry.id, entry.subclass, progressionForClass(sheet, entry.id)) && entry.level >= 3)
         : true;
     });
     if (!casts) {
@@ -187,8 +184,8 @@ export function adaptSheetToLevel(
   if (sheet.spellcasting) {
     const slots =
       (sheet.classes ?? []).length > 1
-        ? slotTableFor({ class: sheet.class, classes: sheet.classes })
-        : spellSlotsFor(sheet.class, level, sheet.subclass);
+        ? slotTableFor({ class: sheet.class, classes: sheet.classes, spellcasting: sheet.spellcasting })
+        : spellSlotsFor(sheet.class, level, sheet.subclass, sheet.spellcasting.progression);
     // Always the table's row, an empty one included. A class the tables do
     // not know keeps the slots it was stored with.
     if (Object.keys(slots).length || findClass(sheet.class)) {
@@ -212,6 +209,46 @@ export function adaptSheetToLevel(
   return sheet;
 }
 
+// The improvements a sheet built at fromLevel took, never more than the
+// level it now plays has earned: its own count, or the old table's at the
+// level it was built.
+function takenWhereBuilt(built: CreateSheetInput, fromLevel: number, earned: number): number {
+  return Math.min(
+    earned,
+    readAsiLedger(built.features ?? []) ?? Math.max(built.asiChoices?.length ?? 0, legacyAsiTaken(fromLevel)),
+  );
+}
+
+// A sheet built at one level and admitted at a higher one by the table door,
+// which judges it as made there: a ready-made hero (src/lib/starter/pregens.ts)
+// is a level 1 build seated at the table's starting level. That door counts a
+// made character as having taken every improvement its level earned, but
+// nobody offered this one any (backlog B6). Its count goes back to what it
+// took where it was built, the rule above for a library hero joining above
+// its level (issue 293), so the sheet lists the rest as owed and the next
+// level-up offers them. Its blank subclass is owed the same way already
+// (subclassOwed, src/lib/srd/owed-choices.ts).
+export function oweSkippedImprovements(
+  admitted: CreateSheetInput,
+  built: CreateSheetInput,
+  fromLevel: number,
+  toLevel: number,
+): CreateSheetInput {
+  const level = Math.max(1, Math.min(20, toLevel));
+  if (level <= fromLevel) {
+    return admitted;
+  }
+  const classList =
+    (admitted.classes ?? []).length > 1
+      ? (admitted.classes ?? [])
+      : [{ id: admitted.class, subclass: admitted.subclass ?? "", level }];
+  const taken = takenWhereBuilt(built, fromLevel, earnedAsiCountFor(classList));
+  if (level < 4 && taken === 0 && readAsiLedger(admitted.features ?? []) === null) {
+    return admitted;
+  }
+  return { ...admitted, features: withAsiLedger(admitted.features ?? [], taken) };
+}
+
 function trimToLevel(view: CasterView, abilities: CreateSheetInput["abilities"]): CasterView {
   const top = maxSpellLevelOf(view);
   // Homebrew names the checklist does not know are kept: no level to judge.
@@ -219,7 +256,7 @@ function trimToLevel(view: CasterView, abilities: CreateSheetInput["abilities"])
     names.filter((name) => (spellLevelOf(name) ?? 0) <= top);
   const granted = grantedSpellsOf(view);
   const isGranted = (name: string) =>
-    granted.some((entry) => entry.toLowerCase() === name.toLowerCase());
+    granted.some((entry) => textKey(entry) === textKey(name));
   // Keep the granted spells and the first `cap` others.
   const capList = (names: string[], cap: number | null) => {
     let room = cap ?? Infinity;
@@ -231,11 +268,9 @@ function trimToLevel(view: CasterView, abilities: CreateSheetInput["abilities"])
       return room >= 0;
     });
   };
-  const cantripCap = suggestedCantripCount(
-    spellClassFor(view.classId),
-    view.level,
-    findClass(view.classId)?.casterType,
-  );
+  // A third caster's count (an Eldritch Knight's two) as much as a
+  // class's own.
+  const cantripCap = cantripCapOf(view);
   const cap = spellCapOf(view, abilities)?.count ?? null;
   const cantrips = cantripCap === null ? view.cantrips : view.cantrips.slice(0, cantripCap);
   const known = capList(castable(view.known), cap);

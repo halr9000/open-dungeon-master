@@ -18,6 +18,7 @@ import {
   SelectField,
   type EnvDefaults,
   type MaskedConfig,
+  inheritedHint,
 } from "@/app/admin/AdminSettingsFields";
 
 // Image generation. The picker names the backend new campaigns start on; a
@@ -261,7 +262,7 @@ export function AdminImagesSection({
   const blocks: Record<Group, React.ReactNode> = {
     comfyui: (
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Server URL" hint={`Env: ${env.comfyUrl}`}>
+        <Field label="Server URL" hint={inheritedHint(images.comfyUrl, env.comfyUrl)}>
           <input
             className={ui.input}
             value={images.comfyUrl}
@@ -274,7 +275,7 @@ export function AdminImagesSection({
     ),
     flux: (
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Worker URL" hint={`Env: ${env.fluxWorkerUrl}. The worker loads its own FLUX model.`}>
+        <Field label="Worker URL" hint={inheritedHint(images.fluxWorkerUrl, env.fluxWorkerUrl, "The worker loads its own FLUX model.")}>
           <input
             className={ui.input}
             value={images.fluxWorkerUrl}

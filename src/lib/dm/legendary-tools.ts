@@ -2,7 +2,7 @@ import { z } from "zod";
 import { dmRoll } from "@/lib/dm/roll-card";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter, listEnemies, orderEntryId, saveEncounter, turnKey, type Encounter, type EncounterEnemy } from "@/lib/db/encounters";
-import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
+import { resolveEnemyRef, unknownEnemyRef } from "@/lib/dm/enemy-damage";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
@@ -30,6 +30,8 @@ import {
   spendResistance,
   type LegendaryPool,
 } from "@/lib/dm/legendary-logic";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { containsPhrase, textKey } from "@/lib/language/text-logic";
 
 // Legendary actions, lair actions and legendary resistance as tools
 // (docs/vtt-parity-implementation-plan.md 4.1). Imports point downward
@@ -40,8 +42,6 @@ type ToolDef = {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
 };
-
-export const LEGENDARY_TOOL_NAMES = ["legendary_action", "legendary_resist", "lair_action"] as const;
 
 export const legendaryTools: ToolDef[] = [
   {
@@ -66,7 +66,7 @@ export const legendaryTools: ToolDef[] = [
     function: {
       name: "legendary_resist",
       description:
-        "Spend one use of Legendary Resistance so the creature succeeds on the save it just failed this round. The server keeps the count and the last failed save: it lifts what that save laid and gives back the hit points a success would have spared. With no failed save on record, or none left, it is refused. The server already spends one on its own when a failed save would leave the creature under a binding condition; use this for anything else (a damaging save it must not fail).",
+        "Spend one use of Legendary Resistance so the creature succeeds on the save it just failed this round. The server keeps the count and the last failed save: it lifts what that save laid and gives back the HP a success would have spared. With no failed save on record, or none left, it is refused. The server already spends one on its own when a failed save would leave the creature under a binding condition; use this for anything else (a damaging save it must not fail).",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -84,7 +84,7 @@ export const legendaryTools: ToolDef[] = [
       parameters: {
         type: "object",
         additionalProperties: false,
-        properties: { action: { type: "string", description: "Which printed lair option (its words or its number), or a line for a lair with none printed." } },
+        properties: { action: { type: "string", description: "The printed lair option by its list number or whole line, or your own line for a lair with none." } },
         required: ["action"],
       },
     },
@@ -120,15 +120,21 @@ export function refillLegendaryForTurn(encounter: Encounter, enemy: EncounterEne
   // (the condition enemy-damage.ts sets, which ends as this turn starts;
   // `enemy` is read from before that, so it still shows).
   const regeneration = regenerationOf(enemy.stats);
-  if (regeneration && enemy.currentHp > 0) {
+  // A5e's Bloodied Regeneration works only at half its hit points or fewer.
+  const bloodied = !regeneration?.whileBloodied || enemy.currentHp <= Math.floor(enemy.maxHp / 2);
+  if (regeneration && enemy.currentHp > 0 && bloodied) {
     // Chill Touch: a creature it struck cannot regain hit points.
     if (enemy.conditions.includes(REGENERATION_STOPPED) || enemy.conditions.includes("chill touch")) {
       lines.push(`${enemy.displayName} does not regenerate this turn.`);
     } else if (enemy.currentHp < enemyHpCap(enemy)) {
-      // Never past the maximum, which exhaustion 4 halves.
+      // Never past the maximum, which exhaustion 4 halves. What the block
+      // asks that the server cannot see ("isn't in sunlight or running
+      // water") is the DM's to hold it to.
       const healed = Math.min(enemyHpCap(enemy), enemy.currentHp + regeneration.amount);
       patchEnemyHp(enemy.id, healed, "alive");
-      lines.push(`${enemy.displayName} regenerates ${healed - enemy.currentHp} hit points.`);
+      lines.push(
+        `${enemy.displayName} regenerates ${healed - enemy.currentHp} hit points.${regeneration.onlyIf ? ` Its Regeneration works only if ${regeneration.onlyIf}: if it does not, take them back with apply_damage.` : ""}`,
+      );
     }
   }
   const ledger = encounter.legendary.abilities?.[enemy.id];
@@ -168,33 +174,33 @@ function publishEncounter(campaign: Campaign) {
 
 const actionSchema = z.object({ enemyId: z.string().min(1), action: z.string().trim().min(1).max(80) });
 
-export function handleLegendaryAction(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleLegendaryAction(campaign: Campaign, rawArguments: string): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: legendary actions are taken only in a fight.", retry: true };
   }
   let args: z.infer<typeof actionSchema>;
   try {
     args = actionSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: legendary_action needs enemyId and action." };
+    return { error: "Invalid arguments: legendary_action needs enemyId and action.", retry: true };
   }
   const enemy = resolveEnemyRef(encounter.id, args.enemyId);
   if (!enemy) {
-    return { error: "Unknown enemyId; use one from GAME STATE." };
+    return unknownEnemyRef(encounter.id, "enemyId", args.enemyId);
   }
   if (enemy.status !== "alive") {
-    return { error: `${enemy.displayName} is ${enemy.status}.` };
+    return { error: `${enemy.displayName} is ${enemy.status}.`, retry: true };
   }
   const profile = legendaryProfile(enemy.stats);
   if (!profile || !profile.actions.length) {
-    return { error: `${enemy.displayName} has no legendary actions.` };
+    return { error: `${enemy.displayName} has no legendary actions. It acts on its own turn.`, retry: true };
   }
   // A legendary action is still an action of the creature's: not while it
   // is incapacitated, and not while it is surprised.
   const allowed = canEnemyAct({ enemy, encounter, kind: "legendary" });
   if (!allowed.ok) {
-    return { error: allowed.error };
+    return toolError(allowed);
   }
   const current = encounter.order[encounter.turnIndex];
   // Its own turn: the pointer on it, or its turn handed to the model by an
@@ -202,7 +208,7 @@ export function handleLegendaryAction(campaign: Campaign, rawArguments: string):
   const turnDue =
     Boolean(encounter.legendary.handoff?.enemyIds.includes(enemy.id)) && !enemyActedThisRound(encounter, enemy.id);
   if ((current && orderEntryId(current) === enemy.id) || turnDue) {
-    return { error: `It is ${enemy.displayName}'s own turn; legendary actions come at the end of other creatures' turns. Take its turn first: enemy_attack, or cast_at_player / aoe_damage with casterEnemyId for an ability or spell.` };
+    return { error: `It is ${enemy.displayName}'s own turn; legendary actions come at the end of other creatures' turns. Take its turn first: enemy_attack, or cast_at_player / aoe_damage with casterEnemyId and enemyAbility or spell.`, retry: true };
   }
   // One option at the end of each other creature's turn: the turn is the
   // pointer's, and each enemy that acts since closes a turn of its own.
@@ -212,20 +218,28 @@ export function handleLegendaryAction(campaign: Campaign, rawArguments: string):
   if (taken.includes(enemy.id)) {
     return {
       error: `${enemy.displayName} has already taken a legendary action at the end of this turn. It takes one option at the end of each other creature's turn; the next comes when another creature's turn ends. Nothing was spent.`,
+      retry: true,
     };
   }
   const pool: LegendaryPool = encounter.legendary.pools[enemy.id] ?? freshPool(profile);
   const outcome = spendLegendaryAction(pool, profile, args.action);
   if (!outcome.ok) {
-    return { error: outcome.error };
+    return toolError(outcome);
   }
   encounter.legendary.pools[enemy.id] = outcome.pool;
   encounter.legendary.opportunities = { key, ids: [...taken, enemy.id] };
-  const wanted = outcome.action.name.toLowerCase();
-  // "Tail Attack", or "uses its Paralyzing Touch": the line names an attack.
-  const attack = enemy.stats.attacks.find((entry) => {
-    const name = entry.name.replace(/\([^)]*\)/g, "").trim().toLowerCase();
-    return name === wanted || wanted.includes(name) || name.includes(wanted) || outcome.action.text.toLowerCase().includes(`its ${name}`);
+  // The attack the action buys, by the attack's whole name: the action is
+  // named for it ("Bite", "Tail Attack"), or its line makes or uses it
+  // ("makes one tail attack", "uses its Paralyzing Touch"), the longest name
+  // first, so "its tail spike" is the Tail Spike and not the Tail.
+  const named = textKey(outcome.action.name);
+  const attack = [...enemy.stats.attacks, ...(enemy.stats.legendaryAttacks ?? [])].sort((a, b) => b.name.length - a.name.length).find((entry) => {
+    const name = textKey(entry.name.replace(/\([^)]*\)/g, ""));
+    return (
+      named === name ||
+      named === `${name} attack` ||
+      [`${name} attack`, `${name} attacks`, `its ${name}`, `makes one ${name}`].some((phrase) => containsPhrase(outcome.action.text, phrase))
+    );
   });
   // A line with its own numbers (Wing Attack's DC 22 save) resolves through
   // aoe_damage or cast_at_player naming it; "casts a cantrip" through a
@@ -257,7 +271,7 @@ export function handleLegendaryAction(campaign: Campaign, rawArguments: string):
     remaining: outcome.pool.actions,
     ...(attack ? { next: `Resolve it now with enemy_attack (enemyId ${enemy.id}, attack "${attack.name}"): one attack.` } : {}),
     ...(effect
-      ? { next: `Resolve it now with aoe_damage (or cast_at_player for one target) with casterEnemyId ${enemy.id} and ability "${ability?.name}"; the server takes its DC and dice from the block.` }
+      ? { next: `Resolve it now with aoe_damage (or cast_at_player for one target) with casterEnemyId ${enemy.id} and enemyAbility "${ability?.name}"; the server takes its DC and dice from the block.` }
       : {}),
     ...(cantrip ? { next: `Resolve it now with the cantrip from its list: cast_at_player or aoe_damage with casterEnemyId ${enemy.id} and spell.` } : {}),
   };
@@ -265,24 +279,24 @@ export function handleLegendaryAction(campaign: Campaign, rawArguments: string):
 
 const resistSchema = z.object({ enemyId: z.string().min(1) });
 
-export function handleLegendaryResist(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleLegendaryResist(campaign: Campaign, rawArguments: string): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: Legendary Resistance is spent only in a fight.", retry: true };
   }
   let args: z.infer<typeof resistSchema>;
   try {
     args = resistSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: legendary_resist needs enemyId." };
+    return { error: "Invalid arguments: legendary_resist needs enemyId.", retry: true };
   }
   const enemy = resolveEnemyRef(encounter.id, args.enemyId);
   if (!enemy) {
-    return { error: "Unknown enemyId; use one from GAME STATE." };
+    return unknownEnemyRef(encounter.id, "enemyId", args.enemyId);
   }
   const pool = encounter.legendary.pools[enemy.id];
   if (!pool) {
-    return { error: `${enemy.displayName} has no Legendary Resistance.` };
+    return { error: `${enemy.displayName} has no Legendary Resistance: the save stands as rolled.`, retry: true };
   }
   // Legendary Resistance answers a save the creature has just failed: the
   // server keeps the last one (src/lib/dm/forced-save.ts) and turns exactly
@@ -290,25 +304,25 @@ export function handleLegendaryResist(campaign: Campaign, rawArguments: string):
   const failed = encounter.legendary.failedSave;
   if (!failed || failed.enemyId !== enemy.id || failed.round !== encounter.round || failed.resisted) {
     return {
-      error: `${enemy.displayName} has no failed save to turn into a success this round. Legendary Resistance answers a save the server just rolled and the creature failed; nothing was spent.`,
+      error: `${enemy.displayName} has no failed save to turn into a success this round. Legendary Resistance answers a save the server just rolled and the creature failed. Nothing was spent.`,
+      retry: true,
     };
   }
   if (enemy.status !== "alive") {
-    return { error: `${enemy.displayName} already fell to that save; Legendary Resistance is spent before the effect lands. Nothing was spent.` };
+    return { error: `${enemy.displayName} already fell to that save; Legendary Resistance is spent before the effect lands. Nothing was spent.`, retry: true };
   }
   const spent = spendResistance(pool);
   if (!spent) {
-    return { error: `${enemy.displayName} has no Legendary Resistance left.` };
+    return { error: `${enemy.displayName} has no Legendary Resistance left.`, retry: true };
   }
   // Settle the save as a success: what it laid comes off, and the hit points
   // a success would have spared come back.
-  const lower = (value: string | undefined) => (value ?? "").toLowerCase();
   let conditions = enemy.conditions;
   let meta = enemy.conditionMeta as ConditionMetaMap;
   const lifted: string[] = [];
   for (const name of failed.conditions ?? []) {
     const out = removeConditionInstances(conditions, meta, name, (entry) =>
-      (!failed.spell || !entry.spell || lower(entry.spell) === lower(failed.spell)) && (!failed.source || !entry.source || entry.source === failed.source),
+      (!failed.spell || !entry.spell || textKey(entry.spell) === textKey(failed.spell)) && (!failed.source || !entry.source || entry.source === failed.source),
     );
     if (out.removed > 0) {
       lifted.push(name);
@@ -340,19 +354,19 @@ export function handleLegendaryResist(campaign: Campaign, rawArguments: string):
 
 const lairSchema = z.object({ action: z.string().trim().min(1).max(300) });
 
-export function handleLairAction(campaign: Campaign, turn: DmTurn | null, rawArguments: string): Record<string, unknown> {
+export function handleLairAction(campaign: Campaign, turn: DmTurn | null, rawArguments: string): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: lair actions are taken only in a fight.", retry: true };
   }
   let args: z.infer<typeof lairSchema>;
   try {
     args = lairSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: lair_action needs an action." };
+    return { error: "Invalid arguments: lair_action needs an action.", retry: true };
   }
   if (!encounter.legendary.lair) {
-    return { error: "This fight is not in a lair." };
+    return { error: "This fight is not in a lair: there are no lair actions, and the enemies act on their own turns.", retry: true };
   }
   // Initiative count 20, losing ties: the move that passed it opened the
   // lair's moment, and the next move closes it (encounter-tools.ts).
@@ -360,21 +374,22 @@ export function handleLairAction(campaign: Campaign, turn: DmTurn | null, rawArg
   if (due === undefined) {
     return {
       error: "The lair acts on initiative count 20 (losing ties): after every creature at 20 or higher has had its turn, before anyone lower. That moment has not come with this turn; the server announces it (\"Initiative 20: the lair stirs\"). Nothing was done.",
+      retry: true,
     };
   }
   if (encounter.legendary.lairUsedRound === due) {
-    return { error: `The lair already acted this round (round ${due}).` };
+    return { error: `The lair already acted this round (round ${due}).`, retry: true };
   }
   // A block that prints its lair options is held to them.
   const enemies = listEnemies(encounter.id);
   const options = legendaryLairLines(enemies);
   const picked = options.length ? pickLairOption(options, args.action) : args.action;
   if (!picked) {
-    return { error: `The lair's options are printed in its block; name one of them (or its number): ${options.map((line, at) => `${at + 1}. ${line}`).join(" ")}` };
+    return { error: `The lair's options are printed in its block; send one's number (or its whole line): ${options.map((line, at) => `${at + 1}. ${line}`).join(" ")}`, retry: true };
   }
   const noRepeat = enemies.some((enemy) => (enemy.stats.traits ?? []).some((line) => /same (?:lair )?(?:effect|action) two rounds in a row/i.test(line)));
   if (options.length > 1 && noRepeat && encounter.legendary.lairLast === picked && encounter.legendary.lairUsedRound === due - 1) {
-    return { error: `The lair cannot use the same effect two rounds in a row; it used this one last round. Choose another: ${options.filter((line) => line !== picked).join(" ")}` };
+    return { error: `The lair cannot use the same effect two rounds in a row; it used this one last round. Choose another: ${options.filter((line) => line !== picked).join(" ")}`, retry: true };
   }
   encounter.legendary.lairUsedRound = due;
   encounter.legendary.lairLast = picked;
@@ -400,6 +415,8 @@ export function handleLairAction(campaign: Campaign, turn: DmTurn | null, rawArg
   };
 }
 
-function legendaryLairLines(enemies: EncounterEnemy[]): string[] {
-  return enemies.flatMap((enemy) => legendaryProfile(enemy.stats)?.lairActions ?? []);
+export function legendaryLairLines(enemies: EncounterEnemy[]): string[] {
+  // A book's printed lair options (Tome of Beasts' dragons) are offered in a
+  // fight the DM started in the lair; they never make one a lair fight.
+  return enemies.flatMap((enemy) => [...(legendaryProfile(enemy.stats)?.lairActions ?? []), ...(enemy.stats.lairOptions ?? [])]);
 }

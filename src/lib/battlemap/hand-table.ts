@@ -51,19 +51,35 @@ export function turnFromEncounter(
     ...(own?.castThisAction ? { castThisAction: true } : {}),
     ...(own && own.lightMeleeAttack !== undefined ? { lightMeleeAttack: own.lightMeleeAttack } : {}),
     ...(own && own.oneHandMeleeAttack !== undefined ? { oneHandMeleeAttack: own.oneHandMeleeAttack } : {}),
+    ...(own?.interactionUsed ? { interactionUsed: true } : {}),
     table,
   };
 }
 
 // What the turn's pips show: the engine's count, the same one the cards read.
-export function turnPips(turn: HandTurn): Array<{ label: string; used: boolean }> {
+// Each names the cost it pays for, whose colour and shape the cards' cost
+// tags wear too (issue 529).
+export type TurnPip = { label: string; used: boolean; cost: "action" | "bonus" | "reaction" };
+
+// The character a player's controls follow in a fight: the one whose turn
+// it is, or, while the enemies before them take theirs, the one up next, so
+// the Hand and the board keep that character's cards and reach, waiting,
+// rather than switching to another sheet and back as the enemies play.
+export function turnCharacterId(
+  encounter: Pick<PublicEncounter, "acting" | "upNext"> | null | undefined,
+): string | undefined {
+  return encounter?.acting?.id || encounter?.upNext?.id || undefined;
+}
+
+export function turnPips(turn: HandTurn): TurnPip[] {
   return [
     {
       label: "Action",
       used: turn.actionUsed && (turn.extraActions ?? 0) <= 0 && (turn.grantedActions ?? 0) <= 0,
+      cost: "action",
     },
-    { label: "Bonus", used: turn.bonusUsed },
-    { label: "Reaction", used: turn.reactionUsed },
+    { label: "Bonus", used: turn.bonusUsed, cost: "bonus" },
+    { label: "Reaction", used: turn.reactionUsed, cost: "reaction" },
   ];
 }
 
@@ -88,6 +104,7 @@ export function turnSignature(turn: HandTurn): string {
     turn.grantedActions ?? 0,
     turn.flurryStrikes ?? 0,
     (turn.marks ?? []).length,
+    turn.interactionUsed ? 1 : 0,
     turn.table?.round ?? 0,
     turn.table?.acting?.name ?? "",
   ].join("|");

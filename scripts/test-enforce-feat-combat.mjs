@@ -95,7 +95,12 @@ const piercer = world.addHero({
   equipment: [{ name: "Rapier", qty: 1 }],
   feats: ["Piercer"],
 });
-const heroes = [greatWeapon, plain, sharpshooter, gunner, adept, evoker, duelist, slayer, powerful, deadeye, polearm, lucky, brawler, piercer];
+const savage = world.addHero({
+  class: "fighter", level: 5, maxHp: 44, abilities: { str: 16, dex: 12 }, proficiencies: TRAINED,
+  equipment: [{ name: "Longsword", qty: 1 }],
+  feats: ["Savage Attacker"],
+});
+const heroes = [greatWeapon, plain, sharpshooter, gunner, adept, evoker, duelist, slayer, powerful, deadeye, polearm, lucky, brawler, piercer, savage];
 const base = new Map(heroes.map((hero) => [hero.id, world.sheet(hero.id)]));
 
 async function stage(hero, { count = 1, apart = 1 } = {}) {
@@ -295,10 +300,10 @@ await test("Dungeon Delver saves against a trap at advantage and takes half its 
   assert.equal(d20Faces(kit.lastRolls(8).find((roll) => roll.kind === "saving_throw" && roll.characterId === delver.id)).length, 2, "the save rolled two d20s");
   // Passive Perception 10 + 0: a DC 13 trap is missed without the feat and
   // noticed with it.
-  const missed = await world.invoke("check_notice", { sense: "perception", dc: 13, characterIds: [careless.id], reason: "a pressure plate trap under the rug" });
+  const missed = await world.invoke("check_notice", { sense: "perception", dc: 13, characterIds: [careless.id], about: "traps_and_secret_doors", reason: "a pressure plate trap under the rug" });
   assert.equal(missed.ok, true, missed.error);
   assert.deepEqual(missed.result.noticedBy, []);
-  const found = await world.invoke("check_notice", { sense: "perception", dc: 13, characterIds: [delver.id], reason: "a pressure plate trap under the rug" });
+  const found = await world.invoke("check_notice", { sense: "perception", dc: 13, characterIds: [delver.id], about: "traps_and_secret_doors", reason: "a pressure plate trap under the rug" });
   assert.equal(found.ok, true, found.error);
   assert.deepEqual(found.result.noticedBy, [world.sheet(delver.id).name]);
   const ambush = await world.invoke("check_notice", { sense: "perception", dc: 13, characterIds: [delver.id], reason: "an archer in the rafters" });
@@ -361,6 +366,19 @@ await test("Piercer: a piercing critical hit rolls one more die, and once a turn
   const notes = crit.result.conditionEffects ?? [];
   assert.ok(notes.some((note) => /Piercer: a 1 on a d8 is rerolled to 6/.test(note)), JSON.stringify(notes));
   assert.equal(crit.damage.total, 6 + 8 + 8 + abilityMod(16), "three dice on the crit, the 1 rerolled");
+});
+
+await test("Savage Attacker (2014): once a turn a melee hit's weapon dice are rolled twice and the better kept; the second swing rolls once (issue #502)", async () => {
+  const [enemy] = await stage(savage);
+  const first = await kit.swing(savage.id, enemy.id, [15, 2, 7], { weapon: "Longsword" });
+  assert.equal(first.ok, true, first.error);
+  const notes = first.result.conditionEffects ?? [];
+  assert.ok(notes.some((note) => /Savage Attacker: the weapon's dice rolled twice \(2 and 7\)/.test(note)), JSON.stringify(notes));
+  assert.equal(first.damage.total, 7 + abilityMod(16), "the better roll kept");
+  const second = await kit.swing(savage.id, enemy.id, [15, 3], { weapon: "Longsword" });
+  assert.equal(second.ok, true, second.error);
+  assert.ok(!(second.result.conditionEffects ?? []).some((note) => /Savage Attacker/.test(note)));
+  assert.equal(second.damage.total, 3 + abilityMod(16), "once a turn");
 });
 
 await test("the DM prompt carries every feat's rules, and a content pack feat's numbers reach the derived sheet (issue #147)", async () => {

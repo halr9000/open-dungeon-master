@@ -51,7 +51,7 @@ function sourceFiles(dir, out = []) {
 
 // Files that only DEFINE or EDIT settings: the schema, its options, and the
 // panels. A read there is not the engine reading the key.
-const EDITORS = /schemas\/game-settings|schemas\/game-settings-options|GameSettingsPanel|CreateCampaignDialog|settings\/route\.ts|test-/;
+const EDITORS = /schemas\/game-settings|schemas\/game-settings-options|GameSettingsPanel|GameSettingsGroups|table-settings-groups|CreateCampaignDialog|settings\/route\.ts|test-/;
 
 const files = sourceFiles(path.join(repo, "src")).filter((file) => !EDITORS.test(file));
 const corpus = files.map((file) => [file, fs.readFileSync(file, "utf8")]);

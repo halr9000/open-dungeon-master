@@ -13,6 +13,8 @@ const { deriveMonsterHand, monsterInvoke, monsterSentence, swingsLine, takesMany
   "../src/lib/battlemap/monster-hand.ts"
 );
 const { previewRows } = await import("../src/lib/battlemap/hand-play.ts");
+const { monsterAttackIcon } = await import("../src/lib/battlemap/attack-art.ts");
+const { cardArtwork } = await import("../src/lib/battlemap/card-art.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -207,17 +209,26 @@ test("an ability on one target is cast_at_player; on several it is one aoe_damag
   const breath = cards[3];
   assert.deepEqual(monsterInvoke(breath, ["s1"]), {
     name: "cast_at_player",
-    args: { characterId: "s1", casterEnemyId: "e1", ability: "Fire Breath", saveAbility: "dex", dc: 12, damage: "4d6", halfOnSave: true, damageType: "fire" },
+    args: { characterId: "s1", casterEnemyId: "e1", enemyAbility: "Fire Breath", saveAbility: "dex", dc: 12, damage: "4d6", halfOnSave: true, damageType: "fire" },
   });
   assert.deepEqual(monsterInvoke(breath, ["s1", "s2"]), {
     name: "aoe_damage",
-    args: { casterEnemyId: "e1", ability: "Fire Breath", characterIds: ["s1", "s2"], saveAbility: "dex", dc: 12, damage: "4d6", halfOnSave: true, type: "fire" },
+    args: { casterEnemyId: "e1", enemyAbility: "Fire Breath", characterIds: ["s1", "s2"], saveAbility: "dex", dc: 12, damage: "4d6", halfOnSave: true, type: "fire" },
   });
   const fear = cards[4];
   assert.deepEqual(monsterInvoke(fear, ["s1"]).args, {
-    characterId: "s1", casterEnemyId: "e1", ability: "Frightful Presence", saveAbility: "wis", dc: 12, condition: "frightened", rounds: 10,
+    characterId: "s1", casterEnemyId: "e1", enemyAbility: "Frightful Presence", saveAbility: "wis", dc: 12, condition: "frightened", rounds: 10,
   });
   assert.equal(monsterSentence("Drake", breath, ["Kael", "Lys", "Bran"]), "Drake uses Fire Breath on Kael, Lys and Bran.");
+});
+
+test("a creature on the other side (issue 503): its row takes the bite by id, and an area splits sheets from rows", () => {
+  const cards = deriveMonsterHand(drake);
+  const rows = new Set(["e2"]);
+  assert.deepEqual(monsterInvoke(cards[0], ["e2"], "none", rows).args, { enemyId: "e1", targetCharacterId: "e2", attack: "Bite" });
+  assert.deepEqual(monsterInvoke(cards[3], ["s1", "e2"], "none", rows).args, {
+    casterEnemyId: "e1", enemyAbility: "Fire Breath", characterIds: ["s1"], enemyIds: ["e2"], saveAbility: "dex", dc: 12, damage: "4d6", halfOnSave: true, type: "fire",
+  });
 });
 
 test("Flee is enemy_flees and needs no target", () => {
@@ -229,6 +240,17 @@ test("Flee is enemy_flees and needs no target", () => {
 test("the multiattack line counts the swings", () => {
   assert.equal(swingsLine(["Bite"]), "");
   assert.equal(swingsLine(["Claw", "Claw", "Bite"]), "Multiattack: 2 Claw, 1 Bite. One card plays the whole routine.");
+});
+
+test("a monster's attack card shows its weapon's or its strike's painting, never a sword for a bite", () => {
+  const icons = deriveMonsterHand(drake).filter((card) => card.type === "attack").map((card) => card.icon.key);
+  assert.deepEqual(icons, ["natural-attack", "natural-attack", "natural-attack"]);
+  const wolf = { ...drake, name: "Wolf", actions: { ...drake.actions, attacks: [{ ...drake.actions.attacks[0], name: "Bite" }] } };
+  assert.equal(deriveMonsterHand(wolf)[0].icon.key, "strike-bite-mammal");
+  assert.equal(cardArtwork(monsterAttackIcon("Goblin", "Scimitar", false)).key, "weapon-scimitar");
+  assert.equal(cardArtwork(monsterAttackIcon("Bandit Captain", "Light Crossbow", false)).key, "weapon-light-crossbow");
+  assert.equal(monsterAttackIcon("Giant Eagle", "Talons", false).key, "strike-talons");
+  assert.equal(monsterAttackIcon("Lich", "Paralyzing Touch", true).key, "cast");
 });
 
 console.log(`\n${passed} monster hand checks passed`);

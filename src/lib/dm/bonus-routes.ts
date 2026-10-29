@@ -8,6 +8,9 @@
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { classLevelFor } from "@/lib/srd/multiclass";
 import { authoredBonusRoute } from "@/lib/srd/authored-economy";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { holdsFeature } from "@/lib/srd/trait-rules";
+import { subclassNamed } from "@/lib/srd/subclass-name";
 
 export type MoveAction = "dodge" | "dash" | "disengage" | "hide";
 
@@ -20,13 +23,6 @@ export type BonusRoute = { feature: string; ki: number; counter?: string };
 // grifter's Vanish, 3 a long rest, and the horror Adrenaline Surge.
 const VANISH_COUNTER = "mystery_vanish";
 const ADRENALINE_SURGE = "horror_adrenaline_surge";
-
-export function holdsFeature(sheet: Pick<CharacterSheet, "features" | "feats">, name: string): boolean {
-  const wanted = name.toLowerCase();
-  return [...sheet.features.map((feature) => feature.name), ...(sheet.feats ?? [])].some((entry) =>
-    entry.toLowerCase().includes(wanted),
-  );
-}
 
 // Uses left on a counter the sheet holds, or null when it holds none.
 export function usesLeft(sheet: Pick<CharacterSheet, "resources">, id: string): number | null {
@@ -83,16 +79,16 @@ export const EXPEDITIOUS_RETREAT = "expeditious retreat";
 
 // Fast Hands (Thief 3): Cunning Action's bonus action also Uses an Object.
 export function hasFastHands(sheet: CharacterSheet): boolean {
-  return holdsFeature(sheet, "fast hands") || (classLevelFor(sheet, "rogue") >= 3 && /thief/i.test(sheet.subclass ?? ""));
+  return holdsFeature(sheet, "fast hands") || (classLevelFor(sheet, "rogue") >= 3 && subclassNamed(sheet.subclass ?? "", "Thief"));
 }
 
 // Thief's Reflexes (Thief 17): two turns in the first round of a fight.
 export function holdsThiefsReflexes(sheet: CharacterSheet): boolean {
-  return holdsFeature(sheet, "thief's reflexes") || (classLevelFor(sheet, "rogue") >= 17 && /thief/i.test(sheet.subclass ?? ""));
+  return holdsFeature(sheet, "thief's reflexes") || (classLevelFor(sheet, "rogue") >= 17 && subclassNamed(sheet.subclass ?? "", "Thief"));
 }
 
 // The sentence a refused bonus-action move carries.
-export function noBonusRoute(sheet: CharacterSheet, action: MoveAction): string {
+export function noBonusRoute(sheet: CharacterSheet, action: MoveAction): ToolError {
   const which =
     action === "dodge"
       ? "Patient Defense (a monk's ki)"
@@ -101,5 +97,5 @@ export function noBonusRoute(sheet: CharacterSheet, action: MoveAction): string 
         : action === "dash"
           ? "Cunning Action, Step of the Wind or Expeditious Retreat"
           : "Cunning Action or Step of the Wind";
-  return `${sheet.name} has no feature that makes ${action === "dodge" ? "a Dodge" : `a ${action[0].toUpperCase()}${action.slice(1)}`} a bonus action (that takes ${which}). They can take it with their action instead.`;
+  return { error: `${sheet.name} has no feature that makes ${action === "dodge" ? "a Dodge" : `a ${action[0].toUpperCase()}${action.slice(1)}`} a bonus action (that takes ${which}). They can take it with their action instead.`, refused: "rules" };
 }

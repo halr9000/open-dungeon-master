@@ -153,9 +153,9 @@ try {
     assert.equal(story("gpt-5.6", "openai").fit, "ok");
     assert.match(story("gpt-5.6", "openai").summary, /1\.1M context · tool calls · reasoning · sees pictures · \$4 in \/ \$20 out per M tokens/);
     const old = story("gpt-4", "openai");
-    assert.equal(old.fit, "warn");
+    assert.equal(old.fit, "unfit", "an 8K window cannot hold the DM's instructions");
     assert.match(old.warnings[0], /Deprecated/);
-    assert.match(old.warnings[1], /8K window is small/);
+    assert.match(old.warnings[1], /8K window is too small to narrate.*16K tokens to narrate and 24K to run fights/);
     const picture = story("gpt-image-1", "openai");
     assert.equal(picture.fit, "unfit");
     assert.match(picture.warnings.join(" "), /Does not write text/);
@@ -165,7 +165,9 @@ try {
     const utility = logic.assessModel({ role: "utility", id: "sao10k/l3-lunaris-8b", catalog: providers.openrouter.models["sao10k/l3-lunaris-8b"], listed: true });
     assert.equal(utility.fit, "warn", "the utility role only warns about tools");
     const local = logic.assessModel({ role: "story", id: "gpt-4", catalog: providers.openai.models["gpt-4"], listed: true, local: true });
-    assert.deepEqual(local.warnings, ["A 8K window is small for a campaign; the table will forget recent turns often."], "weights on the admin's disk are nobody's to retire");
+    assert.equal(local.fit, "warn", "a local row is a loose match for the weights, so a short window only warns");
+    assert.equal(local.warnings.length, 1, "weights on the admin's disk are nobody's to retire");
+    assert.match(local.warnings[0], /^An 8K window is too small to narrate/);
     assert.equal(local.summary, "8K context · tool calls", "and carry no hosting price");
     const doubt = logic.assessModel({ role: "story", id: "x", catalog: providers.openrouter.models["sao10k/l3-lunaris-8b"], listed: true, local: true });
     assert.equal(doubt.fit, "warn", "a loosely matched row without tools is a doubt for local weights");
@@ -452,7 +454,7 @@ try {
     assert.deepEqual(choices.models.map((model) => model.id), ["gpt-5.6", "gpt-4"], "the images and speech rows were left out");
     const old = choices.models[1];
     assert.equal(old.selected, true);
-    assert.equal(old.verdict.fit, "warn");
+    assert.equal(old.verdict.fit, "unfit", "its 8K window cannot narrate");
     assert.match(old.verdict.warnings[0], /Deprecated/);
     assert.equal(choices.models[0].catalog?.name, "GPT-5.6", "a private address still finds the row by id");
   });
@@ -532,14 +534,21 @@ try {
     const refused = await requestCustomMessage(compatUrl, "", "sk-test", [{ role: "user", content: "hi" }], {});
     assert.equal(refused.error?.status, 400);
     assert.match((await refused.error.json()).error, /lists more than one/);
+    // A blank model against a server that is down used to read as "lists
+    // more than one"; nothing was listed, so the table hears what happened.
+    const down = await requestCustomMessage("http://127.0.0.1:9/v1", "", "", [{ role: "user", content: "hi" }], {});
+    assert.equal(down.error?.status, 502);
+    assert.match((await down.error.json()).error, /Could not reach the backend at http:\/\/127\.0\.0\.1:9\/v1 to list its models/);
   });
 
   await test("the wizard's list is kept to the models that can narrate, led by the catalog's pick, with no name in code", () => {
     const listed = (ids) => ids.map((id) => ({ id, label: id }));
     const fit = store.fitListedModels("https://api.openai.com/v1", listed(["gpt-image-1", "gpt-5.6", "gpt-4", "my-finetune"]));
-    assert.deepEqual(fit.map((model) => model.id), ["gpt-5.6", "gpt-4", "my-finetune"], "the picture model is out; the unknown one stays");
-    assert.equal(fit[1].label, "gpt-4 (deprecated)");
+    assert.deepEqual(fit.map((model) => model.id), ["gpt-5.6", "my-finetune"], "the picture model and the 8K one are out; the unknown one stays");
     assert.equal(fit[0].context, 1_050_000);
+    const served = store.fitListedModels("https://api.openai.com/v1", [{ id: "gpt-4", label: "gpt-4", context: 32_768 }]);
+    assert.deepEqual(served.map((model) => model.id), ["gpt-4"], "a window the server reports outranks the catalog's");
+    assert.equal(served[0].label, "gpt-4 (deprecated)");
     assert.equal(store.recommendListed("https://api.openai.com/v1", fit), "gpt-5.6", "current, tools, reasoning, newest");
     assert.equal(store.recommendListed("https://openrouter.ai/api/v1", listed(["sao10k/l3-lunaris-8b", "google/gemini-3.5-flash"])), "google/gemini-3.5-flash");
     assert.equal(store.recommendListed("http://127.0.0.1:8001/v1", listed(["alpha-local", "beta-local"])), "alpha-local", "nothing known: the server's order");
@@ -554,18 +563,43 @@ try {
     assert.equal(hardware.readGpuStats({}), null);
     const halo = { ramGb: 125, gpu: { name: "AMD Radeon 8060S Graphics", vramGb: 120 }, unified: hardware.unifiedMemory({ name: "AMD Radeon 8060S Graphics", vramGb: 120 }, 125) };
     assert.equal(halo.unified, true);
-    assert.equal(hardware.memoryBudgetGb(halo), 125, "one pool, counted once");
+    assert.equal(hardware.memoryBudgetGb(halo), 100, "one pool, counted once, less the system's share");
     const card = { ramGb: 32, gpu: { name: "NVIDIA GeForce RTX 4090", vramGb: 24 }, unified: hardware.unifiedMemory({ name: "NVIDIA GeForce RTX 4090", vramGb: 24 }, 32) };
     assert.equal(card.unified, false);
-    assert.equal(hardware.memoryBudgetGb(card), 56, "the card plus what the runtime offloads to RAM");
+    assert.equal(hardware.memoryBudgetGb(card), 40, "the card plus half the system memory, as the desktop app reckons it");
     assert.equal(hardware.fitsMachine(36, card), true);
     assert.equal(hardware.fitsMachine(60, card), false);
     assert.equal(hardware.fitsMachine(0, card), null);
     assert.equal(hardware.fitsMachine(10, { ramGb: 0, gpu: null, unified: false }), null, "unknown memory judges nothing");
     assert.match(hardware.describeMachine(halo), /AMD Radeon 8060S Graphics, 125 GB memory shared/);
-    assert.match(hardware.describeMachine({ ramGb: 16, gpu: null, unified: false }), /^16 GB memory$/);
-    const verdict = logic.assessModel({ role: "story", id: "x", catalog: null, listed: true, local: true, memory: { sizeGb: 60, budgetGb: 56 } });
+    assert.match(hardware.describeMachine({ ramGb: 16, gpu: null, unified: false }), /^16 GB memory, no graphics card found$/);
+    assert.equal(hardware.memoryBudgetGb({ ramGb: 64, gpu: null, unified: false }), 64, "no card known: only weights beyond the memory are too big");
+    const verdict = logic.assessModel({ role: "story", id: "x", catalog: null, listed: true, local: true, memory: { sizeGb: 60, budgetGb: 40 } });
     assert.equal(verdict.fit, "unfit");
+  });
+
+  await test("the local storyteller a machine runs follows the 16 GB minimum, and the card is read from its driver", () => {
+    const card = (vramGb, ramGb = 32) => ({ ramGb, gpu: { name: "card", vramGb }, unified: false });
+    assert.equal(hardware.storytellerFit(card(8, 64)), "below", "an 8 GB card is below the minimum whatever sits beside it");
+    assert.equal(hardware.storytellerFit(card(15.7, 16)), "minimum", "a 16 GB card reads a little under 16");
+    assert.equal(hardware.storytellerFit(card(16, 32)), "recommended", "16 GB beside 32 GB holds the 35B at Q4 with its experts in RAM");
+    assert.equal(hardware.storytellerFit({ ramGb: 16, gpu: { name: "Apple silicon", vramGb: 16 }, unified: true }), "below", "a 16 GB Mac leaves its GPU about 13");
+    assert.equal(hardware.storytellerFit({ ramGb: 24, gpu: { name: "Apple silicon", vramGb: 24 }, unified: true }), "minimum");
+    assert.equal(hardware.storytellerFit({ ramGb: 32, gpu: null, unified: false }), "unknown");
+    assert.equal(hardware.graphicsMemoryGb({ ramGb: 125, gpu: { name: "AMD graphics", vramGb: 125 }, unified: true }), 100);
+    assert.deepEqual(hardware.readNvidiaSmi("24564, NVIDIA GeForce RTX 4090\n"), { name: "NVIDIA GeForce RTX 4090", vramGb: 24 });
+    assert.equal(hardware.readNvidiaSmi("NVIDIA-SMI has failed"), null);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "odm-drm-"));
+    try {
+      assert.equal(hardware.readAmdSysfs(root), null, "no card with amdgpu's nodes");
+      fs.mkdirSync(path.join(root, "card1", "device"), { recursive: true });
+      fs.writeFileSync(path.join(root, "card1", "device", "mem_info_vram_total"), String(512 * 1024 ** 2));
+      fs.writeFileSync(path.join(root, "card1", "device", "mem_info_gtt_total"), String(112 * 1024 ** 3));
+      fs.mkdirSync(path.join(root, "card1-DP-1"), { recursive: true });
+      assert.deepEqual(hardware.readAmdSysfs(root), { vramGb: 0.5, gttGb: 112 }, "an APU: a small carve-out, the real pool in GTT");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   await test("the agent program's own list is the harness answer; its vendor's rows say the rest", async () => {
@@ -663,9 +697,8 @@ try {
     assert.equal(storyContextTokens({ textProvider: "custom", localTextModel: "", customBaseUrl: "https://openrouter.ai/api/v1", customModel: "sao10k/l3-lunaris-8b" }), 8_192);
     assert.equal(storyContextTokens({ textProvider: "custom", localTextModel: "", customBaseUrl: "https://openrouter.ai/api/v1", customModel: "nobody/knows" }), 16_384, "an unknown model keeps the conservative default");
     assert.equal(storyContextTokens({ textProvider: "custom", localTextModel: "", customBaseUrl: "http://127.0.0.1:8001/v1", customModel: "gpt-5.6" }), 16_384, "a private server is not the catalog's provider; its /props decides");
-    // Where a local window comes from, whatever the platform: Windows caps an
-    // unset LOCAL_TEXT_CONTEXT at 64K (model-client.ts), so set it past every
-    // window here.
+    // Where a local window comes from: an unset LOCAL_TEXT_CONTEXT caps it at
+    // 64K (model-client.ts), so set it past every window here.
     process.env.LOCAL_TEXT_CONTEXT = "1048576";
     assert.equal(localContextTokens("qwen3.6:35b-a3b-q8_0"), 40_960, "what Ollama said of it earlier in this process");
     assert.equal(localContextTokens("gemma-4-31b-it-GGUF"), 262_144, "the catalog's window for weights nobody has asked Ollama about");
@@ -673,6 +706,26 @@ try {
     textModels.rememberLocalContextWindow("my-merge:latest", 65_536);
     assert.equal(localContextTokens("my-merge:latest"), 65_536, "what Ollama said of it");
     assert.equal(localContextTokens("never-heard-of"), 131_072);
+    delete process.env.LOCAL_TEXT_CONTEXT;
+    // Unset, Ollama is asked for no more than 64K on every platform: the
+    // cache for the whole window is reserved when the model loads, and
+    // gpt-oss-20b's native 128K would not fit beside it on a 16 GB card.
+    textModels.rememberLocalContextWindow("gpt-oss:20b", 131_072);
+    textModels.rememberLocalModelParams("gpt-oss:20b", 20_900_000_000);
+    assert.equal(localContextTokens("gpt-oss:20b"), 65_536, "the floor model at 64K, not its native 128K");
+    assert.equal(localContextTokens("gemma4:31b-it-qat"), 65_536);
+    assert.equal(localContextTokens("qwen3.6:35b-a3b-q8_0"), 40_960, "a smaller window of its own stays");
+    // A small model asks Ollama for 32K, not its native 262K: the short
+    // rules never need more, and the cache would not fit a 4 GB card.
+    textModels.rememberLocalContextWindow("qwen3.5:9b", 262_144);
+    assert.equal(localContextTokens("qwen3.5:9b"), 32_768, "a small model by its name");
+    textModels.rememberLocalContextWindow("my-small-merge", 131_072);
+    textModels.rememberLocalModelParams("my-small-merge", 8_000_000_000);
+    assert.equal(localContextTokens("my-small-merge"), 32_768, "a small model by what Ollama said of it");
+    textModels.rememberLocalContextWindow("tiny-ctx:7b", 8_192);
+    assert.equal(localContextTokens("tiny-ctx:7b"), 8_192, "never more than the model has");
+    process.env.LOCAL_TEXT_CONTEXT = "65536";
+    assert.equal(localContextTokens("qwen3.5:9b"), 65_536, "LOCAL_TEXT_CONTEXT still decides when set");
     delete process.env.LOCAL_TEXT_CONTEXT;
   });
 

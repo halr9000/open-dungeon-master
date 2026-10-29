@@ -1,5 +1,5 @@
 import { activePublicEncounter } from "@/lib/db/encounter-view";
-import { listNpcs, setNpcVoice } from "@/lib/db/npcs";
+import { listCastNpcs, setNpcVoice } from "@/lib/db/npcs";
 import { listSheets } from "@/lib/db/sheets";
 import { listCampaignVoices, setCampaignVoice } from "@/lib/db/voices";
 import { publishCast } from "@/lib/dm/cast";
@@ -8,6 +8,7 @@ import { castingPool, pickVoice, type VoiceGender } from "@/lib/tts-cast";
 import { genderMark } from "@/lib/gender";
 import { baseCreatureName } from "@/lib/tts-segments";
 import { serverVoices, ttsBackend, type TtsBackend } from "@/lib/tts-backend";
+import { textKey } from "@/lib/language/text-logic";
 
 // Everyone at a table who may be given a voice (issue 97): the characters
 // (players' and AI companions), the cast, and the monsters of the fight in
@@ -32,7 +33,7 @@ export type RosterEntry = {
 };
 
 function monsterKey(name: string): string {
-  return `monster:${baseCreatureName(name).toLowerCase().slice(0, 80)}`;
+  return `monster:${textKey(baseCreatureName(name)).slice(0, 80)}`;
 }
 
 export function voiceRoster(campaignId: string): RosterEntry[] {
@@ -55,7 +56,8 @@ export function voiceRoster(campaignId: string): RosterEntry[] {
       voice: saved.get(key)?.voice ?? null,
     });
   }
-  for (const npc of listNpcs(campaignId)) {
+  // A companion's own row is voiced through their sheet, above.
+  for (const npc of listCastNpcs(campaignId)) {
     if (npc.archived) {
       continue;
     }

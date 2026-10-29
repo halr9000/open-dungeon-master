@@ -17,6 +17,7 @@ import type { Encounter, EncounterEnemy } from "@/lib/db/encounters";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { incapacitatedBy } from "@/lib/dm/condition-logic";
 import { spellTurnHold } from "@/lib/srd/condition-effect-queries";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // What the combatant is trying to spend. "attack" and "cast" are actions
 // with their own handlers, "free" is anything that costs nothing but still
@@ -34,7 +35,7 @@ export type CannotActReason =
 
 export type CanActResult =
   | { ok: true }
-  | { ok: false; reason: CannotActReason; error: string };
+  | ({ ok: false; reason: CannotActReason } & ToolError);
 
 export type ActingSheet = Pick<CharacterSheet, "id" | "name" | "currentHp" | "conditions"> & {
   deathSaves?: CharacterSheet["deathSaves"] | null;
@@ -71,8 +72,8 @@ const KIND_WORDS: Record<ActKind, string> = {
   free: "act",
 };
 
-function refuse(reason: CannotActReason, error: string): CanActResult {
-  return { ok: false, reason, error };
+function refuse(reason: CannotActReason, refusal: ToolError): CanActResult {
+  return { ok: false, reason, ...refusal };
 }
 
 function entryRef(entry: Encounter["order"][number]): string {
@@ -136,14 +137,14 @@ export function canAct(input: {
   if (sheet.deathSaves?.dead) {
     return refuse(
       "dead",
-      `${sheet.name} is dead and cannot ${what}. Only magic that raises the dead brings them back.`,
+      { error: `${sheet.name} is dead and cannot ${what}. Only magic that raises the dead brings them back.`, refused: "rules" },
     );
   }
   // Strength before Death holds them up for the extra turn it gives.
   if (sheet.currentHp <= 0 && !holdsOn(sheet)) {
     return refuse(
       "down",
-      `${sheet.name} is at 0 HP and cannot ${what}. They act again once they are healed above 0.`,
+      { error: `${sheet.name} is at 0 HP and cannot ${what}. They act again once they are healed above 0.`, refused: "rules" },
     );
   }
   const stoppedBy = incapacitatedBy(sheet.conditions);
@@ -152,13 +153,13 @@ export function canAct(input: {
   if (stoppedBy && !(kind === "move" && stoppedBy === "incapacitated")) {
     return refuse(
       "incapacitated",
-      `${sheet.name} is ${stoppedBy} and cannot ${what} until the condition ends.`,
+      { error: `${sheet.name} is ${stoppedBy} and cannot ${what} until the condition ends.`, refused: "rules" },
     );
   }
   // A spell's hold on the turn: Stinking Cloud, Command's Halt, Gaseous Form.
   const held = spellTurnHold(sheet.conditions, kind);
   if (held) {
-    return refuse("incapacitated", `${sheet.name} is ${held} and cannot ${what} while it lasts.`);
+    return refuse("incapacitated", { error: `${sheet.name} is ${held} and cannot ${what} while it lasts.`, refused: "rules" });
   }
   if (!encounter) {
     // Outside a fight there are no turns to wait for.
@@ -167,15 +168,15 @@ export function canAct(input: {
   if (isSurprised(encounter, sheet.id, kind === "reaction")) {
     return refuse(
       "surprised",
-      kind === "reaction"
+      { error: kind === "reaction"
         ? `${sheet.name} is surprised and has no reaction until their first turn has passed.`
-        : `${sheet.name} is surprised and cannot ${what} in the first round. They act from round 2.`,
+        : `${sheet.name} is surprised and cannot ${what} in the first round. They act from round 2.`, refused: "rules" },
     );
   }
   if (!encounter.orderReady) {
     return refuse(
       "no_initiative",
-      `Initiative is still being rolled, so ${sheet.name} cannot ${what} yet. Roll initiative for every character first.`,
+      { error: `Initiative is still being rolled, so ${sheet.name} cannot ${what} yet. Roll initiative for every character first.`, retry: true },
     );
   }
   if (kind !== "reaction") {
@@ -183,7 +184,7 @@ export function canAct(input: {
     if (!current || entryRef(current) !== sheet.id) {
       return refuse(
         "not_your_turn",
-        `It is ${current?.name ?? "someone else"}'s turn, not ${sheet.name}'s. Off their own turn a character can only use their reaction.`,
+        { error: `It is ${current?.name ?? "someone else"}'s turn, not ${sheet.name}'s. Off their own turn a character can only use their reaction. What they declared waits for their turn.`, refused: "rules" },
       );
     }
   }
@@ -214,6 +215,29 @@ function writeLedger(encounter: LedgerHolder, ids: string[], owed: string[]) {
     ids,
     ...(owed.length ? { owed } : {}),
   };
+}
+
+// The fight's record of who has taken a bonus action this round, the one
+// Nimble Escape and an enemy's bonus-action spell keep too
+// (src/lib/dm/token-rules.ts, reaction-spells.ts).
+type BonusHolder = { round: number; legendary?: { bonus?: { round: number; ids: string[] } } };
+
+function bonusLedgerOf(encounter: BonusHolder): string[] {
+  const ledger = encounter.legendary?.bonus;
+  return ledger && ledger.round === encounter.round ? ledger.ids : [];
+}
+
+// Whether an enemy has taken its bonus action this round (a block's Bonus
+// Actions: one a round, beside its action).
+export function enemyBonusThisRound(encounter: BonusHolder | null, enemyId: string): boolean {
+  return encounter ? bonusLedgerOf(encounter).includes(enemyId) : false;
+}
+
+// Records an enemy's bonus action for the round. The caller saves the
+// encounter.
+export function markEnemyBonus(encounter: { round: number; legendary: { bonus?: { round: number; ids: string[] } } }, enemyId: string) {
+  const used = bonusLedgerOf(encounter);
+  encounter.legendary.bonus = { round: encounter.round, ids: used.includes(enemyId) ? used : [...used, enemyId] };
 }
 
 // Records an enemy's action for the round on the encounter object. An
@@ -253,50 +277,58 @@ export function oweEnemiesAnAction(encounter: LedgerHolder, enemyIds: string[]) 
   writeLedger(encounter, ids, [...owed, ...enemyIds]);
 }
 
-// An enemy's action, reaction or legendary action. Dead and incapacitated
-// enemies do nothing; a surprised one loses round 1; an action is one a
-// round. A legendary action is spent on somebody else's turn, so the action
-// already taken does not refuse it (the pool does, in legendary-tools.ts).
+// An enemy's action, bonus action, reaction or legendary action. Dead and
+// incapacitated enemies do nothing; a surprised one loses round 1; an action
+// is one a round, and so is a bonus action. A legendary action is spent on
+// somebody else's turn, so the action already taken does not refuse it (the
+// pool does, in legendary-tools.ts).
 export function canEnemyAct(input: {
   enemy: ActingEnemy;
   encounter: ActingEncounter | null;
-  kind: "action" | "reaction" | "legendary";
+  kind: "action" | "bonus" | "reaction" | "legendary";
 }): CanActResult {
   const { enemy, kind } = input;
   const encounter = isRunningFight(input.encounter) ? input.encounter : null;
   if (enemy.status !== "alive") {
-    return refuse("dead", `${enemy.displayName} is ${enemy.status} and cannot act.`);
+    return refuse("dead", { error: `${enemy.displayName} is ${enemy.status} and cannot act.`, retry: true });
   }
   const stoppedBy = incapacitatedBy(enemy.conditions);
   if (stoppedBy) {
     return refuse(
       "incapacitated",
-      `${enemy.displayName} is ${stoppedBy} and cannot act until the condition ends.`,
+      { error: `${enemy.displayName} is ${stoppedBy} and cannot act until the condition ends.`, refused: "rules" },
     );
   }
-  const held = kind === "action" ? spellTurnHold(enemy.conditions, "action") : null;
+  // A bonus action is held by whatever holds its action.
+  const held = kind === "action" || kind === "bonus" ? spellTurnHold(enemy.conditions, "action") : null;
   if (held) {
-    return refuse("incapacitated", `${enemy.displayName} is ${held} and loses its action this turn.`);
+    return refuse("incapacitated", { error: `${enemy.displayName} is ${held} and loses its action this turn.`, refused: "rules" });
   }
   if (!encounter) {
     return { ok: true };
   }
-  if (isSurprised(encounter, enemy.id, kind !== "action")) {
+  if (isSurprised(encounter, enemy.id, kind === "reaction" || kind === "legendary")) {
     return refuse(
       "surprised",
-      `${enemy.displayName} is surprised and does nothing in the first round. It acts from round 2.`,
+      { error: `${enemy.displayName} is surprised and does nothing in the first round. It acts from round 2.`, refused: "rules" },
     );
   }
   if (!encounter.orderReady) {
     return refuse(
       "no_initiative",
-      `Initiative is still being rolled, so ${enemy.displayName} cannot act yet. Roll initiative for every character first.`,
+      { error: `Initiative is still being rolled, so ${enemy.displayName} cannot act yet. Roll initiative for every character first.`, retry: true },
+    );
+  }
+  if (kind === "bonus" && enemyBonusThisRound(encounter as BonusHolder, enemy.id)) {
+    return refuse(
+      "already_acted",
+      { error: `${enemy.displayName} has already taken its bonus action this round (round ${encounter.round}). Its action is separate.`, retry: true },
     );
   }
   if (kind === "action" && enemyActedThisRound(encounter, enemy.id)) {
     return refuse(
       "already_acted",
-      `${enemy.displayName} has already taken its action this round (round ${encounter.round}). It acts again next round; legendary actions and reactions are separate.`,
+      { error: `${enemy.displayName} has already taken its action this round (round ${encounter.round}). It acts again next round; legendary actions and reactions are separate.`, retry: true },
     );
   }
   return { ok: true };

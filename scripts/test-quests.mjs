@@ -52,7 +52,7 @@ test("the arc mirrors into quests and a re-sync keeps the DM's ticks", () => {
   assert.equal(first.length, 2);
   assert.equal(first.find((q) => q.sourceRef === "sa2").status, "done");
   const miller = first.find((q) => q.sourceRef === "sa1");
-  const ticked = handleTickObjective(live(), JSON.stringify({ questId: miller.id, objectiveId: "goal" }));
+  const ticked = handleTickObjective(live(), JSON.stringify({ quest: miller.id, objective: "goal" }));
   assert.equal(ticked.complete, true);
   syncArcQuests(campaign.id, [subArcs[0]]);
   const after = listQuests(campaign.id);
@@ -65,19 +65,72 @@ test("set_quest writes a hand quest, edits it, and the console's lines become ob
   assert.equal(made.ok, true);
   assert.equal(made.quest.objectives.length, 2);
   assert.equal(made.quest.source, "dm");
-  const edited = handleSetQuest(live(), JSON.stringify({ questId: made.quest.id, status: "failed" }));
+  const edited = handleSetQuest(live(), JSON.stringify({ quest: made.quest.id, status: "failed" }));
   assert.equal(edited.quest.status, "failed");
-  assert.ok("error" in handleSetQuest(live(), JSON.stringify({ questId: "nope", title: "x" })));
+  assert.ok("error" in handleSetQuest(live(), JSON.stringify({ quest: "nope", title: "x" })));
   assert.ok("error" in handleSetQuest(live(), "{}"), "a new quest needs a title");
 });
 
 test("tick_objective refuses a stranger's quest and an unknown objective", () => {
   const quest = insertQuest({ campaignId: campaign.id, title: "Secret errand", objectives: normalizeObjectives(["a", "b"]), visibility: "dm" });
-  assert.ok("error" in handleTickObjective(live(), JSON.stringify({ questId: quest.id, objectiveId: "o9" })));
+  assert.ok("error" in handleTickObjective(live(), JSON.stringify({ quest: quest.id, objective: "o9" })));
   const other = createCampaign(dm.id, { title: "Other", description: "", theme: "", maxPlayers: 4, startingLevel: 1, difficulty: "normal" });
-  assert.ok("error" in handleTickObjective(getCampaignById(other.id), JSON.stringify({ questId: quest.id, objectiveId: "o1" })));
-  const ok = handleTickObjective(live(), JSON.stringify({ questId: quest.id, objectiveId: "o1" }));
+  assert.ok("error" in handleTickObjective(getCampaignById(other.id), JSON.stringify({ quest: quest.id, objective: "o1" })));
+  const ok = handleTickObjective(live(), JSON.stringify({ quest: quest.id, objective: "o1" }));
   assert.equal(ok.complete, false);
+});
+
+test("the quest tools take a quest by its title and an objective by its text, as the prompt block shows them", () => {
+  insertQuest({ campaignId: campaign.id, title: "Clear the Cellar", objectives: normalizeObjectives(["Find the rats", "Burn the nest"]), visibility: "party" });
+  const ticked = handleTickObjective(live(), JSON.stringify({ quest: "clear the cellar", objective: "Find the rats" }));
+  assert.equal(ticked.ok, true, ticked.error);
+  assert.deepEqual(ticked.quest.objectives.map((objective) => objective.done), [true, false]);
+  insertQuest({ campaignId: campaign.id, title: "Hidden debt", objectives: normalizeObjectives(["Pay it", "Hide it"]), visibility: "dm" });
+  const secret = handleTickObjective(live(), JSON.stringify({ quest: "[GM only] Hidden debt", objective: "Pay it" }));
+  assert.equal(secret.ok, true, secret.error);
+  const before = listQuests(campaign.id).length;
+  const edited = handleSetQuest(live(), JSON.stringify({ quest: "Clear the Cellar", status: "done" }));
+  assert.equal(edited.quest.status, "done");
+  assert.equal(listQuests(campaign.id).length, before, "an edit by title adds no quest");
+  const unknown = handleTickObjective(live(), JSON.stringify({ quest: "Clear the Cellar", objective: "Kill the cat" }));
+  assert.match(unknown.error, /Find the rats/, "the refusal lists the objectives");
+  const other = createCampaign(dm.id, { title: "Elsewhere", description: "", theme: "", maxPlayers: 4, startingLevel: 1, difficulty: "normal" });
+  const stranger = handleTickObjective(getCampaignById(other.id), JSON.stringify({ quest: "Clear the Cellar", objective: "Burn the nest" }));
+  assert.ok("error" in stranger, "another campaign cannot reach it by title");
+  assert.doesNotMatch(stranger.error, /Cellar \(/, "nor sees it listed");
+});
+
+test("restating a quest's objectives keeps the ticks of the lines it keeps, and adds the new ones open", () => {
+  const made = handleSetQuest(live(), JSON.stringify({ title: "Mend the bridge", objectives: ["Buy the planks", "Hire the carpenter"] }));
+  handleTickObjective(live(), JSON.stringify({ quest: "Mend the bridge", objective: "Buy the planks" }));
+  const restated = handleSetQuest(live(), JSON.stringify({ quest: "Mend the bridge", objectives: ["buy the planks", "Hire the carpenter", "Pay the toll"] }));
+  assert.equal(restated.ok, true, restated.error);
+  assert.deepEqual(
+    restated.quest.objectives.map((objective) => [objective.text, objective.done]),
+    [["buy the planks", true], ["Hire the carpenter", false], ["Pay the toll", false]],
+    "the tick on the kept line survives",
+  );
+  const ids = restated.quest.objectives.map((objective) => objective.id);
+  assert.equal(ids[0], made.quest.objectives[0].id, "a kept line keeps its id");
+  assert.equal(new Set(ids).size, ids.length, "no two objectives share an id");
+});
+
+test("set_quest with the title of a quest in the log updates it rather than adding it twice", () => {
+  const before = listQuests(campaign.id).length;
+  const first = handleSetQuest(live(), JSON.stringify({ title: "Find the smuggler", objectives: ["Ask at the docks", "Watch the tide"] }));
+  handleTickObjective(live(), JSON.stringify({ quest: "Find the smuggler", objective: "Ask at the docks" }));
+  const again = handleSetQuest(live(), JSON.stringify({ title: "find the smuggler", objectives: ["Ask at the docks", "Search the warehouse"] }));
+  assert.equal(again.quest.title, "Find the smuggler", "the log keeps the title it had");
+  assert.equal(again.ok, true, again.error);
+  assert.equal(listQuests(campaign.id).length, before + 1, "one quest, not two");
+  assert.equal(again.quest.id, first.quest.id);
+  assert.deepEqual(again.quest.objectives.map((objective) => objective.done), [true, false]);
+  assert.match(again.note, /already in the log/);
+  // A quest the party failed can be taken up again as a new one.
+  handleSetQuest(live(), JSON.stringify({ quest: "Find the smuggler", status: "failed" }));
+  const retry = handleSetQuest(live(), JSON.stringify({ title: "Find the smuggler" }));
+  assert.notEqual(retry.quest.id, first.quest.id);
+  assert.equal(retry.quest.status, "active");
 });
 
 test("a player's log drops the DM's rows and the prompt block shows the ticks", () => {
@@ -87,7 +140,7 @@ test("a player's log drops the DM's rows and the prompt block shows the ticks", 
   assert.ok(all.some((quest) => quest.visibility === "dm"));
   const block = renderQuestsForPrompt(all);
   assert.ok(block.includes("[x] a"));
-  assert.ok(block.includes("[DM only] Secret errand"));
+  assert.ok(block.includes("[GM only] Secret errand"));
   assert.ok(!block.includes("Find the daughter"), "a failed quest is out of the block");
 });
 

@@ -11,8 +11,11 @@ import { z } from "zod";
 import { replyJsonObject } from "../reply-json-logic.ts";
 import type { Speaker } from "./speech.ts";
 import { QUOTE, quotedText, speakerMatchers } from "./speech-prose.ts";
+import { textKey, words } from "../language/text-logic.ts";
+import type { TableLanguage } from "../schemas/game-settings-options.ts";
+import { DEED_KINDS, type DeedKind } from "./companion-values-logic.ts";
 
-export const CLAIM_KINDS = ["hit", "miss", "dies", "downed", "amount", "cast", "fight_start", "roll_ask", "aside", "speaker"] as const;
+export const CLAIM_KINDS = ["hit", "miss", "dies", "downed", "amount", "cast", "fight_start", "roll_ask", "aside", "speaker", "turn_over", "deed"] as const;
 export type ClaimKind = (typeof CLAIM_KINDS)[number];
 
 export const ROLL_ASK_CHECKS = ["skill", "ability", "save", "initiative"] as const;
@@ -39,7 +42,10 @@ export type NarrationClaim =
       quote: string;
     }
   | { kind: "aside"; quote: string }
-  | { kind: "speaker"; line: string; speaker: Speaker };
+  | { kind: "speaker"; line: string; speaker: Speaker }
+  | { kind: "turn_over"; quote: string }
+  // A deed a party character commits now (issue 503): who, by id and name.
+  | { kind: "deed"; character: string; name: string; deed: DeedKind; quote: string };
 
 // Which claims a piece of narration could contradict or trigger, from
 // engine state alone. A kind the turn gives no ground truth for is never
@@ -49,6 +55,9 @@ export type ReaderGate = {
   guard: boolean;
   // This turn resolved an attack, so a hit or a miss can be checked.
   attacks: boolean;
+  // A fight runs, so a hit or a miss on an enemy no tool touched this turn
+  // can be caught as an attack the prose alone resolved.
+  fight?: boolean;
   // A creature's hit points are known (this turn's results or the live
   // encounter), so a death or a drop can be checked.
   creatures: boolean;
@@ -71,15 +80,24 @@ export type ReaderGate = {
   // The passage may reach the table as narration, so a sentence where the
   // narrator talks to itself about its next steps can be kept off it.
   aside?: boolean;
+  // A fight waits on a player's character whose turn this DM turn has not
+  // ended, so prose that hands the turn on can end it (dm/claims.ts
+  // turnOverFor).
+  turnOver?: boolean;
+  // A lasting companion whose conscience weighs deeds travels with the
+  // party (issue 503), so a deed the narration shows unrecorded is noted.
+  deeds?: boolean;
 };
 
 // One read of a passage: the kinds it was asked and the claims that
 // survived the checks. A kind it was not asked says nothing either way.
-export type PartRead = { kinds: readonly ClaimKind[]; claims: readonly NarrationClaim[] };
+// unread: the reader failed on this part, so its claims are none for want
+// of a reading, not because it claimed nothing (issue #460).
+export type PartRead = { kinds: readonly ClaimKind[]; claims: readonly NarrationClaim[]; unread?: true };
 
 export function claimKindsFor(gate: ReaderGate): ClaimKind[] {
   const kinds: ClaimKind[] = [];
-  if (gate.guard && gate.attacks) {
+  if (gate.guard && (gate.attacks || gate.fight)) {
     kinds.push("hit", "miss");
   }
   if (gate.guard && gate.creatures) {
@@ -103,6 +121,12 @@ export function claimKindsFor(gate: ReaderGate): ClaimKind[] {
   if (gate.speech) {
     kinds.push("speaker");
   }
+  if (gate.turnOver) {
+    kinds.push("turn_over");
+  }
+  if (gate.guard && gate.deeds) {
+    kinds.push("deed");
+  }
   return kinds;
 }
 
@@ -117,17 +141,37 @@ const KIND_LINES: Record<ClaimKind, string> = {
   // named, so the cast went unflagged (measured on the reader's test
   // cases; a hosted model read them the same either way).
   cast: '{"kind":"cast","caster":PARTY_REF,"spell":"English spell name","quote":Q}: a party character casts a spell now. Add "spent":SPENT_REF only when what the narration describes is really the effect of something that character spent this turn, as the message lists it under "Spent refs": a feature, an item or an action is no spell, whatever spell it looks like. Never for a spell the narration names or says is cast: that is a cast of its own, even beside a spend.',
+  // An ambush told as story counts: gpt-oss-20b narrated goblins bursting
+  // from the cliffs and closing in, with no start_encounter, and the reader
+  // read no fight in it, so the fight began a turn late (2026-10-20). Words,
+  // gestures, weapons drawn and fights between others stay out by name: a
+  // claim here makes the model start an encounter (gpt-oss read a threat, an
+  // ogre's jabbing finger and sparring guards as fights before they did).
   fight_start:
-    '{"kind":"fight_start","quote":Q}: the narration announces to the players that a fight begins now: a call to roll initiative, or a stat-block style enemy roster (enemy counts with challenge ratings, a surprise field).',
+    '{"kind":"fight_start","quote":Q}: a fight begins now. Report it for any one of: a call to roll initiative; a stat-block style enemy roster (enemy counts with challenge ratings, a surprise field); hostile creatures attacking a party character now: an ambush springing on them, enemies charging, leaping or rushing at them, a blow struck or a shot loosed at one of them (the attack beginning is enough, landed or not). quote is the words of that attack or that call. Never for words, threats, demands, warnings or gestures, or weapons drawn or aimed with no attack made yet; a fight between others that no party character is in (sparring, a brawl across the room); a fight that might come, is told as past, or is over.',
   roll_ask:
     '{"kind":"roll_ask","character":PARTY_REF|"all","check":"skill"|"ability"|"save"|"initiative","skill":SKILL,"ability":"str"|"dex"|"con"|"int"|"wis"|"cha","dc":N,"quote":Q}: the narration asks a party character to roll now. skill only for a skill check; ability for a save or a bare ability check; dc only when stated.',
   // Narrow on purpose: a sentence it names is cut from the narration, so
   // everything that only sounds like an aside is listed as not one.
   aside:
     '{"kind":"aside","quote":Q}: the narrator steps out of the story to talk to itself about its own work: what it will do, check, look up or set up next, or the game\'s bookkeeping that work waits on ("The quay is not on the map yet.", "I\'ll check how the table records that first."). Unlike the other kinds it is not about what happens in the story. One claim per such sentence; quote is copied from that one sentence. Never for: any character\'s words, however they are written (quoted in any style, a letter, an inscription, a song, a voice in someone\'s head); an out-of-character answer to a player; a question or an offer to the players ("What do you do?", "Let me know if you search the boat."); the story itself, even told by a narrator who says "I" because the table asked for one.',
+  turn_over:
+    '{"kind":"turn_over","quote":Q}: the narration says the acting character\'s own turn is over now, or hands the turn to whoever acts next ("Your turn ends.", "It is now Bram\'s turn.", "The goblins act next."); in a player\'s words, that they end their turn ("...then I end my turn.", "That\'s my turn."). Never for a question about what they do next, or an offer of what they could still do.',
+  deed: `{"kind":"deed","actor":PARTY_REF,"deed":DEED,"quote":Q}: a party character commits one of these deeds now. DEED is one of: murder_helpless (kills someone who cannot fight back: a prisoner, the bound, the surrendered, the sleeping), torture, theft_from_poor, necromancy (raises or commands the dead), desecration (of graves, the dead or a holy place), slaving (takes, sells or keeps slaves), cruelty, betrayal (of an ally), broke_word, mercy (spares a beaten foe who could be killed), laid_to_rest (buries or gives rites to the dead), freed_captives (sets prisoners, slaves or hostages free), upheld_law (hands a wrongdoer to the law instead of killing, freeing or selling them). Never for a threat, a plan, a deed someone else does, or killing an enemy who is still fighting.`,
   speaker:
     '{"kind":"speaker","ref":SPEAKER_REF,"quote":Q}: the one claim about quoted dialogue, saying only who speaks a line of it; quote is copied from inside that line\'s quotation marks. Only when the words around the line tie it to one listed person: a tag that names them or one of their other names, the person the narration is about just before or after it, or a word like "she" that points back to them. Leave the line out when its tag names nobody listed ("a guard calls", "you say"), when it answers the line before with no tag of its own, or when you would be guessing: a line left out stays the narrator\'s, and a line given to the wrong person is a mistake. One claim per quoted line.',
 };
+
+// The plain English ways a player ends their turn, read only at an English
+// table, beside the reader's turn_over claim on their words (dm/claims.ts
+// readTurnEndInWords): gpt-oss-20b as the reader found "then I end my turn"
+// in one reading and missed it in the next. A miss here costs what a table in
+// any other language pays: the reader's reading alone.
+const ENGLISH_ENDS_TURN = /\b(?:end(?:s|ing)?|finish(?:es|ing)?) (?:my|the|his|her|their) turn\b|\bthat'?s (?:it for )?my turn\b|\bmy turn is (?:over|done)\b/i;
+
+export function englishEndsTurn(text: string): boolean {
+  return ENGLISH_ENDS_TURN.test(text);
+}
 
 // The reader's instructions. Every claim kind about the game is listed so the
 // system prompt is the same on every call; the request says which kinds to
@@ -150,10 +194,11 @@ ${kinds.map((kind) => `- ${KIND_LINES[kind]}`).join("\n")}
 SKILL is one of: ${skillIds.join(", ")}.
 
 Rules:
+- A passage headed "Player's words" is asked only for turn_over: there the player's own word that their turn ends is the claim.
 - A claim only for what the narrator states as a fact happening now. Never for:
   - anything inside quoted dialogue, numbers included;
   - what a character reports, boasts, swears or claims ("the innkeeper insists the boar was slain" is no death);
-  - comparisons, metaphors and similes; hedged, possible, nearly-happening or negated statements ("the wyvern barely clings to life" is no death);
+  - comparisons, metaphors and similes; hedged, possible, nearly-happening, hypothetical or negated statements ("the wyvern barely clings to life" is no death; "your blade would miss from here" and "it cannot reach him" are no miss);
   - attempts ("swings at", "strikes toward");
   - events in the past ("yesterday's fireball");
   - a spell cast by anyone outside the party.
@@ -177,7 +222,9 @@ export type ReaderRefs = {
   spent: Array<{ ref: string; name: string; by: string }>;
 };
 
-export function renderReaderInput(kinds: readonly ClaimKind[], refs: ReaderRefs, text: string): string {
+// A player's own words are read only for turn_over (claims.ts
+// readTurnEndInWords), under their own heading.
+export function renderReaderInput(kinds: readonly ClaimKind[], refs: ReaderRefs, text: string, heading: "Narration" | "Player's words" = "Narration"): string {
   const creatures = refs.creatures.map((entry) => `"${entry.ref}" for ${entry.display}`).join(", ") || "(none)";
   const party = refs.party.map((entry) => `"${entry.ref}" for ${entry.name}`).join(", ") || "(none)";
   const speakers = kinds.includes("speaker")
@@ -187,7 +234,7 @@ export function renderReaderInput(kinds: readonly ClaimKind[], refs: ReaderRefs,
     kinds.includes("cast") && refs.spent.length
       ? `\nSpent refs: ${refs.spent.map((entry) => `"${entry.ref}" for ${entry.name} (${entry.by})`).join(", ")}`
       : "";
-  return `Ask: ${kinds.join(", ")}\nCreature refs: ${creatures}\nParty refs: ${party}${spent}${speakers}\n\nNarration:\n<<<\n${text}\n>>>`;
+  return `Ask: ${kinds.join(", ")}\nCreature refs: ${creatures}\nParty refs: ${party}${spent}${speakers}\n\n${heading}:\n<<<\n${text}\n>>>`;
 }
 
 // The reply, read once at the boundary: a claim that is not shaped as its
@@ -218,7 +265,9 @@ const claimSchema = z.discriminatedUnion("kind", [
     quote: quoteField,
   }),
   z.object({ kind: z.literal("aside"), quote: quoteField }),
+  z.object({ kind: z.literal("turn_over"), quote: quoteField }),
   z.object({ kind: z.literal("speaker"), ref: z.string().min(1).max(120), quote: quoteField }),
+  z.object({ kind: z.literal("deed"), actor: z.string().min(1).max(120), deed: z.enum(DEED_KINDS), quote: quoteField }),
 ]);
 const replySchema = z.object({ claims: z.array(z.unknown()).max(40) });
 
@@ -232,13 +281,7 @@ export function parseReaderReply(raw: string): unknown[] | null {
 // Quotes are compared with their quote marks, apostrophes, spacing and case
 // folded, so a reader that straightens a curly quote still matches.
 export function squash(text: string): string {
-  return text
-    .normalize("NFC")
-    .replace(/[“”«»„"]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+  return textKey(text.replace(/[“”«»„"]/g, '"').replace(/[‘’]/g, "'"));
 }
 
 export type ClaimContext = {
@@ -271,7 +314,7 @@ export function namedSpeakers(text: string, speakers: ReadonlyMap<string, Speake
   return new Map(
     [...speakers].filter(([, speaker]) => {
       const [{ pattern, short }] = speakerMatchers([speaker]);
-      return [...prose.matchAll(pattern)].some((found) => !short.has(found[0].toLowerCase()) || /^\p{Lu}/u.test(found[0]));
+      return [...prose.matchAll(pattern)].some((found) => !short.has(textKey(found[0])) || /^\p{Lu}/u.test(found[0]));
     }),
   );
 }
@@ -306,7 +349,10 @@ export function checkClaims(raw: readonly unknown[], context: ClaimContext): Nar
     switch (claim.kind) {
       case "hit":
       case "miss":
-        if (context.attackRefs.has(claim.target)) {
+        // A blow on a creature the turn attacked is checked against the roll;
+        // one on a creature of the fight that no tool touched is a blow the
+        // prose alone resolved (engine-boundary.ts unrolledBlow).
+        if (context.attackRefs.has(claim.target) || context.creatureRefs.has(claim.target)) {
           kept.push(claim);
         }
         break;
@@ -319,17 +365,17 @@ export function checkClaims(raw: readonly unknown[], context: ClaimContext): Nar
       case "amount":
       case "fight_start":
       case "aside":
+      case "turn_over":
         kept.push(claim);
         break;
       case "cast": {
         const caster = context.party.get(claim.caster);
-        const spell = context.normalizeSpell(claim.spell);
         // Tied to what its own caster spent, the cast is that spend, which
         // its tool already resolved. A tie to anyone else's spend, or to none
         // the turn made, excuses nothing.
         const paid = claim.spent ? context.spent.get(claim.spent) === claim.caster : false;
-        if (caster && context.leveledSpells.has(spell) && !paid) {
-          kept.push({ kind: "cast", caster, spell, quote: claim.quote });
+        if (caster && context.leveledSpells.has(context.normalizeSpell(claim.spell)) && !paid) {
+          kept.push({ kind: "cast", caster, spell: claim.spell, quote: claim.quote });
         }
         break;
       }
@@ -347,6 +393,14 @@ export function checkClaims(raw: readonly unknown[], context: ClaimContext): Nar
         // reach request_roll as one (rolls.ts rollAsksFromClaims).
         const { skill, ability, dc, ...ask } = claim;
         kept.push({ ...ask, ...(skill ? { skill } : {}), ...(ability ? { ability } : {}), ...(dc ? { dc } : {}) });
+        break;
+      }
+      case "deed": {
+        // Only a party character's: what the engine can ask them about.
+        const name = context.party.get(claim.actor);
+        if (name) {
+          kept.push({ kind: "deed", character: claim.actor, name, deed: claim.deed, quote: claim.quote });
+        }
         break;
       }
       case "speaker": {
@@ -414,11 +468,45 @@ export function withoutSentences(text: string, quotes: readonly string[]): strin
 // claims; empty when no word of the story is left (a stray quote mark or
 // bold marker is not one), which is how a reply that was only the model's
 // plan reads.
-export function withoutAsides(text: string, claims: readonly NarrationClaim[]): string {
-  const quotes = claims.flatMap((claim) => (claim.kind === "aside" ? [claim.quote] : []));
-  if (!quotes.length) {
-    return text;
+// What a small model writes about the turn rather than in it, found without
+// the reader (Gemma4 e4b's reader, the same small model, quoted none of it):
+// its own input format echoed back ("Bram | attempt to ask the merchant..."),
+// a table note copied out, and sentences about tool calls and corrections
+// ("I will correct this by calling the necessary tool to resolve the attack
+// properly"). The phrasings are English, read only at an English table; the
+// reader's asides cover every language. A sentence holding a quotation is
+// speech and is never taken.
+const ENGLISH_META_SENTENCE =
+  /\btool[ -]?calls?\b|\b(?:the|this|a) tool'?s? (?:output|result)s?\b|\bcalling the (?:necessary |right |appropriate |correct )?tools?\b|\bnarrate the results?\b|\bunwarranted assumption\b|\bmy (?:previous|last|earlier) (?:response|reply|narration|message)\b/i;
+const ECHOED_LINE = /^[ \t]*(?:\[[^\]\n]{1,80}\|\s*attempt\][^\n]*|[^\n|[\]]{1,60}\s\|\s*attempt\b[^\n]*|\[Table note\][^\n]*)$/gim;
+// The game state copied into the story by a small model (Qwen3.5 9B): the
+// turn order recited as a numbered list under its English heading (read only
+// at an English table), and the board squares it reads, "(7,13)", at every
+// table. The board shows both; the prose never needs them.
+const ENGLISH_ORDER_BLOCK = /^[ \t]*\**[ \t]*(?:current[ \t]+)?(?:initiative(?:[ \t]+order)?|turn[ \t]+order)[ \t]*(?::\**|\**[ \t]*:)[^\n]*(?:\n[ \t]*\d+\.[^\n]*)*/gim;
+const GRID_SQUARE = /\(\s*\d{1,3}\s*,\s*\d{1,3}\s*\)/;
+
+export function metaQuotes(text: string, language: TableLanguage): string[] {
+  const quotes = [...text.matchAll(ECHOED_LINE)].map((match) => match[0].trim());
+  for (const match of text.matchAll(/[^.!?\n]+[.!?]*/g)) {
+    if (((language === "english" && ENGLISH_META_SENTENCE.test(match[0])) || GRID_SQUARE.test(match[0])) && !/["\u201c\u201d\u00ab\u00bb]/.test(match[0])) {
+      quotes.push(match[0].trim());
+    }
   }
-  const kept = withoutSentences(text, quotes);
-  return /[\p{L}\p{N}]/u.test(kept) ? kept : "";
+  return quotes.filter(Boolean);
+}
+
+export function withoutAsides(text: string, claims: readonly NarrationClaim[], language: TableLanguage): string {
+  // A recited turn order under its English heading goes whole, heading and
+  // list, at an English table only (cut sentence by sentence, its "3." would
+  // match the wrong line); at any table the reader's asides and the board
+  // squares quoted still go.
+  const unlisted = language === "english" ? text.replace(ENGLISH_ORDER_BLOCK, "").replace(/\n{3,}/g, "\n\n").trim() : text.trim();
+  const source = unlisted === text.trim() ? text : unlisted;
+  const quotes = [...claims.flatMap((claim) => (claim.kind === "aside" ? [claim.quote] : [])), ...metaQuotes(source, language)];
+  if (!quotes.length) {
+    return words(source).length ? source : "";
+  }
+  const kept = withoutSentences(source, quotes);
+  return words(kept).length ? kept : "";
 }

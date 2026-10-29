@@ -6,13 +6,16 @@
 // unarmed strike for 1 bludgeoning, and Hungry Jaws had nothing to bite with
 // (issue 233). Pure.
 import type { SrdWeapon } from "@/lib/srd/weapons";
+import { textKey } from "@/lib/language/text-logic";
+import { pluralForms } from "@/lib/srd/name-forms";
 
 const TRAIT = /^(.+?)\s*\((?:[^()]*?,\s*)?(\d+d\d+)\s+([a-z]+)\s+unarmed strike\)\s*$/i;
 
 export type RacialWeapon = { feature: string; srd: SrdWeapon };
 
-export function racialNaturalWeapon(features: Array<{ name: string }>, term: string | undefined): RacialWeapon | null {
-  const wanted = (term ?? "").trim().toLowerCase().replace(/^(the|a|an|her|his|their|its)\s+/, "");
+// The lineage weapon a written name is, whole ("claws", "Cat's Claws").
+export function racialNaturalWeapon(features: Array<{ name: string }>, name: string): RacialWeapon | null {
+  const wanted = textKey(name);
   if (!wanted) {
     return null;
   }
@@ -24,8 +27,8 @@ export function racialNaturalWeapon(features: Array<{ name: string }>, term: str
     // "Cat's Claws" answers to "claws" as well as to its own name.
     const own = found[1].trim();
     const bare = own.replace(/^[a-z]+'s\s+/i, "");
-    const names = [own.toLowerCase(), bare.toLowerCase()];
-    if (names.some((name) => wanted === name || wanted.startsWith(`${name} `) || name.startsWith(wanted))) {
+    const names = [own, bare].flatMap((name) => pluralForms(textKey(name)));
+    if (names.includes(wanted)) {
       return {
         feature: own,
         srd: { name: bare.replace(/\b\w/g, (letter) => letter.toUpperCase()), category: "simple", kind: "melee", damage: `${found[2]} ${found[3].toLowerCase()}` },

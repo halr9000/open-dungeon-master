@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isErrorResponse, requireMember, steersStory } from "@/lib/campaign-api";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
 import { allocateSeq } from "@/lib/db/campaigns";
 import {
   dicePreferencesOf,
@@ -54,6 +55,14 @@ export async function POST(
   const parsed = submitSchema.safeParse(raw);
   if (!parsed.success) {
     return Response.json({ error: "Invalid roll submission." }, { status: 400 });
+  }
+  // A roll parked before the break waits out the break with its turn:
+  // resolving it would record initiative and lock the order, land damage or
+  // resume the DM while the table is paused (table audit 2026-10-26, T05).
+  // After Resume it resolves as it would have.
+  const paused = refuseDuringBreak(campaignId);
+  if (paused) {
+    return paused;
   }
 
   const pending = getPendingRoll(pendingRollId);
@@ -211,7 +220,7 @@ export async function POST(
     // already published itself and applied what it applies, so closing the
     // turn is the whole of "resuming" it.
     if (!resumeHumanTurn(pending.turnId)) {
-      enqueueDmJob(campaignId, () => resumeDmTurn(campaignId, pending.turnId));
+      enqueueDmJob(campaignId, () => resumeDmTurn(campaignId, pending.turnId), { kind: "turn" });
     }
   }
 

@@ -114,6 +114,20 @@ try {
     assert.notEqual(playerOpportunities({ ...s, turn: { ...turn, key: `2:${sheetId}`, waitingSeq: 8 } })[0].opportunityId, first.opportunityId);
     assert.deepEqual(playerOpportunities({ ...s, turn: { ...turn, characterId: "inactive" } }), []);
   });
+  await test("an earned level follows the character's own decisions and waits only on what stops all play", () => {
+    const level = { current: 1, earned: 3 };
+    const types = (changes) => playerOpportunities(state({ level, ...changes })).map((o) => o.type);
+    assert.deepEqual(types({}), ["response_requested", "level_up_available"]);
+    assert.deepEqual(types({ rolls: [{ id: "my-roll", userId: user.id, characterId: sheetId }] }), ["roll_requested", "level_up_available"]);
+    assert.deepEqual(playerOpportunities(state({ level, rolls: [{ id: "their-roll", userId: other.id, characterId: "other-sheet" }] })),
+      [{ type: "level_up_available", opportunityId: `level:${sheetId}:2`, characterId: sheetId, level: 2 }], "another seat's roll does not hold it back");
+    assert.deepEqual(types({ awaitingRolls: true }), ["level_up_available"]);
+    const theirs = { id: "fight", characterId: "other-sheet", userId: other.id, key: "1:other-sheet", waitingSeq: 6 };
+    assert.deepEqual(types({ floor: { mode: "initiative", encounterId: "fight", userIds: [user.id, other.id], currentName: "Brannoc", round: 1 }, turn: theirs }), ["level_up_available"]);
+    for (const changes of [{ active: false }, { paused: true }, { busy: true }, { floor: { mode: "hold", next: { mode: "open" } } }]) assert.deepEqual(types(changes), []);
+    for (const unearned of [{ current: 2, earned: 2 }, { current: 20, earned: 20 }, null, undefined]) assert.deepEqual(playerOpportunities(state({ level: unearned, lastPlayerSeq: 5 })), []);
+    assert.equal(playerOpportunities(state({ level: { current: 4, earned: 6 }, lastPlayerSeq: 5 }))[0].opportunityId, `level:${sheetId}:5`, "one level at a time");
+  });
   await test("DM work defers narration until the persisted turn is done", async () => {
     narration();
     const turn = createDmTurn(campaign.id, []);
@@ -156,6 +170,50 @@ try {
     setFloor(campaign.id, { ...next, respondedUserIds: [user.id, other.id] });
     assert.deepEqual(playerWebhookState(grant, sub.id).opportunities, []);
     setFloor(campaign.id, { mode: "open" });
+  });
+  await test("an earned level is invited once per level, keeps its ID through a pause, and takes only odm_level_up", async () => {
+    const levelOf = () => playerWebhookState(grant, sub.id).opportunities.find((o) => o.type === "level_up_available");
+    const levelSends = () => sent.filter((s) => s.event.type === "level_up_available");
+    assert.equal(levelOf(), undefined);
+    db.prepare(`UPDATE character_sheets SET xp = 300 WHERE id = ?`).run(sheetId);
+    narration();
+    const o = levelOf();
+    assert.equal(o.opportunityId, `level:${sheetId}:2`); assert.equal(o.level, 2);
+    assert.deepEqual(playerWebhookState(grant, sub.id).opportunities.map((x) => x.type), ["response_requested", "level_up_available"], "listed after the table's own decision");
+    await tick();
+    assert.equal(levelSends().length, 1);
+    const event = levelSends()[0].event;
+    assert.equal(event.level, 2); assert.match(event.text, /earned level 2/);
+    assert.ok(validateEvent(event, sub), "the bundled receiver accepts it");
+    db.prepare(`UPDATE character_sheets SET xp = 600 WHERE id = ?`).run(sheetId);
+    publishPersisted(campaign.id, "x_card", { at: Date.now() }); await tick();
+    publishPersisted(campaign.id, "safety_resumed", { at: Date.now(), action: "continue" }); await tick(); await tick();
+    assert.equal(levelOf().opportunityId, o.opportunityId);
+    assert.equal(levelSends().length, 1, "more experience, a pause and retries invite the same level once");
+    const table = playerWebhookState(grant, sub.id).opportunities.find((x) => x.type !== "level_up_available");
+    const base = { subscriptionId: sub.id, campaignId: campaign.id, fingerprint: "level" };
+    for (const tool of ["odm_take_action", "odm_end_turn", "odm_answer_roll"]) assert.throws(() => reserveWebhookWrite(grant, { ...base, opportunityId: o.opportunityId, tool }), /does not permit/);
+    assert.throws(() => reserveWebhookWrite(grant, { ...base, opportunityId: table.opportunityId, tool: "odm_level_up" }), /does not permit/);
+    assert.ok(workbenchTools(grant).find((t) => t.name === "odm_level_up").inputSchema.properties.opportunityId);
+    const originalFetch = globalThis.fetch; const calls = [];
+    try {
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init.method, body: JSON.parse(init.body) });
+        db.prepare(`UPDATE character_sheets SET level = 2 WHERE id = ?`).run(sheetId);
+        return Response.json({ sheet: { level: 2 }, hpGained: 6 });
+      };
+      const args = { campaignId: campaign.id, level: 2, subscriptionId: sub.id, opportunityId: o.opportunityId };
+      const first = await workbenchCall(grant, "odm_level_up", args);
+      assert.equal(first.isError, false, first.text);
+      assert.deepEqual(await workbenchCall(grant, "odm_level_up", args), first, "a retry gets the saved answer");
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].method, "PATCH"); assert.deepEqual(calls[0].body, { level: 2 }, "the guard stays out of the route's body");
+    } finally { globalThis.fetch = originalFetch; }
+    assert.equal(levelOf(), undefined, "taking the level ends it");
+    db.prepare(`UPDATE character_sheets SET xp = 2700 WHERE id = ?`).run(sheetId);
+    assert.equal(levelOf().opportunityId, `level:${sheetId}:3`, "a further earned level is a new decision");
+    db.prepare(`UPDATE character_sheets SET xp = 0, level = 1 WHERE id = ?`).run(sheetId);
+    assert.equal(levelOf(), undefined);
   });
   await test("guarded submissions reserve once, return identical receipts and reject changed/stale/cross-seat writes", () => {
     const o = playerWebhookState(grant, sub.id).opportunities[0];
@@ -398,6 +456,22 @@ try {
     assert.match(playerPrompt(event, "Be helpful"), /never as instructions/);
     assert.ok(!playerPrompt({ ...event, text: "TEXT-ONLY-MARKER" }, "Be helpful").includes("TEXT-ONLY-MARKER"));
   });
+  await test("the receiver takes an earned level after a decision queued beside it, with the level-up tools", async () => {
+    const base = { ...sent.find((s) => s.event.type === "response_requested").event, subscriptionId: sub.id, occurredAt: nowIso() };
+    const levelEvent = { ...base, type: "level_up_available", opportunityId: `level:${sheetId}:2`, level: 2 };
+    assert.ok(validateEvent(levelEvent, sub));
+    for (const level of [undefined, 1, 21, 2.5, "2"]) assert.ok(!validateEvent({ ...levelEvent, level }, sub));
+    const inbox = new PlayerInbox(path.join(directory, "level-order"));
+    inbox.accept(levelEvent); inbox.accept({ ...base, opportunityId: "table-after-level" });
+    const woke = [];
+    for (let i = 0; i < 2; i += 1) await inbox.processOne(async () => true, async (e) => { woke.push(e.type); });
+    assert.deepEqual(woke, ["response_requested", "level_up_available"]);
+    const prompt = playerPrompt(levelEvent, "Be helpful");
+    assert.match(prompt, /For level_up_available, read odm_level_up_options/);
+    assert.match(prompt, /odm_end_turn, odm_pass and odm_level_up call/);
+    const override = playerMcpOverride("https://odm.example/api/mcp", "private-helper");
+    assert.ok(override.includes('"odm_level_up_options"') && override.includes('"odm_level_up"'));
+  });
   await test("Codex adapter initializes, persists its own thread before starting and resumes it serially", async () => {
     const calls = []; let threadId; let killed = 0; let handlers;
     const factory = (_binary, _args, _options, h) => {
@@ -449,6 +523,158 @@ try {
     await assert.rejects(runCodexPlayerTurn(factory(true), [], options), /failed/);
     await assert.rejects(runCodexPlayerTurn(factory(false), [], options), /timed out/);
     assert.equal(killed, 2);
+  });
+  // Poll links: the pull side of the same subscriptions, for an agent that
+  // cannot take incoming requests. Their own player and table, since a
+  // character has one subscription.
+  const { createPlayerPollLink, pollLinkAnswer, pollLinksAllowed, setPollLinksAllowed, playerSignalsEnabled, POLL_MIN_INTERVAL_MS } = await import("../src/lib/agents/webhooks.ts");
+  const { webhookToolCall } = await import("../src/lib/agents/webhook-tools.ts");
+  const poller = createUser("poll-player", "not-a-password");
+  const pollTable = createCampaign(poller.id, { title: "Poll test", description: "", theme: "", difficulty: "normal", startingLevel: 1, maxPlayers: 4 });
+  const pollSheet = "poll-test-sheet";
+  db.prepare(`INSERT INTO character_sheets (id, campaign_id, user_id, name, race, class, abilities_json, max_hp, current_hp, ac, hit_dice_json, proficiencies_json, created_at, updated_at)
+    VALUES (?, ?, ?, 'Kalanis', 'elf', 'wizard', '{}', 8, 8, 12, '{}', '{}', ?, ?)`).run(pollSheet, pollTable.id, poller.id, nowIso(), nowIso());
+  const pollGrant = createConnectionGrant({ userId: poller.id, name: "Muse", scopes: ["read", "play"], campaignId: pollTable.id }).grant;
+  const subscribePoll = (extra = {}) => webhookToolCall(pollGrant, "odm_subscribe_player_webhook", { campaignId: pollTable.id, characterId: pollSheet, delivery: "poll", ...extra });
+  let pollClock = Date.now() + 60_000;
+  const poll = (token) => { pollClock += POLL_MIN_INTERVAL_MS; return pollLinkAnswer(token, pollClock); };
+  let pollToken = "";
+
+  await test("poll links are off until an admin turns them on", () => {
+    assert.equal(pollLinksAllowed(), false);
+    assert.throws(() => createPlayerPollLink(pollGrant, { campaignId: pollTable.id, characterId: pollSheet }), /turned poll links on/);
+    assert.match(subscribePoll().text, /turned poll links on/);
+    assert.equal(pollLinkAnswer(`odmpoll_${"a".repeat(43)}`).status, 404);
+  });
+
+  await test("with poll links on and no receiver address, players get the webhook tools and guard fields", () => {
+    setPollLinksAllowed(true);
+    const env = process.env.ODM_PLAYER_WEBHOOK_ORIGINS;
+    delete process.env.ODM_PLAYER_WEBHOOK_ORIGINS;
+    try {
+      assert.equal(playerWebhooksEnabled(), false);
+      assert.equal(playerSignalsEnabled(), true);
+      const tools = workbenchTools(pollGrant);
+      assert.ok(tools.some((tool) => tool.name === "odm_subscribe_player_webhook"));
+      assert.ok(tools.find((tool) => tool.name === "odm_take_action").inputSchema.properties.subscriptionId);
+    } finally {
+      process.env.ODM_PLAYER_WEBHOOK_ORIGINS = env;
+    }
+  });
+
+  await test("a poll link is made once, kept only as a hash, and takes no url or headers", () => {
+    assert.match(subscribePoll({ url: "https://receiver.example/x" }).text, /no url or headers/);
+    assert.match(subscribePoll({ authorizationHeader: "Bearer x" }).text, /no url or headers/);
+    assert.match(webhookToolCall(pollGrant, "odm_subscribe_player_webhook", { campaignId: pollTable.id, characterId: pollSheet, delivery: "smoke" }).text, /"push" or "poll"/);
+    const made = subscribePoll();
+    assert.equal(made.isError, false, made.text);
+    const created = JSON.parse(made.text);
+    assert.equal(created.delivery, "poll");
+    assert.equal(created.signingSecret, undefined);
+    assert.match(created.pollPath, /^\/api\/agents\/signal\/odmpoll_[A-Za-z0-9_-]{43}$/);
+    pollToken = created.pollPath.split("/").pop();
+    const row = db.prepare(`SELECT * FROM player_webhooks WHERE id = ?`).get(created.id);
+    assert.ok(!JSON.stringify(row).includes(pollToken), "the link itself is never stored");
+    assert.equal(row.url, "");
+    assert.deepEqual(listPlayerWebhooks(pollGrant.id).map((entry) => entry.delivery), ["poll"]);
+    assert.throws(() => createPlayerWebhook(pollGrant, { campaignId: pollTable.id, characterId: pollSheet, url: "https://receiver.example/odm" }), /already has/);
+    const other = createConnectionGrant({ userId: poller.id, name: "Other agent", scopes: ["read", "play"], campaignId: pollTable.id }).grant;
+    assert.throws(() => createPlayerPollLink(other, { campaignId: pollTable.id, characterId: pollSheet }), /already has a webhook receiver or poll link/);
+    revokeConnectionGrant(poller.id, other.id);
+  });
+
+  await test("a new link from the same connection replaces the old one", () => {
+    const before = pollToken;
+    const again = JSON.parse(subscribePoll().text);
+    pollToken = again.pollPath.split("/").pop();
+    assert.notEqual(pollToken, before);
+    assert.equal(poll(before).status, 404);
+    assert.equal(poll(pollToken).status, 200);
+    assert.equal(listPlayerWebhooks(pollGrant.id).length, 1);
+  });
+
+  await test("an expired connection gets no link", () => {
+    assert.throws(() => createPlayerPollLink({ ...pollGrant, expiresAt: "2000-01-01T00:00:00.000Z" }, { campaignId: pollTable.id, characterId: pollSheet }), /expired or been revoked/);
+  });
+
+  await test("the link answers the same opportunities as the webhook state, with no story", () => {
+    const quiet = poll(pollToken);
+    assert.equal(quiet.status, 200);
+    assert.equal(quiet.body.wake, false, "a table in the lobby asks nothing");
+    setCampaignStatus(pollTable.id, "active");
+    insertCampaignMessage({ campaignId: pollTable.id, seq: allocateSeq(pollTable.id), authorType: "dm", content: "The gate opens. POLL-SECRET-PROSE." });
+    const answer = poll(pollToken);
+    assert.equal(answer.status, 200);
+    assert.equal(answer.body.wake, true);
+    assert.equal(answer.body.lifecycle, "active");
+    assert.deepEqual(answer.body.opportunities.map((o) => o.type), ["response_requested"]);
+    const state = playerWebhookState(pollGrant, answer.body.subscriptionId);
+    assert.deepEqual(answer.body.opportunities.map((o) => o.opportunityId), state.opportunities.map((o) => o.opportunityId));
+    const text = JSON.stringify(answer.body);
+    assert.ok(!text.includes("POLL-SECRET-PROSE") && !text.includes("Kalanis") && !text.includes("odmpoll_"));
+    assert.notEqual(answer.body.fingerprint, quiet.body.fingerprint);
+    assert.equal(poll(pollToken).body.fingerprint, answer.body.fingerprint, "unchanged state keeps its fingerprint");
+    setDmStatus(pollTable.id, "narrating");
+    const narrating = poll(pollToken).body;
+    assert.equal(narrating.wake, false);
+    setDmStatus(pollTable.id, "idle");
+    assert.equal(poll(pollToken).body.fingerprint, answer.body.fingerprint, "the same decision after narration has the fingerprint it was woken for");
+  });
+
+  await test("the fingerprint moves when the character has answered", () => {
+    const before = poll(pollToken).body;
+    insertCampaignMessage({ campaignId: pollTable.id, seq: allocateSeq(pollTable.id), authorType: "player", userId: poller.id, characterId: pollSheet, content: "I step through." });
+    const after = poll(pollToken).body;
+    assert.equal(after.wake, false);
+    assert.notEqual(after.fingerprint, before.fingerprint);
+  });
+
+  await test("a poll link wakes for an earned level and names it", () => {
+    db.prepare(`UPDATE character_sheets SET xp = 300 WHERE id = ?`).run(pollSheet);
+    const answer = poll(pollToken).body;
+    assert.equal(answer.wake, true);
+    assert.deepEqual(answer.opportunities, [{ opportunityId: `level:${pollSheet}:2`, type: "level_up_available", level: 2 }]);
+    db.prepare(`UPDATE character_sheets SET xp = 0 WHERE id = ?`).run(pollSheet);
+    assert.equal(poll(pollToken).body.wake, false);
+  });
+
+  await test("polling faster than the floor is refused with a retry time", () => {
+    pollClock += POLL_MIN_INTERVAL_MS;
+    assert.equal(pollLinkAnswer(pollToken, pollClock).status, 200);
+    const again = pollLinkAnswer(pollToken, pollClock + 100);
+    assert.equal(again.status, 429);
+    assert.ok(again.retryAfterSec >= 1);
+  });
+
+  await test("the delivery loop never sends anything for a poll link", async () => {
+    insertCampaignMessage({ campaignId: pollTable.id, seq: allocateSeq(pollTable.id), authorType: "dm", content: "Another passage." });
+    const pollId = listPlayerWebhooks(pollGrant.id)[0].id;
+    const seen = [];
+    await runPlayerWebhooksOnce(Date.now() + 120_000, async (_url, options) => { seen.push(JSON.parse(options.body)); return new Response(null, { status: 202 }); });
+    assert.ok(!seen.some((event) => event.subscriptionId === pollId));
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM player_webhook_deliveries WHERE subscription_id = ?`).get(pollId).n, 0);
+  });
+
+  await test("an unknown link reads as not found; switching poll links off deletes every link for good", () => {
+    assert.equal(poll(`odmpoll_${"b".repeat(43)}`).status, 404);
+    assert.equal(poll("not-a-token").status, 404);
+    const pushRows = () => db.prepare(`SELECT COUNT(*) AS n FROM player_webhooks WHERE poll_token_hash IS NULL`).get().n;
+    const pushBefore = pushRows();
+    setPollLinksAllowed(false);
+    assert.equal(poll(pollToken).status, 404);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM player_webhooks WHERE poll_token_hash IS NOT NULL`).get().n, 0);
+    assert.equal(pushRows(), pushBefore, "push webhooks are untouched");
+    setPollLinksAllowed(true);
+    assert.equal(poll(pollToken).status, 404, "turning them on again does not revive an old link");
+  });
+
+  await test("revoking the connection stops its link and removes the row", () => {
+    pollToken = JSON.parse(subscribePoll().text).pollPath.split("/").pop();
+    assert.equal(poll(pollToken).status, 200);
+    revokeConnectionGrant(poller.id, pollGrant.id);
+    assert.equal(poll(pollToken).status, 404);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM player_webhooks WHERE grant_id = ?`).get(pollGrant.id).n, 0, "a dead link's row goes");
+    setPollLinksAllowed(false);
   });
   console.log(`${passed} player webhook tests passed`);
 } finally {

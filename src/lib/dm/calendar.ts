@@ -19,6 +19,7 @@ import { normalizeWeather } from "@/lib/srd/weather";
 import type { Weather } from "@/lib/scene/state";
 import { normalizeBetween, type BetweenState } from "@/lib/dm/between-state";
 import { normalizeMarch, type MarchState } from "@/lib/dm/march-state";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 export type CalendarMonth = {
   name: string;
@@ -341,14 +342,14 @@ export function advance(
   instant: Instant,
   amount: number,
   unit: AdvanceUnit,
-): { instant: Instant; minutes: number } | { error: string } {
+): { instant: Instant; minutes: number } | ToolError {
   const value = Math.round(amount);
   if (!Number.isFinite(value) || value <= 0) {
-    return { error: "Time moves forward; say how much." };
+    return { error: "Time moves forward; say how much.", retry: true };
   }
   const minutes = value * UNIT_MINUTES[unit];
   if (minutes > MAX_ADVANCE_DAYS * MINUTES_PER_DAY) {
-    return { error: `That is more than ${MAX_ADVANCE_DAYS} days; advance it in stages.` };
+    return { error: `That is more than ${MAX_ADVANCE_DAYS} days; advance it in stages.`, retry: true };
   }
   return { instant: clampInstant(instant) + minutes, minutes };
 }

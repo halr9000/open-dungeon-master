@@ -25,9 +25,15 @@ import {
 import type { AbilityScores } from "@/lib/schemas/sheet";
 import type { SpellFacts } from "@/lib/srd/legality/types";
 import { thirdCasterOutside, thirdCasterSchoolProblem } from "@/lib/srd/third-caster";
+import { textKey } from "@/lib/language/text-logic";
+import { revisedOnlySpellProblem } from "@/lib/content/edition";
 
-const lower = (name: string) => name.trim().toLowerCase();
-const has = (list: string[], name: string) => list.some((entry) => lower(entry) === lower(name));
+// A name no list carries: a 2024-only spell says so, anything else is unknown.
+function unknownSpell(name: string, list: string): string {
+  return revisedOnlySpellProblem(name) ?? `${name} is not a spell this server knows; pick one from the ${list} spell list.`;
+}
+
+const has = (list: string[], name: string) => list.some((entry) => textKey(entry) === textKey(name));
 const added = (after: string[], before: string[]) =>
   dedupeNames(after).filter((name) => !has(before, name));
 
@@ -100,7 +106,7 @@ export function levelUpSpells(input: SpellLevelUp): SpellLevelUpResult {
       }
       const spell = input.spellOf(name);
       if (!spell) {
-        return { error: `${name} is not a spell this server knows; pick one from the ${input.list} spell list.` };
+        return { error: unknownSpell(name, input.list) };
       }
       if (spell.level === 0) {
         after.cantrips.push(spell.name);
@@ -118,7 +124,7 @@ export function levelUpSpells(input: SpellLevelUp): SpellLevelUpResult {
       if (after.style !== "known" || !has(before.known, forget)) {
         return { error: `${forget} is not a spell this character knows, so it cannot be given up for another.` };
       }
-      after.known = after.known.filter((name) => lower(name) !== lower(forget));
+      after.known = after.known.filter((name) => textKey(name) !== textKey(forget));
       removed = [forget];
     }
   } else if (picks?.kind === "lists") {
@@ -179,24 +185,24 @@ export function levelUpSpells(input: SpellLevelUp): SpellLevelUpResult {
   for (const name of newCantrips) {
     const spell = input.spellOf(name);
     if (!spell) {
-      return { error: `${name} is not a spell this server knows; pick one from the ${input.list} spell list.` };
+      return { error: unknownSpell(name, input.list) };
     }
     if (spell.level !== 0) {
       return { error: `${spell.name} is a level ${spell.level} spell, not a cantrip; it cannot sit on the cantrip list.` };
     }
-    if (!spell.classes.map(lower).includes(input.list)) {
+    if (!spell.classes.map(textKey).includes(textKey(input.list))) {
       return { error: `${spell.name} is not a ${input.list} cantrip, so a ${label} cannot learn it.` };
     }
   }
   for (const name of newSpells) {
     const spell = input.spellOf(name);
     if (!spell) {
-      return { error: `${name} is not a spell this server knows; pick one from the ${input.list} spell list.` };
+      return { error: unknownSpell(name, input.list) };
     }
     if (spell.level === 0) {
       return { error: `${spell.name} is a cantrip; it belongs on the cantrip list, not among the spells.` };
     }
-    if (!spell.classes.map(lower).includes(input.list)) {
+    if (!spell.classes.map(textKey).includes(textKey(input.list))) {
       return { error: `${spell.name} is not on the ${input.list} spell list, so a ${label} cannot learn or prepare it.` };
     }
     if (spell.level > top) {
@@ -216,9 +222,14 @@ export function levelUpSpells(input: SpellLevelUp): SpellLevelUpResult {
     const schools = thirdCasterSchoolProblem({
       classId: before.classId,
       subclass: input.subclass,
+      profile: after.progression,
       level: input.level,
       spells: levelled(after.known.length ? after.known : after.prepared),
-      heldOutside: thirdCasterOutside(before.classId, levelled(before.known.length ? before.known : before.prepared)),
+      heldOutside: thirdCasterOutside(
+        before.classId,
+        levelled(before.known.length ? before.known : before.prepared),
+        after.progression ?? before.progression,
+      ),
     });
     if (schools) {
       return { error: schools };

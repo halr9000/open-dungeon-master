@@ -2,12 +2,14 @@
 
 import { scopedParams, useContentCampaign } from "@/lib/content-scope";
 import { Check, ChevronDown, ChevronRight, Loader2, Plus } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { InfoButton } from "@/components/ui/InfoDialog";
 import { cn } from "@/lib/cn";
 import { contentSlug, describeContentEntry, spellSummary } from "@/lib/help";
+import { PrerequisiteLine } from "./ContentPicker";
 import { uniqueByName } from "./pickerRows";
 import type { PickerEntry } from "./useContentSearch";
+import { textKey } from "@/lib/language/text-logic";
 
 // The whole catalog, not just what you can name.
 //
@@ -63,6 +65,7 @@ export default function CatalogBrowser({
   onUnpick,
   defaultOpen = false,
   openSections = [],
+  judge,
 }: {
   kind: "spells" | "items" | "feats";
   // "Browse all spells", "Browse all items"...
@@ -84,12 +87,17 @@ export default function CatalogBrowser({
   defaultOpen?: boolean;
   // Section keys expanded (and fetched) from the first render.
   openSections?: string[];
+  // A feat's prerequisite as judged (featPrereqs.ts), as ContentPicker
+  // shows it: written under the row, and a blocked row cannot be picked.
+  judge?: (entry: PickerEntry) => { blocked: boolean; note: string } | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [expanded, setExpanded] = useState<string[]>(openSections);
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [loading, setLoading] = useState<string[]>([]);
   const [unavailable, setUnavailable] = useState(false);
+  // Sections whose last browse failed, until one gets through.
+  const [failedKeys, setFailedKeys] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   // The table the browse is for (src/lib/content-scope.tsx).
   const campaignId = useContentCampaign();
@@ -97,9 +105,10 @@ export default function CatalogBrowser({
   // with new props (a spell level change rewrites `sections` every keystroke
   // elsewhere in the step).
   const fetched = useRef(new Set<string>());
+  const noteId = useId();
 
   const selected = useMemo(
-    () => new Set(selectedNames.map((name) => name.trim().toLowerCase())),
+    () => new Set(selectedNames.map((name) => textKey(name))),
     [selectedNames],
   );
 
@@ -110,6 +119,7 @@ export default function CatalogBrowser({
       }
       fetched.current.add(section.key);
       setLoading((current) => [...current, section.key]);
+      setFailedKeys((current) => current.filter((key) => key !== section.key));
       const rows: PickerEntry[] = [];
       let truncated = false;
       try {
@@ -119,8 +129,9 @@ export default function CatalogBrowser({
           );
           const response = await fetch(`/api/content/${kind}?${params}`);
           if (!response.ok) {
-            setUnavailable(true);
-            break;
+            // Refused, which is not a missing pack: said so, and asked again
+            // the next time the section opens.
+            throw new Error(String(response.status));
           }
           const body = (await response.json()) as {
             results?: PickerEntry[];
@@ -148,6 +159,7 @@ export default function CatalogBrowser({
         // A failed browse leaves the search box, which is the same catalog by
         // another door; forgetting the attempt lets a retry through.
         fetched.current.delete(section.key);
+        setFailedKeys((current) => [...new Set([...current, section.key])]);
       } finally {
         setLoading((current) => current.filter((key) => key !== section.key));
       }
@@ -185,14 +197,14 @@ export default function CatalogBrowser({
   }
 
   function toggleRow(entry: PickerEntry) {
-    if (selected.has(entry.name.trim().toLowerCase())) {
+    if (selected.has(textKey(entry.name))) {
       onUnpick?.(entry.name);
-    } else {
+    } else if (!judge?.(entry)?.blocked) {
       onPick(entry);
     }
   }
 
-  const needle = filter.trim().toLowerCase();
+  const needle = textKey(filter);
 
   return (
     <div className="mt-2">
@@ -218,17 +230,17 @@ export default function CatalogBrowser({
 
           {recommended?.entries.length ? (
             <div className="mb-2">
-              <p className="eyebrow px-1 pb-1 text-[10px] text-amber-300/80">
+              <p className="eyebrow px-1 pb-1 text-[0.875rem] text-amber-300/80">
                 {recommended.label}
               </p>
               {recommended.note ? (
-                <p className="px-1 pb-1.5 text-[11px] text-stone-500">{recommended.note}</p>
+                <p className="px-1 pb-1.5 text-sm text-stone-500">{recommended.note}</p>
               ) : null}
               <ul>
                 {recommended.entries
-                  .filter((entry) => !needle || entry.name.toLowerCase().includes(needle))
+                  .filter((entry) => !needle || textKey(entry.name).includes(needle))
                   .map((entry) => {
-                    const on = selected.has(entry.name.trim().toLowerCase());
+                    const on = selected.has(textKey(entry.name));
                     return (
                       <li key={entry.name} className="flex items-center gap-1 pr-1 hover:bg-stone-800/60">
                         <button
@@ -255,7 +267,7 @@ export default function CatalogBrowser({
                             )}
                             <span className={cn(on && "text-amber-200")}>{entry.name}</span>
                           </span>
-                          <span className="shrink-0 text-[11px] text-stone-500">
+                          <span className="shrink-0 text-[0.875rem] text-stone-500">
                             {entry.note ?? ""}
                           </span>
                         </button>
@@ -275,7 +287,7 @@ export default function CatalogBrowser({
             const isLoading = loading.includes(section.key);
             const rows = loaded[section.key]?.rows ?? [];
             const visible = needle
-              ? rows.filter((entry) => entry.name.toLowerCase().includes(needle))
+              ? rows.filter((entry) => textKey(entry.name).includes(needle))
               : rows;
             return (
               <div key={section.key} className="border-t border-stone-800/80 first:border-t-0">
@@ -293,32 +305,37 @@ export default function CatalogBrowser({
                   <span className="grow">{section.label}</span>
                   {isLoading ? <Loader2 className="size-3.5 animate-spin text-stone-500" /> : null}
                   {!isLoading && loaded[section.key] ? (
-                    <span className="text-[11px] text-stone-500">{rows.length}</span>
+                    <span className="text-[0.875rem] text-stone-500">{rows.length}</span>
                   ) : null}
                 </button>
                 {isOpen ? (
                   <div className="pb-2">
                     {section.note ? (
-                      <p className="px-1 pb-1 text-[11px] text-stone-500">{section.note}</p>
+                      <p className="px-1 pb-1 text-sm text-stone-500">{section.note}</p>
                     ) : null}
                     {!isLoading && !rows.length ? (
-                      <p className="px-1 py-1 text-[11px] text-stone-500">
-                        {unavailable
-                          ? "The content pack is not installed on this server, so there is nothing to list. Whoever runs it can install it with: node scripts/import-open5e.mjs"
-                          : "Nothing here."}
+                      <p className="px-1 py-1 text-sm text-stone-500" role={failedKeys.includes(section.key) ? "alert" : undefined}>
+                        {failedKeys.includes(section.key)
+                          ? "Could not reach the server to list these. Close and open this section to try again."
+                          : unavailable
+                            ? "The content pack is not installed on this server, so there is nothing to list. Whoever runs it can install it with: node scripts/import-open5e.mjs"
+                            : "Nothing here."}
                       </p>
                     ) : null}
                     <ul className="max-h-72 overflow-y-auto">
                       {groupRows(visible, section.bucketOf ?? bucketOf).map((bucket) => (
                         <li key={bucket.key}>
                           {bucket.label ? (
-                            <p className="eyebrow sticky top-0 bg-stone-950/95 px-1 py-1 text-[10px] text-amber-300/70">
+                            <p className="eyebrow sticky top-0 bg-stone-950/95 px-1 py-1 text-[0.875rem] text-amber-300/70">
                               {bucket.label}
                             </p>
                           ) : null}
                           <ul>
                             {bucket.rows.map((entry) => {
-                              const on = selected.has(entry.name.trim().toLowerCase());
+                              const on = selected.has(textKey(entry.name));
+                              const verdict = judge?.(entry) ?? null;
+                              const blocked = Boolean(verdict?.blocked && !on);
+                              const describedBy = `${noteId}-${section.key}-${entry.slug}`;
                               return (
                                 <li
                                   key={entry.slug}
@@ -327,25 +344,33 @@ export default function CatalogBrowser({
                                   <button
                                     type="button"
                                     aria-pressed={on}
+                                    aria-disabled={blocked || undefined}
+                                    aria-describedby={verdict ? describedBy : undefined}
                                     onClick={() => toggleRow(entry)}
-                                    className="flex grow items-center justify-between gap-2 px-2 py-1.5 text-left text-xs"
+                                    className={cn(
+                                      "flex grow items-center justify-between gap-2 px-2 py-1.5 text-left text-xs",
+                                      blocked && "cursor-not-allowed opacity-70",
+                                    )}
                                   >
-                                    <span className="flex items-center gap-1.5">
-                                      {on ? (
-                                        <Check className="size-3.5 shrink-0 text-amber-200" />
-                                      ) : (
-                                        <Plus className="size-3.5 shrink-0 text-stone-600" />
-                                      )}
-                                      <span
-                                        className={cn(
-                                          on && "text-amber-200",
-                                          entry.source === "homebrew" && !on && "text-amber-300",
+                                    <span className="flex flex-col">
+                                      <span className="flex items-center gap-1.5">
+                                        {on ? (
+                                          <Check className="size-3.5 shrink-0 text-amber-200" />
+                                        ) : (
+                                          <Plus className="size-3.5 shrink-0 text-stone-600" />
                                         )}
-                                      >
-                                        {entry.name}
+                                        <span
+                                          className={cn(
+                                            on && "text-amber-200",
+                                            entry.source === "homebrew" && !on && "text-amber-300",
+                                          )}
+                                        >
+                                          {entry.name}
+                                        </span>
                                       </span>
+                                      {verdict ? <PrerequisiteLine id={describedBy} {...verdict} /> : null}
                                     </span>
-                                    <span className="shrink-0 text-[11px] text-stone-500">
+                                    <span className="shrink-0 text-[0.875rem] text-stone-500">
                                       {entry.source === "homebrew"
                                         ? "homebrew"
                                         : (metaOf?.(entry) ?? "")}
@@ -371,7 +396,7 @@ export default function CatalogBrowser({
                       ))}
                     </ul>
                     {loaded[section.key]?.truncated ? (
-                      <p className="px-1 pt-1 text-[11px] text-stone-500">
+                      <p className="px-1 pt-1 text-sm text-stone-500">
                         Showing the first {rows.length}. Search by name above for the rest.
                       </p>
                     ) : null}

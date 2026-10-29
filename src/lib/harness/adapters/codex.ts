@@ -27,7 +27,7 @@
 // for it and the admin card shows the key, so the next rename is seen rather
 // than silently ignored.
 
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { noteSpeed } from "@/lib/speed-status";
 import os from "node:os";
 import path from "node:path";
@@ -196,6 +196,45 @@ function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+// `codex debug models` took ~0.5 s in each fresh run home (measured
+// 2026-10-17, Codex 0.162.1), and every agent turn starts one. Its answer
+// depends on the binary and the sign-in, so it is kept for a few minutes per
+// binary, its modification time and those of the admin's auth and config;
+// each run still gets its own home and catalog file, as before
+// (docs/agent-context-efficiency-audit-2026-10-17.md, additional item 4).
+const CATALOG_TTL_MS = 5 * 60_000;
+
+declare global {
+  var __odmCodexCatalogs: Map<string, { at: number; stdout: string }> | undefined;
+}
+
+function modified(file: string): number {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+export function codexCatalogKey(binary: string, adminHome: string): string {
+  return [binary, modified(binary), modified(path.join(adminHome, "auth.json")), modified(path.join(adminHome, "config.toml"))].join("|");
+}
+
+async function codexCatalogText(binary: string, adminHome: string, env: Record<string, string>, cwd: string): Promise<string> {
+  const cache = (globalThis.__odmCodexCatalogs ??= new Map());
+  const key = codexCatalogKey(binary, adminHome);
+  const known = cache.get(key);
+  if (known && Date.now() - known.at < CATALOG_TTL_MS) {
+    return known.stdout;
+  }
+  const dumped = await runProgram(binary, ["debug", "models"], env, 30_000, cwd, Number.POSITIVE_INFINITY);
+  if (dumped.code !== 0) {
+    throw new Error(`Codex could not list its models: ${dumped.stderr.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 400)}`);
+  }
+  cache.set(key, { at: Date.now(), stdout: dumped.stdout });
+  return dumped.stdout;
+}
+
 async function start(options: HarnessStartOptions) {
   const adminHome = codexHome(options.env);
   const runHome = path.join(options.cwd, "codex-home");
@@ -206,11 +245,7 @@ async function start(options: HarnessStartOptions) {
   }
   const env = { ...options.env, CODEX_HOME: runHome };
   // The whole catalog: Codex takes this file in place of its own list.
-  const dumped = await runProgram(options.binary, ["debug", "models"], env, 30_000, options.cwd, Number.POSITIVE_INFINITY);
-  if (dumped.code !== 0) {
-    throw new Error(`Codex could not list its models: ${dumped.stderr.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 400)}`);
-  }
-  const catalog = parseCodexCatalog(dumped.stdout);
+  const catalog = parseCodexCatalog(await codexCatalogText(options.binary, adminHome, env, options.cwd));
   const catalogPath = path.join(runHome, "catalog.json");
   writeFileSync(catalogPath, directCatalog(catalog));
   let configToml = "";
@@ -363,7 +398,7 @@ async function start(options: HarnessStartOptions) {
   );
 
   await peer.request("initialize", {
-    clientInfo: { name: "open_dungeon_master", title: "Open Dungeon Master", version: "1" },
+    clientInfo: { name: "open_dungeon_master", title: "Open Game Master", version: "1" },
     capabilities: { experimentalApi: true },
   });
   peer.notify("initialized", {});
@@ -497,7 +532,7 @@ async function probeAppServer(binary: string, env: Record<string, string>, cwd: 
   });
   try {
     await peer.request("initialize", {
-      clientInfo: { name: "open_dungeon_master", title: "Open Dungeon Master", version: "1" },
+      clientInfo: { name: "open_dungeon_master", title: "Open Game Master", version: "1" },
       capabilities: { experimentalApi: true },
     }, 20_000);
     peer.notify("initialized", {});
@@ -587,7 +622,7 @@ export const codexAdapter: HarnessAdapter = {
     }
     if (ignored.length > 0) {
       notes.push(
-        `This Codex ignores ${ignored.length === 1 ? "a setting" : "settings"} the lockdown relies on (${ignored.map((key) => `\`${key}\``).join(", ")}). Update Open Dungeon Master, or hold Codex at a version it supports.`,
+        `This Codex ignores ${ignored.length === 1 ? "a setting" : "settings"} the lockdown relies on (${ignored.map((key) => `\`${key}\``).join(", ")}). Update Open Game Master, or hold Codex at a version it supports.`,
       );
     }
     return {

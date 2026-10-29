@@ -1,10 +1,12 @@
 import { isErrorResponse, requireStoryAuthority } from "@/lib/campaign-api";
 import { campaignSeats, setDmMode, updateGameSettings } from "@/lib/db/campaigns";
-import { isPrimaryDm } from "@/lib/dm/viewer";
+import { isPrimaryDm, narratorIsAi } from "@/lib/dm/viewer";
+import { NO_STORYTELLER_MESSAGE, storyConfigured, storytellerConfigured } from "@/lib/capabilities";
 import { gameSettingsSchema } from "@/lib/schemas/game-settings";
 import { layOver } from "@/lib/schemas/parse-keeping-valid";
 import { publishPersisted } from "@/lib/events";
-import { wakeForWaitingPlayers } from "@/lib/dm/loop";
+import { requestDmTurn, wakeForWaitingPlayers } from "@/lib/dm/loop";
+import { settleTableWait } from "@/lib/dm/table-wait";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,9 +50,19 @@ export async function PATCH(
       campaign.ownerUserId !== user.id
     ) {
       return Response.json(
-        { error: "Only the Dungeon Master can hand the game to someone else or to the AI." },
+        { error: "Only the Game Master can hand the game to someone else or to the AI." },
         { status: 403 },
       );
+    }
+    // Handing the table to the AI needs a storyteller: this campaign's own
+    // (a key or address its lead set in Story AI) or the server's.
+    if (
+      narratorIsAi(dmMode) &&
+      !narratorIsAi(campaign.gameSettings.dmMode) &&
+      !storyConfigured(campaign.settings) &&
+      !(await storytellerConfigured())
+    ) {
+      return Response.json({ error: NO_STORYTELLER_MESSAGE, reason: "no_storyteller" }, { status: 409 });
     }
     const changed = setDmMode(campaignId, dmMode, context.user.id);
     if (!changed) {
@@ -68,5 +80,15 @@ export async function PATCH(
     return Response.json({ error: "Campaign not found." }, { status: 404 });
   }
   publishPersisted(campaignId, "campaign_updated", { gameSettings });
+  // Wait for the table switched off or its time shortened: posts it held
+  // are answered now rather than at the next post, and every seat is told.
+  if (sent.has("waitForTable") || sent.has("waitForTableSeconds")) {
+    const fire = settleTableWait(campaignId);
+    if (fire) {
+      requestDmTurn(campaignId);
+    } else if (!gameSettings.waitForTable && context.campaign.gameSettings.waitForTable) {
+      wakeForWaitingPlayers(campaignId, true);
+    }
+  }
   return Response.json({ gameSettings });
 }

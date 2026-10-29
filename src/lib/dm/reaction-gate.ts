@@ -17,6 +17,7 @@ import { canAct } from "@/lib/dm/can-act";
 import { freshLastHit } from "@/lib/dm/last-hit";
 import { reactionTimingOf, type ReactionTiming } from "@/lib/dm/reaction-kinds";
 import { conditionBlocksReactions } from "@/lib/srd/condition-effects";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
 
 export type { ReactionTiming } from "@/lib/dm/reaction-kinds";
 
@@ -49,20 +50,20 @@ export function reactionRefusal(
   encounter: Encounter | null,
   label: string,
   timing: ReactionTiming = reactionTimingOf(label),
-): string | null {
+): ToolError | null {
   const standing = reactingSheet(campaignId, sheet, timing);
   if (timing === "at_zero" && !standing.beforeDrop) {
-    return sheet.currentHp > 0
+    return { error: sheet.currentHp > 0
       ? `${label} answers the hit that drops ${sheet.name} to 0 hit points, and they are not down. Nothing was spent.`
-      : `${label} is taken as the hit that drops ${sheet.name} to 0 hit points lands, and the server has no such hit on them this turn. Nothing was spent.`;
+      : `${label} is taken as the hit that drops ${sheet.name} to 0 hit points lands, and the server has no such hit on them this turn. Nothing was spent.`, refused: "rules" };
   }
   const allowed = canAct({ sheet: standing.sheet, encounter, kind: "reaction" });
   if (!allowed.ok) {
     return sheet.currentHp <= 0 && timing === "after" && !sheet.deathSaves?.dead
-      ? `${allowed.error} ${label} follows the damage rather than changing it, so a character that damage dropped is already unconscious and cannot take it.`
-      : allowed.error;
+      ? { ...toolError(allowed), error: `${allowed.error} ${label} follows the damage rather than changing it, so a character that damage dropped is already unconscious and cannot take it.` }
+      : toolError(allowed);
   }
   // Slow and its kin switch reactions off entirely.
   const blocked = conditionBlocksReactions(standing.sheet.conditions);
-  return blocked ? `${sheet.name} is ${blocked} and cannot take reactions; ${label} does not happen.` : null;
+  return blocked ? { error: `${sheet.name} is ${blocked} and cannot take reactions; ${label} does not happen.`, refused: "rules" } : null;
 }

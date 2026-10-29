@@ -1,20 +1,26 @@
 "use client";
 
-import { readLoad, useLoadStatus } from "@/lib/load-state";
+import { findLostCreate, readLoad, readWrite, UNREACHABLE, useLoadStatus } from "@/lib/load-state";
 import { EmptyState } from "@/components/EmptyState";
-import { ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Info, Pencil, Plus, Trash2 } from "lucide-react";
 import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { Select } from "@/components/ui/Select";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
+import { InfoDialog } from "@/components/ui/InfoDialog";
+import { contentSlug } from "@/lib/help";
+import { cardArtwork } from "@/lib/battlemap/card-art";
 import { cn } from "@/lib/cn";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { formatCopper } from "@/lib/srd/currency";
-import { KitButton, LoadFailed, panelField, PanelLoading, SettingToggle } from "./PanelKit";
+import { formatCopper, formatPrice } from "@/lib/srd/currency";
+import { KitButton, LoadFailed, PanelError, panelField, PanelLoading, RowMenu, SettingToggle } from "./PanelKit";
 import { MarketShopEditor, type Named } from "./MarketShopEditor";
 import type { StockLine } from "@/lib/dm/shop-logic";
+import type { MarketRequest } from "@/lib/dm/table-tabs";
+import { GameTerm } from "@/components/ui/GameTerm";
+import { useTourPrepare } from "@/lib/tours/prepare";
 
 // The market (docs/vtt-parity-implementation-plan.md 11.1): the shops at
 // the party's place, stock as tiles with a price chip in coin, a Buy on
@@ -22,7 +28,9 @@ import type { StockLine } from "@/lib/dm/shop-logic";
 // the purse when money moves. Whoever steers the story sees every shop in
 // the world; whoever holds the prep (the DM seat, the lead of an
 // AI-narrated table, the workshop's author: the server says which, #171)
-// opens shops here or in the workshop and writes their shelves.
+// opens shops here or in the workshop and writes their shelves. A tile's
+// name opens the item card (src/components/ui/InfoDialog.tsx): its damage,
+// armour class, properties and text, so a buyer knows what the coin gets.
 
 type StockView = { itemName: string; qty: number; priceCp: number; askingCp: number; note: string };
 type ShopView = {
@@ -41,7 +49,41 @@ type ShopView = {
   buys: boolean;
   markup: number;
   haggledBy: string[];
+  haggles: Array<{ ids: string[]; steps: number; skill: HaggleSkill }>;
+  // The viewer's own price at this shop, moved by a haggle they were at
+  // the counter for, and that haggle's step (null: they have not haggled).
+  yourMarkup: number;
+  yourHaggle: number | null;
+  // Where that haggle left the viewer's prices, in the server's words.
+  yourPrices: string | null;
+  haggleDc: number;
+  // Whether the shop is where the party is now, which is where its counter
+  // trades (the trade route asks the same). False only for a shop shown to
+  // whoever steers the story, to prep it; absent from an older server.
+  standsHere?: boolean;
 };
+
+type HaggleSkill = "persuasion" | "intimidation" | "deception";
+
+// A haggle's outcome for the person who made it, in the rules' own words.
+// `moved` is false at an end of the price ladder, where a step had nowhere
+// to go; `prices` is where it left them, in the server's words.
+function haggleOutcome(steps: number, moved: boolean, prices: string): string {
+  if (steps < 0) {
+    return moved ? `You talked the keeper down: your prices here are ${prices}.` : "You talked the keeper down, but your prices here are already at their lowest.";
+  }
+  if (steps === 0) {
+    return "The keeper holds firm: your prices stay where they were.";
+  }
+  return moved
+    ? `A bad failure (you missed the DC by 5 or more): your prices here are ${prices}.`
+    : "A bad failure (you missed the DC by 5 or more), but your prices here are already at their highest.";
+}
+
+// Where the viewer's haggle left their prices, for the line under a shop.
+function haggledLine(steps: number, prices: string): string {
+  return steps < 0 ? `You haggled here: your prices are ${prices}.` : steps === 0 ? "You haggled here: the keeper held firm." : `You haggled here and pushed too hard: your prices are ${prices}.`;
+}
 
 const KINDS = ["general", "smith", "apothecary", "outfitter", "curiosities"] as const;
 const SIZES = ["hamlet", "village", "town", "city"] as const;
@@ -53,6 +95,11 @@ function coinGlyph(copper: number): string {
   return copper >= 100 ? "coin-gp" : copper >= 10 ? "coin-sp" : "coin-cp";
 }
 
+// The last Browse wares the Market answered. Kept outside the panel, which
+// remounts each time its section is opened again, so a later visit to the
+// Market is not taken for the same press.
+let lastFocusedAt = 0;
+
 export function MarketPanel({
   campaignId,
   steersStory,
@@ -60,6 +107,8 @@ export function MarketPanel({
   mySheet,
   refreshKey = 0,
   coins,
+  focus = null,
+  onAskKeeper,
 }: {
   campaignId: string;
   // Story authority sees every shop and where it stands.
@@ -70,6 +119,11 @@ export function MarketPanel({
   mySheet: CharacterSheet | null;
   refreshKey?: number;
   coins?: { characterId: string; direction: "in" | "out"; at: number } | null;
+  // A Browse wares from the chat: the heading takes focus and that shop
+  // comes into view, once per press.
+  focus?: MarketRequest | null;
+  // Puts an action in the composer, for a sale only the DM can price.
+  onAskKeeper?: (text: string) => void;
 }) {
   const [shops, setShops] = useState<ShopView[] | null>(null);
   const [here, setHere] = useState<{ id: string; name: string } | null>(null);
@@ -77,15 +131,28 @@ export function MarketPanel({
   const [keepers, setKeepers] = useState<Named[]>([]);
   const [canPrep, setCanPrep] = useState(isDm);
   const [editing, setEditing] = useState("");
+  const [details, setDetails] = useState<StockView | null>(null);
   // A refused or failed read is shown in the server's words with a way to
   // ask again, never as "nothing here yet" (issue 140).
   const { loaded, loadError, settle } = useLoadStatus();
 
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  // A write that failed: the server's refusal, or no answer at all (audit
+  // WA-05). Said as an alert, apart from the keeper's own words above.
+  const [writeError, setWriteError] = useState("");
   const [opening, setOpening] = useState(false);
   const [draft, setDraft] = useState({ name: "", kind: "general", size: "village", locationId: "", keeperNpcId: "", stockFromPack: true });
   const [reload, setReload] = useState(0);
+  // Something the pack and the item's worth leave unpriced: the keeper
+  // names a price, so the sale goes to whoever runs the story.
+  const [unpriced, setUnpriced] = useState<{ shop: string; item: string } | null>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [spotlight, setSpotlight] = useState("");
+  // Prices are the viewer's own (a haggle they were at the counter for), so
+  // a Play as switch to another of their characters reads the shops again.
+  const viewerId = mySheet?.id ?? "";
 
   useEffect(() => {
     let cancelled = false;
@@ -108,22 +175,73 @@ export function MarketPanel({
     return () => {
       cancelled = true;
     };
-  }, [campaignId, refreshKey, reload, settle, isDm]);
+  }, [campaignId, refreshKey, reload, settle, isDm, viewerId]);
 
-  async function counter(shop: ShopView, action: "buy" | "sell" | "haggle", item = "") {
+  // Create's Shop and the palette's New shop (audit WA-10). The Market sits
+  // below Lore's entries in a workshop, so the form comes into view with its
+  // name field ready. Unanswered until the shops have loaded, so the asker
+  // tries again rather than giving up on a panel still on the wire.
+  const nameRef = useRef<HTMLInputElement>(null);
+  const [askedToOpen, setAskedToOpen] = useState(0);
+  useTourPrepare((name) => {
+    if (name !== "open-shop-editor" || shops === null || !canPrep) return;
+    setOpening(true);
+    setAskedToOpen((count) => count + 1);
+    return true;
+  });
+  useEffect(() => {
+    const input = nameRef.current;
+    if (!askedToOpen || !input) return;
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+    input.focus({ preventScroll: true });
+  }, [askedToOpen]);
+
+  // Deferred a tick, as the hero page's heading is: the panel paints the
+  // shops on the render that loads them, after this effect is scheduled.
+  const loadedShops = shops !== null;
+  useEffect(() => {
+    if (!focus || !loadedShops || focus.at === lastFocusedAt) {
+      return;
+    }
+    lastFocusedAt = focus.at;
+    const id = window.setTimeout(() => {
+      headingRef.current?.focus({ preventScroll: true });
+      const section = listRef.current?.querySelector<HTMLElement>(`[data-shop-id="${CSS.escape(focus.shopId)}"]`);
+      (section ?? headingRef.current)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      setSpotlight(section ? focus.shopId : "");
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [focus, loadedShops]);
+
+  async function counter(shop: ShopView, action: "buy" | "sell" | "haggle", item = "", skill: HaggleSkill = "persuasion") {
     setBusy(`${shop.id}:${action}:${item}`);
     setError("");
+    setWriteError("");
+    setUnpriced(null);
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/shops/${shop.id}/trade`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, item, qty: 1, characterId: mySheet?.id }),
-      });
+      let response: Response;
+      try {
+        response = await fetch(`/api/campaigns/${campaignId}/shops/${shop.id}/trade`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, item, qty: 1, characterId: mySheet?.id, ...(action === "haggle" ? { skill } : {}) }),
+        });
+      } catch {
+        // The trade may have gone through before the answer was lost: the
+        // shelf and the purse are read again before anything is tried twice.
+        setWriteError(`${UNREACHABLE} The shelf is read again; check it before trying again.`);
+        setReload((current) => current + 1);
+        return;
+      }
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      if (!response.ok && data.unpriced === true) {
+        setUnpriced({ shop: shop.name, item });
+      } else if (!response.ok) {
         setError(String(data.error ?? "The keeper shakes their head."));
       } else if (action === "haggle") {
-        setError(data.result?.success ? `Haggled well: prices ${data.result.prices}.` : `The keeper is unmoved: prices ${data.result?.prices ?? "rise"}.`);
+        // The haggler's new markup against the shop's own: equal when the
+        // step met an end of the ladder.
+        setError(haggleOutcome(Number(data.result?.steps) || 0, Number(data.result?.markup) !== shop.markup, String(data.result?.prices ?? "")));
       }
       setReload((current) => current + 1);
     } finally {
@@ -137,17 +255,41 @@ export function MarketPanel({
     }
     setBusy("open");
     setError("");
+    setWriteError("");
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/shops`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...draft, locationId: draft.locationId || here?.id || "" }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(String(data.error ?? "The shop could not be opened."));
+      const sent = await readWrite<{ shop?: { id?: string } }>(
+        fetch(`/api/campaigns/${campaignId}/shops`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...draft, locationId: draft.locationId || here?.id || "" }),
+        }),
+        "The shop could not be opened.",
+      );
+      if (sent.error !== null) {
+        // A shop whose answer was lost is looked for before anything is said,
+        // so a second press never opens two. The form keeps what was typed.
+        if (sent.unanswered) {
+          const name = draft.name.trim();
+          const reread = async () =>
+            (await readLoad<{ shops?: ShopView[] }>(fetch(`/api/campaigns/${campaignId}/shops`), "The market")).payload?.shops ?? null;
+          const found = await findLostCreate(shops, reread, (shop) => shop.name === name);
+          if (found === "made") {
+            setOpening(false);
+            setDraft({ name: "", kind: "general", size: "village", locationId: "", keeperNpcId: "", stockFromPack: true });
+            setReload((current) => current + 1);
+            return;
+          }
+          setWriteError(
+            found === "missing"
+              ? "The server did not answer and the shop is not in the market, so it was not opened. What you typed is kept; press Open it again."
+              : "The server could not be reached, so it is not known yet whether the shop was opened. What you typed is kept. Look at the market before opening it again.",
+          );
+          return;
+        }
+        setWriteError(sent.error);
         return;
       }
+      const data = sent.payload;
       setOpening(false);
       setDraft({ name: "", kind: "general", size: "village", locationId: "", keeperNpcId: "", stockFromPack: true });
       // A shop started bare opens straight into its shelf.
@@ -164,7 +306,9 @@ export function MarketPanel({
     if (!(await appConfirm(`Close ${shop.name} for good?`, { actionLabel: "Close it", tone: "danger" }))) {
       return;
     }
-    await fetch(`/api/campaigns/${campaignId}/shops/${shop.id}`, { method: "DELETE" });
+    setWriteError("");
+    const sent = await readWrite(fetch(`/api/campaigns/${campaignId}/shops/${shop.id}`, { method: "DELETE" }), `${shop.name} could not be closed.`);
+    if (sent.error !== null) setWriteError(sent.error);
     setReload((current) => current + 1);
   }
 
@@ -181,8 +325,20 @@ export function MarketPanel({
     return <PanelLoading label="Looking over the stalls..." />;
   }
   return (
-    <div className="space-y-2">
+    <div ref={listRef} className="space-y-2">
+      {details ? (
+        <InfoDialog
+          open
+          onOpenChange={(open) => !open && setDetails(null)}
+          title={details.itemName}
+          meta={`${formatPrice(details.askingCp)} here, ${details.qty} on the shelf`}
+          note={details.note || undefined}
+          reference={{ kind: "items", slug: contentSlug(details.itemName), name: details.itemName }}
+          icon={cardArtwork({ kind: "item", key: details.itemName, family: "item-gear" })}
+        />
+      ) : null}
       <SectionHead
+        headingRef={headingRef}
         title="Market"
         glyph="tab-market"
         aside={
@@ -196,10 +352,21 @@ export function MarketPanel({
       />
       {here ? <p className="-mt-1 text-xs text-stone-500">at {here.name}</p> : null}
       {error ? <p role="status" className="live-in text-xs text-amber-300/90">{error}</p> : null}
+      {writeError ? <PanelError>{writeError}</PanelError> : null}
+      {unpriced ? (
+        <p role="status" className="live-in flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-amber-300/90">
+          <span className="min-w-0">The shopkeeper will name a price for {unpriced.item}.</span>
+          {onAskKeeper ? (
+            <KitButton onClick={() => onAskKeeper(`I offer my ${unpriced.item} to the keeper of ${unpriced.shop} and ask what they would pay.`)}>
+              Ask at the counter
+            </KitButton>
+          ) : null}
+        </p>
+      ) : null}
       {canPrep ? (
         opening ? (
           <div className="panel reveal flex flex-wrap items-center gap-1.5 rounded-lg p-2.5">
-            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} maxLength={80} placeholder="Marla's Sundries" aria-label="Shop name" className={cn(panelField, "min-w-[9rem] flex-1")} />
+            <input ref={nameRef} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} maxLength={80} placeholder="Marla's Sundries" aria-label="Shop name" className={cn(panelField, "min-w-[9rem] flex-1")} />
             <Select size="sm" label="Kind of shop" value={draft.kind} options={KIND_OPTIONS} onChange={(kind) => setDraft({ ...draft, kind })} className="pk-w-28" />
             <Select size="sm" label="Size of the place" value={draft.size} options={SIZE_OPTIONS} onChange={(size) => setDraft({ ...draft, size })} className="pk-w-24" />
             {places.length ? (
@@ -232,7 +399,7 @@ export function MarketPanel({
             <KitButton onClick={() => setOpening(false)}>Cancel</KitButton>
           </div>
         ) : (
-          <KitButton onClick={() => setOpening(true)}>
+          <KitButton data-tour="market-open" onClick={() => setOpening(true)}>
             <Plus className="size-3.5" /> Open a shop {here ? `at ${here.name}` : ""}
           </KitButton>
         )
@@ -245,9 +412,24 @@ export function MarketPanel({
         ) : null
       ) : null}
       {shops.map((shop) => {
-        const canHaggle = Boolean(mySheet && !shop.haggledBy.includes(mySheet.id));
+        // A shop elsewhere (shown to whoever steers the story, to prep it)
+        // offers no counter: the server would refuse the trade until the
+        // party is there.
+        const trades = Boolean(mySheet) && shop.standsHere !== false;
+        const canHaggle = Boolean(trades && mySheet && !shop.haggledBy.includes(mySheet.id));
+        // A keeper falls for a lie once: after one Deception here, nobody may try another.
+        const canDeceive = canHaggle && !shop.haggles.some((deal) => deal.skill === "deception");
+        // The haggle's skills: the menu beside Haggle and the shop's own
+        // right-click or long-press menu offer the same list.
+        const haggleItems: ContextMenuItem[] = canHaggle
+          ? [
+              { id: "haggle", label: "Haggle (Persuasion)", glyph: "skill-persuasion", disabled: Boolean(busy), onSelect: () => void counter(shop, "haggle") },
+              { id: "haggle-intimidation", label: "Haggle by Intimidation (a bad failure: two steps up)", glyph: "skill-intimidation", disabled: Boolean(busy), onSelect: () => void counter(shop, "haggle", "", "intimidation") },
+              ...(canDeceive ? [{ id: "haggle-deception", label: "Haggle by Deception (works once per shop)", glyph: "skill-deception", disabled: Boolean(busy), onSelect: () => void counter(shop, "haggle", "", "deception") }] : []),
+            ]
+          : [];
         const shopItems: ContextMenuItem[] = [
-          ...(canHaggle ? [{ id: "haggle", label: "Haggle", glyph: "skill-persuasion", disabled: Boolean(busy), onSelect: () => void counter(shop, "haggle") }] : []),
+          ...haggleItems,
           ...(canPrep ? [{ id: "edit", label: "Edit the shop and its shelf", glyph: "ui-edit", separated: canHaggle, onSelect: () => setEditing(shop.id) }] : []),
           ...(canPrep ? [{ id: "close", label: `Close ${shop.name}`, glyph: "ui-lock", tone: "danger" as const, onSelect: () => void close(shop) }] : []),
         ];
@@ -268,7 +450,7 @@ export function MarketPanel({
           );
         }
         return (
-          <section key={shop.id} className="panel @container space-y-2 rounded-lg p-2.5">
+          <section key={shop.id} data-shop-id={shop.id} data-spotlight={spotlight === shop.id ? "" : undefined} className={cn("panel @container space-y-2 rounded-lg p-2.5", spotlight === shop.id && "ring-1 ring-amber-400/60")}>
             <ContextMenu items={shopItems} label={shop.name} className="group flex items-center gap-2">
               {shop.keeperPortrait ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -279,18 +461,39 @@ export function MarketPanel({
                 </span>
               )}
               <div className="min-w-0 flex-1">
-                <p className="gold-title truncate text-sm">{shop.name}</p>
-                <p className="truncate text-[11px] text-stone-500">
+                {/* Wrapped, not cut: beside Haggle and the prep buttons a
+                    20rem panel leaves a name and its markup a few letters. */}
+                <p className="gold-title break-words text-sm leading-tight">{shop.name}</p>
+                <p className="text-pretty break-words text-[11px] leading-snug text-stone-500">
                   {shop.kind}
                   {shop.keeperName ? `, kept by ${shop.keeperName}` : ""}
                   {steersStory && shop.locationName ? ` at ${shop.locationName}` : ""}
-                  {shop.markup !== 1 ? ` (prices ${shop.markup > 1 ? "+" : ""}${Math.round((shop.markup - 1) * 100)}%)` : ""}
+                  {shop.yourMarkup !== 1 ? ` (prices ${shop.yourMarkup > 1 ? "+" : ""}${Math.round((shop.yourMarkup - 1) * 100)}%)` : ""}
+                  {shop.kind === "curiosities" || shop.kind === "apothecary" ? (
+                    <>
+                      {" · "}
+                      {/* A finger-sized target (40px) that keeps the line's height. */}
+                      <GameTerm id="magic_item_prices" className="-my-3.5 inline-block py-3.5">
+                        How magic is priced
+                      </GameTerm>
+                    </>
+                  ) : null}
                 </p>
               </div>
               {canHaggle ? (
-                <KitButton disabled={Boolean(busy)} busy={busy === `${shop.id}:haggle:`} onClick={() => void counter(shop, "haggle")}>
-                  Haggle
-                </KitButton>
+                <>
+                  <KitButton disabled={Boolean(busy)} busy={busy === `${shop.id}:haggle:`} onClick={() => void counter(shop, "haggle")}>
+                    Haggle
+                  </KitButton>
+                  {/* One tap haggles by Persuasion; this door opens the other
+                      skills, the same list the shop's own menu holds. */}
+                  <RowMenu
+                    items={haggleItems}
+                    label={`Haggle at ${shop.name}`}
+                    trigger={{ label: "Haggle with another skill", icon: <ChevronDown className="size-4" aria-hidden="true" /> }}
+                    className="-ml-1.5"
+                  />
+                </>
               ) : null}
               {canPrep ? (
                 <>
@@ -303,6 +506,23 @@ export function MarketPanel({
                 </>
               ) : null}
             </ContextMenu>
+            {canHaggle ? (
+              <p data-haggle-rules="" className="text-pretty text-[11px] leading-snug text-stone-500">
+                Haggling is a Persuasion check against DC {shop.haggleDc}: win and your prices drop a step, fail and they stay where they were, fail by 5 or
+                more and they rise a step. One try each, and the price you get is yours, not the whole party&apos;s. The menu beside Haggle offers
+                Intimidation and Deception instead.
+              </p>
+            ) : mySheet && shop.standsHere === false ? (
+              <p data-shop-away="" className="text-pretty text-[11px] leading-snug text-stone-500">
+                {shop.locationName
+                  ? `The party is not at ${shop.locationName}. Its shelf is for looking until they get there.`
+                  : "This shop has no place yet. Its shelf is for looking until it opens where the party is."}
+              </p>
+            ) : mySheet && shop.yourHaggle !== null ? (
+              <p data-haggle-rules="" className="text-[11px] leading-snug text-stone-500">
+                {haggledLine(shop.yourHaggle, shop.yourPrices ?? "")}
+              </p>
+            ) : null}
             {/* Columns follow the panel, not the window: the side panel is
                 narrow on the widest screen, and three columns there left
                 no room for a price. */}
@@ -315,21 +535,30 @@ export function MarketPanel({
                     as="li"
                     key={line.itemName}
                     label={line.itemName}
-                    items={mySheet ? [{ id: "buy", label: `Buy for ${formatCopper(line.askingCp)}`, glyph: coinGlyph(line.askingCp), disabled: cannotBuy, onSelect: () => void counter(shop, "buy", line.itemName) }] : []}
+                    items={[
+                      { id: "details", label: "Details", glyph: "system-rules", onSelect: () => setDetails(line) },
+                      ...(trades ? [{ id: "buy", label: `Buy for ${formatPrice(line.askingCp)}`, glyph: coinGlyph(line.askingCp), disabled: cannotBuy, onSelect: () => void counter(shop, "buy", line.itemName) }] : []),
+                    ]}
                     className="flex flex-col justify-between rounded-lg border border-stone-700/60 bg-stone-900/50 p-2 transition-transform duration-[var(--dur-quick,150ms)] hover:-translate-y-0.5 hover:border-amber-500/40"
                   >
-                    <span className="flex min-w-0 items-center gap-1.5 text-xs text-stone-200" title={line.note || line.itemName}>
+                    <button
+                      type="button"
+                      onClick={() => setDetails(line)}
+                      aria-label={`Details of ${line.itemName}`}
+                      className="pk-tap flex min-w-0 items-center gap-1.5 rounded text-left text-xs text-stone-200 hover:text-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
+                    >
                       <GameIcon icon={{ kind: "item", key: line.itemName, family: "item-gear" }} size="size-7" />
                       <span className="truncate">{line.itemName}</span>
-                    </span>
+                      <Info aria-hidden className="size-3.5 shrink-0 text-stone-500" />
+                    </button>
                     <span className="mt-1.5 flex flex-wrap items-center justify-between gap-1">
                       <span className="pk-chip max-w-full whitespace-normal text-amber-200">
                         <GameIcon icon={{ kind: "glyph", key: coinGlyph(line.askingCp) }} size="size-4" />
-                        {formatCopper(line.askingCp)}
+                        {formatPrice(line.askingCp)}
                       </span>
                       <span className="text-[11px] tabular-nums text-stone-500">x{line.qty}</span>
                     </span>
-                    {mySheet ? (
+                    {trades ? (
                       <KitButton disabled={cannotBuy} busy={buying} onClick={() => void counter(shop, "buy", line.itemName)} className="mt-1.5 w-full justify-center border-amber-500/30 text-amber-100">
                         {buying ? null : "Buy"}
                       </KitButton>
@@ -339,7 +568,7 @@ export function MarketPanel({
               })}
               {!shop.stock.length ? <li className="col-span-full text-xs italic text-stone-500">Bare shelves.</li> : null}
             </ul>
-            {shop.buys && mySheet?.equipment.length ? (
+            {shop.buys && trades && mySheet?.equipment.length ? (
               <details className="group/sell text-xs">
                 <summary className="pk-link pk-tap flex cursor-pointer list-none items-center gap-1">
                   <GameIcon icon={{ kind: "glyph", key: "tab-trade" }} size="size-5" /> Sell from your pack

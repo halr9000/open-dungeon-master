@@ -20,6 +20,9 @@ export function spawnProgram(
     env: Record<string, string>;
     onLine: (line: string) => void;
     onExit: (code: number | null) => void;
+    // A line longer than this stops the program: one that never writes a
+    // newline would otherwise grow the buffer without end. Unset means no cap.
+    maxLineBytes?: number;
   },
 ): SpawnedProgram {
   const { command, prefix } = resolveWindowsShim(binary);
@@ -51,6 +54,11 @@ export function spawnProgram(
         options.onLine(line);
       }
       index = buffer.indexOf("\n");
+    }
+    if (options.maxLineBytes && buffer.length > options.maxLineBytes) {
+      stderr = `${stderr}\n[odm] The program wrote a line longer than ${options.maxLineBytes} bytes and was stopped.`.slice(-4_000);
+      buffer = "";
+      kill();
     }
   });
   child.stderr.setEncoding("utf8");

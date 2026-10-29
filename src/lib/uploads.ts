@@ -26,6 +26,14 @@ export function isUploadedPdfPath(value: unknown): value is string {
   return typeof value === "string" && PDF_PATH.test(value);
 }
 
+// A 3D model a map addon made for its board view (src/lib/addons/map-view.ts):
+// binary glTF only, the one format that carries its textures inside itself.
+const MODEL_PATH = /^\/uploads\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.glb$/;
+
+export function isUploadedModelPath(value: unknown): value is string {
+  return typeof value === "string" && MODEL_PATH.test(value);
+}
+
 // A picture an image backend saved (src/lib/comfyui.ts, openai-images.ts,
 // harness/images.ts): /generated/<time>-<backend>-<slug>.<ext>, flat, one
 // dot. Its WebP copies carry a second dot, so they never match.

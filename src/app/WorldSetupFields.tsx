@@ -30,36 +30,49 @@ const CATEGORY_LABELS: Record<WorldLoreCategory, string> = {
   other: "Other",
 };
 
-// Posts the drafts after creation; failures are silent (the lobby panels
-// can re-enter anything that was lost).
+// What did not save, so the creator can say so and send only that again:
+// the house rules text when it failed, and the lore drafts that failed.
+export type WorldSetupLeft = { houseRules: string; loreDrafts: LoreDraft[] };
+
+const posted = (request: Promise<Response>) => request.then((response) => response.ok).catch(() => false);
+
+// Posts the drafts after creation and answers with what did not land. The
+// lobby panels can re-enter anything, but only if the person knows it was
+// lost: a campaign made without the rules typed for it is not what they made.
 export async function submitWorldSetup(
   campaignId: string,
   houseRules: string,
   loreDrafts: LoreDraft[],
-) {
-  const jobs: Promise<unknown>[] = [];
-  if (houseRules.trim()) {
-    jobs.push(
-      fetch(`/api/campaigns/${campaignId}/rules`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: houseRules }),
-      }).catch(() => undefined),
-    );
-  }
-  for (const draft of loreDrafts) {
-    if (!draft.title.trim() || !draft.body.trim()) {
-      continue;
-    }
-    jobs.push(
+): Promise<WorldSetupLeft> {
+  const rules = houseRules.trim()
+    ? posted(
+        fetch(`/api/campaigns/${campaignId}/rules`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: houseRules }),
+        }),
+      )
+    : Promise.resolve(true);
+  const drafts = loreDrafts.filter((draft) => draft.title.trim() && draft.body.trim());
+  const lore = drafts.map((draft) =>
+    posted(
       fetch(`/api/campaigns/${campaignId}/lore`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ category: draft.category, title: draft.title, body: draft.body }),
-      }).catch(() => undefined),
-    );
-  }
-  await Promise.all(jobs);
+      }),
+    ),
+  );
+  const [rulesSaved, ...loreSaved] = await Promise.all([rules, ...lore]);
+  return { houseRules: rulesSaved ? "" : houseRules, loreDrafts: drafts.filter((_, index) => !loreSaved[index]) };
+}
+
+// The same, in words for the person who typed them.
+export function worldSetupProblems(left: WorldSetupLeft): string[] {
+  return [
+    ...(left.houseRules.trim() ? ["The house rules did not save."] : []),
+    ...left.loreDrafts.map((draft) => `The lore entry "${draft.title.trim()}" did not save.`),
+  ];
 }
 
 export function WorldSetupFields({
@@ -124,7 +137,7 @@ export function WorldSetupFields({
               className={ui.input}
             />
             <span className="mt-1 block text-xs text-stone-500">
-              The DM is reminded of the relevant rules each turn. Editable later in Setup.
+              The GM is reminded of the relevant rules each turn. Editable later in the table&apos;s Settings.
             </span>
           </label>
 
@@ -183,7 +196,7 @@ export function WorldSetupFields({
               </button>
             </div>
             <span className="mt-1 block text-xs text-stone-500">
-              Places, factions, and history the DM treats as canon. Grows anytime from the lobby
+              Places, factions, and history the GM treats as canon. Grows anytime from the lobby
               and the Facts tab.
             </span>
           </div>

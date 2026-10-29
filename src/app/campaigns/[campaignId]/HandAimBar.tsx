@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeft, Loader2, PencilLine, X } from "lucide-react";
-import { useRef, type CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import { cn } from "@/lib/cn";
 import { replayAnimation } from "@/lib/motion/replay";
 import { ui } from "@/lib/ui";
@@ -131,6 +131,15 @@ export function HandAimBar({
   // named: the area catches whoever stands in it.
   const areaPicked = hasPick(card.area, areaPick);
   const ready = (!needsTarget || aim !== null || areaPicked) && !needsTrigger;
+  // Once the card can go, its button is brought into view. On a short phone
+  // the Hand scrolls in what the message box leaves it (hand.css), and the
+  // button sat below the fold after the target was picked.
+  const commitRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (ready) {
+      commitRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [ready, aim]);
   const hint = needsTrigger
     ? "Say what you wait for."
     : areaPicked && !aim
@@ -338,7 +347,7 @@ export function HandAimBar({
               content={
                 blocked ??
                 (ready
-                  ? "Send this to the Dungeon Master."
+                  ? "Send this to the Game Master."
                   : needsTrigger
                     ? "Name the trigger first."
                     : card.area
@@ -347,6 +356,7 @@ export function HandAimBar({
               }
             >
               <button
+                ref={commitRef}
                 type="button"
                 onClick={onCommit}
                 disabled={!ready || sending || blocked !== null}

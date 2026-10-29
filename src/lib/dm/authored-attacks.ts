@@ -20,6 +20,7 @@ import { effectiveMaxHp } from "@/lib/dm/condition-logic";
 import { computeSheetDerived } from "@/lib/srd";
 import { authoredNaturalWeapon, hasRapidStrike } from "@/lib/srd/authored-effects-more";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 const CLAWS_EXTRA = "form of the beast:claws";
 const RAPID_STRIKE = "rapid strike";
@@ -34,7 +35,7 @@ export function withClawsExtra(
   budget: TurnBudget,
   notes: string[],
 ): TurnBudget {
-  const natural = authoredNaturalWeapon(sheet, weapon);
+  const natural = authoredNaturalWeapon(sheet, weapon ?? "");
   if (!natural?.weapon.extraAttack || budget.oncePerTurn.includes(CLAWS_EXTRA)) {
     return budget;
   }
@@ -50,20 +51,20 @@ export function rapidStrike(input: {
   advantage: Advantage;
   weaponAttack: boolean;
   bonus: boolean;
-}): { refused: string } | { budget: TurnBudget; note: string } {
+}): { refused: ToolError } | { budget: TurnBudget; note: string } {
   const { sheet, budget } = input;
   const feature = hasRapidStrike(sheet);
   if (!feature) {
-    return { refused: `${sheet.name} does not have Rapid Strike (a Samurai's 15th level feature); attack without rapidStrike.` };
+    return { refused: { error: `${sheet.name} does not have Rapid Strike (a Samurai's 15th level feature); attack without rapidStrike.`, retry: true } };
   }
   if (!budget || !input.weaponAttack || input.bonus) {
-    return { refused: "Rapid Strike trades the advantage of one weapon attack of the Attack action, on the fighter's own turn." };
+    return { refused: { error: "Rapid Strike trades the advantage of one weapon attack of the Attack action, on the fighter's own turn. Attack without rapidStrike.", retry: true } };
   }
   if (budget.oncePerTurn.includes(RAPID_STRIKE)) {
-    return { refused: `${sheet.name} has used Rapid Strike this turn; it comes once a turn.` };
+    return { refused: { error: `${sheet.name} has used Rapid Strike this turn; it comes once a turn. Attack without rapidStrike.`, retry: true } };
   }
   if (input.advantage !== "advantage") {
-    return { refused: "Rapid Strike forgoes advantage on the attack, and this attack has none to forgo; attack without rapidStrike." };
+    return { refused: { error: "Rapid Strike forgoes advantage on the attack, and this attack has none to forgo; attack without rapidStrike.", retry: true } };
   }
   return {
     budget: { ...budget, attacksAllowed: budget.attacksAllowed + 1, oncePerTurn: [...budget.oncePerTurn, RAPID_STRIKE] },
@@ -75,16 +76,16 @@ export function rapidStrike(input: {
 // second psychic blade): made on the character's own turn, after attacking
 // with the first. Null when it may be made; the weapon needs no second item
 // in hand, so two-weapon fighting's carried-weapons rule does not apply.
-export function secondWeaponProblem(sheet: CharacterSheet, weapon: string | undefined, budget: TurnBudget | null): string | null | undefined {
-  const natural = authoredNaturalWeapon(sheet, weapon);
+export function secondWeaponProblem(sheet: CharacterSheet, weapon: string | undefined, budget: TurnBudget | null): ToolError | null | undefined {
+  const natural = authoredNaturalWeapon(sheet, weapon ?? "");
   if (!natural?.second) {
     return undefined;
   }
   if (!budget) {
-    return `The second ${natural.weapon.name.toLowerCase()} is a bonus action on ${sheet.name}'s own turn; it is not their turn.`;
+    return { error: `The second ${natural.weapon.name.toLowerCase()} is a bonus action on ${sheet.name}'s own turn; it is not their turn. What they declared waits for their turn.`, refused: "rules" };
   }
   if (budget.attacksMade < 1 || !budget.lightMeleeAttack) {
-    return `The second ${natural.weapon.name.toLowerCase()} follows an attack with the first on the same turn; ${sheet.name} attacks with it first.`;
+    return { error: `The second ${natural.weapon.name.toLowerCase()} follows an attack with the first on the same turn; ${sheet.name} attacks with it first.`, retry: true };
   }
   return null;
 }
@@ -97,7 +98,7 @@ export function naturalWeaponOnHit(
   weaponName: string | undefined,
 ): string[] {
   const sheet = getSheetById(stale.id) ?? stale;
-  const natural = authoredNaturalWeapon(sheet, weaponName);
+  const natural = authoredNaturalWeapon(sheet, weaponName ?? "");
   if (natural?.weapon.onHit !== "bite_heal") {
     return [];
   }

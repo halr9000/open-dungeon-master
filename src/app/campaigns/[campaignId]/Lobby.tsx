@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Play } from "lucide-react";
 import { Suspense, lazy, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { transcribesVoice, useCapabilities } from "@/lib/use-capabilities";
@@ -16,11 +16,14 @@ import { LobbyParty } from "@/app/campaigns/[campaignId]/LobbyParty";
 import { LobbyGroupHead, LobbyHero, LobbyRealDice, enter } from "@/app/campaigns/[campaignId]/LobbyPieces";
 import { LobbyRoomCode } from "@/app/campaigns/[campaignId]/LobbyRoomCode";
 import { LorePanel } from "@/app/campaigns/[campaignId]/LorePanel";
+import { PartyStory } from "@/app/campaigns/[campaignId]/PartyStory";
+import { mayWritePartyBackstory } from "@/lib/dm/party-story";
 import { RulesPanel } from "@/app/campaigns/[campaignId]/RulesPanel";
 import { VoicePanel } from "@/app/campaigns/[campaignId]/VoicePanel";
 import { useVoiceSpeaking } from "@/app/campaigns/[campaignId]/liveStore";
 import { resolveCompanionMode } from "@/lib/schemas/game-settings";
 import { isPrimaryDm, lobbyBlocker, partySlotCount, viewerCaps } from "@/lib/dm/viewer";
+import { lobbyNext } from "@/lib/dm/lobby-next";
 import {
   ContentImportPicker,
   EMPTY_SELECTION,
@@ -29,6 +32,7 @@ import {
 import type { CampaignState } from "@/app/campaigns/[campaignId]/useCampaignStream";
 import { navigateTo } from "@/lib/navigation";
 import { SceneBackdrop } from "@/app/campaigns/[campaignId]/CinematicParts";
+import { ArrivalBanner } from "@/app/campaigns/[campaignId]/ArrivalBanner";
 import { StorySetupNotice } from "@/components/StorySetupNotice";
 import {
   STORY_SETUP_WARNING,
@@ -56,8 +60,23 @@ const EditCampaignDialog = lazy(() =>
 // both columns are display: contents below lg, so their children interleave).
 const EMPTY_MESSAGES: never[] = [];
 
-export function Lobby({ state, refresh }: { state: CampaignState; refresh: () => void }) {
+// The same panels serve a running campaign's prep (issue 530, page.tsx):
+// laid over the table under its header, with the way back to the table in
+// place of Ready and Begin, and without what belongs before the first
+// scene or to the table's own header (the call, the way out).
+export function Lobby({
+  state,
+  refresh,
+  mode = "lobby",
+  onResume,
+}: {
+  state: CampaignState;
+  refresh: () => void;
+  mode?: "lobby" | "prep";
+  onResume?: () => void;
+}) {
   const { campaign, me, members, sheets } = state;
+  const prep = mode === "prep";
   const voiceSpeaking = useVoiceSpeaking();
   // The call records and announces a transcript only where it can be written.
   const transcribes = transcribesVoice(useCapabilities());
@@ -104,6 +123,9 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
   // ids here, so a button it would refuse is never rendered.
   const seatCampaignId =
     campaign && campaign.gameSettings.dmMode !== "ai" ? campaign.id : "";
+  // Asked again when the DM seat changes hands: a DM the owner replaced may
+  // no longer move the seats.
+  const seatHolder = campaign?.dmUserId ?? "";
   useEffect(() => {
     // No reset on the way out: the buttons are also gated on the campaign
     // being human-run, so a stale yes renders nothing.
@@ -122,7 +144,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
     return () => {
       cancelled = true;
     };
-  }, [seatCampaignId, seatVersion]);
+  }, [seatCampaignId, seatVersion, seatHolder]);
 
   if (!campaign || !me) {
     return null;
@@ -198,6 +220,10 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
     resolveCompanionMode(campaign.gameSettings, partySize, humanDmTable) === "full" &&
     partyCompanions.length < campaign.gameSettings.maxCompanions;
   const showCompanions = canBuildCompanion || (steersStory && partyCompanions.length > 0);
+  // Whether a lasting companion can travel with this party, so its
+  // conscience setting can matter (issue 503).
+  const lastingCompanions =
+    resolveCompanionMode(campaign.gameSettings, partySize, humanDmTable) === "full" || partyCompanions.length > 0;
   // AI Story Setup meeting the table's prep (issue 249): the one-time pass
   // is still to run at a table the AI narrates, and either an imported
   // Storyboard already wrote the arc (state.prepArc, told only to whoever
@@ -249,6 +275,23 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
       hasSheet: sheets.some((sheet) => sheet.userId === member.userId),
     })),
   );
+
+  // The one line above the actions that says what happens next for this
+  // viewer, from the same seats the Begin button reads.
+  const others = members.filter((member) => member.userId !== me.id && !isDmSeatOf(member.userId));
+  const next = lobbyNext({
+    solo: isSolo,
+    isDm,
+    hasSheet: Boolean(mySheet),
+    ready: Boolean(myMember?.ready),
+    canStart: isOwner || isPrimaryDm(seats, me.id),
+    blocker: startBlocker,
+    needHero: others.filter((member) => !sheets.some((sheet) => sheet.userId === member.userId)).map((member) => member.username),
+    notReady: others.filter((member) => !member.ready).map((member) => member.username),
+  });
+  function isDmSeatOf(userId: string) {
+    return userId === campaign!.dmUserId || userId === campaign!.assistantDmUserId;
+  }
 
   // Returns whether the server took it, so the solo flow can stop before
   // trying to start a game whose only player is not ready.
@@ -324,9 +367,9 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
   }
 
   // Moves a DM seat; userId null empties it (the server allows that only for
-  // the co-DM seat, since a human-run game always needs a DM). The seat
-  // change event is not one the stream applies, so the mover reloads the
-  // snapshot to see the new seats.
+  // the co-DM seat, since a human-run game always needs a DM). Every seat's
+  // stream reads the snapshot again on the seat change (reloadsSnapshot);
+  // the mover reads it at once so its own screen does not wait for the event.
   async function assignSeat(seat: "dm" | "assistant", userId: string | null) {
     setSeatError("");
     try {
@@ -422,27 +465,52 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
     }
   }
 
+  // Who may bring others in mid-campaign: the room code only works while
+  // the table holds the door open (src/lib/join-preview.ts).
+  const showRoomCode = !isSolo && (!prep || campaign.gameSettings.midGameJoinOpen);
+  const Shell = prep ? "div" : "main";
   return (
-    <main className="cine-stage cine-lobby mx-auto w-full max-w-2xl flex-1 p-4 sm:p-6 lg:max-w-6xl">
+    <Shell className="cine-stage cine-lobby mx-auto w-full max-w-2xl flex-1 p-4 sm:p-6 lg:max-w-6xl" data-lobby-mode={mode}>
       {/* The lobby under the same sky as the table: the cover art behind
           the panels, dimmed, so the door and the room read as one place. */}
       <SceneBackdrop messages={EMPTY_MESSAGES} cover={campaign.cover} genre={campaign.genre} seed={campaign.id} />
-      <Link
-        href="/"
-        className="mb-3 inline-flex items-center gap-1.5 text-sm text-stone-500 transition-colors hover:text-amber-200"
-      >
-        <ArrowLeft className="size-4" /> All campaigns
-      </Link>
+      {prep ? (
+        <div className="prep-banner reveal-banner mb-4" data-prep-banner="">
+          <span className="min-w-0 flex-1">
+            <h2 className="font-display text-lg tracking-wide text-amber-100">Campaign prep</h2>
+            <p className="text-sm text-stone-400">
+              The adventure is still running: nothing here ends it, and the table is as you left it.
+            </p>
+          </span>
+          <button type="button" onClick={onResume} className={cn(ui.btnPrimary, "min-h-11 px-5")} data-prep-resume="">
+            <Play aria-hidden="true" className="size-4" /> Back to the table
+          </button>
+        </div>
+      ) : (
+        <Link
+          href="/"
+          className="mb-3 inline-flex items-center gap-1.5 text-sm text-stone-500 transition-colors hover:text-amber-200"
+        >
+          <ArrowLeft className="size-4" /> All campaigns
+        </Link>
+      )}
 
       <div className="flex flex-col lg:grid lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-start lg:gap-x-8">
         <div className="contents lg:flex lg:min-w-0 lg:flex-col">
-          <LobbyHero
-            campaign={campaign}
-            canEdit={isLead}
-            onEdit={() => setEditing(true)}
-            className="lobby-enter order-1"
-            style={enter(0)}
-          />
+          {/* A player taking a seat, for everyone here (F27): the banner
+              rides on the lobby card's art, so it never covers another
+              card's words. */}
+          <div className="relative order-1">
+            <LobbyHero
+              campaign={campaign}
+              eyebrow={prep ? "The adventure is under way" : undefined}
+              canEdit={isLead}
+              onEdit={() => setEditing(true)}
+              className="lobby-enter"
+              style={enter(0)}
+            />
+            <ArrivalBanner sheets={sheets} />
+          </div>
 
           {!isSolo || showCompanions ? (
             <LobbyParty
@@ -463,12 +531,14 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
               canBuildCompanion={canBuildCompanion}
               onBuildCompanion={() => setBuildingCompanion(true)}
               onDismissCompanion={dismissCompanion}
+              inPlay={prep}
+              joinsOpen={campaign.gameSettings.midGameJoinOpen}
               className="lobby-enter order-3"
               style={enter(2)}
             />
           ) : null}
 
-          <div className="lobby-enter order-4 mb-8" style={enter(3)}>
+          <div className={cn("lobby-enter order-4", prep ? "mb-4" : "mb-8")} style={enter(3)}>
             {campaign.gameSettings.multiCharacter !== "off" && mySheets.length > 1 ? (
               <div className="mb-3 flex flex-wrap justify-center gap-2" aria-label="Your characters">
                 {mySheets.map((sheet) => (
@@ -491,7 +561,11 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
                 className="mb-3"
               />
             ) : null}
+            {/* Ready and Begin are the lobby's; a running campaign is
+                already begun, and its characters are changed at the table. */}
+            {prep ? null : (
             <LobbyActions
+              next={next}
               campaign={campaign}
               myMember={myMember}
               mySheet={mySheet}
@@ -508,7 +582,23 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
               onRemoveCharacter={() => void removeCharacter()}
               onDelete={() => void deleteCampaign()}
             />
+            )}
           </div>
+
+          {/* Optional, and written once characters have joined: how this
+              party knows each other. Right after the actions so a phone
+              reaches Begin first. */}
+          <section className="lobby-enter order-4 mb-6" style={enter(4)}>
+            <LobbyGroupHead glyph="tab-party" title="Party story" />
+            <div className={cn(ui.card, "p-3")}>
+              <PartyStory
+                campaignId={campaign.id}
+                party={campaign.party}
+                canWrite={mayWritePartyBackstory({ isLead, holdsDmSeat: isDm, hasCharacter: mySheets.length > 0 })}
+                hasCharacters={sheets.some((sheet) => !(sheet.isCompanion && sheet.companionKind === "guest"))}
+              />
+            </div>
+          </section>
 
           {/* Settings, rules and lore are story authority (the lead at an AI
               table, the DM once a person runs it), which is what their routes
@@ -553,7 +643,7 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
         </div>
 
         <div className="contents lg:flex lg:min-w-0 lg:flex-col">
-          {!isSolo ? (
+          {showRoomCode ? (
             <LobbyRoomCode
               campaignId={campaign.id}
               campaignTitle={campaign.title}
@@ -593,7 +683,8 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
               are still building characters. Pointless in a solo campaign, which
               is the same reason the party list is hidden there. No floor to
               show: the game has not started, so everyone can talk. */}
-          {!isSolo ? (
+          {/* In prep the call is the table header's, live above this. */}
+          {!isSolo && !prep ? (
             <section className="reveal lobby-enter order-7 mb-6" style={enter(3)}>
               <VoicePanel
                 campaignId={campaign.id}
@@ -620,6 +711,9 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
               campaignId={campaign.id}
               settings={campaign.gameSettings}
               steersStory={steersStory}
+              heading={false}
+              solo={campaign.maxPlayers <= 1}
+              lastingCompanions={lastingCompanions}
             />
           </div>
         </div>
@@ -641,6 +735,6 @@ export function Lobby({ state, refresh }: { state: CampaignState; refresh: () =>
         />
       ) : null}
       </Suspense>
-    </main>
+    </Shell>
   );
 }

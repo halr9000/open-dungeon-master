@@ -7,6 +7,8 @@
 // are both subject "marla", so recording the second retires the first
 // instead of letting the sheet contradict itself.
 
+import { textKey } from "../language/text-logic.ts";
+
 export const FACT_CATEGORIES = [
   "location",
   "npc",
@@ -18,8 +20,21 @@ export const FACT_CATEGORIES = [
 export type FactCategory = (typeof FACT_CATEGORIES)[number];
 
 // Who may read a fact outside the DM prompt: the whole party, the DM prompt
-// only, or an explicit list of campaign character ids.
-export type FactKnownBy = "party" | "dm" | string[];
+// only, or an explicit list of campaign character ids. "storyteller" is a DM
+// secret kept even from the lead who steers an AI table: the storyteller
+// tier (src/lib/dm/viewer.ts), for what exists to be kept from the
+// characters (#503's stored intents and pacts).
+export type FactKnownBy = "party" | "dm" | "storyteller" | string[];
+
+// The storyteller's own secret (src/lib/dm/viewer.ts): never the lead's.
+export function isStorytellerFact(knownBy: unknown): knownBy is "storyteller" {
+  return knownBy === "storyteller";
+}
+
+// A fact kept out of the players' views: a DM secret, or the storyteller's.
+export function isSecretFact(knownBy: unknown): boolean {
+  return knownBy === "dm" || isStorytellerFact(knownBy);
+}
 
 export type FactCandidate = {
   category: FactCategory;
@@ -44,20 +59,13 @@ export function isFactCategory(value: unknown): value is FactCategory {
 }
 
 export function normalizeSubject(subject: string): string {
-  return subject
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, SUBJECT_MAX_CHARS);
+  return textKey(subject).slice(0, SUBJECT_MAX_CHARS);
 }
 
 function contentTokens(text: string): Set<string> {
   return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .split(/\s+/)
+    textKey(text)
+      .split(" ")
       .filter((token) => token.length > 2),
   );
 }
@@ -165,7 +173,7 @@ export function renderFactsForPrompt(facts: FactLike[]): {
       perCategory.set(fact.category, used + 1);
       budget -= line.length;
     }
-    if (fact.knownBy === "dm") {
+    if (isSecretFact(fact.knownBy)) {
       dmLines.push(line);
     } else {
       partyLines.push(line);
@@ -183,7 +191,7 @@ export function renderFactsForPrompt(facts: FactLike[]): {
 
 // Serialization helpers for the known_by column.
 export function parseKnownBy(raw: string): FactKnownBy {
-  if (raw === "party" || raw === "dm") {
+  if (raw === "party" || raw === "dm" || raw === "storyteller") {
     return raw;
   }
   if (raw.startsWith("[")) {
@@ -205,17 +213,23 @@ export function serializeKnownBy(knownBy: FactKnownBy): string {
 
 // Whether a member (with the given owned character ids) may read a fact.
 // DM-only facts are spoilers (off-screen developments); they stay out of
-// every player view unless the lead explicitly asks for secrets.
+// every player view unless the lead explicitly asks for secrets. A
+// storyteller secret needs the storyteller tier on top (viewer.ts
+// storytellerSees): never the lead's, at any table.
 export function factVisibleTo(
   knownBy: FactKnownBy,
   ownedCharacterIds: string[],
   includeDmSecrets: boolean,
+  includeStorytellerSecrets = false,
 ): boolean {
   if (knownBy === "party") {
     return true;
   }
   if (knownBy === "dm") {
     return includeDmSecrets;
+  }
+  if (isStorytellerFact(knownBy)) {
+    return includeDmSecrets && includeStorytellerSecrets;
   }
   return knownBy.some((id) => ownedCharacterIds.includes(id));
 }

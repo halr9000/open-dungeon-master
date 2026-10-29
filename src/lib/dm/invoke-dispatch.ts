@@ -9,7 +9,8 @@ import { enqueueDmJob } from "@/lib/dm/queue";
 import { handleCompleteBeat } from "@/lib/dm/arc";
 import { handleCastBuff } from "@/lib/dm/cast-tools";
 import { handleCheckNotice, handleGroupCheck } from "@/lib/dm/check-tools";
-import { handleAddCompanion, handleDismissCompanion } from "@/lib/dm/companion-tools";
+import { handleAddCompanion } from "@/lib/dm/companion-tools";
+import { dismissCompanion } from "@/lib/dm/companion-dismissal";
 import { applyEncounterCall, ENCOUNTER_TOOL_NAMES } from "@/lib/dm/encounter-tools";
 import { handleApplyHazard } from "@/lib/dm/hazard-tools";
 import { handleSearchLore } from "@/lib/dm/lore-search";
@@ -23,6 +24,7 @@ import {
   handleSummonPet,
 } from "@/lib/dm/pet-tools";
 import { handleRecallStory } from "@/lib/dm/recall";
+import { handleRelationshipScheme } from "@/lib/dm/scheme-tools";
 import {
   handleRelationshipBeat,
   handleRelationshipEnd,
@@ -35,6 +37,7 @@ import { handleClearEffect, handleSetEffect } from "@/lib/dm/effect-tools";
 import { handleEndScene, handleSceneCheck, handleStartScene } from "@/lib/dm/scene-tools";
 import { handlePlaySting, handleSetAmbience } from "@/lib/dm/ambience-tools";
 import { handleDismount, handleMountUp } from "@/lib/dm/mount-tools";
+import { handleItemCall } from "@/lib/dm/gear-tool";
 import {
   handleDamageObject,
   handlePassTime,
@@ -65,11 +68,13 @@ import { handleRequestRoll } from "@/lib/dm/invoke-roll";
 import { handleSplitDamage } from "@/lib/dm/split-damage";
 import { strictBooleanArgs } from "@/lib/dm/arg-coerce";
 import { gateAiCall } from "@/lib/dm/ai-gate";
+import { conductGate } from "@/lib/dm/party-conduct";
 import { characterCallUnasked } from "@/lib/dm/player-word";
 import { EXPLORE_TOOL_NAMES, handleExploreCall } from "@/lib/dm/explore-tools";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 const MUTATIONS = new Set<string>(MUTATION_TOOL_NAMES);
 const ENCOUNTERS = new Set<string>(ENCOUNTER_TOOL_NAMES);
@@ -86,7 +91,7 @@ export async function dispatchAdjudication(
   name: string,
   sentArguments: string,
   context: DispatchContext,
-): Promise<Record<string, unknown>> {
+): Promise<ToolResult> {
   const { campaign, turn, sheets, sheetsById } = context;
   // "false" sent as a string is false (src/lib/dm/arg-coerce.ts).
   const coerced = strictBooleanArgs(sentArguments);
@@ -131,23 +136,23 @@ export async function dispatchAdjudication(
       );
     case "cast_buff": {
       const unasked = characterCallUnasked(campaign.id, turn, rawArguments, "characterId");
-      return unasked ? { error: unasked } : handleCastBuff(campaign, turn, rawArguments, sheets, sheetsById);
+      return unasked ?? conductGate(campaign, name, rawArguments) ?? handleCastBuff(campaign, turn, rawArguments, sheets, sheetsById);
     }
     case "take_rest":
       return handleTakeRest(campaign, turn.id, rawArguments, sheets, sheetsById);
     case "group_check":
       return handleGroupCheck(campaign, turn, rawArguments, sheets, sheetsById);
     case "check_notice":
-      return handleCheckNotice(campaign, rawArguments, sheets, sheetsById);
+      return handleCheckNotice(campaign, turn, rawArguments, sheets, sheetsById);
     case "split_damage":
       return handleSplitDamage(campaign, turn, rawArguments, sheets, sheetsById);
     case "apply_hazard":
       return handleApplyHazard(campaign, turn, rawArguments, sheets, sheetsById);
     case "summon_pet":
-      return handleSummonPet(campaign, turn, rawArguments, sheets, sheetsById);
+      return handleSummonPet(campaign, rawArguments, sheets, sheetsById);
     case "pet_attack": {
       const unasked = characterCallUnasked(campaign.id, turn, rawArguments, "characterId");
-      return unasked ? { error: unasked } : handlePetAttack(campaign, turn, rawArguments, sheets, sheetsById);
+      return unasked ? unasked : handlePetAttack(campaign, turn, rawArguments, sheets, sheetsById);
     }
     case "damage_pet":
       return handleDamagePet(campaign, rawArguments, sheets, sheetsById);
@@ -165,6 +170,8 @@ export async function dispatchAdjudication(
       return handleRomanceAdvance(campaign, turn, rawArguments, sheets, sheetsById);
     case "relationship_end":
       return handleRelationshipEnd(campaign, rawArguments, sheets, sheetsById);
+    case "relationship_scheme":
+      return handleRelationshipScheme(campaign, rawArguments, sheets, sheetsById);
     case "roll_treasure":
       return handleRollTreasure(campaign, turn, rawArguments, sheets, sheetsById);
     case "travel":
@@ -204,7 +211,7 @@ export async function dispatchAdjudication(
     case "clear_effect":
       return handleClearEffect(campaign, rawArguments, sheets, sheetsById);
     case "start_scene":
-      return handleStartScene(campaign, rawArguments);
+      return handleStartScene(campaign, rawArguments, sheets, sheetsById);
     case "scene_check":
       return handleSceneCheck(campaign, rawArguments, sheets, sheetsById);
     case "end_scene":
@@ -217,12 +224,14 @@ export async function dispatchAdjudication(
       return handleMountUp(campaign, rawArguments, sheets, sheetsById, turn);
     case "dismount":
       return handleDismount(campaign, rawArguments, sheets, sheetsById, turn);
+    case "handle_item":
+      return handleItemCall(campaign, rawArguments, sheets, sheetsById, turn);
     case "damage_object":
       return handleDamageObject(rawArguments, campaign, turn);
     case "add_companion":
       return handleAddCompanion(campaign, rawArguments, sheets);
     case "dismiss_companion":
-      return handleDismissCompanion(campaign, rawArguments, sheets);
+      return dismissCompanion(campaign, rawArguments, sheets, turn.actor === "ai" ? "ai" : "person");
     case "move_party":
     case "update_location": {
       const pictures =
@@ -270,6 +279,6 @@ export async function dispatchAdjudication(
     case "read_card":
       return handleReadCard(campaign, rawArguments);
     default:
-      return { error: `The engine has no action called "${name}".` };
+      return { error: `The engine has no action called "${name}".`, retry: true };
   }
 }

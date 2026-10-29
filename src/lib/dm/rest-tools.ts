@@ -15,8 +15,9 @@ import {
   shortRestResourcePatch,
 } from "@/lib/dm/rest-logic";
 import { resolveSheetRef } from "@/lib/dm/rolls";
-import { normalizeRestKind } from "@/lib/dm/arg-coerce";
 import { tickWorldTimeskip } from "@/lib/dm/world-tick";
+import { departureNote, departureOpenings } from "@/lib/dm/departure";
+import { pactMoment } from "@/lib/dm/pacts";
 import { advanceClock, getClock, openShortRestWindow, recordLongRests, setTravelPace } from "@/lib/db/clock";
 import { getDmTurn } from "@/lib/db/dm-turns";
 import { partyChefDie, partySongOfRestDie, playerChoosesHitDice, spendHitDice } from "@/lib/dm/hit-dice";
@@ -35,12 +36,11 @@ import {
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
 import { authoredRestTempHp } from "@/lib/dm/authored-turns";
 import { tranquilityAfterLongRest } from "@/lib/dm/srd-defenses";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // The rest engine: short rests spend hit dice with real server rolls, long
 // rests restore HP, slots, and half the hit dice. Every sheet write is
 // audited (kinds rest_short / rest_long) so the party lead can undo it.
-
-export const REST_TOOL_NAMES = ["take_rest"] as const;
 
 type ToolDef = {
   type: "function";
@@ -61,12 +61,12 @@ export const takeRestTool: ToolDef = {
         spend: {
           type: "array",
           description:
-            "Short rest only: hit dice to spend for a character whose player is not at the table (the server otherwise spends toward half HP for them). A connected player chooses their own hit dice on their sheet after the rest; the server rolls them.",
+            "Short rest only: hit dice to spend for a character whose player is not at the table. The server otherwise spends toward half HP for them. A connected player chooses their own hit dice on their sheet after the rest; the server rolls them.",
           items: {
             type: "object",
             properties: {
               characterId: { type: "string", description: "Exact characterId from GAME STATE." },
-              dice: { type: "integer", minimum: 1, maximum: 20 },
+              dice: { type: "integer", minimum: 1, maximum: 20, description: "How many hit dice they spend." },
             },
             required: ["characterId", "dice"],
           },
@@ -81,7 +81,7 @@ export const takeRestTool: ToolDef = {
 export const restTools: ToolDef[] = [takeRestTool];
 
 const restArgsSchema = z.object({
-  kind: z.preprocess(normalizeRestKind, z.enum(["short", "long"])),
+  kind: z.enum(["short", "long"]),
   spend: z
     .array(z.object({ characterId: z.string(), dice: z.number().int().min(1).max(20) }))
     .optional(),
@@ -109,7 +109,7 @@ function parseRestArgs(rawArguments: string): z.infer<typeof restArgsSchema> | n
   }
   const flat = z
     .object({
-      kind: z.preprocess(normalizeRestKind, z.enum(["short", "long"])),
+      kind: z.enum(["short", "long"]),
       characterId: z.string().optional(),
       dice: z.coerce.number().int().min(1).max(20).optional(),
       reason: z.string().optional(),
@@ -172,15 +172,16 @@ export function handleTakeRest(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   if (getActiveEncounter(campaign.id)) {
-    return { error: "The party cannot rest during combat. End the encounter first." };
+    return { error: "The party cannot rest during combat. End the encounter first.", refused: "rules" };
   }
   const args = parseRestArgs(rawArguments);
   if (!args) {
     return {
       error:
         'Invalid take_rest arguments. Send {"kind":"short"} or {"kind":"long"}; a spend list is [{"characterId": "...", "dice": 1}] with whole dice of 1 or more. Nobody rested and no time passed.',
+      retry: true,
     };
   }
   const reason = (args.reason ?? `${args.kind} rest`).slice(0, 200);
@@ -213,6 +214,15 @@ export function handleTakeRest(
       }
     }
   }
+
+  // The night watch of a long rest is a companion's opening (issue 503): one
+  // holding a plan to slip away, or to strike once the party is weak enough,
+  // acts on it as the party settles, read against the party as it lies down.
+  // Companions talk where the party does not hear (issue 503 Phase 5): a
+  // pact that is ready goes first, then a wavering companion may recruit,
+  // once a long rest; only what the table saw comes back.
+  const pacts = args.kind === "long" ? pactMoment(campaign, turnId, "long_rest", { resting, restEndsAt: endsAt }) : [];
+  const leaving = args.kind === "long" ? [...pacts, ...departureOpenings(campaign, "long_rest").map(departureNote).filter(Boolean)] : [];
 
   // A rest takes in-world time, and how much depends on the variant: eight
   // hours and one under the standard rules, a night and a week under gritty
@@ -284,6 +294,7 @@ export function handleTakeRest(
       ...(resilience.length ? { restTempHp: resilience } : {}),
       ...(afflictions.length ? { afflictions } : {}),
       ...(living.length ? { lifestyle: living } : {}),
+      ...(leaving.length ? { companionsLeft: leaving } : {}),
       ...(unaffected.length ? { unaffected: unaffected.join("; ") } : {}),
       restedFor,
       ...(nowReads ? { now: nowReads } : {}),

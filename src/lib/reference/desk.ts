@@ -1,4 +1,5 @@
 import {
+  documentLabel,
   listConditions,
   searchFeats,
   searchItems,
@@ -12,6 +13,7 @@ import { enqueueDmJob } from "@/lib/dm/queue";
 import { describeContentEntry, glossaryTerms } from "@/lib/help";
 import { arcTextTimeoutMs } from "@/lib/model-client";
 import { rulingSources } from "@/lib/reference/rulings";
+import { stopWordsFor } from "@/lib/language/language";
 import {
   DESK_SYSTEM,
   checkCitations,
@@ -46,10 +48,17 @@ const DESK_QUEUE = "reference-desk";
 const PER_KIND = 4;
 const MAX_TERMS = 6;
 
+// The desk belongs to no table, so it has no table language: a question is
+// read against the rulebook, which is English, with Snowball's English stop
+// list (src/lib/language/language.ts).
+const DESK_STOP_WORDS = stopWordsFor("english");
+
+// The origin names the row's own book (src/lib/content/index.ts
+// documentLabel), so a Level Up spell is never cited as the SRD's.
 function entrySource(
   kind: DeskSource["kind"],
   entry: ContentEntry,
-  origin: string,
+  noun: string,
 ): DeskSource | null {
   const text = describeContentEntry(entry.data);
   if (!text) {
@@ -60,7 +69,7 @@ function entrySource(
     ref: `${kind}:${entry.slug}`,
     name: entry.name,
     text: `${entry.name}. ${text}`,
-    origin: entry.source === "homebrew" ? "your homebrew" : origin,
+    origin: documentLabel(entry, noun),
   };
 }
 
@@ -91,22 +100,22 @@ function gatherSources(userId: string, question: string): DeskSource[] {
   // offered rather than searched: "am I prone if I am grappled" names
   // neither condition the way the table spells it.
   for (const entry of listConditions({ userId })) {
-    add(entrySource("condition", entry, "SRD condition"));
+    add(entrySource("condition", entry, "condition"));
   }
 
-  for (const term of deskTerms(question).slice(0, MAX_TERMS)) {
+  for (const term of deskTerms(question, DESK_STOP_WORDS).slice(0, MAX_TERMS)) {
     const options = { q: term, userId, limit: PER_KIND };
     for (const entry of searchSpells(options)) {
-      add(entrySource("spell", entry, "SRD spell"));
+      add(entrySource("spell", entry, "spell"));
     }
     for (const entry of searchMonsters(options)) {
-      add(entrySource("monster", entry, "SRD monster"));
+      add(entrySource("monster", entry, "monster"));
     }
     for (const entry of searchItems(options)) {
-      add(entrySource("item", entry, "SRD item"));
+      add(entrySource("item", entry, "item"));
     }
     for (const entry of searchFeats(options)) {
-      add(entrySource("feat", entry, "SRD feat"));
+      add(entrySource("feat", entry, "feat"));
     }
   }
 
@@ -129,7 +138,7 @@ export async function runRulesDesk(
     return { error: "Ask a question first." };
   }
 
-  const evidence = selectEvidence(question, gatherSources(request.userId, question));
+  const evidence = selectEvidence(question, gatherSources(request.userId, question), DESK_STOP_WORDS);
   let result: DeskAnswer | { error: string } = {
     error: "The model is unavailable; try again shortly.",
   };
@@ -152,7 +161,7 @@ export async function runRulesDesk(
           ].join("\n\n"),
         },
       ],
-      { timeoutMs: arcTextTimeoutMs() },
+      { meta: { task: "rules_desk" }, timeoutMs: arcTextTimeoutMs() },
     );
     if (error) {
       return;
@@ -176,7 +185,7 @@ export function previewSources(userId: string, question: string) {
   if (!clamped) {
     return [];
   }
-  return selectEvidence(clamped, gatherSources(userId, clamped)).map((source) => ({
+  return selectEvidence(clamped, gatherSources(userId, clamped), DESK_STOP_WORDS).map((source) => ({
     kind: source.kind,
     ref: source.ref,
     name: source.name,

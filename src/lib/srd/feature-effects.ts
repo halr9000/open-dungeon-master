@@ -19,6 +19,8 @@ import subclassesJson from "@/lib/srd/subclasses.json";
 import authoredFeatsJson from "@/lib/srd/authored-feats.json";
 import { authoredFeatureDefs } from "@/lib/srd/authored-feature-defs";
 import { tableFeat } from "@/lib/srd/feat-effects";
+import { textKey } from "@/lib/language/text-logic";
+import { choiceIn, isNamed } from "@/lib/srd/feature-names";
 
 export type FightingStyleId =
   | "archery"
@@ -69,11 +71,12 @@ export type FeatureEffect =
   // Flat passive Perception / Investigation bonus (Observant feat: +5).
   | { kind: "passive_bonus"; amount: number }
   // Walking speed bonus; `gate` names the equipment that switches it off
-  // (Fast Movement: heavy armor; Unarmored Movement: any armor or shield).
+  // (Fast Movement: heavy armor; Unarmored Movement: any armor or shield), or
+  // the rage it needs (Totem Spirit: Elk, raging and not in heavy armor).
   | {
       kind: "speed_bonus";
       amount: (level: number) => number;
-      gate?: "heavy_armor" | "armor_or_shield";
+      gate?: "heavy_armor" | "armor_or_shield" | "raging";
     }
   // Half the proficiency bonus (rounded down) on ability checks that do not
   // already use it, initiative included. Jack of All Trades covers every
@@ -97,6 +100,8 @@ export type FeatureEffect =
   | { kind: "magical_attacks" }
   // Initiative bonus equal to an ability modifier (Dread Ambusher: WIS).
   | { kind: "initiative_ability"; ability: "str" | "dex" | "con" | "int" | "wis" | "cha" }
+  // Initiative bonus equal to the proficiency bonus (Aura of the Sentinel).
+  | { kind: "initiative_proficiency" }
   // An ability modifier added to a named attack-roll spell's damage
   // (Agonizing Blast: +CHA per Eldritch Blast beam).
   | {
@@ -108,10 +113,10 @@ export type FeatureEffect =
   | { kind: "narrative" };
 
 export type FeatureDef = {
-  // Lowercased feature names this entry answers to. A sheet's feature
-  // matches when its name equals one of these or begins with one followed
-  // by " (" so the numbered SRD variants ("Extra Attack (2)", "Action Surge
-  // (1 use)") all land on the same entry.
+  // Feature names this entry answers to, keyed (textKey). A sheet's feature
+  // matches when its name, or its name before a note in parentheses, keys
+  // to one of these, so the numbered SRD variants ("Extra Attack (2)",
+  // "Action Surge (1 use)") all land on the same entry.
   match: string[];
   // Restrict to specific classes when one feature name means different
   // things to different classes.
@@ -202,7 +207,7 @@ export function songOfRestDie(level: number): string {
 // Feats live in sheet.feats, but they are named abilities like any other,
 // so they resolve through the same table. defenseRiders and the derived
 // stats read features AND feats together.
-export const FEATURE_EFFECTS: FeatureDef[] = [
+export const FEATURE_EFFECTS: FeatureDef[] = ([
   // A Level Up feat with the same rules as one of ODM's answers to both
   // names (feat-effects.ts FEAT_TWINS): Attentive is Alert, Intuitive is
   // Observant. (Level Up's Skirmisher is Mobile too, but the Scout
@@ -434,7 +439,7 @@ export const FEATURE_EFFECTS: FeatureDef[] = [
     guidance:
       "Agonizing Blast: their Charisma modifier is added to each Eldritch Blast beam's damage. The server applies it on pc_attack.",
   },
-];
+] as FeatureDef[]).map((def) => ({ ...def, match: def.match.map(textKey) }));
 
 // ---- Authored-catalog parsing ----
 //
@@ -477,11 +482,12 @@ export function parseFeatureEffects(desc: string): FeatureEffect[] {
   }
   // Always-on resistances: "you gain/have resistance to poison damage" or a
   // leading "Resistance to psychic damage, and ...", with no trigger words
-  // in the clause (a rage-gated or spent resistance stays narrative).
+  // in the clause (a rage-gated or spent resistance stays narrative, and
+  // one to nonmagical damage only is the authored layer's `nonmagical`).
   const sentence =
     /[^.]*\byou (?:gain|have|grant(?:s)? you)? ?resistance to[^.,]*/i.exec(desc)?.[0] ??
     /^Resistance to[^.,]*/i.exec(desc)?.[0];
-  if (sentence && !/while|when |until|spend|reaction|rage|minute|hour|bonus action/i.test(sentence)) {
+  if (sentence && !/while|when |until|spend|reaction|rage|minute|hour|bonus action|nonmagical/i.test(sentence)) {
     const types = DAMAGE_TYPE_WORDS.filter((word) =>
       new RegExp(`\\b${word}\\b`, "i").test(sentence),
     );
@@ -546,7 +552,7 @@ const AUTHORED_PARSED = new Map<string, { effects: FeatureEffect[]; guidance: st
     rows.push({ n: feat.name, d: feat.desc ?? feat.d ?? "" });
   }
   for (const row of rows) {
-    const name = normalize(row.n);
+    const name = textKey(row.n);
     // The static table wins for names it already covers.
     if (FEATURE_EFFECTS.some((def) => def.match.includes(name))) {
       continue;
@@ -600,10 +606,6 @@ const AUTHORED_PARSED = new Map<string, { effects: FeatureEffect[]; guidance: st
   }
 }
 
-function normalize(name: string) {
-  return name.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
 // The names of every class and subclass feature ODM knows: a content pack
 // feat that shares one (Level Up's Skirmisher and the Scout ranger's) is
 // not read through this table, which reads features and feats alike.
@@ -616,7 +618,7 @@ const CLASS_FEATURE_NAMES = new Set<string>();
     for (const entry of entries) {
       for (const features of Object.values(entry.levels)) {
         for (const feature of features) {
-          CLASS_FEATURE_NAMES.add(normalize(feature.n));
+          CLASS_FEATURE_NAMES.add(textKey(feature.n));
         }
       }
     }
@@ -624,7 +626,7 @@ const CLASS_FEATURE_NAMES = new Set<string>();
 }
 
 export function clashesWithClassFeature(name: string): boolean {
-  return CLASS_FEATURE_NAMES.has(normalize(name));
+  return CLASS_FEATURE_NAMES.has(textKey(name));
 }
 
 const REGISTERED_FEATS = new Set<string>();
@@ -636,7 +638,7 @@ const REGISTERED_FEATS = new Set<string>();
 // fetches a feat's text. A name this table already answers, or one a class
 // feature shares, is left alone. Returns whether anything was registered.
 export function registerFeatRules(name: string, desc: string): boolean {
-  const key = normalize(name);
+  const key = textKey(name);
   if (!key || REGISTERED_FEATS.has(key)) {
     return false;
   }
@@ -676,7 +678,7 @@ export function effectsFor(input: {
   // The table, for its workshop feats (feat-effects.ts tableFeat).
   campaignId?: string | null;
 }): Array<{ def: FeatureDef; effect: FeatureEffect; feature: string; featureClassId?: string }> {
-  const wantedClass = normalize(input.class);
+  const wantedClass = textKey(input.class);
   const out: Array<{
     def: FeatureDef;
     effect: FeatureEffect;
@@ -686,18 +688,19 @@ export function effectsFor(input: {
   for (const feature of input.features) {
     // A workshop feat that runs as a published one is read as that feat.
     const workshop = tableFeat(feature.name, input.campaignId);
-    const name = normalize(workshop?.runsAs ?? feature.name);
+    const written = workshop?.runsAs ?? feature.name;
+    const names = [textKey(written), textKey(written.replace(/\s*\(.*$/, ""))];
     const matches = FEATURE_EFFECTS.filter(
       (def) =>
         (!def.classes || def.classes.includes(wantedClass)) &&
-        def.match.some((term) => name === term || name.startsWith(`${term} (`)),
+        def.match.some((term) => names.includes(term)),
     );
     // Prefer the most specific match: "extra attack (2)" over "extra attack".
     let best: FeatureDef | null = null;
     let bestLength = -1;
     for (const def of matches) {
       const length = Math.max(
-        ...def.match.filter((term) => name === term || name.startsWith(`${term} (`)).map(
+        ...def.match.filter((term) => names.includes(term)).map(
           (term) => term.length,
         ),
       );
@@ -708,7 +711,7 @@ export function effectsFor(input: {
     }
     // A workshop feat of its own is read by its text, as a pack feat is.
     if (!best && workshop && !workshop.runsAs && workshop.desc) {
-      best = tableFeatDef(name, workshop.desc);
+      best = tableFeatDef(names[0], workshop.desc);
     }
     if (best) {
       for (const effect of best.effects) {
@@ -760,7 +763,7 @@ export type CombatRiders = {
   // `source` is the table entry granting the bonus: one feature's tiers
   // replace each other, different features (Unarmored Movement and Mobile)
   // add up.
-  speedBonuses: Array<{ amount: number; gate: "heavy_armor" | "armor_or_shield" | null; source?: object }>;
+  speedBonuses: Array<{ amount: number; gate: "heavy_armor" | "armor_or_shield" | "raging" | null; source?: object }>;
   // Extra damage dice on landed attacks (Divine Strike, Improved Divine
   // Smite), resolved to this level's dice.
   damageRiders: Array<{
@@ -916,18 +919,38 @@ export function combatRiders(sheet: {
 
 // How many fighting styles the character has earned but not yet chosen.
 // "Fighting Style" and "Additional Fighting Style" each grant one.
+// The features that open a fighting style pick, and the styles each allows:
+// a class's own slot opens every style, the College of Swords' Fighting
+// Style (Blade) only Dueling or Two-Weapon Fighting.
+const STYLE_SLOTS = new Map<string, FightingStyleId[] | null>([
+  [textKey("Fighting Style"), null],
+  [textKey("Additional Fighting Style"), null],
+  [textKey("Fighting Style (Blade)"), ["dueling", "two_weapon_fighting"]],
+]);
+
 export function fightingStyleSlots(features: Array<{ name: string }>): number {
-  return features.filter((feature) => {
-    const name = normalize(feature.name);
-    return name === "fighting style" || name === "additional fighting style";
-  }).length;
+  return features.filter((feature) => STYLE_SLOTS.has(textKey(feature.name))).length;
+}
+
+// The styles the character's slots let them pick from.
+export function fightingStyleChoices(features: Array<{ name: string }>): typeof FIGHTING_STYLES {
+  const allowed = new Set<FightingStyleId>();
+  for (const feature of features) {
+    const key = textKey(feature.name);
+    if (!STYLE_SLOTS.has(key)) {
+      continue;
+    }
+    const only = STYLE_SLOTS.get(key);
+    if (!only) {
+      return FIGHTING_STYLES;
+    }
+    only.forEach((id) => allowed.add(id));
+  }
+  return FIGHTING_STYLES.filter((style) => allowed.has(style.id));
 }
 
 export function chosenFightingStyles(features: Array<{ name: string }>): string[] {
-  const prefix = normalize(FIGHTING_STYLE_PREFIX);
-  return features
-    .filter((feature) => normalize(feature.name).startsWith(prefix))
-    .map((feature) => feature.name.slice(FIGHTING_STYLE_PREFIX.length).trim());
+  return features.flatMap((feature) => choiceIn(feature.name, FIGHTING_STYLE_PREFIX) ?? []);
 }
 
 
@@ -1003,6 +1026,9 @@ export function defenseRiders(
       case "initiative_ability":
         riders.initiativeBonus += Math.max(0, abilityMods?.[effect.ability] ?? 0);
         break;
+      case "initiative_proficiency":
+        riders.initiativeBonus += 2 + Math.floor((clampLevel(sheet.level) - 1) / 4);
+        break;
       case "save_bonus":
         riders.saveBonus += Math.max(effect.min, abilityMods?.[effect.ability] ?? 0);
         break;
@@ -1045,35 +1071,20 @@ export function halfProficiencyCovers(
 // Halfling Lucky: a natural 1 on an attack roll, ability check, or saving
 // throw is rerolled once and the new face must be used. Detected from the
 // racial trait ("Lucky (reroll nat 1 on d20)") the builder grants, kept
-// distinct from the "Lucky" feat (luck points, different mechanic) by
-// requiring the reroll wording or a race-sourced trait on a halfling.
+// distinct from the "Lucky" feat (luck points, different mechanic) by its
+// race source.
 export function hasHalflingLuck(sheet: {
-  race?: string;
   features?: Array<{ name: string; source?: string }>;
 }): boolean {
-  const isHalfling = (sheet.race ?? "").toLowerCase().includes("halfling");
-  return (sheet.features ?? []).some((feature) => {
-    const name = feature.name.toLowerCase();
-    if (name.includes("reroll nat 1")) {
-      return true;
-    }
-    return isHalfling && feature.source === "race" && name.includes("lucky");
-  });
+  return (sheet.features ?? []).some((feature) => feature.source === "race" && isNamed(feature.name, "Lucky"));
 }
 
 // Brave (Halfling racial trait): advantage on saving throws against being
-// frightened. Detected from the trait ("Brave (adv. vs frightened)") the
-// builder grants, keyed off the fear wording or a race-sourced "Brave".
+// frightened: the trait the builder grants ("Brave (adv. vs frightened)").
 export function hasBrave(sheet: {
   features?: Array<{ name: string; source?: string }>;
 }): boolean {
-  return (sheet.features ?? []).some((feature) => {
-    const name = feature.name.toLowerCase();
-    if (!name.includes("brave")) {
-      return false;
-    }
-    return feature.source === "race" || name.includes("frighten");
-  });
+  return (sheet.features ?? []).some((feature) => isNamed(feature.name, "Brave"));
 }
 
 // Elven Accuracy (feat): with advantage on an attack roll using Dexterity,
@@ -1085,6 +1096,6 @@ export function hasElvenAccuracy(sheet: {
   feats?: string[];
 }): boolean {
   return [...(sheet.features ?? []).map((feature) => feature.name), ...(sheet.feats ?? [])].some(
-    (name) => name.toLowerCase().includes("elven accuracy"),
+    (name) => isNamed(name, "Elven Accuracy"),
   );
 }

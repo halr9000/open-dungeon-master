@@ -53,7 +53,7 @@ export function UseInCampaignDialog({
   const [campaigns, setCampaigns] = useState<CampaignRow[] | null>(null);
   // A refused or failed read is shown in the server's words with a way to
   // ask again, never as "nothing here yet" (issue 140).
-  const { loaded, loadError, settle } = useLoadStatus();
+  const { loadError, settle } = useLoadStatus();
   const [reloads, setReloads] = useState(0);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState<{ campaignId: string; text: string; taken: boolean } | null>(null);
@@ -114,7 +114,7 @@ export function UseInCampaignDialog({
     >
       <p className="mb-3 text-xs leading-5 text-stone-400">
         {companion
-          ? "The table gets its own copy of the sheet as a party companion the DM plays, at the party's level. Only whoever runs the story can bring one in, and only where the table allows companions. Your library keeps this one as it is."
+          ? "The table gets its own copy of the sheet as a party companion the GM plays, at the party's level. Only whoever runs the story can bring one in, and only where the table allows companions. Your library keeps this one as it is."
           : "The table gets its own copy of the sheet, adapted to its starting level. Your library keeps this one as it is."}
       </p>
       {campaigns === null && loadError ? (

@@ -14,6 +14,8 @@
 // Pure by design: no "@/" imports of anything with I/O, so the guard test
 // can load it directly.
 
+import { containsPhrase } from "@/lib/language/text-logic";
+
 export type AdjudicationCategory =
   | "combat"
   | "party"
@@ -37,8 +39,8 @@ export const CATEGORY_LABELS: Record<AdjudicationCategory, string> = {
 // - "enemies": several live enemies, sent as an id list.
 // - "combatant": one character or enemy on the board, sent as its id, for
 //   the map tools that take a token by name or id.
-// - "shares": split_damage's rows, one creature and its share each, sent as
-//   the handler's own [{ enemyId | characterId, share }].
+// - "shares": apply_damage's targets, one creature and its share each, sent
+//   as the handler's own [{ enemyId | characterId, share }].
 // - "hitDice": take_rest's per-character hit dice, sent as the handler's
 //   own [{ characterId, dice }].
 // - "list": several words typed in one box (a companion's spells), sent as
@@ -64,9 +66,9 @@ export type CatalogField = {
   label: string;
   kind: FieldKind;
   required?: boolean;
-  // Required unless this other field is filled (damage, or the dice the
-  // server rolls for it).
-  requiredUnless?: string;
+  // Required unless one of these other fields is filled (damage, or the
+  // dice the server rolls for it; a character, or an enemy instead).
+  requiredUnless?: string | string[];
   options?: Array<{ value: string; label: string }>;
   min?: number;
   max?: number;
@@ -93,7 +95,22 @@ export type CatalogField = {
   // or first square, or the square a wall or line runs toward), so the board
   // can preview the area the pick would lay.
   square?: { row: string; role: "at" | "toward" };
+  // Shown, and sent, only while another field holds one of these values: a
+  // drake's essence only for a drake, a story pet's numbers only for one.
+  onlyWhen?: { field: string; equals: string[] };
+  // An empty input here is an answer, not a field left blank: the facade
+  // passes "" on to the handler instead of dropping it (src/lib/dm/invoke.ts
+  // normalizeArgs), and the handler decides what an empty answer means. A
+  // value left out altogether is still no answer, and this is no way past
+  // `required`: checkArgs reads "" as missing all the same. Only
+  // update_sheet's Becomes says it, where an empty Conditions clears them.
+  keepsEmpty?: boolean;
 };
+
+// Whether a field can matter with the values the form holds now.
+export function fieldShown(field: CatalogField, values: Record<string, unknown>): boolean {
+  return !field.onlyWhen || field.onlyWhen.equals.includes(String(values[field.onlyWhen.field] ?? ""));
+}
 
 export type CatalogEntry = {
   // The tool name the engine dispatches on. Identical to the name the model
@@ -141,15 +158,8 @@ function selectAccepts(allowed: string[], value: string): boolean {
   if (allowed.includes(value)) {
     return true;
   }
-  const cleaned = value.trim().toLowerCase().replace(/\s+/g, " ");
-  return allowed.some((option) => {
-    const wanted = option.toLowerCase();
-    return (
-      cleaned === wanted ||
-      cleaned.replace(/ /g, "_") === wanted ||
-      new RegExp(`(^|[^a-z])${wanted.replace(/[^a-z0-9 _]/g, "")}([^a-z]|$)`).test(cleaned)
-    );
-  });
+  // An option also without its apostrophes: "Asps Kiss" is Asp's Kiss.
+  return allowed.some((option) => containsPhrase(value, option) || containsPhrase(value, option.replace(/['‘’ʼ´`]/g, "")));
 }
 
 // A pre-flight check for the console's form: required fields present,
@@ -170,8 +180,9 @@ export function checkArgs(
     if (field.required && missing) {
       return `${entry.label} needs ${field.label.toLowerCase()}.`;
     }
-    const other = field.requiredUnless ? args[field.requiredUnless] : undefined;
-    if (field.requiredUnless && missing && (other === undefined || other === null || (typeof other === "string" && other.trim() === ""))) {
+    const others = field.requiredUnless === undefined ? [] : [field.requiredUnless].flat();
+    const empty = (other: unknown) => other === undefined || other === null || (typeof other === "string" && other.trim() === "") || (Array.isArray(other) && other.length === 0);
+    if (others.length && missing && others.every((other) => empty(args[other]))) {
       return `${entry.label} needs ${field.label.toLowerCase()}.`;
     }
     if (missing) {

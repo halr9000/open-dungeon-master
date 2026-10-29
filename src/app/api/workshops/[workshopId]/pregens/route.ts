@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
-import { listPregens, setCharacterWorkshop } from "@/lib/db/characters";
+import { listPregens, setCharacterWorkshop, setPregenOffered } from "@/lib/db/characters";
 import { getWorkshopForUser } from "@/lib/db/workshops";
+import { publicPregen } from "@/lib/workshop/pregen-roster";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 // sheet itself is edited where every sheet is, at /characters/:id.
 
 const bodySchema = z.object({ characterId: z.string().min(1).max(80) });
+const offerSchema = bodySchema.extend({ offered: z.boolean() });
 
 async function resolve(workshopId: string) {
   const user = await currentUser();
@@ -23,19 +25,6 @@ async function resolve(workshopId: string) {
     return { error: Response.json({ error: "Workshop not found." }, { status: 404 }) };
   }
   return { user, workshop };
-}
-
-function publicPregen(character: ReturnType<typeof listPregens>[number]) {
-  return {
-    id: character.id,
-    name: character.name,
-    role: character.role,
-    race: character.race,
-    class: character.class,
-    subclass: character.subclass,
-    background: character.background,
-    level: character.level,
-  };
 }
 
 export async function GET(
@@ -75,6 +64,37 @@ export async function POST(
   if (!character) {
     return Response.json({ error: "That character is not in your library." }, { status: 404 });
   }
+  return Response.json({
+    pregens: listPregens(resolved.user.id, resolved.workshop.id).map(publicPregen),
+  });
+}
+
+// Offers a pregen to the players of a table made from this workshop, or
+// takes the offer back: the DM ticks which (option B). A companion is the
+// DM's to play and is never offered.
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ workshopId: string }> },
+) {
+  const { workshopId } = await params;
+  const resolved = await resolve(workshopId);
+  if (resolved.error) {
+    return resolved.error;
+  }
+  const parsed = offerSchema.safeParse(await request.json().catch(() => ({})));
+  if (!parsed.success) {
+    return Response.json({ error: "Pick a pregen and whether to offer it." }, { status: 400 });
+  }
+  const listed = listPregens(resolved.user.id, resolved.workshop.id).find(
+    (character) => character.id === parsed.data.characterId,
+  );
+  if (!listed) {
+    return Response.json({ error: "That character is not on this roster." }, { status: 404 });
+  }
+  if (parsed.data.offered && listed.role === "companion") {
+    return Response.json({ error: `${listed.name} is an ally the GM plays, so players cannot take them.` }, { status: 400 });
+  }
+  setPregenOffered(resolved.user.id, listed.id, parsed.data.offered);
   return Response.json({
     pregens: listPregens(resolved.user.id, resolved.workshop.id).map(publicPregen),
   });

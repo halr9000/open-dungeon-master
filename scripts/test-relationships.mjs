@@ -18,6 +18,7 @@ import {
   beatOutcome,
   beatSpec,
   bumpBeatCount,
+  bystanderShare,
   canAdvanceRomance,
   consentCheck,
   decayBeatCounts,
@@ -193,7 +194,7 @@ test("nobody is courted into liking someone", () => {
   // sits underneath it, so a disliked character cannot start a romance.
   const disliked = canAdvanceRomance("none", "interested", -40, "active");
   assert.equal(disliked.ok, false);
-  assert.match(disliked.reason, /do not even like them/);
+  assert.match(disliked.error, /do not even like them/);
   assert.ok(tierIndex(friendshipTier(ROMANCE_THRESHOLD.interested)) >= tierIndex(ROMANCE_MIN_TIER));
 });
 
@@ -202,10 +203,10 @@ test("the romance ladder moves one rung at a time, with the feeling behind it", 
   assert.equal(nextRomanceStage("married"), null);
   const skipping = canAdvanceRomance("interested", "married", 100, "active");
   assert.equal(skipping.ok, false);
-  assert.match(skipping.reason, /one step at a time/);
+  assert.match(skipping.error, /one step at a time/);
   const early = canAdvanceRomance("courting", "together", ROMANCE_THRESHOLD.together - 1, "active");
   assert.equal(early.ok, false);
-  assert.match(early.reason, /needs approval 70/);
+  assert.match(early.error, /needs approval 70/);
   assert.deepEqual(canAdvanceRomance("courting", "together", ROMANCE_THRESHOLD.together, "active"), {
     ok: true,
     target: "together",
@@ -304,6 +305,14 @@ test("the roster line is readable and bounded", () => {
   });
   assert.match(soured, /close to walking/);
   assert.equal(ROMANCE_STAGES[0], "none");
+});
+
+test("standing by while another does a deed costs a third of it, never credit (issue 563)", () => {
+  assert.equal(bystanderShare(-15), -5);
+  assert.equal(bystanderShare(-1), -1, "at least a point");
+  assert.equal(bystanderShare(-2), -1);
+  assert.equal(bystanderShare(0), 0);
+  assert.equal(bystanderShare(9), 0, "a deed that won regard shares none of it");
 });
 
 console.log(`\ntest-relationships: ${passed} passed`);

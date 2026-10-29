@@ -13,14 +13,14 @@ const ROWS = [
   {
     tag: "Card",
     title: "Play a card",
-    body: "Pick one, then pick who it lands on. The numbers come from your sheet, so nothing is typed twice. Spent cards dim and say why when you press them.",
+    body: "Pick one, then pick who it lands on. Your spells, items and basic actions each wait under one card: open it to choose. A card's coloured corner is the pip it spends. Spent cards dim and say why when you press them.",
     className: "border-amber-500/45 bg-amber-500/10",
     tagClassName: "border-amber-400/60 text-amber-200",
   },
   {
     tag: "Type",
     title: "Or type your move",
-    body: "The message box still takes prose for anything the cards do not cover. Both land in the same chronicle, and the Dungeon Master rules on both the same way.",
+    body: "The message box still takes prose for anything the cards do not cover. Both land in the same chronicle, and the Game Master rules on both the same way.",
     className: "border-stone-600/50 bg-stone-950/60",
     tagClassName: "border-stone-500/60 text-stone-300",
   },

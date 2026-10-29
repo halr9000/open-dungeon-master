@@ -9,10 +9,12 @@ import { ui } from "@/lib/ui";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { Select } from "@/components/ui/Select";
+import { newCharacterHref } from "@/app/characters/builder/door";
 import { ListHead, useListHead } from "@/app/workshop/ListHead";
 import { rowIcon } from "@/app/workshop/kit";
-import { LoadFailed } from "@/app/campaigns/[campaignId]/PanelKit";
-import { readLoad, useLoadStatus } from "@/lib/load-state";
+import { LoadFailed, PanelError } from "@/app/campaigns/[campaignId]/PanelKit";
+import { readLoad, readWrite, useLoadStatus } from "@/lib/load-state";
+import { DraftPregensCard } from "@/app/workshop/party/DraftPregens";
 import type { TargetParty } from "@/lib/workshop/kind";
 
 // The Party system (docs/workshop-parity-audit.md phase 15): the party a
@@ -31,6 +33,10 @@ type Pregen = {
   subclass: string;
   background: string;
   level: number;
+  // Ticked: players joining a table made from this workshop may take it.
+  offered?: boolean;
+  // Drafted by the AI DM and not edited since (src/lib/dm/pregen-draft.ts).
+  drafted?: boolean;
 };
 
 type LibraryEntry = Pregen & { workshopId: string };
@@ -96,21 +102,28 @@ export function PartyPanel({
     };
   }, [workshopId, version, settle]);
 
-  async function change(method: "POST" | "DELETE", characterId: string) {
+  // POST files a character, DELETE takes it off, PATCH ticks or unticks
+  // "Offer to players" (src/lib/db/pregen-offers.ts). All three are safe to
+  // send twice, so one that dies on the connection is said (WA-05) and the
+  // roster read again, since it may have landed all the same.
+  async function change(method: "POST" | "DELETE" | "PATCH", characterId: string, offered?: boolean) {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/workshops/${workshopId}/pregens`, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ characterId }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError((payload as { error?: string }).error ?? "That did not work.");
+      const sent = await readWrite<{ pregens: Pregen[] }>(
+        fetch(`/api/workshops/${workshopId}/pregens`, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(method === "PATCH" ? { characterId, offered } : { characterId }),
+        }),
+        "That did not work.",
+      );
+      if (sent.error !== null) {
+        setError(sent.error);
+        if (sent.unanswered) setVersion((current) => current + 1);
         return;
       }
-      setPregens((payload as { pregens: Pregen[] }).pregens);
+      setPregens(sent.payload.pregens);
       setPicked("");
       setVersion((current) => current + 1);
       onChanged();
@@ -130,6 +143,11 @@ export function PartyPanel({
         Built for {targetParty.size} at level {targetParty.level}; every encounter and odds preview
         budgets against that. The characters below are pregens: sheets ready for anyone who sits
         down without one. They ride along in the bundle.
+      </p>
+      <p className="text-xs text-stone-400">
+        Tick Offer to players and anyone joining a table that starts from this workshop can take
+        that pregen, as a copy at the table&apos;s level. One player each per table. A table starts
+        from it when you choose it under Start from, at creation or later in the lobby.
       </p>
 
       {loadError && (pregens !== null || loaded) ? <LoadFailed error={loadError} onRetry={() => setVersion((current) => current + 1)} /> : null}
@@ -169,12 +187,32 @@ export function PartyPanel({
                     {character.role === "companion" ? (
                       <span className={cn(chip, "border-stone-700 text-stone-400")}>Companion</span>
                     ) : null}
+                    {character.drafted ? (
+                      <span className={cn(chip, "border-sky-800 text-sky-200/90")} data-pregen-drafted={character.id}>
+                        Drafted by the AI GM
+                      </span>
+                    ) : null}
                     {offLevel ? (
                       <span className={cn(chip, "border-amber-800 text-amber-300/90")}>
                         Level {character.level}, the party is built for {targetParty.level}
                       </span>
                     ) : null}
                   </span>
+                  {/* Option B: the DM ticks which pregens the players of a
+                      table made from this workshop may take. Unticked, a
+                      pregen is the DM's alone. */}
+                  {character.role !== "companion" ? (
+                    <label className="mt-2 flex min-h-11 cursor-pointer items-center gap-2 text-xs text-stone-300" data-pregen-offer={character.id}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(character.offered)}
+                        disabled={busy}
+                        onChange={(event) => void change("PATCH", character.id, event.target.checked)}
+                        className="size-4 accent-amber-500"
+                      />
+                      Offer to players
+                    </label>
+                  ) : null}
                 </span>
                 <button
                   type="button"
@@ -190,11 +228,21 @@ export function PartyPanel({
             );
           })}
           {pregens.length === 0 ? (
-            <li className="sm:col-span-2"><EmptyState art="board" title="No pregens yet. Pick one from your library below, or build one and come back." /></li>
+            <li className="sm:col-span-2"><EmptyState art="board" title="No pregens yet. Let the AI GM draft some, pick one from your library below, or build one and come back." /></li>
           ) : null}
         </ul>
         </>
       )}
+
+      <DraftPregensCard
+        workshopId={workshopId}
+        targetParty={targetParty}
+        onDrafted={(result) => {
+          setPregens(result.pregens as Pregen[]);
+          setVersion((current) => current + 1);
+          onChanged();
+        }}
+      />
 
       <div className={cn(ui.card, "space-y-2 p-3")} data-tour="party-add">
         <SectionHead title="Add to the roster" glyph="tab-characters" className="mb-0" />
@@ -221,14 +269,16 @@ export function PartyPanel({
           >
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Add it
           </button>
-          <Link href="/characters/new" className={ui.btnSecondary}>
+          {/* A pregen is a player character, built at the party's level: the
+              builder starts there instead of asking. */}
+          <Link href={newCharacterHref({ role: "pc", level: targetParty.level, from: "party" })} className={ui.btnSecondary}>
             Build a new one
           </Link>
         </div>
         {available.length === 0 && library.length > 0 ? (
           <p className="reveal text-xs text-stone-500">Every character in your library is already on the roster.</p>
         ) : null}
-        {error ? <p className="motion-shake text-xs text-red-400">{error}</p> : null}
+        {error ? <PanelError>{error}</PanelError> : null}
       </div>
     </section>
   );

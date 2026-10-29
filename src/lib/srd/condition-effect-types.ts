@@ -91,6 +91,9 @@ export type ConditionEffectRow = {
   // A flat bonus to the holder's checks with one skill (Pass without Trace:
   // +10 Stealth).
   skillBonus?: { skill: string; bonus: number };
+  // Several skills at once (Hearth of Moonlight and Shadow: +5 Stealth and
+  // Perception).
+  skillBonuses?: Array<{ skill: string; bonus: number }>;
   // Movement changes (longstrider +10, haste x2, slow x0.5).
   speedBonus?: number;
   speedMultiplier?: number;
@@ -99,6 +102,9 @@ export type ConditionEffectRow = {
   extraAction?: boolean;
   // The holder cannot take reactions (slow).
   noReactions?: boolean;
+  // An action or a bonus action on its turn, not both, and one attack at
+  // most (slow): the turn budget holds it (src/lib/dm/action-budget.ts).
+  actionOrBonus?: boolean;
   // Extra dice the holder's weapon and spell attacks deal on a hit
   // (divine favor +1d4 radiant, hunter's mark +1d6 of the weapon's type,
   // enlarged +1d4). `type` "" = the attack's own damage type. A leading "-"
@@ -115,6 +121,9 @@ export type ConditionEffectRow = {
   // onHitDice rides hits on one creature only, the one the caster marked
   // (Hunter's Mark, Hex): conditionMeta.quarry holds its enemyId.
   marksTarget?: boolean;
+  // With marksTarget: the holder's attack rolls against the marked creature
+  // score a critical hit on this natural roll or higher (Hexblade's Curse 19).
+  critRangeVsMarked?: number;
   // Held by the TARGET: the next attack roll against it spends it (Guiding
   // Bolt's advantage).
   consumedAgainst?: boolean;
@@ -127,6 +136,9 @@ export type ConditionEffectRow = {
   // The holder takes no action on its turn (Stinking Cloud's retching,
   // Command's Halt): read by the action guards (src/lib/dm/can-act.ts).
   noAction?: boolean;
+  // The holder cannot move (Command's Halt, Haste's lethargy), whatever bare
+  // incapacitation would allow: the same guards refuse a move.
+  noMove?: boolean;
   // Conditions the holder cannot be given while this holds (Heroism:
   // frightened), and damage types that do nothing to it (Heroes' Feast:
   // poison).

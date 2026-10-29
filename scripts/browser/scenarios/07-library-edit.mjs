@@ -3,7 +3,7 @@
 // copy, says so, and can throw it away. In the app the edit page is one of
 // the native screens (client src/renderer/game/index.tsx ROUTES), so the
 // same walk proves the route is there.
-import { check, eventually, sleep } from "../lib.mjs";
+import { check, eventually, currentStep } from "../lib.mjs";
 
 // Everything on screen: the app's game root, or the page's body.
 const screenText = async (page, root) =>
@@ -25,8 +25,9 @@ async function walkToSave(t) {
     const ready = await eventually(() => next.first().isEnabled(), { timeoutMs: 10_000, label: "Continue" }).catch(() => false);
     if (!ready) await t.shot(`step-${step + 1}`);
     check(ready, `step ${step + 1} of the stored build is complete`);
+    const was = await currentStep(page, root);
     await t.tap(next.first());
-    await sleep(500);
+    await eventually(async () => (await currentStep(page, root)) !== was, { label: `step ${step + 2} of the build editor` });
   }
   throw new Error("the build editor never reached Save changes");
 }
@@ -41,7 +42,12 @@ export default {
       const edit = visible(page, root, /^\s*Edit build\s*$/);
       return (await edit.count()) ? edit.first() : null;
     }, { label: "the Edit build button" }));
-    const name = page.locator(`${root}input[aria-label="Name"]`).locator("visible=true").first();
+    // The editor opens on its summary (backlog F3); the name row goes to
+    // the identity step, the last before it (backlog F4).
+    const nameRow = page.locator(`${root}section[data-active] [data-summary-edit="identity"]`).locator("visible=true");
+    await eventually(() => nameRow.count(), { timeoutMs: 30_000, label: "the summary's name row" });
+    await t.tap(nameRow.first());
+    const name = page.locator(`${root}section[data-active] input[aria-label="Name"]`).locator("visible=true").first();
     await name.waitFor({ state: "visible", timeout: 30_000 });
     // The stored name, as an earlier viewport may have renamed it.
     const stored = await name.inputValue();
@@ -59,10 +65,17 @@ export default {
     await t.shot("saved");
 
     // Duplicate and edit: the copy opens in the editor and says it is one.
+    // The saved name shows in the editor's own heading before the save has
+    // navigated, so wait for the character page's actions themselves: in
+    // the app the page arrived a beat after the heading matched, and the
+    // menu was looked for on the editor, found absent, and never opened.
     const menu = page.locator(`${root}button[aria-label^="More actions"]`).locator("visible=true");
+    await eventually(
+      async () => (await menu.count()) || (await visible(page, root, /^\s*Duplicate and edit/).count()),
+      { timeoutMs: 30_000, label: "the character page's actions after the save" },
+    );
     if (await menu.count()) {
       await t.tap(menu.first());
-      await sleep(400);
     }
     // The item's hint follows its label in the same button.
     const duplicate = visible(page, root, /^\s*Duplicate and edit/);

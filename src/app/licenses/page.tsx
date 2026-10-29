@@ -2,7 +2,7 @@ import Link from "next/link";
 import { PIXEL_ICONS } from "@/lib/ui";
 import { PageSection, PageShell } from "@/components/PageShell";
 import { listDocuments } from "@/lib/content";
-import { contentPackInstalled } from "@/lib/content/db";
+import { contentPackInstalled, contentPackStale } from "@/lib/content/db";
 import { listWorldPackSummaries } from "@/lib/worlds";
 import { installedTracks } from "@/lib/ambience/library";
 import { cueById } from "@/lib/ambience/catalog";
@@ -10,7 +10,7 @@ import { cueById } from "@/lib/ambience/catalog";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Licenses | Open Dungeon Master",
+  title: "Licenses | Open Game Master",
 };
 
 // Attribution for the imported Open5e dataset (a mix of CC-BY and OGL
@@ -18,6 +18,7 @@ export const metadata = {
 export default function LicensesPage() {
   const documents = listDocuments();
   const installed = contentPackInstalled();
+  const stale = contentPackStale();
   const worldPacks = listWorldPackSummaries();
   const ambience = installedTracks();
 
@@ -29,13 +30,13 @@ export default function LicensesPage() {
       blurb="Where the bundled rules, imported content and sounds come from."
       actions={
         <Link href="/" className="text-sm text-amber-200 hover:text-amber-100">
-          Back to Open Dungeon Master
+          Back to Open Game Master
         </Link>
       }
     >
       <PageSection bodyClassName="space-y-3 text-sm leading-6 text-stone-300">
         <p>
-          Open Dungeon Master bundles game content from the System Reference Document 5.1
+          Open Game Master bundles game content from the System Reference Document 5.1
           (SRD 5.1) by Wizards of the Coast LLC, available under the Creative Commons
           Attribution 4.0 International License (CC-BY-4.0).
         </p>
@@ -59,6 +60,12 @@ export default function LicensesPage() {
             The Open5e content pack is not installed on this server. Run
             <span className="font-mono"> node scripts/import-open5e.mjs</span> to download
             it; until then the app uses only the bundled SRD 5.1 data.
+          </p>
+        ) : null}
+        {stale ? (
+          <p className="reveal rounded border border-stone-700 bg-stone-900 p-3 text-stone-400">
+            This server&rsquo;s content pack was built by an older release. Run
+            <span className="font-mono"> npm run setup</span> to replace it with the one this release plays.
           </p>
         ) : null}
       </PageSection>
@@ -102,7 +109,7 @@ export default function LicensesPage() {
           </p>
           <p className="text-sm leading-6 text-stone-400">
             Community campaign packs were installed on this server by its operator. They are{" "}
-            <span className="text-stone-200">not distributed with Open Dungeon Master</span>, are
+            <span className="text-stone-200">not distributed with Open Game Master</span>, are
             not covered by its MIT license, and are the work of their own authors. Where a pack
             references an existing setting it is an unofficial fan work with no affiliation with
             or endorsement from that setting&apos;s rights holders. Each pack names its own
@@ -117,7 +124,7 @@ export default function LicensesPage() {
             Each ambience and music file on this server is credited below as it arrived: made
             here with a music model, carried in the release&apos;s sound pack, supplied by the
             operator, or fetched from a public archive. Archive files are{" "}
-            <span className="text-stone-200">not distributed with Open Dungeon Master</span> and
+            <span className="text-stone-200">not distributed with Open Game Master</span> and
             are credited as their archive recorded them.
           </p>
           <ul className="mt-4 space-y-2">
@@ -151,7 +158,7 @@ export default function LicensesPage() {
       ) : null}
 
       <p className="px-1 text-xs text-stone-500">
-        Open Dungeon Master itself is MIT licensed. Homebrew content belongs to the user who
+        Open Game Master itself is MIT licensed. Homebrew content belongs to the user who
         created it, and installed campaign plugins belong to their authors.
       </p>
     </PageShell>

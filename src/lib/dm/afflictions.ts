@@ -14,7 +14,8 @@
 import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
 import { getClock } from "@/lib/db/clock";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
-import { removeConditions } from "@/lib/dm/condition-logic";
+import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { settleOnDamage } from "@/lib/dm/spell-effects";
 import { applyPcDamage } from "@/lib/dm/pc-damage";
 import { handleSetCondition } from "@/lib/dm/set-condition";
 import { exhaustionPatch } from "@/lib/dm/vitals-logic";
@@ -41,11 +42,11 @@ import {
   writeAfflictions,
 } from "@/lib/dm/between-io";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
 
 const MINUTES_PER_DAY = 1440;
-const lower = (text: string) => text.trim().toLowerCase();
 const holds = (sheet: Pick<CharacterSheet, "conditions">, name: string) =>
-  sheet.conditions.some((entry) => lower(entry) === lower(name));
+  sheet.conditions.some((entry) => textKey(entry) === textKey(name));
 
 // ---- conditions ----
 
@@ -173,7 +174,7 @@ export function infectWorkshopDisease(
   turnId: string,
   sheet: CharacterSheet,
   own: { id: string; name: string; disease: DiseaseSpec },
-  input: { save?: boolean; dc?: number; symptomsNow?: boolean },
+  input: { save?: boolean; saveDc?: number; symptomsNow?: boolean },
 ): Record<string, unknown> {
   const spec = own.disease;
   if (spec.runsAs && DISEASES[spec.runsAs]) {
@@ -184,7 +185,7 @@ export function infectWorkshopDisease(
     return { ok: true, note: `${sheet.name} already has ${own.name}.` };
   }
   if (input.save !== false) {
-    const dc = input.dc ?? spec.infect.dc;
+    const dc = input.saveDc ?? spec.infect.dc;
     const save = characterSave(campaign, sheet, { ability: spec.infect.ability, dc, detail: `${sheet.name}: ${spec.infect.ability.toUpperCase()} save vs ${own.name}`, against: "disease", advantage: holds(sheet, "recuperated") });
     if (save.success) {
       return { ok: true, resisted: true, note: `${sheet.name} resists ${own.name} (${spec.infect.ability.toUpperCase()} save ${save.total} vs DC ${dc}).` };
@@ -254,14 +255,14 @@ export function infectDisease(
   turnId: string,
   sheet: CharacterSheet,
   disease: Disease,
-  input: { save?: boolean; dc?: number; symptomsNow?: boolean },
+  input: { save?: boolean; saveDc?: number; symptomsNow?: boolean },
 ): Record<string, unknown> {
   const list = liveAfflictions(campaign.id, sheet);
   if (list.some((entry) => entry.kind === "disease" && entry.id === disease.id)) {
     return { ok: true, note: `${sheet.name} already has ${disease.name}.` };
   }
   if (input.save !== false) {
-    const dc = input.dc ?? disease.infectDc;
+    const dc = input.saveDc ?? disease.infectDc;
     const save = characterSave(campaign, sheet, { ability: "con", dc, detail: `${sheet.name}: CON save vs ${disease.name}`, against: "disease", advantage: holds(sheet, "recuperated") });
     if (save.success) {
       return { ok: true, resisted: true, note: `${sheet.name} resists ${disease.name} (CON save ${save.total} vs DC ${dc}).` };
@@ -297,7 +298,7 @@ export function inflictMadness(
 ): Record<string, unknown> {
   if (input.saveDc) {
     const ability = input.saveAbility ?? "wis";
-    const save = characterSave(campaign, sheet, { ability, dc: input.saveDc, detail: `${sheet.name}: ${ability.toUpperCase()} save against madness`, against: "madness" });
+    const save = characterSave(campaign, sheet, { ability, dc: input.saveDc, detail: `${sheet.name}: ${ability.toUpperCase()} save against madness` });
     if (save.success) {
       return { ok: true, resisted: true, note: `${sheet.name} keeps their mind (${ability.toUpperCase()} save ${save.total} vs DC ${input.saveDc}).` };
     }
@@ -519,14 +520,24 @@ export function afflictionStress(campaign: Campaign, turnId: string, sheetId: st
     return [];
   }
   const lines: string[] = [];
-  // A condition that ends when the creature takes damage ends now: a
-  // madness's paralysis, a poison's sleep, a Sleep spell's slumber.
+  // A condition that ends when the creature takes damage ends now (a
+  // madness's paralysis, a poison's sleep, a Sleep spell's slumber), and one
+  // that grants a save when hurt saves (Dominate Person, Hideous Laughter):
+  // each source on its own, as a monster's are (spell-effects.ts).
   if (cause === "damage") {
-    const meta = sheet.conditionMeta as Record<string, { endsOnDamage?: boolean } | undefined>;
-    const waking = sheet.conditions.filter((name) => meta[name]?.endsOnDamage);
-    if (waking.length) {
-      dropConditions(campaign.id, sheet.id, waking);
-      lines.push(`${sheet.name} is jolted out of it by the blow: no longer ${waking.join(" or ")}.`);
+    const hurt = sheet;
+    const settled = settleOnDamage(hurt.conditions, hurt.conditionMeta as ConditionMetaMap, (entry, name) => {
+      const { ability, dc, advantage } = entry.saveOnDamage ?? { ability: "wis" as const, dc: 10 };
+      const save = characterSave(campaign, getSheetById(sheetId) ?? hurt, { ability, dc, advantage, detail: `${hurt.name}: ${ability.toUpperCase()} save against ${entry.spell ?? name} (hurt)` });
+      lines.push(save.success ? `${hurt.name} is hurt and shakes off ${entry.spell ?? name}.` : `${hurt.name} is hurt but stays ${name}.`);
+      return save.success;
+    });
+    if (settled.changed) {
+      patchSheet(hurt.id, { conditions: settled.conditions, conditionMeta: settled.meta });
+      publishSheetOf(campaign.id, hurt.id);
+      if (settled.endedByDamage.length) {
+        lines.push(`${hurt.name} is jolted out of it by the blow: no longer ${settled.endedByDamage.join(" or ")}.`);
+      }
       sheet = getSheetById(sheetId) ?? sheet;
     }
   }
@@ -547,7 +558,7 @@ export function afflictionStress(campaign: Campaign, turnId: string, sheetId: st
     }
   }
   if (cause === "damage" && holds(sheet, "madness: confusion on damage")) {
-    const save = characterSave(campaign, getSheetById(sheet.id) ?? sheet, { ability: "wis", dc: 15, detail: `${sheet.name}: WIS save against madness's confusion`, against: "madness" });
+    const save = characterSave(campaign, getSheetById(sheet.id) ?? sheet, { ability: "wis", dc: 15, detail: `${sheet.name}: WIS save against madness's confusion` });
     if (!save.success && afflictCondition(campaign, turnId, sheet.id, "confused", { rounds: 10, source: "long-term madness" })) {
       lines.push(`${sheet.name}'s madness takes hold: confused for 1 minute.`);
     }
@@ -590,6 +601,6 @@ export function afflictionConditionsFor(
         : word === "indefinite madness"
           ? madnessConditions("indefinite")
           : [];
-  const wanted = new Set(names.map(lower));
-  return sheet.conditions.filter((entry) => wanted.has(lower(entry)));
+  const wanted = new Set(names.map(textKey));
+  return sheet.conditions.filter((entry) => wanted.has(textKey(entry)));
 }

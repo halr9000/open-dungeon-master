@@ -13,9 +13,9 @@
 // not apply to a person. They do apply to the AI's share of an assisted
 // session, which reaches the engine through here with actor.kind "ai": the
 // same two counters the turn loop keeps are kept on its turn.
-import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
+import type { Campaign } from "@/lib/db/campaigns";
 import { createDmTurn, getDmTurn, saveDmTurn, type DmTurn } from "@/lib/db/dm-turns";
-import { listMembers } from "@/lib/db/campaigns";
+import { getCampaignById, listMembers } from "@/lib/db/campaigns";
 import { listSheets } from "@/lib/db/sheets";
 import { heldRollUserIds } from "@/lib/dice/held-rolls";
 import { listOpenPendingRolls } from "@/lib/db/dm-turns";
@@ -24,13 +24,17 @@ import { dispatchAdjudication } from "@/lib/dm/invoke-dispatch";
 import { askForInitiative, describeInitiativeAsk } from "@/lib/dm/initiative-ask";
 import { listPendingPlayerWhispers, markPlayerWhispersAnswered } from "@/lib/db/dm-whispers";
 import { publishEphemeral } from "@/lib/events";
-import { ENCOUNTER_CAP_PER_TURN, ENCOUNTER_TOOL_NAMES, handOnEnemyTurns, settleTurn, turnHolder } from "@/lib/dm/encounter-tools";
+import { ENCOUNTER_CAP_PER_TURN, ENCOUNTER_CAP_REFUSAL, ENCOUNTER_TOOL_NAMES, handOnEnemyTurns, settleTurn, turnHolder } from "@/lib/dm/encounter-tools";
 import { personRunsTable } from "@/lib/dm/enemies-due";
-import { MUTATION_CAP_PER_TURN, MUTATION_TOOL_NAMES } from "@/lib/dm/mutations";
+import { MUTATION_CAP_PER_TURN, MUTATION_CAP_REFUSAL, MUTATION_TOOL_NAMES } from "@/lib/dm/mutations";
 // "goblin x4" is the same shorthand a prepared encounter is saved in, so the
 // live form and the saved roster share one parser.
 import { parseRoster } from "@/lib/dm/encounter-template-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { routeCall } from "@/lib/dm/tool-merge";
+import { settleCompanionLeaving } from "@/lib/dm/departure-turn";
+import { mergedCall, renamedArgs } from "@/lib/dm/tool-merge-logic";
 
 export type Actor =
   | { kind: "ai"; turnId: string }
@@ -40,7 +44,11 @@ export type Adjudication = { name: string; args: Record<string, unknown> };
 
 export type InvokeOutcome =
   | { ok: true; result: Record<string, unknown>; turnId: string }
-  | { ok: false; error: string };
+  // A handler's refusal keeps its kind for the server's own readers; the
+  // console and the agents get the sentence alone (the dm/invoke route,
+  // odm_dm_invoke). The console's own checks and a handler that threw have
+  // none.
+  | { ok: false; error: string; retry?: true; refused?: "rules" | "limit" };
 
 // Arguments a form produces are not quite arguments a tool call produces.
 // A person types "goblin x3" where the model sends an array, and a comma
@@ -67,8 +75,9 @@ function toList(value: unknown): string[] {
 }
 
 // "enemy:goblin-1 half" / "character:<id> double" / "goblin-2" -> what
-// split_damage expects. A line with no share takes the full total, which is
-// the common case and the one worth typing least for.
+// apply_damage's targets are (split_damage's, which they reach). A line with
+// no share takes the full total, which is the common case and the one worth
+// typing least for.
 function toDamageTargets(
   value: unknown,
 ): Array<{ enemyId?: string; characterId?: string; share: string }> {
@@ -104,7 +113,8 @@ function toDamageTargets(
 // Names a form has used for an argument its handler reads under another
 // one. The catalog now carries the handler's names; these stay so a console
 // built from an older catalog (the client apps compile the server's screens)
-// still reaches the engine.
+// still reaches the engine. The arguments a tool renamed for every caller
+// are mapped first, at every door (tool-merge-logic.ts RENAMED_ARGS).
 const FIELD_ALIASES: Record<string, Record<string, string>> = {
   pc_attack: { enemyId: "targetEnemyId" },
   pet_attack: { enemyId: "targetEnemyId" },
@@ -113,6 +123,7 @@ const FIELD_ALIASES: Record<string, Record<string, string>> = {
   relationship_beat: { npc: "subject" },
   romance_advance: { npc: "subject" },
   relationship_end: { npc: "subject" },
+  relationship_scheme: { npc: "subject" },
   // The handler answers to a companion's name as well as their id.
   dismiss_companion: { name: "characterId" },
 };
@@ -127,7 +138,7 @@ export function normalizeArgs(
   entry: CatalogEntry,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  const renamed: Record<string, unknown> = { ...args };
+  const renamed: Record<string, unknown> = { ...renamedArgs(entry.name, args) };
   for (const [from, to] of Object.entries(FIELD_ALIASES[entry.name] ?? {})) {
     const value = renamed[from];
     const empty = (entry: unknown) => entry === undefined || entry === null || entry === "";
@@ -149,16 +160,21 @@ export function normalizeArgs(
     delete renamed.characterIds;
   }
   args = renamed;
+  // An input left blank is dropped, so a required one is reported missing
+  // below and a handler never reads "" as a value. A field whose empty input
+  // is an answer keeps it (catalog-types.ts keepsEmpty): update_sheet's
+  // Becomes, where an empty Conditions clears them.
+  const keepsEmpty = new Set(entry.fields.filter((field) => field.keepsEmpty).map((field) => field.name));
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
-    if (value === undefined || value === null || value === "") {
+    if (value === undefined || value === null || (value === "" && !keepsEmpty.has(key))) {
       continue;
     }
     if (key === "enemies") {
       out.enemies = parseRoster(value);
       continue;
     }
-    if (key === "targets" && entry.name === "split_damage") {
+    if (key === "targets" && entry.name === "apply_damage") {
       out.targets = toDamageTargets(value);
       continue;
     }
@@ -229,45 +245,55 @@ export async function invokeEngine(
   actor: Actor,
   call: Adjudication,
 ): Promise<InvokeOutcome> {
-  const entry = adjudication(call.name);
+  // A retired name (issue #471) is the form that took its place, with the
+  // old form's fields mapped: an app whose console was compiled from older
+  // pages, an agent program and a delegated monster still send them.
+  const merged = mergedCall(call.name, call.args ?? {});
+  const entry = adjudication(merged.name);
   if (!entry) {
     return { ok: false, error: `Unknown action "${call.name}".` };
   }
-  const args = normalizeArgs(entry, call.args ?? {});
+  const args = normalizeArgs(entry, merged.args);
   const complaint = checkArgs(entry, args);
   if (complaint) {
     return { ok: false, error: complaint };
+  }
+  // The handler the form's fields name (src/lib/dm/tool-merge.ts): its own
+  // rails and rules below.
+  const engine = routeCall(campaign, entry.name, args);
+  if ("error" in engine) {
+    return { ok: false, ...toolError(engine) };
   }
 
   const turn =
     actor.kind === "ai" ? getDmTurn(actor.turnId) : humanTurnFor(campaign.id);
   if (!turn) {
-    return { ok: false, error: "That DM turn no longer exists." };
+    return { ok: false, error: "That GM turn no longer exists." };
   }
 
   // The rails on the model, for the model only.
   const counted =
     actor.kind !== "ai"
       ? null
-      : ENCOUNTER_TOOL_NAMES.includes(entry.name)
+      : ENCOUNTER_TOOL_NAMES.includes(engine.name)
         ? ("encounterCount" as const)
-        : (MUTATION_TOOL_NAMES as readonly string[]).includes(entry.name)
+        : (MUTATION_TOOL_NAMES as readonly string[]).includes(engine.name)
           ? ("mutationCount" as const)
           : null;
   if (counted === "encounterCount" && turn.encounterCount >= ENCOUNTER_CAP_PER_TURN) {
-    return { ok: false, error: "Encounter action limit reached for this turn." };
+    return { ok: false, ...ENCOUNTER_CAP_REFUSAL };
   }
   if (counted === "mutationCount" && turn.mutationCount >= MUTATION_CAP_PER_TURN) {
-    return { ok: false, error: "Mutation limit reached for this turn." };
+    return { ok: false, ...MUTATION_CAP_REFUSAL };
   }
 
   const sheets: CharacterSheet[] = listSheets(campaign.id);
   const sheetsById = new Map(sheets.map((sheet) => [sheet.id, sheet]));
 
-  let result: Record<string, unknown>;
+  let result: ToolResult;
   const holder = turnHolder(campaign.id);
   try {
-    result = await dispatchAdjudication(entry.name, JSON.stringify(args), {
+    result = await dispatchAdjudication(engine.name, JSON.stringify(engine.args), {
       campaign,
       turn,
       sheets,
@@ -291,6 +317,14 @@ export async function invokeEngine(
     if (ask) {
       result = { ...result, ...describeInitiativeAsk(campaign.id, ask) };
     }
+  }
+
+  // A companion's leaving the call brought on or opened (issue 503), once
+  // the call's own work is done (a fight's initiative asked and the order
+  // ready): a table a person runs has no AI turn to settle it before.
+  const leaving = settleCompanionLeaving(getCampaignById(campaign.id) ?? campaign);
+  if (leaving.length && typeof result.error !== "string") {
+    result = { ...result, companionsLeft: leaving };
   }
 
   // A person answering a player's private message: the whisper is answered,
@@ -332,7 +366,13 @@ export async function invokeEngine(
   saveDmTurn(turn);
 
   if (typeof result.error === "string") {
-    return { ok: false, error: result.error };
+    const refusal = toolError(result);
+    // An attack out of reach names the square to walk to in the model's own
+    // tool words (map-tools.ts checkPcAttackRange): a model or an agent
+    // reads them after the sentence, a person never sees them.
+    return actor.kind === "ai" && typeof result.closeIn === "string"
+      ? { ok: false, ...refusal, error: `${refusal.error} ${result.closeIn}` }
+      : { ok: false, ...refusal };
   }
   return { ok: true, result, turnId: turn.id };
 }
@@ -384,17 +424,4 @@ export function askInitiativeAgain(campaign: Campaign): Record<string, unknown> 
     const ask = askForInitiative(campaign, turn, realDiceUsers(campaign));
     return ask ? describeInitiativeAsk(campaign.id, ask) : null;
   });
-}
-
-// Convenience for routes that already have only the id.
-export async function invokeEngineById(
-  campaignId: string,
-  actor: Actor,
-  call: Adjudication,
-): Promise<InvokeOutcome> {
-  const campaign = getCampaignById(campaignId);
-  if (!campaign) {
-    return { ok: false, error: "Campaign not found." };
-  }
-  return invokeEngine(campaign, actor, call);
 }

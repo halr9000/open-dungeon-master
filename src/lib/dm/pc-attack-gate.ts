@@ -1,3 +1,7 @@
+import { lashOutTarget } from "@/lib/dm/confusion";
+import { resolveTargetFoe } from "@/lib/dm/sheet-foe";
+import { hostileTo, unknownCombatantRef } from "@/lib/dm/combatant";
+import { isSheetFoe } from "@/lib/dm/combat-sides-logic";
 // The refusals that come before a player's attack is built: whether the
 // attacker may attack now (their action on their turn, their one reaction
 // off it), whether the target can be attacked at all, and whether the
@@ -9,7 +13,6 @@ import type { Campaign } from "@/lib/db/campaigns";
 import type { Encounter, EncounterEnemy } from "@/lib/db/encounters";
 import { actingCombatantId, canAct } from "@/lib/dm/can-act";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
-import { resolveEnemyRef } from "@/lib/dm/enemy-damage";
 import { READIED_WORDS, RELEASE_TOOLS, readiedHeld } from "@/lib/dm/readied-kinds";
 import type { PcAttackArgs } from "@/lib/dm/pc-attack";
 import { inspirationProblem, strokeOfLuckProblem } from "@/lib/dm/attack-features";
@@ -18,13 +21,17 @@ import { giantKillerOpen } from "@/lib/dm/reaction-attacks";
 import { conditionBlocksReactions } from "@/lib/srd/condition-effects";
 import { conditionUntargetable } from "@/lib/srd/condition-effect-queries";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError } from "@/lib/dm/tool-errors";
 
 export function gatePcAttack(input: {
   campaign: Campaign;
   encounter: Encounter;
   sheet: CharacterSheet;
   args: PcAttackArgs;
-}): { enemy: EncounterEnemy; giantKiller: boolean } | { refused: Record<string, unknown> } {
+  // A target the rules chose, whichever side it is on (Confusion's random
+  // creature in reach, spell-turn-start.ts); never the model's to set.
+  anySide?: boolean;
+}): { enemy: EncounterEnemy; giantKiller: boolean } | { refused: ToolError } {
   const { campaign, encounter, sheet, args } = input;
 
   // On their own turn a character attacks with their action. Off it they
@@ -34,24 +41,26 @@ export function gatePcAttack(input: {
   let giantKiller = false;
   const allowed = canAct({ sheet, encounter, kind: onTurn ? "attack" : "reaction" });
   if (!allowed.ok) {
-    return { refused: { error: allowed.error } };
+    return { refused: toolError(allowed) };
   }
   if (!onTurn) {
     const blocked = conditionBlocksReactions(sheet.conditions);
     if (blocked) {
-      return { refused: { error: `${sheet.name} is ${blocked} and cannot take reactions, so they cannot attack off their own turn.` } };
+      return { refused: { error: `${sheet.name} is ${blocked} and cannot take reactions, so they cannot attack off their own turn.`, refused: "rules" } };
     }
     if (encounter.reactionsUsed.includes(sheet.id)) {
       return {
         refused: {
           error: `It is not ${sheet.name}'s turn, and they have already used their reaction. Off their own turn a character attacks only with their reaction; it comes back at the start of their next turn.`,
+          refused: "rules",
         },
       };
     }
     if (args.offHand) {
       return {
         refused: {
-          error: `The off-hand attack is a bonus action on ${sheet.name}'s own turn; it is not their turn.`,
+          error: `The off-hand attack is a bonus action on ${sheet.name}'s own turn; it is not their turn. What they declared waits for their turn.`,
+          refused: "rules",
         },
       };
     }
@@ -59,7 +68,7 @@ export function gatePcAttack(input: {
     // attack (the server rolls those itself) or a readied action.
     // Giant Killer answers a Large creature's attack the same way
     // (src/lib/dm/reaction-attacks.ts).
-    const target = resolveEnemyRef(encounter.id, args.targetEnemyId);
+    const target = resolveTargetFoe(campaign.id, encounter, args.targetEnemyId);
     giantKiller = Boolean(target && giantKillerOpen(campaign.id, encounter.id, sheet, target));
     // Ready commits to one action: a readied attack (or a readied
     // attack-roll spell) releases here, a readied move or Help does not.
@@ -70,39 +79,63 @@ export function gatePcAttack(input: {
         refused: {
           error: held
             ? `It is not ${sheet.name}'s turn, and what they readied is ${READIED_WORDS[held.holds]} (${held.trigger}), not an attack: a readied action is released only as the action that was readied (SRD 5.1, Ready). Nothing was spent. ${RELEASE_TOOLS[held.holds]} releases it.`
-            : `It is not ${sheet.name}'s turn. Off their own turn a character attacks only with an opportunity attack, which the server rolls itself when an enemy leaves their reach, or with an attack they readied on their turn (take_action ready); ${sheet.name} has neither waiting.`,
+            : `It is not ${sheet.name}'s turn. Off their own turn a character attacks only with an opportunity attack, which the server rolls itself when an enemy leaves their reach, or with an attack they readied on their turn (take_action ready); ${sheet.name} has neither waiting. What they declared waits for their turn.`,
+          refused: "rules",
         },
       };
     }
   }
-  const enemy = resolveEnemyRef(encounter.id, args.targetEnemyId);
+  // The target is any combatant (src/lib/dm/combatant.ts): an enemy, or a
+  // character fighting on the other side, seen as a foe (sheet-foe.ts).
+  const enemy = resolveTargetFoe(campaign.id, encounter, args.targetEnemyId);
   if (!enemy) {
-    return { refused: { error: "Unknown targetEnemyId; use one from GAME STATE." } };
+    return { refused: unknownCombatantRef(campaign.id, encounter, "targetEnemyId", args.targetEnemyId) };
+  }
+  if (enemy.id === sheet.id) {
+    return { refused: { error: `${sheet.name} cannot attack themselves. Name the creature they attack.`, retry: true } };
+  }
+  // A character on the attacker's own side is an ally: pc_attack does not
+  // strike one by mistake. A character who turns on the party is moved to
+  // the other side by the server (combat-sides.ts), and is a target then.
+  // Confusion's lash-out (confusion.ts): the creature its d10 picked, and no
+  // other, whichever side it is on.
+  const lash = lashOutTarget(sheet, encounter.round);
+  if (lash && enemy.id !== lash) {
+    const picked = resolveTargetFoe(campaign.id, encounter, lash);
+    return { refused: { error: `${sheet.name} is confused: this turn's attack is on ${picked?.displayName ?? "the creature Confusion picked"}, picked at random, and no other.`, refused: "rules" } };
+  }
+  if (isSheetFoe(enemy) && !input.anySide && !lash && !hostileTo(encounter, { kind: "sheet", id: sheet.id }, { kind: "sheet", id: enemy.id })) {
+    return {
+      refused: {
+        error: `${enemy.displayName} fights on ${sheet.name}'s side: pc_attack does not strike an ally. Pick a creature on the other side.`,
+        refused: "rules",
+      },
+    };
   }
   if (enemy.status !== "alive") {
-    return { refused: { error: `${enemy.displayName} is already ${enemy.status}.` } };
+    return { refused: { error: `${enemy.displayName} is already ${enemy.status}. Ask the player which living ${isSheetFoe(enemy) ? "foe" : "enemy"} in GAME STATE to target instead.`, retry: true } };
   }
   // Resilient Sphere: nothing reaches in (condition-effects untargetable).
   const sealed = conditionUntargetable(enemy.conditions);
   if (sealed) {
-    return { refused: { error: `${enemy.displayName} is ${sealed}: sealed in force, it cannot be attacked from outside until the spell ends. Nothing was spent.` } };
+    return { refused: { error: `${enemy.displayName} is ${sealed}: sealed in force, it cannot be attacked from outside until the spell ends. Nothing was spent; pick another target.`, refused: "rules" } };
   }
   if (enemy.conditions.includes("banished")) {
-    return { refused: { error: `${enemy.displayName} is banished to another plane and cannot be attacked until the spell ends.` } };
+    return { refused: { error: `${enemy.displayName} is banished to another plane and cannot be attacked until the spell ends. Pick another target.`, refused: "rules" } };
   }
   if (enemy.conditions.includes(HURLED)) {
-    return { refused: { error: `${enemy.displayName} is being hurled through the lower planes and cannot be attacked until it returns at the end of the warlock's next turn.` } };
+    return { refused: { error: `${enemy.displayName} is being hurled through the lower planes and cannot be attacked until it returns at the end of the warlock's next turn. Pick another target.`, refused: "rules" } };
   }
   // The spends a declared option needs, asked before anything is spent.
-  const optionProblem =
+  const optionProblem: ToolError | null =
     inspirationProblem(sheet, args.useInspiration) ??
     strokeOfLuckProblem(sheet, args.strokeOfLuck) ??
     hurlProblem(sheet, args.hurlThroughHell) ??
     (args.openHand && !hasOpenHandTechnique(sheet)
-      ? `${sheet.name} does not have Open Hand Technique (a Way of the Open Hand monk's feature); attack without openHand.`
+      ? { error: `${sheet.name} does not have Open Hand Technique (a Way of the Open Hand monk's feature); attack without openHand.`, retry: true }
       : null);
   if (optionProblem) {
-    return { refused: { error: optionProblem } };
+    return { refused: optionProblem };
   }
   // A charmed creature cannot attack the one who charmed it.
   const charmedAs = sheet.conditions.find((entry) => entry.trim().toLowerCase() === "charmed");
@@ -111,6 +144,7 @@ export function gatePcAttack(input: {
     return {
       refused: {
         error: `${sheet.name} is charmed by ${enemy.displayName} and cannot attack it. They can attack another target, or act once the charm ends.`,
+        refused: "rules",
       },
     };
   }

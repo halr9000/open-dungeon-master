@@ -2,9 +2,11 @@ import {
   damageScore,
   isWeaponProficient,
   matchWeapon,
+  weaponNamed,
   type SrdWeapon,
 } from "@/lib/srd/weapons";
-import { magicItemBonus } from "@/lib/srd/armor";
+import { lineNamed, magicItemBonus, withoutBonus } from "@/lib/srd/item-row";
+import { wearingIsExplicit } from "@/lib/srd/armor";
 import {
   gearProfileParts,
   isMagicWeaponName,
@@ -12,12 +14,14 @@ import {
   type WeaponGear,
 } from "@/lib/dm/gear-attack";
 import type { TypedRider } from "@/lib/dm/damage-parts";
+import type { CreatureOnHit } from "@/lib/srd/creature-attacks";
 import type { GearDice } from "@/lib/srd/magic-gear";
 import type { CombatRiders } from "@/lib/srd/feature-effects";
 import { rageDamageBonus } from "@/lib/srd/class-resources";
-import { rageApplies } from "@/lib/dm/damage-logic";
+import { rageApplies, type WeaponMaterial } from "@/lib/dm/damage-logic";
 import type { EquipmentItem } from "@/lib/schemas/sheet";
 import type { SheetDerived } from "@/lib/srd";
+import { textKey } from "@/lib/language/text-logic";
 
 // Pure attack math for the pc_attack engine: which weapon a character swings,
 // what their to-hit and damage bonuses are, and whether a roll beats an AC.
@@ -43,6 +47,14 @@ export type ResolvedWeapon = {
 
 export type AttackProfile = {
   weapon: string;
+  // The SRD weapon it swings as, by its row's name (a Flame Tongue is a
+  // Longsword): what the ammunition and the feats keyed to a weapon read,
+  // never the name it is carried under. Absent for an unarmed strike or an
+  // improvised weapon.
+  base?: string;
+  // The wielded item's material, for the resistances that name it
+  // (damage-logic.ts weaponMaterial).
+  material?: WeaponMaterial;
   toHit: number;
   damageExpression: string;
   damageType: string;
@@ -93,6 +105,11 @@ export type AttackProfile = {
   gearDice?: GearDice[];
   gearCritDice?: GearDice[];
   gearBonusVs?: { types: string[]; bonus: number };
+  // A creature's natural attack (a beast form, a summoned creature): what
+  // its hit does besides the damage (src/lib/dm/natural-onhit.ts), and the
+  // "one prone creature" its hooves and stomps strike only.
+  creatureOnHit?: CreatureOnHit;
+  proneTargetsOnly?: boolean;
 };
 
 // The weapon block a homebrew item snapshotted onto its equipment line, if
@@ -102,31 +119,37 @@ export function weaponOf(item: EquipmentItem | undefined): SrdWeapon | null {
   return weapon && typeof weapon.damage === "string" ? weapon : null;
 }
 
-function itemMatchesTerm(itemName: string, term: string): boolean {
-  const item = itemName.trim().toLowerCase();
-  const wanted = term.trim().toLowerCase();
-  return Boolean(item && wanted && (item.includes(wanted) || wanted.includes(item)));
-}
-
-// Which weapon the character attacks with. A named weapon fuzzy-matches
-// their carried equipment and the SRD table; no name picks the best
-// proficient carried weapon; nothing usable falls back to an unarmed strike.
+// Which weapon the character attacks with. A named weapon is the carried
+// line that name picks out (src/lib/srd/item-row.ts lineNamed), and
+// "unarmed strike" is the rules' own; no name picks the best proficient
+// carried weapon; nothing usable falls back to an unarmed strike. A name
+// that is no carried line is "carried: false" unless the attack says it is
+// an improvised object, and a weapon of the table is never improvised.
+// `shieldOnArm`: a two-handed weapon cannot be used with a shield on the arm
+// (attack-rules.ts handsRuling), so the unnamed pick prefers one that can.
 export function resolveAttackWeapon(
   equipment: EquipmentItem[],
   weaponProfs: string[],
   weaponArg: string | undefined,
+  options: { shieldOnArm?: boolean; improvised?: boolean } = {},
 ): ResolvedWeapon {
   const arg = (weaponArg ?? "").trim();
   if (arg) {
-    if (/unarmed|fist|punch|kick/i.test(arg)) {
+    if (textKey(arg) === "unarmed strike") {
       return { displayName: "Unarmed strike", srd: null, unarmed: true, carried: true };
     }
-    // The exact name wins over a name that merely contains it, so a
-    // "Longsword" asked for beside a "Longsword +1" is the plain one.
-    const wanted = arg.toLowerCase();
+    // Sent with a bonus its weapon lacks ("+3 Longsword" of a plain one),
+    // the attack is the weapon carried, at that weapon's own bonus; sent as
+    // the table's weapon by another spelling it answers to ("long sword"),
+    // the line whose row it is, when only one line is, or one is called by
+    // the row's own name.
+    const named = weaponNamed(arg);
+    const ofWeapon = named ? equipment.filter((item) => matchWeapon(item) === named) : [];
     const carriedItem =
-      equipment.find((item) => item.name.trim().toLowerCase() === wanted) ??
-      equipment.find((item) => itemMatchesTerm(item.name, arg));
+      equipment[lineNamed(equipment, arg)] ??
+      equipment[lineNamed(equipment, withoutBonus(arg))] ??
+      (named ? equipment[lineNamed(equipment, named.name)] : undefined) ??
+      (new Set(ofWeapon.map((item) => textKey(item.name))).size === 1 ? ofWeapon[0] : undefined);
     // A carried homebrew weapon carries its own block (src/lib/homebrew/
     // gear.ts) and wins over a name that happens to resemble an SRD one. A
     // carried magic weapon swings as its base weapon (src/lib/dm/
@@ -135,34 +158,52 @@ export function resolveAttackWeapon(
     const srd =
       (magic?.gear ? magic.srd : null) ??
       weaponOf(carriedItem) ??
-      matchWeapon(arg) ??
-      (carriedItem ? matchWeapon(carriedItem.name) : null);
+      named ??
+      (carriedItem ? matchWeapon(carriedItem) : null);
     return {
       displayName: carriedItem?.name ?? srd?.name ?? arg,
       srd,
       unarmed: false,
       // A name that is a weapon on the table and on nobody's back is not
       // theirs to swing. A name that is no weapon at all is whatever they
-      // picked up: improvised.
-      carried: Boolean(carriedItem) || (srd === null && !isMagicWeaponName(arg)),
+      // picked up, when the attack says so.
+      carried: Boolean(carriedItem) || (options.improvised === true && srd === null && !isMagicWeaponName(arg)),
       ...(magic?.gear ? { gear: magic.gear } : {}),
     };
   }
-  // No name given: best carried weapon, proficient ones first.
-  let best: { item: EquipmentItem; srd: SrdWeapon; proficient: boolean; gear: WeaponGear | null } | null = null;
+  // No name given: best carried weapon, one the hands can use first, then
+  // the one in hand (issue #424: a character holding a mace was played with
+  // the crossbow in the pack), then proficient ones, then the most damage.
+  // With only two-handed weapons beside a shield the best of them still
+  // stands, and the hands rule says why it cannot swing. A sheet that marks
+  // nothing as equipped holds everything, as the armor engine reads it.
+  const explicit = wearingIsExplicit(equipment);
+  let best: {
+    item: EquipmentItem;
+    srd: SrdWeapon;
+    usable: boolean;
+    held: boolean;
+    proficient: boolean;
+    gear: WeaponGear | null;
+  } | null = null;
   for (const item of equipment) {
     const magic = magicWeaponOfRow(item);
     const srd = (magic.gear ? magic.srd : null) ?? weaponOf(item) ?? magic.srd ?? null;
     if (!srd) {
       continue;
     }
+    const usable = !(options.shieldOnArm && (srd.properties ?? []).includes("two-handed"));
+    const held = !explicit || item.equipped === true;
     const proficient = isWeaponProficient(weaponProfs, srd);
-    if (
-      !best ||
-      (proficient && !best.proficient) ||
-      (proficient === best.proficient && damageScore(srd) > damageScore(best.srd))
-    ) {
-      best = { item, srd, proficient, gear: magic?.gear ?? null };
+    const better = (() => {
+      if (!best) return true;
+      if (usable !== best.usable) return usable;
+      if (held !== best.held) return held;
+      if (proficient !== best.proficient) return proficient;
+      return damageScore(srd) > damageScore(best.srd);
+    })();
+    if (better) {
+      best = { item, srd, usable, held, proficient, gear: magic?.gear ?? null };
     }
   }
   if (best) {
@@ -383,6 +424,7 @@ export function weaponAttackProfile(
 
   return {
     weapon: resolved.displayName,
+    base: srd.name,
     toHit: mod + magicBonus + toHitBonus + (proficient ? derived.proficiencyBonus : 0),
     damageExpression: `${withModifier(damageDice, abilityToDamage + magicBonus + damageBonus)}${gearParts.suffix}`,
     damageType: type,
@@ -414,6 +456,8 @@ export function weaponAttackProfile(
 // Attack-roll spells (Fire Bolt, Guiding Bolt...): to-hit is the sheet's
 // spell attack bonus; the damage dice come from the model (validated by the
 // caller) because spell payloads live in the content pack's prose.
+export function spellAttackProfile(derived: { spellAttack: number }, spellName: string, damageExpression: string, damageType: string): AttackProfile;
+export function spellAttackProfile(derived: Pick<SheetDerived, "spellAttack">, spellName: string, damageExpression: string, damageType: string): AttackProfile | null;
 export function spellAttackProfile(
   derived: Pick<SheetDerived, "spellAttack">,
   spellName: string,

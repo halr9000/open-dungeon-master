@@ -10,7 +10,8 @@ import { fireCalendarEvents } from "@/lib/dm/calendar-fire";
 import { tickClockConditions } from "@/lib/dm/condition-tick";
 import { getDatabase, parseJson } from "@/lib/db/core";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
-import { publishPersisted } from "@/lib/events";
+import { publishEphemeral, publishPersisted } from "@/lib/events";
+import { conscienceClockTick } from "@/lib/dm/conscience";
 import {
   advance,
   clampInstant,
@@ -20,6 +21,7 @@ import {
   type CampaignClock,
   type Instant,
 } from "@/lib/dm/calendar";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // Reading and writing the campaign's in-world clock.
 //
@@ -49,7 +51,7 @@ export function advanceClock(
   campaignId: string,
   amount: number,
   unit: AdvanceUnit,
-): { clock: CampaignClock; minutes: number } | { error: string } {
+): { clock: CampaignClock; minutes: number } | ToolError {
   const current = getClock(campaignId);
   const moved = advance(current.instant, amount, unit);
   if ("error" in moved) {
@@ -80,15 +82,15 @@ export function advanceClock(
       }
     }
   }
-  // Time passing is what ends an effect measured in minutes. Doing it here
-  // rather than in each caller means travel, a rest and pass_time all expire
-  // the same things, which is the point of having one clock.
-  tickEffectMinutes(campaignId, moved.minutes);
-  // Timed conditions run on the same clock outside combat (issue #30): a
-  // poison that outlasted the fight wears off on the road or over a night's
-  // rest. Inside an encounter the round wrap owns them (condition-tick.ts),
-  // so a DM nudging the clock mid-fight does not count the same time twice.
+  // Timed conditions and active effects run on the same clock outside combat
+  // (issue #30): a poison or a "for ten rounds" effect that outlasted the
+  // fight wears off on the road or over a night's rest. Doing it here rather
+  // than in each caller means travel, a rest and pass_time all expire the
+  // same things. Inside an encounter the round wrap owns them
+  // (condition-tick.ts), so a DM nudging the clock mid-fight does not count
+  // the same time twice.
   if (!getActiveEncounter(campaignId)) {
+    tickEffectMinutes(campaignId, moved.minutes);
     const campaign = getCampaignById(campaignId);
     if (campaign) {
       tickClockConditions(campaign, moved.minutes);
@@ -109,6 +111,10 @@ export function advanceClock(
   // its midnight (src/lib/dm/afflictions.ts, affliction-poisons.ts).
   afflictionClockTick(campaignId, moved.instant);
   poisonClockTick(campaignId, moved.instant);
+  // A companion's ultimatum whose deadline it passed (issue 503).
+  if (conscienceClockTick(campaignId)) {
+    publishEphemeral(campaignId, "relationships_updated", {});
+  }
   return { clock: getClock(campaignId), minutes: moved.minutes };
 }
 

@@ -2,9 +2,10 @@ import { z } from "zod";
 import { hasPrepAuthority, isErrorResponse, requireMember, requirePrepAuthority, steersStory } from "@/lib/campaign-api";
 import { getCurrentLocation, listLocations } from "@/lib/db/locations";
 import { getNpcById, listNpcs } from "@/lib/db/npcs";
-import { insertShop, listShops, listShopsAt, normalizeStock, shopRefProblem, stockLineSchema } from "@/lib/db/shops";
-import { askingPriceCp, SIZE_MARKUP, type Shop } from "@/lib/dm/shop-logic";
-import { stockPool } from "@/lib/dm/shop-tools";
+import { insertShop, listShops, normalizeStock, shopRefProblem, shopStandsAt, stockLineSchema } from "@/lib/db/shops";
+import { askingPriceCp, dealFor, dealInWords, haggleDc, markupFor, SIZE_MARKUP, type Shop } from "@/lib/dm/shop-logic";
+import { getSheetForUser } from "@/lib/db/sheets";
+import { announceShop, stockPool } from "@/lib/dm/shop-tools";
 import { stockFromPool } from "@/lib/dm/shop-logic";
 import { getClock } from "@/lib/db/clock";
 import { publishEphemeral } from "@/lib/events";
@@ -19,14 +20,23 @@ export const dynamic = "force-dynamic";
 // reads the places and cast a shop can stand at and be kept by.
 
 // The prepared shelf is prep: the people at the counter see what is on the
-// shelf now, not what the keeper restocks to.
-export function shopView(shop: Shop, prep = true) {
+// shelf now, not what the keeper restocks to. Prices are the viewer's own:
+// a haggle they were at the counter for moves them, and only for them.
+export function shopView(shop: Shop, prep = true, viewerId: string | null = null) {
+  const markup = markupFor(shop, viewerId);
+  const deal = dealFor(shop, viewerId);
   return {
     ...shop,
     preparedStock: prep ? shop.preparedStock : null,
     keeperName: shop.keeperNpcId ? getNpcById(shop.keeperNpcId)?.name ?? "" : "",
     keeperPortrait: shop.keeperNpcId ? getNpcById(shop.keeperNpcId)?.portraitUrl ?? "" : "",
-    stock: shop.stock.map((line) => ({ ...line, askingCp: askingPriceCp(line.priceCp, shop.markup) })),
+    stock: shop.stock.map((line) => ({ ...line, askingCp: askingPriceCp(line.priceCp, markup) })),
+    yourMarkup: markup,
+    yourHaggle: deal?.steps ?? null,
+    // Where that haggle left the viewer's prices, in words: at an end of the
+    // ladder a step had nowhere to go, and this says so.
+    yourPrices: deal ? dealInWords(shop.markup, deal.steps) : null,
+    haggleDc: haggleDc(shop.size),
   };
 }
 
@@ -39,9 +49,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cam
   const here = getCurrentLocation(campaignId);
   const dm = steersStory(context);
   const prep = hasPrepAuthority(context);
-  const shops = dm ? listShops(campaignId) : here ? listShopsAt(campaignId, here.id, here.name) : [];
+  const shops = dm ? listShops(campaignId) : listShops(campaignId).filter((shop) => shopStandsAt(shop, here));
+  const viewerId = getSheetForUser(campaignId, context.user.id)?.id ?? null;
   return Response.json({
-    shops: shops.map((shop) => shopView(shop, prep)),
+    // standsHere: whether the shop is where the party is now, which is where
+    // its counter trades (the trade route asks the same). Only a viewer who
+    // steers the story is shown a shop elsewhere, to prep it, and the shops
+    // the party can reach come first.
+    shops: shops
+      .map((shop) => ({ ...shopView(shop, prep, viewerId), standsHere: shopStandsAt(shop, here) }))
+      .sort((a, b) => Number(b.standsHere) - Number(a.standsHere)),
     here: here ? { id: here.id, name: here.name } : null,
     places: dm ? listLocations(campaignId).map((location) => ({ id: location.id, name: location.name })) : [],
     // Who may keep a shop: the cast, for the prep holder's editor.
@@ -102,5 +119,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ cam
     restockedAt: getClock(campaignId).instant,
   });
   publishEphemeral(campaignId, "shops_updated", { at: Date.now() });
+  // A shop opened where the party stands is open to them now: the chat
+  // says so, as it does for one the AI DM opens.
+  if (place && place.id === getCurrentLocation(campaignId)?.id) {
+    announceShop(campaignId, shop);
+  }
   return Response.json({ shop: shopView(shop) });
 }

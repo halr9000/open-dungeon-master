@@ -199,7 +199,7 @@ test("the checks are the validator's checks", () => {
 test("the DM brief floor is advice, not a problem", () => {
   const check = checkDraft(fullDraft({ dmFlavor: "short" }));
   assert.deepEqual(check.problems, []);
-  assert.ok(check.advice.some((line) => line.includes("DM brief")));
+  assert.ok(check.advice.some((line) => line.includes("GM brief")));
 });
 
 // ---- the catalogs ----
@@ -235,7 +235,7 @@ test("mergePulled adds the compile's flavour and never overwrites", () => {
     theme: "",
     premise: "",
   };
-  const compiled = compileToPack(bundle);
+  const compiled = compileToPack(workshopBundleSchema.parse({ kind: "odm.workshop", version: 1, ...bundle }));
   const before = fullDraft();
   const { draft, added } = mergePulled(before, compiled.draft);
   assert.equal(draft.factions[0].blurb, "Priests who own the water.", "the hand-written faction is kept");

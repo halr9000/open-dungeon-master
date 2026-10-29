@@ -43,6 +43,7 @@ test("a pack's non-empty overrides win and its empty ones inherit", () => {
   assert.equal(merged.name, sample.name);
   assert.equal(merged.mapStyle, sample.mapStyle || base.mapStyle);
   assert.equal(merged.portraitStyle, sample.portraitStyle || base.portraitStyle);
+  assert.equal(merged.sceneStyle, sample.sceneStyle || base.sceneStyle);
   assert.equal(merged.nameHints, sample.nameHints || base.nameHints);
   assert.equal(
     merged.companionRaces,
@@ -130,7 +131,11 @@ test("packRecommends and packIds read the pack's own lists", () => {
 test("settingClassIds prefers the pack list and falls back to the genre", () => {
   assert.deepEqual(settingClassIds("cyberpunk", ["a", "b"]), ["a", "b"]);
   assert.ok(settingClassIds("cyberpunk", []).includes("netrunner"));
-  assert.deepEqual(settingClassIds("high_fantasy", []), []);
+  // High fantasy plays the SRD's callings and dark fantasy's (issue #434);
+  // a class made only for another setting is not among them.
+  const high = settingClassIds("high_fantasy", []);
+  assert.ok(high.includes("fighter") && high.includes("witch_hunter"), high.join(", "));
+  assert.ok(!high.includes("netrunner"));
 });
 
 test("the primer names the world and prints canonical names in the alias table", () => {
@@ -163,6 +168,7 @@ test("an all-defaults pack renders nothing rather than empty headers", () => {
     dmFlavor: "",
     mapStyle: "",
     portraitStyle: "",
+    sceneStyle: "",
     nameHints: "",
     raceHint: "",
     companionRaces: [],

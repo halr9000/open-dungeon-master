@@ -12,7 +12,10 @@ import { imageToolArgsSchema, type ImageToolArgs } from "@/lib/image-tool";
 import { publishEphemeral, publishPersisted } from "@/lib/events";
 import { enqueueMediaJob } from "@/lib/media-queue";
 import { toEnglishForImage } from "@/lib/image-english";
+import { artDirection, scenePrompt, typedStyle } from "@/lib/art-direction";
+import { presetFor } from "@/lib/worlds/preset";
 import type { AspectPreset, GeneratedImage, ImageRequest, StorySettings } from "@/lib/types";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 // Ephemeral progress refinements for the pending-media placeholders. The
 // durable truth stays derivable (a message with imageRequest and no
@@ -21,7 +24,9 @@ export function publishMediaStatus(
   campaignId: string,
   kind: "image" | "map" | "tts",
   targetId: string,
-  state: "queued" | "generating" | "failed",
+  // "skipped": narration that fell behind and was passed over for a newer
+  // passage (src/lib/tts.ts). Not a failure; the replay button still reads it.
+  state: "queued" | "generating" | "failed" | "skipped",
   // Why it failed, in words the table can read (narration, issue 88).
   reason?: string,
 ) {
@@ -68,10 +73,14 @@ export function fulfillMessageImage(
       // The table's boundary decides what the picture leaves out
       // (docs/vtt-parity-implementation-plan.md 9.1).
       const boundaries = campaign.gameSettings.safety?.boundaries ?? "standard";
+      // The look the campaign has now (src/lib/art-direction.ts), leading
+      // the subject the DM wrote. A typed style may need English too.
+      const look = artDirection(campaign.settings, presetFor(campaign.gameSettings));
+      const typed = typedStyle(campaign.settings, "scene");
       // The AI DM writes its prompt in English, a human DM may not.
-      const english = await toEnglishForImage(campaign, { prompt });
+      const english = await toEnglishForImage(campaign, { prompt, style: typed });
       const image = await generateStoryImage(settings, {
-        prompt: english.prompt,
+        prompt: scenePrompt(typed ? english.style : look.scene, english.prompt),
         mode: request.mode ?? settings.imageMode,
         aspect: request.aspect ?? settings.aspect,
         negative: boundaryNegativeTerms(boundaries),
@@ -141,19 +150,19 @@ export async function fulfillAutoImage(
 export function handleGenerateImage(
   campaign: Campaign,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   if (!campaign.settings.imageGenerationEnabled) {
-    return { error: "Image generation is off for this campaign." };
+    return { error: "Image generation is off for this campaign.", retry: true };
   }
   let args: ImageToolArgs;
   try {
     args = imageToolArgsSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: illustrating needs a prompt." };
+    return { error: "Invalid arguments: illustrating needs a prompt.", retry: true };
   }
   const message = getLatestDmMessage(campaign.id);
   if (!message) {
-    return { error: "Narrate something first; the picture hangs under the passage it draws." };
+    return { error: "Narrate something first; the picture hangs under the passage it draws.", retry: true };
   }
   const request: ImageRequest = {
     needed: true,
@@ -165,7 +174,7 @@ export function handleGenerateImage(
     characterIds: [],
   };
   if (!setMessageImageRequest(message.id, request)) {
-    return { error: "That passage is no longer there." };
+    return { error: "That passage is no longer there.", retry: true };
   }
   const updated = getCampaignMessage(message.id);
   if (updated) {

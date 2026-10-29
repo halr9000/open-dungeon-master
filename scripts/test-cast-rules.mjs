@@ -22,11 +22,11 @@ const {
   ritualProblem,
   slotPlan,
   spellHeldProblem,
-  spellKeyOf,
   turnCharge,
   withOpenCast,
 } = await import("../src/lib/dm/cast-rules.ts");
 const { copyCost, learnProblem } = await import("../src/lib/dm/learn-rules.ts");
+const { textKey } = await import("../src/lib/language/text-logic.ts");
 const { bundledSpellFacts } = await import("../src/lib/srd/spell-facts.ts");
 const { freshBudget } = await import("../src/lib/dm/action-budget.ts");
 const { spellSupportFor, spellSupportLine } = await import("../src/lib/srd/spell-support.ts");
@@ -86,8 +86,8 @@ function caster(overrides = {}) {
 // ---- names ----
 
 test("a name is compared whole, whatever its case or spacing", () => {
-  assert.equal(spellKeyOf("  Hold  PERSON "), "hold person");
-  assert.equal(spellKeyOf("Hunter's Mark"), spellKeyOf("hunters mark").replace("hunters", "hunter s"));
+  assert.equal(textKey("  Hold  PERSON "), "hold person");
+  assert.equal(textKey("Hunter’s Mark"), textKey("hunter's mark"));
 });
 
 // ---- who holds the spell ----
@@ -118,17 +118,17 @@ test("a character with no Spellcasting holds nothing", () => {
 
 test("raging, wild shaped, polymorphed and untrained armor each stop a cast", () => {
   assert.equal(casterStateProblem(caster()), null);
-  assert.match(casterStateProblem(caster({ conditions: ["raging"] })), /raging/);
+  assert.match(casterStateProblem(caster({ conditions: ["raging"] }))?.error, /raging/);
   const wolf = { form: "Wolf", beastHp: 11, beastMaxHp: 11, beastAc: 13, kind: "wildshape" };
-  assert.match(casterStateProblem(caster({ wildShape: wolf })), /wild shaped/);
+  assert.match(casterStateProblem(caster({ wildShape: wolf }))?.error, /wild shaped/);
   assert.equal(
     casterStateProblem(caster({ wildShape: wolf, features: [{ name: "Beast Spells", level: 18 }] })),
     null,
     "Beast Spells lets a druid of 18th level cast in beast form",
   );
-  assert.match(casterStateProblem(caster({ wildShape: { ...wolf, kind: "polymorph" } })), /polymorphed/);
+  assert.match(casterStateProblem(caster({ wildShape: { ...wolf, kind: "polymorph" } }))?.error, /polymorphed/);
   assert.match(
-    casterStateProblem(caster({ equipment: [{ name: "Plate", qty: 1, equipped: true }] })),
+    casterStateProblem(caster({ equipment: [{ name: "Plate", qty: 1, equipped: true }] }))?.error,
     /not trained/,
   );
   assert.equal(
@@ -143,7 +143,7 @@ test("raging, wild shaped, polymorphed and untrained armor each stop a cast", ()
 
 test("no verbal spell without a voice; a spell with none is still cast", () => {
   const hushed = caster({ conditions: ["silenced"] });
-  assert.match(componentProblem(hushed, facts("Magic Missile")), /verbal/);
+  assert.match(componentProblem(hushed, facts("Magic Missile"))?.error, /verbal/);
   const somatic = { ...facts("Magic Missile"), verbal: false };
   assert.equal(componentProblem(hushed, somatic), null);
 });
@@ -157,11 +157,11 @@ test("two busy hands refuse a somatic spell; War Caster or a holy symbol on a sh
     proficiencies: { ...PROFS, armor: ["light", "medium", "heavy", "shield"], weapons: ["simple", "martial"] },
   };
   assert.equal(handsBusy(caster(armed)), 2);
-  assert.match(componentProblem(caster(armed), facts("Magic Missile")), /free hand/);
+  assert.match(componentProblem(caster(armed), facts("Magic Missile"))?.error, /free hand/);
   assert.equal(componentProblem(caster({ ...armed, feats: ["War Caster"] }), facts("Magic Missile")), null);
   const priest = caster({ ...armed, class: "cleric" });
   assert.equal(componentProblem(priest, facts("Hold Person")), null, "V, S, M: the emblem hand");
-  assert.match(componentProblem(priest, facts("Magic Missile")), /free hand/, "V, S: no material, no emblem");
+  assert.match(componentProblem(priest, facts("Magic Missile"))?.error, /free hand/, "V, S: no material, no emblem");
   assert.equal(handsBusy(caster({ equipment: [{ name: "Longsword", qty: 1 }] })), 0, "carried is not held");
 });
 
@@ -172,11 +172,11 @@ test("a costly material is carried, bought, or the spell is refused", () => {
   assert.equal(revivify.materialCostGp, 300);
   assert.equal(revivify.materialConsumed, true);
   assert.ok("error" in materialPlan(caster(), revivify));
-  const carried = materialPlan(caster({ equipment: [{ name: "Diamond (300 gp)", qty: 1 }] }), revivify);
+  const carried = materialPlan(caster({ equipment: [{ name: "Diamond", qty: 1, worth: 300 }] }), revivify);
   assert.equal(carried.kind, "components");
-  assert.deepEqual(carried.uses.map((use) => [use.itemName, use.take, use.consume]), [["Diamond (300 gp)", 1, true]]);
+  assert.deepEqual(carried.uses.map((use) => [use.itemName, use.take, use.consume]), [["Diamond", 1, true]]);
   // Pieces make the worth: three 100 gp diamonds.
-  const pieces = materialPlan(caster({ equipment: [{ name: "Diamond (100 gp)", qty: 5 }] }), revivify);
+  const pieces = materialPlan(caster({ equipment: [{ name: "Diamond", qty: 5, worth: 100 }] }), revivify);
   assert.deepEqual(pieces.uses.map((use) => use.take), [3]);
   // A name alone proves no worth.
   assert.ok("error" in materialPlan(caster({ equipment: [{ name: "Diamond", qty: 1 }] }), revivify, { inFight: true }));
@@ -210,9 +210,9 @@ test("a ritual is a named, ritual-tagged spell, cast by a class with Ritual Cast
   assert.equal(canCastRituals(caster({ class: "sorcerer" })), false);
   assert.equal(canCastRituals(caster({ class: "sorcerer", feats: ["Ritual Caster"] })), true);
   assert.ok(ritualProblem(iris, "", null, false));
-  assert.match(ritualProblem(iris, "Fireball", facts("Fireball"), false), /no ritual tag/);
-  assert.match(ritualProblem(caster({ class: "sorcerer" }), "Detect Magic", facts("Detect Magic"), false), /does not cast rituals/);
-  assert.match(ritualProblem(iris, "Detect Magic", facts("Detect Magic"), true), /fight/);
+  assert.match(ritualProblem(iris, "Fireball", facts("Fireball"), false)?.error, /no ritual tag/);
+  assert.match(ritualProblem(caster({ class: "sorcerer" }), "Detect Magic", facts("Detect Magic"), false)?.error, /does not cast rituals/);
+  assert.match(ritualProblem(iris, "Detect Magic", facts("Detect Magic"), true)?.error, /fight/);
   assert.equal(ritualProblem(iris, "Detect Magic", facts("Detect Magic"), false), null);
 });
 
@@ -237,22 +237,22 @@ test("a ritual is cast only through a ritual caster's own spells, or the ritual 
   const detect = facts("Detect Magic");
   // A sorcerer-wizard whose sorcerer knows Detect Magic and whose book does not hold it.
   const sorcWiz = multi([{ classId: "sorcerer", known: ["Detect Magic"] }, { classId: "wizard", spellbook: ["Alarm"], prepared: [] }]);
-  assert.match(spellHeldProblem(sorcWiz, "Detect Magic", detect, { ritual: true }), /as a sorcerer spell/);
+  assert.match(spellHeldProblem(sorcWiz, "Detect Magic", detect, { ritual: true })?.error, /as a sorcerer spell/);
   assert.equal(spellHeldProblem(sorcWiz, "Detect Magic", detect), null, "from a slot it is cast as ever");
   // The same spell written in the wizard's book is a ritual.
   const inBook = multi([{ classId: "sorcerer", known: ["Detect Magic"] }, { classId: "wizard", spellbook: ["Detect Magic"], prepared: [] }]);
   assert.equal(spellHeldProblem(inBook, "Detect Magic", detect, { ritual: true }), null);
   // A cleric's prepared ritual is castable; a paladin's is not.
   assert.equal(spellHeldProblem(multi([{ classId: "cleric", prepared: ["Detect Magic"] }]), "Detect Magic", detect, { ritual: true }), null);
-  assert.match(spellHeldProblem(multi([{ classId: "paladin", prepared: ["Detect Magic"] }]), "Detect Magic", detect, { ritual: true }), /paladin/);
+  assert.match(spellHeldProblem(multi([{ classId: "paladin", prepared: ["Detect Magic"] }]), "Detect Magic", detect, { ritual: true })?.error, /paladin/);
   // Ritual Caster's book holds rituals for any class; the known list does not.
   const book = multi([{ classId: "sorcerer", known: [] }], { feats: ["Ritual Caster"], spellcasting: { spellbook: ["Detect Magic"] } });
   assert.equal(spellHeldProblem(book, "Detect Magic", detect, { ritual: true }), null);
   const unwritten = multi([{ classId: "sorcerer", known: [] }], { feats: ["Ritual Caster"], spellcasting: { spellbook: [] } });
-  assert.match(spellHeldProblem(unwritten, "Detect Magic", detect, { ritual: true }), /not written in/);
+  assert.match(spellHeldProblem(unwritten, "Detect Magic", detect, { ritual: true })?.error, /not written in/);
   // A warlock with Book of Ancient Secrets: the book, not the warlock's list.
   const patron = { features: [{ name: "Invocation: Book of Ancient Secrets", source: "class", description: "" }] };
-  assert.match(spellHeldProblem(multi([{ classId: "warlock", known: ["Detect Magic"] }], patron), "Detect Magic", detect, { ritual: true }), /warlock/);
+  assert.match(spellHeldProblem(multi([{ classId: "warlock", known: ["Detect Magic"] }], patron), "Detect Magic", detect, { ritual: true })?.error, /warlock/);
   assert.equal(spellHeldProblem(multi([{ classId: "warlock", known: [] }], { ...patron, spellcasting: { spellbook: ["Detect Magic"] } }), "Detect Magic", detect, { ritual: true }), null);
 });
 
@@ -338,9 +338,9 @@ test("a spell taught in play is the class's, of a castable level, with room for 
     level: 1,
     spellcasting: { slots: { 1: { max: 2, used: 0 } }, cantrips: ["Fire Bolt", "Light", "Mage Hand"] },
   });
-  assert.match(learnProblem(novice, "Wish", facts("Wish")), /level 9/);
-  assert.match(learnProblem(novice, "Cure Wounds", facts("Cure Wounds")), /not on the wizard spell list/);
-  assert.match(learnProblem(novice, "Ray of Frost", facts("Ray of Frost")), /cantrips/);
+  assert.match(learnProblem(novice, "Wish", facts("Wish"))?.error, /level 9/);
+  assert.match(learnProblem(novice, "Cure Wounds", facts("Cure Wounds"))?.error, /not on the wizard spell list/);
+  assert.match(learnProblem(novice, "Ray of Frost", facts("Ray of Frost"))?.error, /cantrips/);
   assert.equal(learnProblem(novice, "Shield", facts("Shield")), null);
   assert.ok(learnProblem(novice, "Nothing Real", null));
 });
@@ -363,18 +363,18 @@ test("the nine materials a single price cannot hold are kept as printed", () => 
   assert.equal(sum("Simulacrum"), 1500);
   // Two rings, each worth 50: one 100 gp ring is not a pair.
   const bond = { ...facts("Warding Bond"), material: true };
-  assert.ok("error" in materialPlan(caster({ equipment: [{ name: "Platinum ring (100 gp)", qty: 1 }] }), bond, { inFight: true }));
-  const pair = materialPlan(caster({ equipment: [{ name: "Platinum ring (50 gp)", qty: 2 }] }), bond, { inFight: true });
+  assert.ok("error" in materialPlan(caster({ equipment: [{ name: "Platinum ring", qty: 1, worth: 100 }] }), bond, { inFight: true }));
+  const pair = materialPlan(caster({ equipment: [{ name: "Platinum ring", qty: 2, worth: 50 }] }), bond, { inFight: true });
   assert.deepEqual(pair.uses.map((use) => use.take), [2]);
   // Imprisonment counts the target's Hit Dice.
   const prison = { ...facts("Imprisonment"), material: true };
-  assert.match(materialPlan(caster({ gold: 100000 }), prison).error, /Hit Die/);
+  assert.match(materialPlan(caster({ gold: 100000 }), prison).error, /per Hit Die of its target: send units with the target.s Hit Dice/, "the refusal names the field that carries them");
   assert.equal(materialPlan(caster({ gold: 100000 }), prison, { units: 10 }).bought[0].copper, 500000);
 });
 
 test("a material with no price needs a component pouch or the class's focus", () => {
   const fireball = facts("Fireball");
-  assert.match(focusProblem(caster(), fireball), /component pouch or an arcane focus/);
+  assert.match(focusProblem(caster(), fireball)?.error, /component pouch or an arcane focus/);
   assert.equal(focusProblem(caster({ equipment: [{ name: "Component pouch", qty: 1 }] }), fireball), null);
   assert.equal(focusProblem(caster({ equipment: [{ name: "Crystal", qty: 1 }] }), fireball), null);
   // A holy symbol is a cleric's focus, not a wizard's.
@@ -385,7 +385,7 @@ test("a material with no price needs a component pouch or the class's focus", ()
 test("War Caster frees the gestures with both hands full, never the material", () => {
   const full = { equipment: [{ name: "Longsword", qty: 1, equipped: true }, { name: "Shield", qty: 1, equipped: true }], feats: ["War Caster"] };
   assert.equal(componentProblem(caster(full), facts("Shocking Grasp") ?? facts("Magic Missile")), null);
-  assert.match(componentProblem(caster(full), facts("Fireball")), /War Caster frees the gestures, not the material/);
+  assert.match(componentProblem(caster(full), facts("Fireball"))?.error, /War Caster frees the gestures, not the material/);
 });
 
 console.log(`test-cast-rules: ${passed} passed`);

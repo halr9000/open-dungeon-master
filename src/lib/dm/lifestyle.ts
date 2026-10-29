@@ -24,7 +24,7 @@
 
 import type { Campaign } from "@/lib/db/campaigns";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
-import { addCopper, formatCopper } from "@/lib/srd/currency";
+import { addCopper, formatCopper, formatPrice } from "@/lib/srd/currency";
 import type { DowntimeProgress, Lifestyle } from "@/lib/dm/between-state";
 import { LIFESTYLES } from "@/lib/dm/between-state";
 import {
@@ -36,10 +36,14 @@ import {
 } from "@/lib/dm/between-io";
 import { afflictCondition, dropConditions, liveAfflictions } from "@/lib/dm/afflictions";
 import { writeAfflictions } from "@/lib/dm/between-io";
-import { listPriceCp } from "@/lib/dm/trade-value";
-import { matchMagicItem } from "@/lib/srd/magic-items";
+import { magicValueOf, packListCp } from "@/lib/dm/trade-value";
+import { magicItemNamed } from "@/lib/srd/magic-items";
+import { rowName } from "@/lib/srd/item-row";
 import { grantItemMath } from "@/lib/dm/mutation-math";
+import { alreadyInPack } from "@/lib/dm/item-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export const LIFESTYLE_COST_CP: Record<Lifestyle, number> = {
   wretched: 0,
@@ -85,11 +89,11 @@ export function chargeLifestyle(
     .find((lifestyle) => daily(lifestyle) * days <= purse) ?? "wretched";
   const paidCp = daily(affordable) * days;
   pay(campaign.id, sheet, paidCp);
-  const covered = coveredCp > 0 ? ` (their work covers ${formatCopper(coveredCp)} a day)` : "";
+  const covered = coveredCp > 0 ? ` (their work covers ${formatPrice(coveredCp)} a day)` : "";
   const line =
     affordable === chosen
-      ? `${sheet.name} lives ${chosen} for ${days} day${days === 1 ? "" : "s"}: ${formatCopper(paidCp)}${covered}.`
-      : `${sheet.name} cannot keep up a ${chosen} lifestyle and lives ${affordable} for ${days} day${days === 1 ? "" : "s"}: ${formatCopper(paidCp)}${covered}.`;
+      ? `${sheet.name} lives ${chosen} for ${days} day${days === 1 ? "" : "s"}: ${formatPrice(paidCp)}${covered}.`
+      : `${sheet.name} cannot keep up a ${chosen} lifestyle and lives ${affordable} for ${days} day${days === 1 ? "" : "s"}: ${formatPrice(paidCp)}${covered}.`;
   return { paidCp, lived: affordable, line };
 }
 
@@ -101,6 +105,9 @@ export type DowntimeEntry = {
   characterId: string;
   activity: DowntimeActivity;
   item?: string;
+  // The SRD or pack item a crafted thing is, when item is the table's own
+  // name ("Spada lunga" is a Longsword): what prices it and what it is.
+  srdName?: string;
   tool?: string;
   helperIds?: string[];
   subject?: string;
@@ -111,58 +118,57 @@ export type DowntimeEntry = {
   perform?: boolean;
 };
 
-const proficientWith = (sheet: CharacterSheet, tool: string) => {
-  const wanted = tool.trim().toLowerCase();
-  return (sheet.proficiencies.tools ?? []).some((entry) => {
-    const held = entry.trim().toLowerCase();
-    return held === wanted || held.includes(wanted) || wanted.includes(held);
-  });
-};
+const proficientWith = (sheet: CharacterSheet, tool: string) =>
+  (sheet.proficiencies.tools ?? []).some((entry) => textKey(entry) === textKey(tool));
 
 // Why this entry cannot be done, checked before any time passes.
-export function downtimeProblem(campaign: Campaign, sheet: CharacterSheet, entry: DowntimeEntry): string | null {
+export function downtimeProblem(campaign: Campaign, sheet: CharacterSheet, entry: DowntimeEntry): ToolError | null {
   if (sheet.deathSaves?.dead) {
-    return `${sheet.name} is dead and spends no downtime.`;
+    return { error: `${sheet.name} is dead and spends no downtime.`, retry: true };
   }
   if (entry.activity === "crafting") {
     if (!entry.item?.trim() || !entry.tool?.trim()) {
-      return `Crafting needs the item to make and the tool it is made with (smith's tools, leatherworker's tools...).`;
+      return { error: `Crafting needs the item to make (item) and the tools it is made with (tool: smith's tools, leatherworker's tools...).`, retry: true };
     }
-    if (matchMagicItem(entry.item)) {
-      return `${entry.item} is a magic item; downtime crafting makes nonmagical objects only (SRD 5.1, Crafting).`;
+    const made = { name: entry.item, ...(entry.srdName ? { srdName: entry.srdName } : {}) };
+    if (magicItemNamed(rowName(made)) || magicValueOf(made)) {
+      return { error: `${entry.item} is a magic item; downtime crafting makes nonmagical objects only (SRD 5.1, Crafting).`, refused: "rules" };
     }
-    if (!listPriceCp(entry.item)) {
-      return `The server has no market value for "${entry.item}"; name an item from the equipment lists so its crafting can be measured.`;
+    // Measured by the pack's list price alone: a magic item's value by its
+    // rarity is what it sells for, not a recipe.
+    if (!packListCp(rowName(made))) {
+      return { error: `The server has no market value for "${entry.item}"; name an item from the equipment lists, or send srdName with the one it is by its English name when item is the table's own name, so its crafting can be measured.`, retry: true };
     }
     for (const id of [sheet.id, ...(entry.helperIds ?? [])]) {
       const crafter = id === sheet.id ? sheet : getSheetById(id);
       if (!crafter || crafter.campaignId !== campaign.id) {
-        return `Unknown helper ${id}; use characterIds from GAME STATE.`;
+        return { error: `Unknown helper ${id}; use characterIds from GAME STATE.`, retry: true };
       }
       if (!proficientWith(crafter, entry.tool)) {
-        return `${crafter.name} is not proficient with ${entry.tool}; only a character proficient with the tools can craft or help craft with them.`;
+        return { error: `${crafter.name} is not proficient with ${entry.tool}; only a character proficient with the tools can craft or help craft with them. Their tools: ${(crafter.proficiencies.tools ?? []).join(", ") || "none"}.`, refused: "rules" };
       }
     }
     const progress = downtimeOf(campaign.id, sheet.id).crafting;
-    const starting = !progress || progress.item.toLowerCase() !== entry.item.trim().toLowerCase();
-    const materials = Math.floor((listPriceCp(entry.item) ?? 0) / 2);
+    const starting = !progress || textKey(progress.item) !== textKey(entry.item);
+    const materials = Math.floor((packListCp(rowName(made)) ?? 0) / 2);
     if (starting && purseOf(sheet) < materials) {
-      return `${sheet.name} needs ${formatCopper(materials)} of raw materials (half the market value) to start crafting ${entry.item}, and has ${formatCopper(purseOf(sheet))}.`;
+      return { error: `${sheet.name} needs ${formatPrice(materials)} of raw materials (half the market value) to start crafting ${entry.item}, and has ${formatCopper(purseOf(sheet))}.`, refused: "rules" };
     }
   }
   if (entry.activity === "training") {
-    if (!entry.subject?.trim()) {
-      return "Training needs the language or tool to learn (subject) and whether it is a language or a tool (kind).";
+    const subject = entry.subject?.trim();
+    if (!subject) {
+      return { error: "Training needs the language or tool to learn (subject) and whether it is a language or a tool (kind).", retry: true };
     }
     const known = entry.kind === "tool"
-      ? (sheet.proficiencies.tools ?? []).some((tool) => tool.toLowerCase() === entry.subject?.trim().toLowerCase())
-      : (sheet.proficiencies.languages ?? []).some((language) => language.toLowerCase() === entry.subject?.trim().toLowerCase());
+      ? (sheet.proficiencies.tools ?? []).some((tool) => textKey(tool) === textKey(subject))
+      : (sheet.proficiencies.languages ?? []).some((language) => textKey(language) === textKey(subject));
     if (known) {
-      return `${sheet.name} already knows ${entry.subject}.`;
+      return { error: `${sheet.name} already knows ${entry.subject}.`, refused: "rules" };
     }
   }
   if (entry.activity === "research" && !entry.topic?.trim()) {
-    return "Research needs the topic being researched.";
+    return { error: "Research needs the topic being researched (topic).", retry: true };
   }
   return null;
 }
@@ -198,34 +204,35 @@ export function spendDowntime(campaign: Campaign, turnId: string, entry: Downtim
   const progress: DowntimeProgress = { ...downtimeOf(campaign.id, sheet.id) };
   if (entry.activity === "crafting" && entry.item && entry.tool) {
     const item = entry.item.trim();
-    const valueCp = listPriceCp(item) ?? 0;
+    const srdName = entry.srdName;
+    const valueCp = packListCp(rowName({ name: item, srdName })) ?? 0;
     let crafting = progress.crafting;
-    if (!crafting || crafting.item.toLowerCase() !== item.toLowerCase()) {
+    if (!crafting || textKey(crafting.item) !== textKey(item)) {
       if (crafting) {
         lines.push(`${sheet.name} sets aside the unfinished ${crafting.item}; its materials are spent.`);
       }
       const materials = Math.floor(valueCp / 2);
       pay(campaign.id, getSheetById(sheet.id) ?? sheet, materials);
-      lines.push(`${sheet.name} buys ${formatCopper(materials)} of raw materials for ${item}.`);
-      crafting = { item, valueCp, progressCp: 0, tool: entry.tool.trim() };
+      lines.push(`${sheet.name} buys ${formatPrice(materials)} of raw materials for ${item}.`);
+      crafting = { item, ...(srdName ? { srdName } : {}), valueCp, progressCp: 0, tool: entry.tool.trim() };
     }
     const crafters = 1 + (entry.helperIds ?? []).length;
     const progressCp = Math.min(crafting.valueCp, crafting.progressCp + 500 * crafters * days);
     if (progressCp >= crafting.valueCp) {
       const fresh = getSheetById(sheet.id) ?? sheet;
-      patchSheet(fresh.id, { equipment: grantItemMath(fresh.equipment, crafting.item, 1).equipment });
+      patchSheet(fresh.id, { equipment: grantItemMath(fresh.equipment, crafting.item, 1, crafting.srdName ? { srdName: crafting.srdName } : {}).equipment });
       publishSheetOf(campaign.id, fresh.id);
       delete progress.crafting;
-      lines.push(`${sheet.name} finishes crafting ${crafting.item}; it is in their pack.`);
+      lines.push(`${sheet.name} finishes crafting ${crafting.item}. ${alreadyInPack(sheet.name, false)}`);
     } else {
       progress.crafting = { ...crafting, progressCp };
-      lines.push(`${sheet.name} crafts ${crafting.item}: ${formatCopper(progressCp)} of ${formatCopper(crafting.valueCp)} done (5 gp a day per crafter).`);
+      lines.push(`${sheet.name} crafts ${crafting.item}: ${formatPrice(progressCp)} of ${formatPrice(crafting.valueCp)} done (5 gp a day per crafter).`);
     }
   }
   if (entry.activity === "training" && entry.subject) {
     const subject = entry.subject.trim();
     const kind = entry.kind === "tool" ? "tool" : "language";
-    const training = progress.training && progress.training.subject.toLowerCase() === subject.toLowerCase() ? progress.training : { subject, kind, days: 0 };
+    const training = progress.training && textKey(progress.training.subject) === textKey(subject) ? progress.training : { subject, kind, days: 0 };
     const affordable = Math.min(days, Math.floor(purseOf(getSheetById(sheet.id) ?? sheet) / 100));
     pay(campaign.id, getSheetById(sheet.id) ?? sheet, affordable * 100);
     const total = Math.min(250, training.days + affordable);
@@ -250,7 +257,7 @@ export function spendDowntime(campaign: Campaign, turnId: string, entry: Downtim
     const affordable = Math.min(days, Math.floor(purseOf(getSheetById(sheet.id) ?? sheet) / 100));
     pay(campaign.id, getSheetById(sheet.id) ?? sheet, affordable * 100);
     const topic = entry.topic.trim();
-    const research = progress.research && progress.research.topic.toLowerCase() === topic.toLowerCase() ? progress.research : { topic, days: 0 };
+    const research = progress.research && textKey(progress.research.topic) === textKey(topic) ? progress.research : { topic, days: 0 };
     progress.research = { topic, days: research.days + affordable };
     lines.push(`${sheet.name} researches ${topic}: ${progress.research.days} day${progress.research.days === 1 ? "" : "s"} so far (1 gp a day paid). What they find is yours to say.`);
   }
@@ -293,8 +300,8 @@ export function lifestyleLine(campaignId: string, sheetId: string): string | nul
   const lifestyle = lifestyleOf(campaignId, sheetId);
   const progress = downtimeOf(campaignId, sheetId);
   const parts = [
-    ...(lifestyle ? [`lifestyle ${lifestyle} (${formatCopper(LIFESTYLE_COST_CP[lifestyle])} a day, paid at each dawn in town)`] : []),
-    ...(progress.crafting ? [`crafting ${progress.crafting.item} ${formatCopper(progress.crafting.progressCp)} of ${formatCopper(progress.crafting.valueCp)}`] : []),
+    ...(lifestyle ? [`lifestyle ${lifestyle} (${formatPrice(LIFESTYLE_COST_CP[lifestyle])} a day, paid at each dawn in town)`] : []),
+    ...(progress.crafting ? [`crafting ${progress.crafting.item} ${formatPrice(progress.crafting.progressCp)} of ${formatPrice(progress.crafting.valueCp)}`] : []),
     ...(progress.training ? [`training ${progress.training.subject} ${progress.training.days}/250 days`] : []),
     ...(progress.research ? [`researching ${progress.research.topic} (${progress.research.days} days)`] : []),
     ...(progress.recuperating ? [`recuperating ${progress.recuperating.days}/3 days`] : []),

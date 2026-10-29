@@ -58,6 +58,10 @@ export type AmbienceAudio = {
   bedLevel: number;
   musicLevel: number;
   unlocked: boolean;
+  // A scene this install can play is set, and the browser has not had the
+  // gesture it needs to start it. The player waits in silence until then,
+  // so the table says so (AudioWaitingBanner.tsx).
+  waiting: boolean;
   // True once the library has at least one file. False means nobody has
   // installed the sound library, and the control says so rather than
   // offering a volume slider for silence.
@@ -196,14 +200,17 @@ export function useAmbienceAudio(
   const setDucked = useCallback((ducked: boolean) => playerRef.current?.setLevels({ ducked }), []);
 
   // A later gesture can retry a cue that the browser refused after the first.
+  // On the click, as narration's (useNarrationAudio.ts): unlocking takes the
+  // sound banner off the composer, and on the press that moved the button
+  // being pressed out from under the release.
   useEffect(() => {
     if (!enabled) {
       return;
     }
-    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("click", unlock);
     window.addEventListener("keydown", unlock);
     return () => {
-      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("click", unlock);
       window.removeEventListener("keydown", unlock);
     };
   }, [enabled, unlock]);
@@ -219,6 +226,11 @@ export function useAmbienceAudio(
   }, [sting, enabled]);
 
   const installed = Boolean(tracks && Object.keys(tracks).length);
+  const waiting =
+    enabled &&
+    !muted &&
+    !unlocked &&
+    [ambience.bed, ambience.music].some((cueId) => Boolean(cueId && tracks?.[cueId]?.length));
   // One object per real change, so the memoized header is not handed a new
   // ambience prop on every table render.
   return useMemo(
@@ -228,6 +240,7 @@ export function useAmbienceAudio(
       bedLevel,
       musicLevel,
       unlocked,
+      waiting,
       installed,
       tracks: tracks ?? {},
       counts,
@@ -242,6 +255,6 @@ export function useAmbienceAudio(
       skip,
       setDucked,
     }),
-    [muted, volume, bedLevel, musicLevel, unlocked, installed, tracks, counts, refresh, ambience, playing, setMuted, setVolume, setBedLevel, setMusicLevel, unlock, skip, setDucked],
+    [muted, volume, bedLevel, musicLevel, unlocked, waiting, installed, tracks, counts, refresh, ambience, playing, setMuted, setVolume, setBedLevel, setMusicLevel, unlock, skip, setDucked],
   );
 }

@@ -71,7 +71,10 @@ export function stopWordsFor(language: TableLanguage): ReadonlySet<string> {
         .split("\n")
         .flatMap((line) => line.split("|")[0].trim().split(/\s+/))
         .filter(Boolean)
-        .map((word) => word.normalize("NFC").toLowerCase()),
+        // As written, not keyed: a few entries carry an elision's apostrophe
+        // or a full stop ("d'", "ill."), which no word token ever equals, and
+        // keying them would make "d" a stop word.
+        .map((word) => word.normalize("NFKC").toLowerCase()),
     );
     stopSets.set(language, set);
   }
@@ -109,10 +112,30 @@ function memoStem(word: string, language: TableLanguage): string {
   return stem;
 }
 
+// A text's words in lower case, each whole ("dell'oracolo", "don't"): what a
+// stemmer and a stop list read.
+export function stemmerWords(text: string): string[] {
+  return words(text).map((word) => word.toLowerCase());
+}
+
 export function stems(text: string, language: TableLanguage): string[] {
   const stop = stopWordsFor(language);
-  return words(text.normalize("NFC"))
-    .map((word) => word.toLowerCase())
+  return stemmerWords(text)
     .filter((word) => !stop.has(word))
     .map((word) => memoStem(word, language));
+}
+
+// A name as someone writes it with an article or a possessive before it ("the
+// wolf", "il lupo", "her claws", "l'arco"): the leading words of the table
+// language's stop list taken off. Every Snowball list holds its language's
+// articles and possessives, so the one rule reads every table; the last word
+// always stays. Keys in, a key out (textKey).
+export function withoutLeadingStopWords(key: string, language: TableLanguage): string {
+  const stop = stopWordsFor(language);
+  const parts = key.split(" ");
+  let start = 0;
+  while (start < parts.length - 1 && stop.has(parts[start])) {
+    start += 1;
+  }
+  return parts.slice(start).join(" ");
 }

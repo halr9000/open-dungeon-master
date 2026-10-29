@@ -23,7 +23,7 @@ await test("A creature that fails its save against Thunderwave is pushed 10 feet
   const { world, sheets: [wizard], enemies: [goblin] } = await table([caster("wizard", "int", ["Thunderwave"])]);
   await layMap(world, field(), { [wizard.id]: { x: 5, y: 2 }, [goblin.id]: { x: 6, y: 2 } });
   world.dice(4, 4, 1);
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Thunderwave", enemyIds: [goblin.id], saveAbility: "con", dc: 15, level: 1 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Thunderwave", enemyIds: [goblin.id], saveAbility: "con", dc: 15, level: 1 });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.deepEqual(squareOf(world, goblin.id), [8, 2]);
@@ -33,7 +33,7 @@ await test("A creature in Gust of Wind's line that fails its Strength save is pu
   const { world, sheets: [druid], enemies: [goblin] } = await table([caster("druid", "wis", ["Gust of Wind"])]);
   await layMap(world, field(), { [druid.id]: { x: 5, y: 2 }, [goblin.id]: { x: 7, y: 2 } });
   world.dice(1);
-  const out = await world.invoke("aoe_damage", { casterId: druid.id, spell: "Gust of Wind", enemyIds: [goblin.id], saveAbility: "str", dc: 15, level: 2 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: druid.id, spell: "Gust of Wind", enemyIds: [goblin.id], saveAbility: "str", dc: 15, level: 2 });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.deepEqual(squareOf(world, goblin.id), [10, 2]);
@@ -141,11 +141,11 @@ await test("A creature that fails its save against Levitate rises off the ground
 
 await test("Chain Lightning strikes its target and up to three more creatures from one casting; a fifth is refused before the slot.", async () => {
   const { world, sheets: [wizard], enemies } = await table([caster("wizard", "int", ["Chain Lightning"], [], 11)], 5);
-  const refused = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Chain Lightning", enemyIds: enemies.map((enemy) => enemy.id), saveAbility: "dex", dc: 15, level: 6 });
+  const refused = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Chain Lightning", enemyIds: enemies.map((enemy) => enemy.id), saveAbility: "dex", dc: 15, level: 6 });
   assert.equal(refused.ok, false);
   assert.equal(world.sheet(wizard.id).spellcasting.slots["6"].used, 0);
   world.dice(...new Array(10).fill(1), 1, 1, 1, 1);
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Chain Lightning", enemyIds: enemies.slice(0, 4).map((enemy) => enemy.id), saveAbility: "dex", dc: 15, level: 6 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Chain Lightning", enemyIds: enemies.slice(0, 4).map((enemy) => enemy.id), saveAbility: "dex", dc: 15, level: 6 });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.equal(world.sheet(wizard.id).spellcasting.slots["6"].used, 1);
@@ -154,7 +154,7 @@ await test("Chain Lightning strikes its target and up to three more creatures fr
 await test("Acid Splash's second target must stand within 5 feet of the first.", async () => {
   const { world, sheets: [wizard], enemies: [a, b] } = await table([caster("wizard", "int", [], ["Acid Splash"])], 2);
   await layMap(world, field(), { [wizard.id]: { x: 2, y: 2 }, [a.id]: { x: 6, y: 2 }, [b.id]: { x: 10, y: 2 } });
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Acid Splash", enemyIds: [a.id, b.id], saveAbility: "dex", dc: 15 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Acid Splash", enemyIds: [a.id, b.id], saveAbility: "dex", dc: 15 });
   assert.equal(out.ok, false);
   assert.equal(enemyOf(world, b.id).currentHp, enemyOf(world, b.id).maxHp);
 });
@@ -164,7 +164,7 @@ await test("Acid Splash's second target must stand within 5 feet of the first.",
 await test("Black Tentacles restrains and deals 3d6 bludgeoning on a failed save, and a creature it holds takes 3d6 again at the start of its turn.", async () => {
   const { world, sheets: [wizard], enemies: [goblin] } = await table([caster("wizard", "int", ["Black Tentacles"])]);
   world.dice(1, 1, 1, 1);
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Black Tentacles", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 4 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Black Tentacles", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 4 });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.ok(enemyOf(world, goblin.id).conditions.includes("restrained"));
@@ -178,7 +178,7 @@ await test("Black Tentacles restrains and deals 3d6 bludgeoning on a failed save
 await test("A creature that fails its save against Stinking Cloud spends its action retching: it takes no action that turn.", async () => {
   const { world, sheets: [wizard, fighter], enemies: [goblin] } = await table([caster("wizard", "int", ["Stinking Cloud"]), FIGHTER]);
   world.dice(1);
-  await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Stinking Cloud", enemyIds: [goblin.id], saveAbility: "con", dc: 15, level: 3 });
+  await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Stinking Cloud", enemyIds: [goblin.id], saveAbility: "con", dc: 15, level: 3 });
   world.clearDice();
   const swing = await enemySwing(world, goblin.id, fighter.id);
   assert.equal(swing.ok, false);
@@ -187,7 +187,7 @@ await test("A creature that fails its save against Stinking Cloud spends its act
 await test("A confused creature rolls a d10 at the start of its turn; on 2 to 6 it neither moves nor takes an action.", async () => {
   const { world, sheets: [wizard, fighter], enemies: [goblin] } = await table([caster("wizard", "int", ["Confusion"]), FIGHTER]);
   world.dice(1);
-  await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Confusion", enemyIds: [goblin.id], saveAbility: "wis", dc: 15, level: 4 });
+  await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Confusion", enemyIds: [goblin.id], saveAbility: "wis", dc: 15, level: 4 });
   world.clearDice();
   // The d10 of its turn and the round's repeat save, in whichever order the
   // pointer rolls them: a 4 on the d10 (or a 1, with the save at 4) leaves
@@ -205,7 +205,7 @@ await test("A concentrating creature caught in Sleet Storm makes a Constitution 
   const { world, sheets: [druid], enemies: [mage] } = await table([caster("druid", "wis", ["Sleet Storm"])]);
   encounters.setEnemyConcentration(mage.id, "Hold Person");
   world.dice(20, 1);
-  await world.invoke("aoe_damage", { casterId: druid.id, spell: "Sleet Storm", enemyIds: [mage.id], saveAbility: "dex", dc: 15, level: 3 });
+  await world.invoke("aoe_damage", { casterCharacterId: druid.id, spell: "Sleet Storm", enemyIds: [mage.id], saveAbility: "dex", dc: 15, level: 3 });
   world.clearDice();
   assert.equal(enemyOf(world, mage.id).concentration ?? null, null);
 });
@@ -220,9 +220,22 @@ await test("Blight has no effect on undead or constructs, and a plant saves with
   assert.equal(d20s(world.diceLog()), 2);
   assert.equal(enemyOf(world, shrub.id).maxHp - enemyOf(world, shrub.id).currentHp, 64);
   const other = await table([caster("druid", "wis", ["Blight"])], 1, { type: "undead" });
-  const refused = await other.world.invoke("cast_at_enemy", { characterId: other.sheets[0].id, targetEnemyId: other.enemies[0].id, spell: "Blight", saveAbility: "con", level: 4 });
-  assert.equal(refused.ok, false);
-  assert.equal(other.world.sheet(other.sheets[0].id).spellcasting.slots["4"].used, 0);
+  const spared = await other.world.invoke("cast_at_enemy", { characterId: other.sheets[0].id, targetEnemyId: other.enemies[0].id, spell: "Blight", saveAbility: "con", level: 4 });
+  assert.equal(spared.ok, true, spared.error);
+  assert.match(String(spared.result.noEffect), /no effect on undead/);
+  assert.equal(other.world.sheet(other.sheets[0].id).spellcasting.slots["4"].used, 1);
+  assert.equal(enemyOf(other.world, other.enemies[0].id).currentHp, enemyOf(other.world, other.enemies[0].id).maxHp);
+});
+
+await test("Command has no effect on undead: the spell is cast, its slot spent, and the creature does as it would.", async () => {
+  const { world, sheets: [cleric], enemies: [zombie] } = await table([caster("cleric", "wis", ["Command"])], 1, { type: "undead" });
+  world.dice(1);
+  const out = await world.invoke("cast_at_enemy", { characterId: cleric.id, targetEnemyId: zombie.id, spell: "Command", condition: "grovel", saveAbility: "wis", level: 1 });
+  world.clearDice();
+  assert.equal(out.ok, true, out.error);
+  assert.match(String(out.result.noEffect), /no effect on undead/);
+  assert.equal(world.sheet(cleric.id).spellcasting.slots["1"].used, 1);
+  assert.deepEqual(enemyOf(world, zombie.id).conditions, []);
 });
 
 // ---- Bestow Curse: each of its four curses held by the engine ----

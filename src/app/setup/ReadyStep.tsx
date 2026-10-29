@@ -52,6 +52,13 @@ function rows(input: {
   const pictures: Row =
     draft.pictures === "none"
       ? { key: "pictures", title: "Pictures", tone: "off", text: "Painted placeholders", step: steps.pictures }
+      : draft.pictures === ""
+        ? // Skipped: nothing was saved, and a ComfyUI found on its own still counts.
+          wait
+          ? { key: "pictures", title: "Pictures", tone: "wait", text: "Asking…", step: steps.pictures }
+          : caps.images.configured && caps.images.reachable
+            ? { key: "pictures", title: "Pictures", tone: "ok", text: "Found on this computer, and painting", step: steps.pictures }
+            : { key: "pictures", title: "Pictures", tone: "off", text: "Not set up yet. Tables use painted placeholders until it is.", step: steps.pictures }
       : wait
         ? { key: "pictures", title: "Pictures", tone: "wait", text: "Asking…", step: steps.pictures }
         : caps.images.configured && caps.images.reachable
@@ -62,6 +69,12 @@ function rows(input: {
   const narration: Row =
     draft.narration === "off"
       ? { key: "narration", title: "Narration", tone: "off", text: "Text only", step: steps.voice }
+      : draft.narration === ""
+        ? wait
+          ? { key: "narration", title: "Narration", tone: "wait", text: "Asking…", step: steps.voice }
+          : caps.tts.configured && caps.tts.reachable
+            ? { key: "narration", title: "Narration", tone: "ok", text: "Found on this computer, and reading aloud", step: steps.voice }
+            : { key: "narration", title: "Narration", tone: "off", text: "Not set up yet. The story is read on screen until it is.", step: steps.voice }
       : wait
         ? { key: "narration", title: "Narration", tone: "wait", text: "Asking…", step: steps.voice }
         : caps.tts.configured && caps.tts.reachable

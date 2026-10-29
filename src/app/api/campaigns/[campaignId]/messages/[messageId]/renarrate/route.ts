@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isErrorResponse, requireStoryAuthority } from "@/lib/campaign-api";
+import { correctionsField } from "@/lib/correction-reasons";
 import { getLatestDmMessage } from "@/lib/db/messages";
 import { publishPersisted } from "@/lib/events";
 import { getDmStatus } from "@/lib/dm/status";
@@ -66,14 +67,14 @@ export async function POST(
   const latest = getLatestDmMessage(campaignId);
   if (!latest || latest.id !== messageId) {
     return Response.json(
-      { error: "Only the DM's most recent message can be rerolled." },
+      { error: "Only the GM's most recent message can be rerolled." },
       { status: 400 },
     );
   }
   // A turn in flight is about to replace this narration anyway, and the
   // reroll would queue behind it and rewrite the wrong message.
   if (getDmStatus(campaignId) !== "idle") {
-    return Response.json({ error: "The DM is mid-turn; try again after." }, { status: 409 });
+    return Response.json({ error: "The GM is mid-turn; try again after." }, { status: 409 });
   }
 
   const result = await runRenarrate({
@@ -81,10 +82,11 @@ export async function POST(
     messageId,
     guidance: parsed.data.guidance,
     tempOffset: parsed.data.tempOffset,
+    userId: context.user.id,
   });
   if ("error" in result) {
     return Response.json({ error: result.error }, { status: result.status });
   }
   publishPersisted(campaignId, "message_updated", { message: result.message });
-  return Response.json({ message: result.message });
+  return Response.json({ message: result.message, ...correctionsField(result.correctionId ? [result.correctionId] : []) });
 }

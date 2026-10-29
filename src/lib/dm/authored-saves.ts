@@ -19,6 +19,7 @@
 // from rollEnemySave (forced-save.ts) and applyEnemyDamage (enemy-damage.ts);
 // this module must not import either.
 
+import { sideOf } from "@/lib/dm/combatant";
 import { getBattleMapForEncounter, getTokenByRef } from "@/lib/db/battle-maps";
 import { getActiveEncounter, patchEnemyConditions, type Encounter, type EncounterEnemy } from "@/lib/db/encounters";
 import { getSheetById, listSheets } from "@/lib/db/sheets";
@@ -28,8 +29,8 @@ import type { Advantage } from "@/lib/dice";
 import { activeAuthored, hasCondition } from "@/lib/srd/authored-effects";
 import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
+import { textKey } from "@/lib/language/text-logic";
+import { isConditionNamed } from "@/lib/srd/feature-names";
 
 // The character whose turn it is, when the pointer rests on one.
 export function actingSheetId(encounter: Encounter | null): string | null {
@@ -57,7 +58,7 @@ export function withinFeet(encounterId: string, fromRef: string, toRef: string, 
 }
 
 function sourcedMark(enemy: EncounterEnemy, name: string): { condition: string; source: string | undefined } | null {
-  const condition = enemy.conditions.find((entry) => lower(entry) === name);
+  const condition = enemy.conditions.find((entry) => textKey(entry) === name);
   if (!condition) {
     return null;
   }
@@ -163,7 +164,12 @@ function reach(range: number | Array<[number, number]>, level: number): number {
 export function authoredAuraResistances(campaignId: string, sheet: CharacterSheet, options: { spell?: boolean } = {}): string[] {
   const out: string[] = [];
   const encounter = getActiveEncounter(campaignId);
+  // An aura covers the holder's own side of a fight (src/lib/dm/combatant.ts).
+  const side = encounter ? sideOf(encounter, "sheet", sheet.id, sheet) : null;
   for (const holder of fielded(campaignId)) {
+    if (encounter && holder.id !== sheet.id && sideOf(encounter, "sheet", holder.id, holder) !== side) {
+      continue;
+    }
     for (const { effect, held } of activeAuthored(holder, "aura_resist")) {
       const inRange =
         holder.id === sheet.id ||
@@ -182,9 +188,9 @@ export function authoredAuraResistances(campaignId: string, sheet: CharacterShee
         continue;
       }
       if (effect.typeFrom && holder.id !== sheet.id) {
-        const aura = holder.conditions.find((entry) => lower(entry).startsWith(effect.typeFrom!.condition));
-        const kind = aura ? /\(([^)]+)\)/.exec(aura)?.[1]?.toLowerCase() : undefined;
-        const type = kind ? effect.typeFrom.map[kind] : undefined;
+        const aura = holder.conditions.find((entry) => isConditionNamed(entry, effect.typeFrom!.condition));
+        const kind = aura ? /\(([^)]+)\)/.exec(aura)?.[1] : undefined;
+        const type = kind ? effect.typeFrom.map[textKey(kind)] : undefined;
         if (type) {
           out.push(type);
         }

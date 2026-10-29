@@ -1,7 +1,7 @@
 "use client";
 
-import { FolderOpen, FolderPlus, Lock, Plus, Search, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { FolderOpen, FolderPlus, Plus, Search, Trash2, Wand2, X } from "lucide-react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
@@ -11,11 +11,19 @@ import { SHELF_LABELS, newId } from "@/lib/worldforge/model";
 import { folderAndBelow, folderTree, removeFolder } from "@/lib/worldforge/tree";
 import type { WorldApi, WorldState } from "./useWorld";
 import { EntityPage } from "./EntityPage";
-import { EntityAvatar, tint, typeOf } from "./world-ui";
+import { tint, typeOf } from "./world-ui";
+import { EntryList } from "./EntryList";
+import { searchEntries, searchIndex } from "@/lib/worldforge/search";
+import type { OpenSystem } from "./WorldForgePanel";
+import type { OpenPrep } from "./PlaceBattleMaps";
+import { CreateButton } from "@/app/workshop/[workshopId]/CreateChooser";
+import { textKey } from "@/lib/language/text-logic";
 
 // The wiki: every entry of the world, which is every Cast member, place,
 // faction and lore entry of the workshop, filtered by type and folder and
-// found by name or alias, beside the one that is open.
+// found by name, alias or tag, or by a word in its texts or a value in its
+// fields (src/lib/worldforge/search.ts, audit WF-24), beside the one that is
+// open. The list draws only the rows in view in a big world (EntryList.tsx).
 
 export function WikiView({
   api,
@@ -23,18 +31,33 @@ export function WikiView({
   focus,
   onFocus,
   onOpenSystem,
+  onOpenPrep,
+  onCreate,
+  onDraftWorld,
+  atTable = false,
   canWrite,
   canPaint,
+  campaignId,
 }: {
   api: WorldApi;
   world: WorldState;
   focus: string | null;
   onFocus: (ref: string | null) => void;
-  onOpenSystem: (system: string) => void;
+  // The workshop's way to a record's own tool; absent at the play table,
+  // which has no workshop tools to open.
+  onOpenSystem?: OpenSystem;
+  onOpenPrep?: OpenPrep;
+  onCreate?: () => void;
+  // "Draft a world from this idea" (OutlineView.tsx), offered in the empty
+  // world when there is a text model to draft with.
+  onDraftWorld?: () => void;
+  // The play table's World tab: the campaign's world, with no files to open.
+  atTable?: boolean;
   // Whether there is a text model to draft with and an image backend to
   // paint with (src/lib/use-capabilities.ts).
   canWrite: boolean;
   canPaint: boolean;
+  campaignId: string;
 }) {
   const { doc, entities } = world;
   const [query, setQuery] = useState("");
@@ -44,21 +67,38 @@ export function WikiView({
   const [newType, setNewType] = useState(doc.types[0]?.id ?? "");
   const [newName, setNewName] = useState("");
   const [folderName, setFolderName] = useState<string | null>(null);
+  // The search box's Down arrow, asking the list to take the focus.
+  const [toList, setToList] = useState(0);
 
+  // The tour's "new entry" step. The Create chooser names a shelf
+  // ("open-world-entry:location"), and the form starts on its first type.
   useTourPrepare((name) => {
-    if (name === "open-world-entry") setMaking(true);
+    const [asked, shelf] = name.split(":");
+    if (asked !== "open-world-entry") return;
+    const type = shelf ? doc.types.find((entry) => entry.shelf === shelf) : undefined;
+    if (type) setNewType(type.id);
+    setMaking(true);
+    return true;
   });
 
+  // The search reads keys built once per world, and only once someone
+  // searches; typing stays ahead of the list (useDeferredValue).
+  const asked = useDeferredValue(query);
+  const searching = Boolean(textKey(asked));
+  const index = useMemo(() => (searching ? searchIndex(doc, entities) : null), [doc, entities, searching]);
+  const hits = useMemo(() => (index ? searchEntries(index, asked) : null), [index, asked]);
+  const excerpts = useMemo(() => new Map((hits ?? []).map((hit) => [hit.ref, hit.excerpt])), [hits]);
+  const byRef = useMemo(() => new Map(entities.map((entity) => [entity.ref, entity])), [entities]);
   const shown = useMemo(() => {
-    const words = query.trim().toLowerCase();
     const inFolder = folder === "" ? null : folder === "__none" ? new Set([""]) : folderAndBelow(doc.folders, folder);
-    return entities.filter(
-      (entity) =>
-        (!typeFilter || typeOf(doc, entity).id === typeFilter) &&
-        (!inFolder || inFolder.has(entity.entry.folderId)) &&
-        (!words || [entity.name, ...entity.aliases, ...entity.tags].some((name) => name.toLowerCase().includes(words))),
-    );
-  }, [doc, entities, folder, query, typeFilter]);
+    const pool = hits ? hits.map((hit) => byRef.get(hit.ref)).filter((entity): entity is (typeof entities)[number] => entity !== undefined) : entities;
+    return pool.filter((entity) => (!typeFilter || typeOf(doc, entity).id === typeFilter) && (!inFolder || inFolder.has(entity.entry.folderId)));
+  }, [byRef, doc, entities, folder, hits, typeFilter]);
+  const typeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entity of entities) counts.set(typeOf(doc, entity).id, (counts.get(typeOf(doc, entity).id) ?? 0) + 1);
+    return counts;
+  }, [doc, entities]);
   const open = entities.find((entity) => entity.ref === focus) ?? null;
   const chosenType = doc.types.find((type) => type.id === newType) ?? doc.types[0];
 
@@ -87,8 +127,8 @@ export function WikiView({
   }
 
   return (
-    <div className="grid gap-4 md:grid-cols-[17rem_minmax(0,1fr)]">
-      <aside className={cn("flex min-w-0 flex-col gap-2", open && "hidden md:flex")} aria-label="Entries">
+    <div className="grid gap-4 @2xl:grid-cols-[17rem_minmax(0,1fr)]">
+      <aside className={cn("flex min-w-0 flex-col gap-2", open && "hidden @2xl:flex")} aria-label="Entries">
         <KitButton tone="primary" onClick={() => setMaking((value) => !value)} data-tour="world-new-entry">
           <Plus className="size-3.5" /> New entry
         </KitButton>
@@ -123,7 +163,18 @@ export function WikiView({
 
         <label className="relative block">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-stone-500" />
-          <input className={cn(ui.input, "pl-8 text-xs")} placeholder="Find by name, alias or tag" aria-label="Find an entry" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input
+            className={cn(ui.input, "pl-8 text-xs")}
+            placeholder="Find by name, a word or a field"
+            aria-label="Find an entry"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowDown") return;
+              event.preventDefault();
+              setToList((count) => count + 1);
+            }}
+          />
         </label>
 
         <div className="flex flex-wrap gap-1" aria-label="Types">
@@ -131,7 +182,7 @@ export function WikiView({
             All {entities.length}
           </button>
           {doc.types.map((type) => {
-            const count = entities.filter((entity) => typeOf(doc, entity).id === type.id).length;
+            const count = typeCounts.get(type.id) ?? 0;
             return count ? (
               <button key={type.id} type="button" onClick={() => setTypeFilter(typeFilter === type.id ? "" : type.id)} className="rounded-md border px-1.5 py-0.5 text-[11px] motion-press" style={typeFilter === type.id ? { background: tint(type.color, 0.25), borderColor: type.color, color: "#f5f0e6" } : { borderColor: tint(type.color, 0.35), color: type.color }}>
                 {type.name} {count}
@@ -153,57 +204,63 @@ export function WikiView({
               <KitButton tone="small" type="submit" disabled={!folderName.trim()}>Add</KitButton>
             </form>
           ) : null}
-          {[{ id: "", name: "Everything", depth: 0 }, ...folderTree(doc.folders).map(({ folder: entry, depth }) => ({ id: entry.id, name: entry.name, depth })), ...(doc.folders.length ? [{ id: "__none", name: "In no folder", depth: 0 }] : [])].map((entry) => (
-            <div key={entry.id || "all"} className="group flex items-center">
-              <button type="button" onClick={() => setFolder(entry.id)} className={cn("flex flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs motion-press", folder === entry.id ? "bg-amber-400/10 text-amber-100" : "text-stone-400 hover:text-stone-200")} style={{ paddingLeft: `${0.375 + entry.depth * 0.75}rem` }}>
-                <FolderOpen className="size-3.5 shrink-0" /> {entry.name}
-              </button>
-              {entry.id && entry.id !== "__none" ? (
-                <KitButton tone="iconDanger" aria-label={`Remove the folder ${entry.name}`} onClick={() => dropFolder(entry.id)}>
-                  <Trash2 className="size-3" />
-                </KitButton>
-              ) : null}
-            </div>
-          ))}
+          {/* A big world's folders scroll on their own, so the entry list
+              below them stays in sight (audit WF-24). */}
+          <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto pr-1" data-testid="world-folders">
+            {[{ id: "", name: "Everything", depth: 0 }, ...folderTree(doc.folders).map(({ folder: entry, depth }) => ({ id: entry.id, name: entry.name, depth })), ...(doc.folders.length ? [{ id: "__none", name: "In no folder", depth: 0 }] : [])].map((entry) => (
+              <div key={entry.id || "all"} className="group flex shrink-0 items-center">
+                <button type="button" onClick={() => setFolder(entry.id)} className={cn("flex flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs motion-press", folder === entry.id ? "bg-amber-400/10 text-amber-100" : "text-stone-400 hover:text-stone-200")} style={{ paddingLeft: `${0.375 + entry.depth * 0.75}rem` }}>
+                  <FolderOpen className="size-3.5 shrink-0" /> {entry.name}
+                </button>
+                {entry.id && entry.id !== "__none" ? (
+                  <KitButton tone="iconDanger" aria-label={`Remove the folder ${entry.name}`} onClick={() => dropFolder(entry.id)}>
+                    <Trash2 className="size-3" />
+                  </KitButton>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </div>
 
-        <div className="flex max-h-[60vh] flex-col gap-0.5 overflow-y-auto pr-1" role="listbox" aria-label="Entries">
-          {shown.length === 0 ? <p className="px-1 py-2 text-xs text-stone-500">{entities.length ? "Nothing matches." : "No entries yet. Make one, or open a WorldForge file."}</p> : null}
-          {shown.map((entity) => {
-            const type = typeOf(doc, entity);
-            // shrink-0: motion-press hides overflow, and a flex item that
-            // hides overflow has no minimum height, so the capped column
-            // squeezed forty entries into slivers over one another instead
-            // of scrolling (issue 282).
-            return (
-              <button
-                key={entity.ref}
-                type="button"
-                role="option"
-                aria-selected={entity.ref === focus}
-                onClick={() => onFocus(entity.ref)}
-                className={cn("flex shrink-0 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left motion-press", entity.ref === focus ? "bg-amber-400/10 shadow-[0_0_16px_rgba(212,171,58,0.12)]" : "hover:bg-stone-900/70")}
-              >
-                <EntityAvatar entity={entity} type={type} size="size-8" />
-                <span className="min-w-0 flex-1">
-                  <span className={cn("block truncate text-sm", entity.ref === focus ? "text-amber-100" : "text-stone-200")}>{entity.name}</span>
-                  <span className="block truncate text-[11px]" style={{ color: type.color }}>{type.name}</span>
-                </span>
-                {entity.entry.hiddenTruth ? <Lock className="size-3 shrink-0 text-red-400/80" aria-label="Has a hidden truth" /> : null}
-              </button>
-            );
-          })}
-        </div>
+        <EntryList
+          doc={doc}
+          shown={shown}
+          focus={focus}
+          onFocus={onFocus}
+          excerptOf={hits ? (ref) => excerpts.get(ref) ?? "" : undefined}
+          toList={toList}
+          empty={
+            <>
+              {shown.length === 0 ? <p className="px-1 py-2 text-xs text-stone-500">{entities.length ? "Nothing matches." : atTable ? "No entries yet. Make one, or bring a workshop's world in from Settings." : "No entries yet. Make one, or open a WorldForge file."}</p> : null}
+              {!entities.length && onCreate ? (
+                // An empty world is where an author most expects WorldForge to
+                // make anything; Create says where each thing is made instead.
+                <div className="flex flex-col items-start gap-2 px-1 py-1" data-testid="world-empty-create">
+                  <p className="text-xs text-stone-400">WorldForge keeps the story: its people, places, factions and lore. A monster to fight, an item to hold or a map to stand on is made in its own tool, and Create takes you there; an entry here can then link to it.</p>
+                  <div className="flex flex-wrap gap-2">
+                    {onDraftWorld ? (
+                      <button type="button" onClick={onDraftWorld} className={ui.btnSmall} data-testid="world-empty-outline">
+                        <Wand2 className="size-4" /> Draft a world from an idea
+                      </button>
+                    ) : null}
+                    <CreateButton onClick={onCreate} />
+                  </div>
+                  {!onDraftWorld && !atTable ? <p className="text-[11px] text-stone-500">Drafting a world from an idea needs a text model. An admin adds one under Admin &gt; Text model defaults; until then, entries are written by hand or opened from a WorldForge file.</p> : null}
+                </div>
+              ) : null}
+            </>
+          }
+        />
       </aside>
 
-      <div className={cn("min-w-0", !open && "hidden md:block")}>
+      <div className={cn("min-w-0", !open && "hidden @2xl:block")}>
         {open ? (
-          <EntityPage key={open.ref} api={api} world={world} entity={open} onFocus={onFocus} onBack={() => onFocus(null)} onOpenSystem={onOpenSystem} canWrite={canWrite} canPaint={canPaint} />
+          <EntityPage key={open.ref} campaignId={campaignId} api={api} world={world} entity={open} onFocus={onFocus} onBack={() => onFocus(null)} onOpenSystem={onOpenSystem} onOpenPrep={onOpenPrep} canWrite={canWrite} canPaint={canPaint} />
         ) : (
           <div className="panel flex min-h-48 flex-col items-center justify-center gap-2 rounded-xl p-6 text-center animate-fade-up">
             <p className="font-display text-lg text-amber-100">The world, entry by entry</p>
             <p className="max-w-md text-sm text-stone-400">
-              Every Cast member, place, faction and lore entry of this workshop is an entry here. Open one to write its article, link it to the rest, give it the fields its type keeps and the truth only you know.
+              Every Cast member, place, faction and lore entry of this {atTable ? "campaign" : "workshop"} is an entry here. Open one to write its article, link it to the rest, give it the fields its type keeps and the truth only you know.
             </p>
           </div>
         )}

@@ -17,6 +17,8 @@ import {
 } from "@/lib/srd/spell-prep";
 import { SpellBook, type SpellTile } from "./SpellBook";
 import { useSpellLookups, useSpellPool, type PoolSpell } from "./useSpellPool";
+import { textKey } from "@/lib/language/text-logic";
+import { revisedOnlySpellProblem } from "@/lib/content/edition";
 
 // A character's spells as a spell book, one per caster class. The owner of a
 // prepared caster can change what is prepared right here: unpreparing takes
@@ -40,7 +42,7 @@ export function SheetSpells({
   // A character whose class casts nothing may still hold a feat's spells
   // (Fey Touched's misty step, Ritual Caster's book, src/lib/srd/feat-spells.ts):
   // one book, read as spells known, with no slots to prepare from.
-  const classCasts = (view: CasterView) => Object.keys(spellSlotsFor(view.classId, 20, view.subclass)).length > 0;
+  const classCasts = (view: CasterView) => Object.keys(spellSlotsFor(view.classId, 20, view.subclass, view.progression)).length > 0;
   let views = casterViewsOf(sheet).map((view) =>
     classCasts(view)
       ? view
@@ -122,6 +124,16 @@ function CasterBook({
       ? { ...tile, blocked: "Prepared list full" }
       : tile,
   );
+  // A 2024-only spell an older sheet still lists: it is not cast here, and
+  // the character's next edit asks for a 2014 one in its place.
+  const revised = [
+    ...new Set(
+      [
+        ...view.cantrips.map((name) => revisedOnlySpellProblem(name, "cantrip")),
+        ...[...heldSpells(view), ...view.pending, ...spellbookOf(view)].map((name) => revisedOnlySpellProblem(name)),
+      ].filter((problem): problem is string => problem !== null),
+    ),
+  ];
   const counters = [
     ...(view.cantrips.length ? [{ label: "Cantrips", value: view.cantrips.length }] : []),
     view.style === "known"
@@ -211,6 +223,11 @@ function CasterBook({
                 You know these spells and always have them ready. You can swap one when you level up.
               </p>
             ) : null}
+            {revised.length ? (
+              <p role="note" className="mt-2 text-[11px] text-amber-200/90">
+                {revised.join(" ")} The character&apos;s next edit asks for it.
+              </p>
+            ) : null}
             {message ? (
               <p
                 role={message.tone === "error" ? "alert" : "status"}
@@ -227,7 +244,7 @@ function CasterBook({
 }
 
 function isGranted(view: CasterView, name: string) {
-  return grantedSpellsOf(view).some((entry) => entry.toLowerCase() === name.toLowerCase());
+  return grantedSpellsOf(view).some((entry) => textKey(entry) === textKey(name));
 }
 
 // Tiles for one caster: what is ready, what waits, and while editing what
@@ -236,9 +253,9 @@ function isGranted(view: CasterView, name: string) {
 // looked-up rows for this caster's own pack spells (already taken, so they
 // never turn into "available" tiles).
 function buildTiles(view: CasterView, pool: PoolSpell[], editing: boolean): SpellTile[] {
-  const levels = new Map(pool.map((spell) => [spell.name.toLowerCase(), spell]));
+  const levels = new Map(pool.map((spell) => [textKey(spell.name), spell]));
   const tile = (name: string, state: SpellTile["state"]): SpellTile => {
-    const row = levels.get(name.toLowerCase());
+    const row = levels.get(textKey(name));
     return {
       name,
       level: row?.level ?? spellLevelOf(name),
@@ -257,7 +274,7 @@ function buildTiles(view: CasterView, pool: PoolSpell[], editing: boolean): Spel
     ...heldSpells(view).map((name) => tile(name, "ready")),
     ...view.pending.map((name) => tile(name, "pending")),
   ].filter((entry) => {
-    const key = entry.name.toLowerCase();
+    const key = textKey(entry.name);
     if (taken.has(key)) {
       return false;
     }
@@ -268,13 +285,13 @@ function buildTiles(view: CasterView, pool: PoolSpell[], editing: boolean): Spel
     // The book is always worth seeing: it is what the wizard owns.
     tiles.push(
       ...spellbookOf(view)
-        .filter((name) => !taken.has(name.toLowerCase()))
+        .filter((name) => !taken.has(textKey(name)))
         .map((name) => tile(name, "inBook")),
     );
   } else if (editing && view.style === "prepared") {
     tiles.push(
       ...pool
-        .filter((spell) => spell.level > 0 && !taken.has(spell.name.toLowerCase()))
+        .filter((spell) => spell.level > 0 && !taken.has(textKey(spell.name)))
         .map((spell) => tile(spell.name, "available")),
     );
   }

@@ -254,7 +254,7 @@ test("a pack-only race saves its trait names, and a level-up regrant keeps them"
     state: {
       name: "Mira", subclass: "", alignment: "N", gender: "", appearance: "", acOverride: null, portrait: null,
       gold: 15, feats: [], stylePicks: [], optionPicks: [], racialAsi: [], racialSkills: [], racialTool: "",
-      racialCantrip: "", backgroundSkills: ["insight"], backstory: "", spells: [], spellWarningAck: true,
+      racialCantrips: [], backgroundSkills: ["insight"], backstory: "", spells: [], spellWarningAck: true,
     },
     derived: {
       abilities: { str: 10, dex: 14, con: 12, int: 10, wis: 12, cha: 10 },
@@ -308,3 +308,20 @@ test("a race an edit needs stays an option even when its rules ask for a subrace
 });
 
 console.log(`\ntest-pack-rows: ${passed} tests passed.`);
+
+const { subraceLabel } = await import("../src/lib/content/race-options.ts");
+test("a subrace card reads Parent (Subrace), never twice", () => {
+  assert.equal(subraceLabel("Drow Heritage", "Darakhul"), "Darakhul (Drow Heritage)");
+  assert.equal(subraceLabel("Ravenfolk", "Darakhul"), "Darakhul (Ravenfolk Heritage)");
+  assert.equal(subraceLabel("Dwarf Chassis", "Gearforged"), "Gearforged (Dwarf Chassis)");
+  assert.equal(subraceLabel("Stoor Halfling", "Halfling"), "Halfling (Stoor)");
+  assert.equal(subraceLabel("High Elf", "Elf"), "Elf (High)");
+  assert.equal(subraceLabel("Lightfoot", "Halfling"), "Halfling (Lightfoot)");
+  assert.equal(subraceLabel("Malkin", "Catfolk"), "Catfolk (Malkin)");
+  assert.equal(subraceLabel("Fever-Bit", "Drow"), "Drow (Fever-Bit)");
+  assert.equal(subraceLabel("Dwarf (Hill)", "Dwarf"), "Dwarf (Hill)");
+  assert.equal(subraceLabel("Dwarf", "Dwarf"), "Dwarf");
+  assert.equal(subraceLabel("Alseid", undefined), "Alseid");
+  const malkin = raceOptions.find((entry) => entry.slug === "malkin");
+  if (malkin) assert.equal(malkin.name, "Catfolk (Malkin)");
+});

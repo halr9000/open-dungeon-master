@@ -31,6 +31,7 @@ const DAWN_HOUR = 6;
 // The pure reads (the rule, the most, the count now) live in
 // src/lib/srd/item-charge-rules.ts so the sheet can show them too.
 import { chargeMax, chargeRuleOf, chargesLeft } from "@/lib/srd/item-charge-rules";
+import type { ToolError } from "@/lib/dm/tool-errors";
 export { chargeMax, chargeRuleOf, chargesLeft };
 
 // How many dawns fall after `from` and at or before `to`, both minutes on
@@ -50,7 +51,7 @@ export function spendChargesMath(
   item: EquipmentItem,
   rule: ChargeRule,
   count: number,
-): { error: string } | { charges: number; destroyed: boolean; notes: string[]; d20?: ReturnType<typeof rollExpression>; initial?: ReturnType<typeof rollExpression> } {
+): ToolError | { charges: number; destroyed: boolean; notes: string[]; d20?: ReturnType<typeof rollExpression>; initial?: ReturnType<typeof rollExpression> } {
   let initial: ReturnType<typeof rollExpression> | undefined;
   if (typeof item.charges !== "number" && typeof rule.max === "string") {
     initial = rollExpression(rule.max);
@@ -64,6 +65,7 @@ export function spendChargesMath(
       : "It does not regain charges.";
     return {
       error: `${item.name} has ${left} charge${left === 1 ? "" : "s"} left and this use needs ${count}. ${regains}`,
+      refused: "rules",
     };
   }
   const after = left - count;

@@ -19,7 +19,7 @@ const { damageAdjust } = await import("../src/lib/dm/damage-logic.ts");
 const fighter = world.addHero({
   name: "Fighter", class: "fighter", level: 5, abilities: { str: 16, dex: 10 }, proficiencies: { ...TRAINED, skills: ["athletics", "perception"] },
   maxHp: 60, ac: 10, acOverride: true,
-  equipment: [{ name: "Longsword", qty: 1 }, { name: "Shortsword", qty: 1 }, { name: "Silvered Longsword", qty: 1 }, { name: "Longbow", qty: 1 }, { name: "Light Crossbow", qty: 1 }, { name: "Hand Crossbow", qty: 1 }],
+  equipment: [{ name: "Longsword", qty: 1 }, { name: "Shortsword", qty: 1 }, { name: "Silvered Longsword", srdName: "Longsword", qty: 1, tags: ["silvered"] }, { name: "Longbow", qty: 1 }, { name: "Light Crossbow", qty: 1 }, { name: "Hand Crossbow", qty: 1 }],
 });
 const other = world.addHero({
   name: "Other", class: "fighter", level: 5, proficiencies: TRAINED, maxHp: 60, ac: 10, acOverride: true,
@@ -87,7 +87,7 @@ await test("An enemy drags the character it grapples at half speed (move_token d
   kit.place(fighter.id, 5, 6);
   kit.place(enemy.id, 5, 7);
   world.patch(fighter.id, { conditions: ["grappled"], conditionMeta: { grappled: { source: enemy.id } } });
-  const out = await world.invoke("move_token", { tokenName: enemy.id, x: 5, y: 12, drag: true });
+  const out = await world.invoke("move_token", { token: enemy.id, x: 5, y: 12, drag: true });
   assert.equal(out.ok, true, out.error);
   // Speed 30 is six squares; dragging, three.
   assert.deepEqual([kit.token(enemy.id).x, kit.token(enemy.id).y], [5, 10]);
@@ -95,7 +95,7 @@ await test("An enemy drags the character it grapples at half speed (move_token d
   assert.equal(chebyshevOf(kit.token(fighter.id), kit.token(enemy.id)), 1, "the dragged character was left behind");
   assert.ok(lower(world.sheet(fighter.id).conditions).includes("grappled"));
   world.patch(fighter.id, { conditions: [], conditionMeta: {} });
-  const none = await world.invoke("move_token", { tokenName: enemy.id, x: 5, y: 11, drag: true });
+  const none = await world.invoke("move_token", { token: enemy.id, x: 5, y: 11, drag: true });
   assert.equal(none.ok, false, "a drag with nobody held was allowed");
 });
 
@@ -177,9 +177,15 @@ await test("Underwater, a ranged weapon attack past its normal range misses; wit
   kit.freshTurn();
   // A hand crossbow's normal range is 30 feet; the target stands 45 feet off.
   kit.place(enemy.id, 5, 14);
+  // SRD 5.1: it "automatically misses": the shot is made, and spent, with no
+  // roll.
+  const hp = kit.enemy(enemy.id).currentHp;
   const far = await kit.swing(fighter.id, enemy.id, [15, 3], { weapon: "Hand Crossbow" });
-  assert.equal(far.ok, false, "a crossbow bolt flew past its normal range underwater");
-  assert.ok(!world.encounter().turnBudget?.actionUsed, "the refused shot spent the action");
+  assert.equal(far.ok, true, far.error);
+  assert.equal(far.result.hit, false, "a crossbow bolt flew past its normal range underwater");
+  assert.equal(far.toHit, null, "the automatic miss was rolled");
+  assert.ok(world.encounter().turnBudget?.attacksMade > 0, "the shot that missed was not spent");
+  assert.equal(kit.enemy(enemy.id).currentHp, hp);
 });
 
 await test("A creature fully immersed in water has resistance to fire damage.", async () => {
@@ -218,13 +224,13 @@ await test("A silvered weapon passes resistance and immunity to nonmagical attac
 
 await test("A blinded creature automatically fails any ability check that requires sight; a deafened one any that requires hearing.", async () => {
   world.patch(fighter.id, { conditions: ["blinded"], conditionMeta: {} });
-  const spot = await world.invoke("request_roll", { characterId: fighter.id, kind: "skill_check", skill: "perception", reason: "spot the tracks in the mud" });
+  const spot = await world.invoke("request_roll", { characterId: fighter.id, kind: "skill_check", skill: "perception", by: "sight", reason: "spot the tracks in the mud" });
   assert.equal(spot.ok, true, spot.error);
   assert.equal(spot.result.autoFailed, true, "a blinded character rolled to spot tracks");
-  const listen = await mk.forced([10], () => world.invoke("request_roll", { characterId: fighter.id, kind: "skill_check", skill: "perception", reason: "listen at the door" }));
+  const listen = await mk.forced([10], () => world.invoke("request_roll", { characterId: fighter.id, kind: "skill_check", skill: "perception", by: "hearing", reason: "listen at the door" }));
   assert.notEqual(listen.result.autoFailed, true, "a blinded character failed a hearing check");
   world.patch(fighter.id, { conditions: ["deafened"], conditionMeta: {} });
-  const hear = await world.invoke("request_roll", { characterId: fighter.id, kind: "skill_check", skill: "perception", reason: "listen at the door" });
+  const hear = await world.invoke("request_roll", { characterId: fighter.id, kind: "skill_check", skill: "perception", by: "hearing", reason: "listen at the door" });
   assert.equal(hear.result.autoFailed, true, "a deafened character rolled to listen");
   world.patch(fighter.id, { conditions: [], conditionMeta: {} });
 });

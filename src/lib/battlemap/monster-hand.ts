@@ -1,5 +1,6 @@
 import { signed, type HandCard, type MonsterAbilityUse } from "@/lib/battlemap/hand-core";
 import type { PublicEnemyAbility, PublicEnemyActions, PublicEnemyAttack } from "@/lib/dm/enemy-actions-view";
+import { monsterAttackIcon } from "@/lib/battlemap/attack-art";
 
 // The DM's hand: a monster's turn as cards (issue #108). A person running
 // the table used to play every goblin through the console's form; the
@@ -62,7 +63,7 @@ function attackCard(enemy: MonsterHandEnemy, actions: PublicEnemyActions, attack
     roll: `${signed(attack.toHit)} to hit`,
     rules: [swingsLine(attack.swings), attack.spellAttack ? "A spell attack." : ""].filter(Boolean).join(" "),
     condition: attack.onHit ?? "",
-    icon: { kind: "action", key: "attack" },
+    icon: monsterAttackIcon(enemy.name, attack.name, Boolean(attack.spellAttack)),
     target: "enemy",
     toHit: attack.toHit,
     damage: attack.damage || null,
@@ -188,11 +189,13 @@ export function monsterSentence(enemyName: string, card: HandCard, targetNames: 
 
 // The console call a played card makes: the same adjudication the form
 // would send, so the server's rules are the only rules. Null when the card
-// still needs a target.
+// still needs a target. rows: the targets that are enemy rows (a creature
+// the party dominates strikes its own kind, issue 503).
 export function monsterInvoke(
   card: HandCard,
   targetIds: string[],
   advantage: MonsterAdvantage = "none",
+  rows: ReadonlySet<string> = new Set(),
 ): { name: string; args: Record<string, unknown> } | null {
   const intent = card.intent;
   if (intent.card !== "monster") {
@@ -231,7 +234,7 @@ export function monsterInvoke(
       args: {
         characterId: targetIds[0],
         casterEnemyId: intent.enemyId,
-        ability: ability.name,
+        enemyAbility: ability.name,
         ...numbers,
         ...(ability.damageType ? { damageType: ability.damageType } : {}),
         ...(ability.condition ? { condition: ability.condition } : {}),
@@ -243,8 +246,9 @@ export function monsterInvoke(
     name: "aoe_damage",
     args: {
       casterEnemyId: intent.enemyId,
-      ability: ability.name,
-      characterIds: targetIds,
+      enemyAbility: ability.name,
+      characterIds: targetIds.filter((id) => !rows.has(id)),
+      ...(targetIds.some((id) => rows.has(id)) ? { enemyIds: targetIds.filter((id) => rows.has(id)) } : {}),
       ...numbers,
       ...(ability.damageType ? { type: ability.damageType } : {}),
     },

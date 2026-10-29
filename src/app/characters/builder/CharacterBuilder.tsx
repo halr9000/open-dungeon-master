@@ -2,11 +2,12 @@
 
 import { ContentScopeProvider } from "@/lib/content-scope";
 import { Loader2 } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AvatarCropDialog } from "@/app/settings/AvatarCropDialog";
 import { Wizard, type WizardNotice, type WizardStep } from "@/components/ui/Wizard";
 import { cn } from "@/lib/cn";
-import { useEffectsRoot } from "@/lib/effects-mode";
+import { ui } from "@/lib/ui";
+import { prefersStillMotion, useEffectsRoot } from "@/lib/effects-mode";
 import type { Genre } from "@/lib/schemas/game-settings";
 import type { Ability, CreateSheetInput } from "@/lib/schemas/sheet";
 import { SRD_SKILLS } from "@/lib/srd";
@@ -17,30 +18,54 @@ import { ABILITY_LABELS } from "./AbilityEditor";
 import type { DroppedPick } from "./reconcile";
 import { AbilitiesStep } from "./steps/AbilitiesStep";
 import { AncestryStep } from "./steps/AncestryStep";
+import { BackgroundPanel } from "./steps/BackgroundPanel";
 import { CallingStep } from "./steps/CallingStep";
-import { FinishStep } from "./steps/FinishStep";
-import { IdentityStep, type BuilderRole } from "./steps/IdentityStep";
+import { ContentNotices, LevelField } from "./steps/CallingSetup";
+import { ToolGrantPanels } from "./steps/ClassChoices";
+import { FinishStep, type BuilderRole } from "./steps/FinishStep";
+import { IdentityStep } from "./steps/IdentityStep";
 import { SpellsGearStep } from "./steps/SpellsGearStep";
+import { OwedLine } from "./steps/shared";
+import { owedPicks } from "./owed";
+import { playstyleBackgrounds, type PlaystyleId } from "./playstyles";
 import {
-  abilitiesBlocker,
-  ancestryBlocker,
+  abilitiesBlocks,
+  ancestryBlocks,
+  backgroundBlocks,
   buildBuilderResult,
-  callingBlocker,
+  callingBlocks,
   gearBlocker,
-  identityBlocker,
-  spellsBlocker,
+  identityBlocks,
+  spellsBlocks,
   validateBuilder,
   type BlockerTarget,
   type BuilderResult,
   type StepBlock,
 } from "./submit";
+import { clearBuilderDraft, readBuilderDraft, writeBuilderDraft, type BuilderDraft } from "./builderDraft";
 import { builderActions, useBuilderDerived } from "./useBuilderDerived";
-import { useArchetypes, useBuilderOptions, useWorldPack } from "./useBuilderOptions";
+import { BuildMathPanel } from "./BuildMathPanel";
+import { useArchetypeOptions, useBuilderOptions, useWorldPack, type OptionListKind } from "./useBuilderOptions";
+import { TableScopeNote } from "./TableScopeNote";
+import { UndoChangeBar } from "./UndoChangeBar";
+import { putBackMessage, undoMessage } from "./buildUndo";
+import { summaryRows, type SummaryRowKey } from "./summary";
+import { ALIGNMENT_LABELS } from "./usePickerGroups";
 import { listWords, unofferedPicks } from "./unoffered";
 import { findRace, useBuilderState, type DroppedNotice } from "./useBuilderState";
-import { useFeatDescs } from "./useFeatDescs";
+import { useFeatDescs, useFeatTexts } from "./useFeatDescs";
+import { builderFeatJudge, FeatJudgeContext, unmetFeatMessage } from "./featPrereqs";
+import { racialFeatCount } from "@/lib/srd/race-id";
+import { withSpeciesVariant } from "@/lib/content/species-variants";
 import { usePickerGroups } from "./usePickerGroups";
+import type { PickerGroup } from "./OptionPicker";
+import { useWiderSpellPool } from "@/components/sheet/useSpellPool";
+import { QuickBuildQuiz, type QuizVoice } from "./QuickBuildQuiz";
+import { QuickBuildReadback } from "./QuickBuildReadback";
+import { useQuickFill, type FillRequest } from "./useQuickFill";
 import { useTableRules } from "./useTableRules";
+import { hitDieChip } from "./lineage";
+import { useShowNumbers } from "./numbersPref";
 
 export type { BuilderResult } from "./submit";
 
@@ -48,7 +73,11 @@ export type { BuilderResult } from "./submit";
 // about a dropped pick can take the player to where it is made again.
 const STEP_OF_TARGET: Record<BlockerTarget, string> = {
   name: "identity",
-  backgroundSkills: "identity",
+  background: "ancestry",
+  backgroundSkills: "ancestry",
+  // Every open tool grant, the class's too, is asked beside the background
+  // (backgroundBlocks).
+  tools: "ancestry",
   race: "ancestry",
   languages: "ancestry",
   racialAsi: "ancestry",
@@ -57,10 +86,10 @@ const STEP_OF_TARGET: Record<BlockerTarget, string> = {
   racialCantrip: "ancestry",
   racialFeat: "ancestry",
   ancestry: "ancestry",
+  variant: "ancestry",
   repeatSkills: "ancestry",
   class: "calling",
   classSkills: "calling",
-  tools: "calling",
   subclass: "calling",
   styles: "calling",
   expertise: "calling",
@@ -71,6 +100,21 @@ const STEP_OF_TARGET: Record<BlockerTarget, string> = {
   gear: "spells-gear",
 };
 
+// The steps' keys in order, for the summary's Edit and Fix links, for a
+// quick build's read-back, whose Change goes to a pick's step, and for a
+// kept draft, which names its step by key (builderDraft.ts). How you want
+// to play comes first and the name last (backlog F4): nothing before the
+// identity step needs a name.
+const STEP_ORDER = ["calling", "ancestry", "abilities", "spells-gear", "identity", "finish"];
+
+// The rows a picker offers, in its order: what the quiz and the fill choose
+// from, so they never pick what this table leaves out.
+function offeredRows<T extends { id: string }>(rows: T[], groups: PickerGroup[]): T[] {
+  const ids = [...new Set(groups.flatMap((group) => group.options.map((option) => option.id)).filter(Boolean))];
+  const picked = ids.flatMap((id) => rows.filter((row) => row.id === id).slice(0, 1));
+  return picked.length ? picked : rows;
+}
+
 // A dropped pick as the player knows it: skill and style ids by name, an
 // ability by its word, everything else as it was picked.
 function droppedName(drop: DroppedPick): string {
@@ -78,6 +122,7 @@ function droppedName(drop: DroppedPick): string {
     case "classSkills":
     case "racialSkills":
     case "backgroundSkills":
+    case "repeatSkills":
     case "expertise":
       return SRD_SKILLS.find((skill) => skill.id === drop.value)?.name ?? drop.value;
     case "styles":
@@ -108,8 +153,9 @@ function droppedMessage({ because, drops }: DroppedNotice, stepLabel: string | u
   return `Changing the ${because} set aside ${named}: ${list.length === 1 ? "it no longer fits" : "they no longer fit"}.${where}`;
 }
 
-// Full character creation flow as a six-step wizard: identity, ancestry,
-// calling, abilities, spells and gear, finishing touches, paced by the diamond
+// Full character creation flow as a six-step wizard: class, ancestry and
+// background, abilities, spells and gear, name and story, finish (the
+// summary), paced by the diamond
 // stepper and the gold step wipe (docs/visual-overhaul-plan.md 7). Open5e
 // races/classes/subclasses/backgrounds (SRD fallback), three ability-score
 // methods, spell/equipment/feat pickers, live derived stats. Used by
@@ -134,12 +180,17 @@ function CharacterBuilderForm({
   worldPackId,
   initial,
   initialLevel,
+  startLevel,
+  levelNote,
   submitLabel,
   onSubmit,
   busy,
   error,
   role,
+  draftKey,
   onCancel,
+  quizVoice = "player",
+  openQuiz = false,
   className,
 }: {
   // The table the character is made for: its hit point method and starting
@@ -161,16 +212,32 @@ function CharacterBuilderForm({
   // it earned up to there with no recorded pick were taken in play and are
   // already in its scores.
   initialLevel?: number;
+  // Open a stored character this many levels up ("Level up" in the library),
+  // or a new one at this level when the door knows it (door.ts).
+  startLevel?: number;
+  // Where that level came from, said under the level select.
+  levelNote?: string;
   submitLabel: string;
   onSubmit: (result: BuilderResult) => void;
   busy: boolean;
   error: string;
-  // Player character or DM-played ally; only the library page asks, since a
-  // campaign already knows which door the character comes through.
+  // Player character or DM-played ally, asked on the Finish step; only the
+  // library page asks, and only when the link that opened it did not say
+  // (door.ts), since a campaign already knows which door the character
+  // comes through.
   role?: { value: BuilderRole; onChange: (role: BuilderRole) => void };
+  // Where a new character's progress is kept on this device
+  // (builderDraftKey); the caller clears it once the save succeeds. Ignored
+  // for an edit.
+  draftKey?: string;
   // Where the first step's back arrow leads (the page or dialog it opened
   // from), as every other wizard's does; later steps step back as before.
   onCancel?: () => void;
+  // Whose job the first step's question and "Help me build" ask about: a
+  // player's own hero, or (the DM's quick companion) what the party needs.
+  quizVoice?: QuizVoice;
+  // Open on "Help me build" (the hero chooser's door to it, backlog F1).
+  openQuiz?: boolean;
   className?: string;
 }) {
   // creator.css stills its loops under <html data-effects="low">, which only
@@ -183,6 +250,7 @@ function CharacterBuilderForm({
     backgrounds: rawBackgrounds,
     packInstalled,
     loaded,
+    status: optionStatus,
   } = useBuilderOptions(initial?.race);
   const pack = useWorldPack(worldPackId);
   // Display overlay only. applyIdReskins rewrites `name`, never `id`, so
@@ -201,25 +269,40 @@ function CharacterBuilderForm({
     ...(initial?.feats ?? []),
     ...(initial?.asiChoices ?? []).flatMap((choice) => (choice.mode === "feat" ? [choice.feat] : [])),
   ]);
-  const state = useBuilderState({ initial, initialFeatDescs, initialLevel, fixedLevel, races, classes, backgrounds });
-  // No stand-in for a race or class the player has not chosen: the first
-  // row used to be shown as if picked ("Continue as Aarakocra"), so the
-  // step's own "Pick a race." could never hold. The background keeps its
-  // stand-in; its select on the first step shows it plainly.
-  const race = findRace(races, state.raceId);
+  const state = useBuilderState({ initial, initialFeatDescs, initialLevel, fixedLevel, startLevel, races, classes, backgrounds });
+  // No stand-in for a race, class or background the player has not chosen:
+  // the first row used to be shown as if picked ("Continue as Aarakocra"),
+  // so the step's own race gate could never hold, and an untouched
+  // background was an Acolyte owing two languages nobody asked for.
+  // The race with its species option picked (a Half-Dragon's ancestry): the
+  // scores, skills and languages every step and the math read include it.
+  const pickedRace = findRace(races, state.raceId);
+  const race = useMemo(() => pickedRace && withSpeciesVariant(pickedRace, state.racialVariant), [pickedRace, state.racialVariant]);
   const klass = classes.find((entry) => entry.id === state.classId);
-  const background =
-    backgrounds.find((entry) => entry.id === state.backgroundId) ?? backgrounds[0];
-  const archetypes = useArchetypes(klass?.id ?? "");
+  const background = backgrounds.find((entry) => entry.id === state.backgroundId);
+  const subclassOptions = useArchetypeOptions(klass?.id ?? "");
+  const archetypes = subclassOptions.archetypes;
+  // Why a list is short: the asker's own Homebrew a table leaves out, or a
+  // list the server did not send (workshop import audit F06).
+  const scopeNote = (noun: string, kind: OptionListKind) => (
+    <TableScopeNote noun={noun} unadmitted={optionStatus.unadmitted[kind]} failed={optionStatus.failed.includes(kind)} onRetry={optionStatus.retry} />
+  );
 
   const table = useTableRules(campaignId, klass?.id);
   // The text of every feat picked, for what each grants (issue #125); a
   // content pack's is fetched once.
-  const featDescs = useFeatDescs([
+  const featTexts = useFeatTexts([
     ...state.feats,
     ...state.asiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : [])),
   ]);
-  const derived = useBuilderDerived({ state, race, klass, background, fixedLevel, rules: table.rules, featDescs });
+  const featDescs = featTexts.descs;
+  const derived = useBuilderDerived({ state, race, klass, background, fixedLevel, rules: table.rules, featDescs, genre });
+  // The header's hit die in words, its die with "Show rules and numbers" on (backlog F11).
+  const numbers = useShowNumbers();
+  // Each feat's prerequisite judged as the save judges it, against the
+  // character as built so far (featPrereqs.ts): the feat pickers read it,
+  // and the gates below flag a picked feat a later choice broke.
+  const featJudge = builderFeatJudge({ state, derived, race, klass, background }, featTexts.prerequisites, initial?.feats);
   const actions = builderActions(state, klass, race, background);
   const pickers = usePickerGroups({
     races,
@@ -240,6 +323,135 @@ function CharacterBuilderForm({
   // This builder's own root, so the footer's "Show me" looks inside it and
   // not in another builder on the page.
   const rootId = useId();
+  // What the last save found missing, until the player goes to it.
+  const [saveProblem, setSaveProblem] = useState<{ message: string; target: BlockerTarget } | null>(null);
+  // "How do you want to play?", asked on the first step of a new character,
+  // over the class cards; the background's hints and the quiz follow it.
+  const [playstyle, setPlaystyle] = useState<PlaystyleId | null>(null);
+
+  // An unfinished new character is kept on this device as it is built
+  // (builderDraft.ts), and offered back the next time this door opens. The
+  // step is the builder's so a resumed draft can land where it was left.
+  const draftAt = !initial && draftKey ? draftKey : null;
+  // An edit opens on the last step, the summary (backlog F3): one row per
+  // step with a way to it, so changing one pick never starts at step 1.
+  const [step, setStep] = useState(initial ? STEP_ORDER.length - 1 : 0);
+  // Once the summary has been seen, every other step offers "Back to
+  // summary", and that returns focus to the row the player left from.
+  const [summarySeen, setSummarySeen] = useState(Boolean(initial));
+  if (step === STEP_ORDER.length - 1 && !summarySeen) {
+    setSummarySeen(true);
+  }
+  // The step a "Put it back" was offered on (backlog F12): leaving it ends
+  // the undo. Followed while rendering, as summarySeen above is.
+  const [undoAt, setUndoAt] = useState<{ id: number; step: number } | null>(null);
+  // What the live region says once the old choice is back. It stays
+  // mounted, so a screen reader hears the bar arrive without focus moving
+  // to it.
+  const [putBackSaid, setPutBackSaid] = useState("");
+  if (state.undo && undoAt?.id !== state.undo.id) {
+    setUndoAt({ id: state.undo.id, step });
+    setPutBackSaid("");
+  } else if (state.undo && undoAt && undoAt.step !== step) {
+    state.clearUndo();
+  }
+  const undoSaid = state.undo ? undoMessage(state.undo) : putBackSaid;
+  function putBack() {
+    if (!state.undo) {
+      return;
+    }
+    setPutBackSaid(putBackMessage(state.undo));
+    state.putBack();
+    // The bar goes with the undo; focus goes to the step's heading rather
+    // than being dropped on the page.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLElement>(`[data-builder-root="${rootId}"] section[data-active] .wizard-step-heading`)
+        ?.focus({ preventScroll: true });
+    }, 0);
+  }
+  const [cameFrom, setCameFrom] = useState<SummaryRowKey | null>(null);
+  const [returnTo, setReturnTo] = useState<{ row: SummaryRowKey } | null>(null);
+  function backToSummary(from: string) {
+    setReturnTo({ row: cameFrom ?? (from as SummaryRowKey) });
+    setCameFrom(null);
+    setStep(STEP_ORDER.length - 1);
+  }
+  const [draftOffer, setDraftOffer] = useState<BuilderDraft | null>(null);
+  const [draftChecked, setDraftChecked] = useState(false);
+  useEffect(() => {
+    if (!draftAt) {
+      return;
+    }
+    // Read after mount: the server render has no storage to read.
+    void Promise.resolve().then(() => {
+      setDraftOffer(readBuilderDraft(draftAt));
+      setDraftChecked(true);
+    });
+  }, [draftAt]);
+  const draftJson = draftAt ? JSON.stringify(state.draftFields) : "";
+  const begun = Boolean(state.name.trim() || state.raceId || state.classId);
+  useEffect(() => {
+    // Nothing is written over a draft still on offer, or for a builder
+    // opened and left untouched.
+    if (!draftAt || !draftChecked || draftOffer || !begun) {
+      return;
+    }
+    // Kept by key, so a later change to the order cannot shift it.
+    const id = window.setTimeout(() => writeBuilderDraft(draftAt, STEP_ORDER[step] ?? STEP_ORDER[0], JSON.parse(draftJson)), 400);
+    return () => window.clearTimeout(id);
+  }, [draftAt, draftChecked, draftOffer, begun, draftJson, step]);
+  function resumeDraft() {
+    if (!draftOffer) {
+      return;
+    }
+    state.restoreDraft(draftOffer.fields);
+    setStep(draftStepIndex(draftOffer));
+    setDraftOffer(null);
+  }
+  function discardDraft() {
+    if (draftAt) {
+      clearBuilderDraft(draftAt);
+    }
+    setDraftOffer(null);
+  }
+
+  // The quick build (quickBuild.ts): the quiz, "Fill what's left" and the
+  // cards' "Pick for me" all choose from what this builder offers.
+  const offered = {
+    classes: offeredRows(classes, pickers.classGroups),
+    races: offeredRows(races, pickers.raceGroups),
+    backgrounds: offeredRows(backgrounds, pickers.backgroundGroups),
+    recommended: new Set(
+      pickers.classGroups.filter((group) => group.recommended).flatMap((group) => group.options.map((option) => option.id)),
+    ),
+  };
+  // The spell step's own list for this class, so a fill picks what the
+  // step would offer (shared with it: one fetch).
+  const { pool: spellPool } = useWiderSpellPool(derived.spellSearchClass, derived.maxSpellLevel, derived.casts, derived.spellWider);
+  // "Help me build" open, with the job already picked on the first step.
+  const [quiz, setQuiz] = useState<{ role: PlaystyleId | null } | null>(openQuiz ? { role: null } : null);
+  const fill = useQuickFill({
+    state,
+    derived,
+    race,
+    klass,
+    background,
+    offered,
+    subclasses: pickers.subclassGroups.flatMap((group) => group.options.map((option) => option.id)).filter(Boolean),
+    spellPool,
+    // A quiz character opens on the last step, where every part shows with
+    // a way back to it.
+    onDone: (done) => {
+      if (done.from === "quiz") {
+        setStep(STEP_ORDER.length - 1);
+      }
+    },
+  });
+  function startFill(request: FillRequest = {}) {
+    setSaveProblem(null);
+    fill.start(request);
+  }
 
   // Takes the player to the block that holds the missing pick: scrolls the
   // active step to it, lights it for a moment and puts focus on its first
@@ -251,7 +463,9 @@ function CharacterBuilderForm({
     if (!found) {
       return;
     }
-    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    // Smooth only when the device allows motion: the system setting or the
+    // app's own Effects setting can each ask for a jump instead.
+    const still = prefersStillMotion();
     found.scrollIntoView({ block: "start", inline: "nearest", behavior: still ? "auto" : "smooth" });
     found.removeAttribute("data-flash");
     void found.offsetWidth;
@@ -272,18 +486,11 @@ function CharacterBuilderForm({
     onBlocked: blocked ? () => locate(blocked.target) : undefined,
   });
 
-  // A stored race, class or background these lists do not hold: the race
-  // or class shows as not chosen, the background would be replaced by the
-  // list's first row on save. The save waits until the player picks on
-  // purpose (issue 229).
+  // A stored race, class or background these lists do not hold shows as not
+  // chosen. The save waits until the player picks on purpose (issue 229).
   const unoffered = initial && loaded ? unofferedPicks(initial, state, races, classes, backgrounds) : [];
-  const standIns = unoffered.flatMap((entry) => (entry.standIn ? [entry.standIn] : []));
   const unofferedText = unoffered.length
-    ? `This builder does not offer ${initial?.name || "this character"}'s ${listWords(unoffered.map((entry) => entry.what))}: a table's own content, or a row this server no longer has. ${
-        standIns.length
-          ? `Saving here would put ${listWords(standIns)} in ${standIns.length === 1 ? "its" : "their"} place, so the save`
-          : "The save"
-      } waits until you pick on purpose. Leave without saving to keep ${initial?.name || "them"} as stored.`
+    ? `This builder does not offer ${initial?.name || "this character"}'s ${listWords(unoffered.map((entry) => entry.what))}: a table's own content, or a row this server no longer has. The save waits until you pick on purpose. Leave without saving to keep ${initial?.name || "them"} as stored.`
     : "";
 
   function submit() {
@@ -291,20 +498,52 @@ function CharacterBuilderForm({
       state.setLocalError(unofferedText);
       return;
     }
-    const input = { state, derived, race, klass, background, initial };
+    const input = { state, derived, race, klass, background, initial, featJudge };
     const problem = validateBuilder(input);
     if (problem) {
       if (problem.kind === "spellWarning") {
         state.setSpellWarningAck(true);
       }
-      state.setLocalError(problem.message);
+      // A pick that is missing says so above the steps with "Show me", which
+      // goes to its step and its field, the way the footer's blocker does;
+      // the warning and the unplaceable ones stay by the save button.
+      if (problem.target) {
+        state.setLocalError("");
+        setSaveProblem({ message: problem.message, target: problem.target });
+      } else {
+        setSaveProblem(null);
+        state.setLocalError(problem.message);
+      }
       return;
     }
+    setSaveProblem(null);
     state.setLocalError("");
     onSubmit(buildBuilderResult(input));
   }
 
-  if (!races.length || !classes.length || !backgrounds.length) {
+  // An edit arrives on the summary with focus on its heading, as a step
+  // change puts it (Wizard.tsx); "Back to summary" puts it on the row's
+  // Edit instead. Both run after the wizard's own focus move.
+  const ready = Boolean(races.length && classes.length && backgrounds.length);
+  const arrived = useRef(false);
+  useEffect(() => {
+    if (!ready || !initial || arrived.current) {
+      return;
+    }
+    arrived.current = true;
+    document
+      .querySelector<HTMLElement>(`[data-builder-root="${rootId}"] section[data-active] .wizard-step-heading`)
+      ?.focus({ preventScroll: true });
+  }, [ready, initial, rootId]);
+  useEffect(() => {
+    if (returnTo) {
+      document
+        .querySelector<HTMLElement>(`[data-builder-root="${rootId}"] section[data-active] [data-summary-edit="${returnTo.row}"]`)
+        ?.focus();
+    }
+  }, [returnTo, rootId]);
+
+  if (!ready) {
     return (
       <div className="flex justify-center py-10">
         <Loader2 className="size-5 animate-spin text-stone-500" />
@@ -313,67 +552,94 @@ function CharacterBuilderForm({
   }
 
   // Each gate mirrors a rule the final check enforces, so a player learns
-  // about a missing pick on the step where they can fix it.
-  const blockers = {
-    identity: identityBlocker(state, background),
-    ancestry: ancestryBlocker(state, race, background, derived),
-    calling: callingBlocker(klass, state, derived),
-    abilities: abilitiesBlocker(derived, state),
-    spells: spellsBlocker(state, derived, klass) ?? gearBlocker(derived),
+  // about a missing pick on the step where they can fix it. The gate is the
+  // first pick owed; the step's "choices left" line names them all.
+  const gear = gearBlocker(derived);
+  const owed = {
+    // The name alone: nothing before this step waits on it (backlog F4).
+    identity: identityBlocks(state),
+    // The background and its open picks sit beside the ancestry.
+    ancestry: [
+      ...ancestryBlocks(state, race, background, derived, featJudge),
+      ...backgroundBlocks(state, background, derived),
+    ],
+    calling: callingBlocks(klass, state, derived),
+    // The scores set here can break the racial feat picked a step back;
+    // it is flagged here too, with the way back to it.
+    abilities: [
+      ...abilitiesBlocks(derived, state, featJudge),
+      ...racialFeatBlock(unmetFeatMessage(featJudge, state.feats.slice(0, race ? racialFeatCount(race.id) : 0))),
+    ],
+    spells: [...spellsBlocks(derived, klass), ...(gear ? [gear] : [])],
   };
+  const blockers = {
+    identity: owed.identity[0] ?? null,
+    ancestry: owed.ancestry[0] ?? null,
+    calling: owed.calling[0] ?? null,
+    abilities: owed.abilities[0] ?? null,
+    spells: owed.spells[0] ?? null,
+  };
+  // The summary holds Save on the first pick owed anywhere, and its Show me
+  // goes to that pick's step and field, as a row's Fix does.
+  const firstOwed = blockers.calling ?? blockers.ancestry ?? blockers.abilities ?? blockers.spells ?? blockers.identity;
+  // "Put it back" on the step the change was made on, first in its content
+  // (backlog F12).
+  const undoBar = (key: string) =>
+    state.undo && undoAt?.id === state.undo.id && STEP_ORDER[undoAt.step] === key ? (
+      <UndoChangeBar undo={state.undo} onPutBack={putBack} />
+    ) : null;
+  const owedLine = (blocks: typeof owed.identity) => (
+    <OwedLine picks={owedPicks(blocks)} onShow={locate} onFill={fill.running ? undefined : () => startFill()} />
+  );
+  // What a fill left for the player (a spell list that ran out), said in its
+  // read-back.
+  const stillOwed = Object.values(owed).reduce((sum, blocks) => sum + owedPicks(blocks).length, 0);
+  // A change from the read-back: to the pick's step, then to its block once
+  // the step is showing.
+  function changePick(target: BlockerTarget) {
+    const index = STEP_ORDER.indexOf(STEP_OF_TARGET[target]);
+    if (index >= 0) {
+      setStep(index);
+    }
+    window.setTimeout(() => locate(target), 350);
+  }
   const casts = derived.casts;
+  const summary = summaryRows({
+    name: state.name,
+    background: background?.name,
+    race: race?.name,
+    klass: klass?.name,
+    subclass: state.subclass || undefined,
+    level: derived.effectiveLevel,
+    abilities: derived.shownAbilities,
+    casts,
+    cantrips: state.cantrips,
+    spells: state.spells,
+    gear: derived.fullEquipment,
+    alignment: ALIGNMENT_LABELS[state.alignment]?.name ?? state.alignment,
+    portrait: Boolean(state.portrait),
+    appearance: Boolean(state.appearance.trim()),
+    backstory: Boolean(state.backstory.trim()),
+    owed,
+  });
 
+  // Each step's title is the task in plain words; its label is the short
+  // name printed under its diamond and said with it, and the one the notices
+  // above the steps use ("asked for on the Class step").
   const steps: WizardStep[] = [
     {
-      key: "identity",
-      label: "Identity",
-      title: "Who is this?",
-      ...gate(blockers.identity),
-      content: (
-        <>
-          <IdentityStep
-            state={state}
-            pack={pack}
-            packInstalled={packInstalled}
-            fixedLevel={fixedLevel}
-            role={role}
-            alignmentGroups={pickers.alignmentGroups}
-            alignmentInfo={pickers.alignmentInfo}
-            backgroundGroups={pickers.backgroundGroups}
-            background={background}
-          />
-        </>
-      ),
-    },
-    {
-      key: "ancestry",
-      label: "Ancestry",
-      title: "Ancestry",
-      blurb: "Where are they from, and what does that grant?",
-      ...gate(blockers.ancestry),
-      continueLabel: race ? `Continue as ${race.name}` : undefined,
-      content: (
-        <>
-          <AncestryStep
-            state={state}
-            derived={derived}
-            race={race}
-            background={background}
-            races={races}
-            raceGroups={pickers.raceGroups}
-          />
-        </>
-      ),
-    },
-    {
       key: "calling",
-      label: "Calling",
-      title: "Calling",
+      label: "Class",
+      title: "Choose how you fight or use magic",
       blurb: "The class decides how this character plays.",
       ...gate(blockers.calling),
       content: (
         <>
+          {undoBar("calling")}
+          {owedLine(owed.calling)}
           <CallingStep
+            notices={<ContentNotices pack={pack} packInstalled={packInstalled} />}
+            levelField={<LevelField state={state} fixedLevel={fixedLevel} levelNote={levelNote} className="mt-3" />}
             state={state}
             derived={derived}
             actions={actions}
@@ -387,30 +653,97 @@ function CharacterBuilderForm({
             offersSubclass={pickers.offersSubclass}
             subclassLockedAt={pickers.subclassLockedAt}
             chosenArchetype={pickers.chosenArchetype}
+            classNote={scopeNote("classes", "classes")}
+            subclassNote={<TableScopeNote noun="subclasses" unadmitted={subclassOptions.unadmitted} failed={subclassOptions.failed} onRetry={subclassOptions.retry} />}
+            playstyle={
+              initial
+                ? undefined
+                : {
+                    value: playstyle,
+                    onChange: setPlaystyle,
+                    question: quizVoice === "party" ? "What does the party need?" : "In a fight, what's your job?",
+                    intro: "New to this? Pick what sounds fun. It suggests a class and a background, and nothing is chosen until you choose it.",
+                    onHelpMeBuild: (role) => setQuiz({ role }),
+                  }
+            }
+            onPickForMe={fill.running ? undefined : (target) => startFill({ only: [target] })}
+          />
+        </>
+      ),
+    },
+    {
+      key: "ancestry",
+      label: "Ancestry",
+      title: "Choose where your hero comes from",
+      blurb: "Their people and their past, and what each grants.",
+      ...gate(blockers.ancestry),
+      continueLabel: race ? `Continue as ${race.name}` : undefined,
+      content: (
+        <>
+          {undoBar("ancestry")}
+          {owedLine(owed.ancestry)}
+          <AncestryStep
+            state={state}
+            derived={derived}
+            race={race}
+            background={background}
+            races={races}
+            raceGroups={pickers.raceGroups}
+            listNote={scopeNote("species", "races")}
+            backgroundSection={
+              <>
+                <BackgroundPanel
+                  state={state}
+                  background={background}
+                  backgroundGroups={pickers.backgroundGroups}
+                  raceChosen={Boolean(race)}
+                  suggested={!initial && playstyle ? playstyleBackgrounds(playstyle, backgrounds) : []}
+                  suggestedKey={playstyle ?? undefined}
+                  note={scopeNote("backgrounds", "backgrounds")}
+                />
+                <ToolGrantPanels
+                  state={state}
+                  derived={derived}
+                  classTools={klass?.tools}
+                  className={klass?.name}
+                  backgroundName={background?.name}
+                />
+              </>
+            }
           />
         </>
       ),
     },
     {
       key: "abilities",
-      label: "Ability scores",
-      title: "Ability scores",
+      label: "Abilities",
+      title: "Set what your hero is good at",
       blurb: "How do you roll?",
       ...gate(blockers.abilities),
       content: (
         <>
-          <AbilitiesStep state={state} derived={derived} race={race} klass={klass} />
+          {undoBar("abilities")}
+          {owedLine(owed.abilities)}
+          <AbilitiesStep
+            state={state}
+            derived={derived}
+            race={race}
+            klass={klass}
+            onPickForMe={fill.running ? undefined : (target) => startFill({ only: [target] })}
+          />
         </>
       ),
     },
     {
       key: "spells-gear",
-      label: casts ? "Spells and gear" : "Gear",
-      title: casts ? "Spells and gear" : "Gear",
+      label: casts ? "Spells" : "Gear",
+      title: casts ? "Choose spells and gear" : "Choose your gear",
       blurb: casts ? "Pick what they can cast, then arm your hero." : "Arm your hero.",
       ...gate(blockers.spells),
       content: (
         <>
+          {undoBar("spells-gear")}
+          {owedLine(owed.spells)}
           <SpellsGearStep
             state={state}
             derived={derived}
@@ -424,11 +757,35 @@ function CharacterBuilderForm({
       ),
     },
     {
+      key: "identity",
+      label: "Hero",
+      title: "Name your hero and tell their story",
+      blurb: "Who they are. None of it changes a number on the sheet.",
+      ...gate(blockers.identity),
+      content: (
+        <>
+          {undoBar("identity")}
+          {owedLine(owed.identity)}
+          <IdentityStep
+            state={state}
+            pack={pack}
+            initial={initial}
+            paintsPortraits={paintsPortraits}
+            onUploadPortrait={() => setCropping(true)}
+            alignmentGroups={pickers.alignmentGroups}
+            alignmentInfo={pickers.alignmentInfo}
+          />
+        </>
+      ),
+    },
+    {
       key: "finish",
-      label: "Finishing touches",
-      title: "Finishing touches",
+      label: "Finish",
+      title: "Check your hero and finish",
       blurb: "Who have you made?",
-      canContinue: !busy,
+      canContinue: !busy && !firstOwed,
+      blocker: firstOwed?.message ?? null,
+      onBlocked: firstOwed ? () => changePick(firstOwed.target) : undefined,
       content: (
         <FinishStep
           state={state}
@@ -437,20 +794,44 @@ function CharacterBuilderForm({
           klass={klass}
           background={background}
           table={table}
-          initial={initial}
-          paintsPortraits={paintsPortraits}
-          onUploadPortrait={() => setCropping(true)}
           error={state.localError || error}
+          onEdit={(key) => {
+            setCameFrom(key);
+            setStep(STEP_ORDER.indexOf(key));
+          }}
+          summary={summary}
+          onFix={(target) => {
+            setCameFrom(STEP_OF_TARGET[target] as SummaryRowKey);
+            changePick(target);
+          }}
+          role={role}
         />
       ),
     },
   ];
 
+  // Every step but the summary goes back to it once it has been seen.
+  const flow: WizardStep[] = summarySeen
+    ? steps.map((entry, index) =>
+        index === STEP_ORDER.length - 1
+          ? entry
+          : { ...entry, secondary: { label: "Back to summary", onClick: () => backToSummary(entry.key) } },
+      )
+    : steps;
+
   // What the last change set aside, said above the steps with a way to the
   // step it belongs to (issue #124: the list was computed and thrown away).
   const dropped = state.dropped;
   const droppedStep = dropped ? steps.findIndex((entry) => entry.key === STEP_OF_TARGET[dropped.drops[0].target]) : -1;
-  const notice: WizardNotice | undefined = dropped
+  const problemStep = saveProblem ? steps.findIndex((entry) => entry.key === STEP_OF_TARGET[saveProblem.target]) : -1;
+  const notice: WizardNotice | undefined = saveProblem
+    ? {
+        message: saveProblem.message,
+        step: problemStep >= 0 ? problemStep : undefined,
+        onShow: () => locate(saveProblem.target),
+        onDismiss: () => setSaveProblem(null),
+      }
+    : dropped
     ? {
         message: droppedMessage(dropped, droppedStep >= 0 ? steps[droppedStep].label : undefined),
         step: droppedStep >= 0 ? droppedStep : undefined,
@@ -463,14 +844,83 @@ function CharacterBuilderForm({
     // A bounded height so each step scrolls on its own and the Continue
     // button stays put; the fallback keeps a usable pane on a short phone.
     <div data-builder-root={rootId} className={cn("flex h-[max(30rem,calc(100dvh-14rem))] flex-col text-sm", className)}>
+      <p role="status" data-build-undo-said="" className="sr-only">
+        {undoSaid}
+      </p>
       {unofferedText ? (
         <p role="alert" className="reveal mb-3 shrink-0 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
           {unofferedText}
         </p>
       ) : null}
+      {draftOffer ? (
+        <div role="status" className="reveal mb-3 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-100">
+          <span className="min-w-0 flex-1">
+            You have an unfinished character here
+            {draftOffer.fields.name.trim() ? <>: <span className="font-medium">{draftOffer.fields.name.trim()}</span></> : null}
+            , left on step {draftStepIndex(draftOffer) + 1} of {steps.length}.
+          </span>
+          <button type="button" onClick={resumeDraft} className={ui.btnSmall}>
+            Resume
+          </button>
+          <button type="button" onClick={discardDraft} className={cn(ui.btnSmall, "text-stone-400")}>
+            Start fresh
+          </button>
+        </div>
+      ) : null}
+      {fill.readback ? (
+        <QuickBuildReadback
+          readback={fill.readback}
+          stillOwed={stillOwed}
+          onChange={changePick}
+          onUndo={() => {
+            fill.undo();
+            if (fill.readback?.from === "quiz") {
+              setStep(0);
+            }
+          }}
+          onDismiss={fill.dismiss}
+        />
+      ) : fill.kept ? (
+        // What was picked stays a tap away after "Keep them", until the
+        // character is saved or another fill starts.
+        <p data-quick-kept="" className="mb-3 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-stone-800 px-3 py-1.5 text-xs text-stone-400">
+          <span className="min-w-0 flex-1">
+            {fill.kept.filled.length} {fill.kept.filled.length === 1 ? "choice was" : "choices were"} picked for you.
+          </span>
+          <button type="button" onClick={fill.reopen} className="text-sky-300 underline-offset-2 hover:underline">
+            Show what was picked
+          </button>
+        </p>
+      ) : null}
+      {quiz ? (
+        <QuickBuildQuiz
+          voice={quizVoice}
+          classes={offered.classes}
+          races={offered.races}
+          backgrounds={offered.backgrounds}
+          recommended={offered.recommended}
+          initial={quiz.role ? { role: quiz.role } : undefined}
+          onCancel={() => setQuiz(null)}
+          onChoose={(seed, answers) => {
+            setQuiz(null);
+            // The class step's picker opens on the job the quiz was given.
+            setPlaystyle(answers.role);
+            startFill({ seed, answers });
+          }}
+        />
+      ) : (
+      <FeatJudgeContext.Provider value={featJudge}>
+      {/* The build math table (F10): beside the steps where the builder is wide, under them where it is not. */}
+      <div className="@container flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 @4xl:flex-row @4xl:gap-5">
       <Wizard
-        title={state.name.trim() || "New character"}
+        className="min-w-0 flex-1"
+        step={step}
+        onStepChange={setStep}
+        // The name is asked last (backlog F4); until then the hero is "Your hero".
+        title={state.name.trim() || "Your hero"}
         variant="diamonds"
+        stepNames
         // The wipe paces a first build; an edit of a stored character moves
         // between steps at once.
         wipe={!initial}
@@ -480,16 +930,23 @@ function CharacterBuilderForm({
         jumpAhead
         finishFromAnyStep={Boolean(initial)}
         notice={notice}
+        // Each part holds together when the line wraps under the name
+        // (creator.css): "High HP, d10" never splits across two lines.
         aside={
           race || klass
             ? [
                 [race?.name, klass?.name].filter(Boolean).join(" "),
                 `level ${derived.effectiveLevel}`,
-                ...(klass ? [`d${klass.hitDie}`] : []),
-              ].join(" · ")
+                ...(klass ? [hitDieChip(klass.hitDie, numbers)] : []),
+              ].map((part, index) => (
+                <Fragment key={part}>
+                  {index ? " · " : ""}
+                  <span className="whitespace-nowrap">{part}</span>
+                </Fragment>
+              ))
             : undefined
         }
-        steps={steps}
+        steps={flow}
         onCancel={onCancel}
         onDone={submit}
         doneLabel={
@@ -502,6 +959,20 @@ function CharacterBuilderForm({
           )
         }
       />
+      <BuildMathPanel
+        derived={derived}
+        scores={state.scores}
+        klass={klass}
+        atTable={Boolean(table.rules)}
+        race={race}
+        races={races}
+        raceGroups={pickers.raceGroups}
+        gender={state.gender}
+      />
+      </div>
+      </div>
+      </FeatJudgeContext.Provider>
+      )}
       {cropping ? (
         <AvatarCropDialog
           title={`Portrait for ${state.name.trim() || "your character"}`}
@@ -514,4 +985,14 @@ function CharacterBuilderForm({
       ) : null}
     </div>
   );
+}
+
+// Where a kept draft resumes: its step by key, the first step for a key
+// this builder no longer has.
+function draftStepIndex(draft: BuilderDraft): number {
+  return Math.max(0, STEP_ORDER.indexOf(draft.step));
+}
+
+function racialFeatBlock(message: string | null): Array<{ message: string; target: BlockerTarget }> {
+  return message ? [{ message, target: "racialFeat" }] : [];
 }

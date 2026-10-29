@@ -9,7 +9,8 @@ import { listActiveFacts } from "@/lib/db/facts";
 import { renderWitnessNote } from "@/lib/dm/witness-logic";
 import {
   getNpcByName,
-  listNpcs,
+  listCastNpcs,
+  markNpcMet,
   nearestNpcName,
   patchNpcAgency,
   setNpcAttitude,
@@ -17,6 +18,8 @@ import {
   type Attitude,
   type Npc,
 } from "@/lib/db/npcs";
+import { companionNpcFor } from "@/lib/db/companion-npcs";
+import { attractionFromTold, attractionWords, TOLD_ATTRACTION } from "@/lib/attraction";
 import { agencyFragment, derivePersonality, driftPersonality, nearestNpcHint } from "@/lib/dm/npc-logic";
 import { ensureRelationship, patchRelationship } from "@/lib/db/relationships";
 import {
@@ -26,6 +29,7 @@ import {
   SOCIAL_CHECK_SWING,
   TIER_LABEL,
 } from "@/lib/dm/relationship-logic";
+import { outwardApproval } from "@/lib/dm/scheme-logic";
 import { publishRelationshipsUpdated } from "@/lib/dm/relationship-tools";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { TOLD_GENDER_HELP, TOLD_GENDERS, toldGender } from "@/lib/gender";
@@ -37,11 +41,13 @@ import {
   resolveSocialCheck,
   socialCheckDc,
 } from "@/lib/dm/social";
-import { resolveRollExpression, resolveSheetRef } from "@/lib/dm/rolls";
+import { resolveRollExpression, resolveSheetRef, unknownSheetRef } from "@/lib/dm/rolls";
 import { rollExtrasFor, spendRollCarriers } from "@/lib/dm/forced-save";
 import type { RollArgs } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { waypointProperty } from "@/lib/dm/waypoint-logic";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The social-interaction engine: NPC disposition was pure narration with no
 // state, so a shopkeeper the party bullied yesterday greeted them warmly today
@@ -66,7 +72,7 @@ export const socialTools: ToolDef[] = [
     function: {
       name: "set_npc",
       description:
-        "Register or update a named NPC the party is dealing with, so the server tracks who they are and how they feel about the party across the whole campaign; call it again when the story itself (not a check) changes how they feel.",
+        "Register or update a named NPC the party deals with, so the server tracks who they are and their attitude. Call it again when the story itself (not a check) changes how they feel.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -76,22 +82,27 @@ export const socialTools: ToolDef[] = [
           attitude: {
             type: "string",
             enum: [...ATTITUDE_ENUM],
-            description: "How they currently feel about the party. Default 'indifferent'.",
+            description: "How they currently feel about the party. Default: 'indifferent'.",
           },
           trait: {
             type: "string",
-            description: "A short note on their personality, bond, or goal, for your own recall.",
+            description: "A short note on their personality or bond, for your own recall.",
           },
           location: { type: "string", description: "Where they are usually found." },
           gender: {
             type: "string",
             enum: [...TOLD_GENDERS],
-            description: `${TOLD_GENDER_HELP} Give it when you register someone new; leave it out on later calls.`,
+            description: `${TOLD_GENDER_HELP} Give it when you register someone new; omit it on later calls.`,
+          },
+          drawnTo: {
+            type: "array",
+            items: { type: "string", enum: TOLD_ATTRACTION },
+            description: "Who they could fall for, once the story shows it. The server keeps the first value it is given, so it never changes between characters.",
           },
           goal: {
             type: "string",
             description:
-              "What they are actively working toward right now (a scheme, an errand, a hunt). The server advances it in the background between chapters, so give real NPCs real goals.",
+              "What they are working toward right now (a scheme, an errand, a hunt). The server advances it in the background between chapters, so give real NPCs real goals.",
           },
           ambition: {
             type: "string",
@@ -107,7 +118,7 @@ export const socialTools: ToolDef[] = [
     function: {
       name: "npc_reaction",
       description:
-        "Roll a first-meeting reaction for a new NPC when it is genuinely uncertain how they take the party. The server rolls 2d6 (plus any modifier for the party's approach or reputation) and turns it into a starting attitude (hostile, indifferent, or friendly), registering the NPC with it. Call it instead of simply deciding how a stranger feels. Skip it when the story already fixes the NPC's stance (a sworn enemy, a hired ally).",
+        "Roll a first-meeting reaction for a new NPC when it is uncertain how they take the party. The server rolls 2d6 (plus any modifier for the party's approach or reputation) and turns it into a starting attitude (hostile, indifferent, or friendly), registering the NPC with it. Call it instead of simply deciding how a stranger feels. Skip it when the story already fixes the NPC's stance (a sworn enemy, a hired ally). Someone the party has already dealt with, or whose attitude is already set, is not rolled again: the result reports how they feel.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -116,6 +127,8 @@ export const socialTools: ToolDef[] = [
           name: { type: "string", description: "The new NPC's name." },
           modifier: {
             type: "integer",
+            minimum: -10,
+            maximum: 10,
             description:
               "A small +/- for the situation (a good first impression, a fearsome reputation). Usually -2 to +2.",
           },
@@ -138,7 +151,7 @@ export const socialTools: ToolDef[] = [
         additionalProperties: false,
         properties: {
           ...waypointProperty,
-          characterId: { type: "string", description: "The character making the appeal: exact characterId from GAME STATE." },
+          characterId: { type: "string", description: "Exact characterId from GAME STATE." },
           npc: { type: "string", description: "The exact name of the tracked NPC." },
           approach: {
             type: "string",
@@ -176,7 +189,7 @@ function bootstrapAgency(
     ? campaign.storyArc?.cast?.find(
         (entry) =>
           entry.status !== "gone" &&
-          entry.name.trim().toLowerCase() === npc.name.trim().toLowerCase(),
+          textKey(entry.name) === textKey(npc.name),
       )
     : undefined;
   if (cast) {
@@ -213,16 +226,17 @@ const setNpcSchema = z.object({
   trait: z.string().max(300).optional(),
   location: z.string().max(120).optional(),
   gender: z.enum(TOLD_GENDERS).optional(),
+  drawnTo: z.array(z.string().max(40)).max(6).optional(),
   goal: z.string().max(300).optional(),
   ambition: z.string().max(300).optional(),
 });
 
-export function handleSetNpc(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleSetNpc(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof setNpcSchema>;
   try {
     args = setNpcSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: set_npc needs at least a name." };
+    return { error: "Invalid arguments: set_npc needs at least a name.", retry: true };
   }
   // gender is optional so an update need not restate it, which leaves a
   // registration free to forget it: the result then asks, never refuses.
@@ -236,6 +250,8 @@ export function handleSetNpc(campaign: Campaign, rawArguments: string): Record<s
       trait: args.trait,
       location: args.location,
       gender: toldGender(args.gender),
+      // Written once (upsertNpc): the first answer is who they are.
+      attraction: attractionFromTold(args.drawnTo),
     }),
     { goal: args.goal, ambition: args.ambition },
   );
@@ -264,12 +280,33 @@ export function handleNpcReaction(
   campaign: Campaign,
   turn: DmTurn,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof reactionSchema>;
   try {
     args = reactionSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: npc_reaction needs a name and a gender (Female, Male, Nonbinary or Unknown)." };
+    return { error: "Invalid arguments: npc_reaction needs a name and a gender (Female, Male, Nonbinary or Unknown).", retry: true };
+  }
+  // A reaction roll decides how a stranger takes the party, once. Someone
+  // the party has dealt with keeps the attitude play gave them, and so does
+  // someone whose attitude was set before they were met (the story's
+  // villain, the author's patron, a friendly keeper): only a stranger whose
+  // attitude is still the default is rolled. A known name is answered with
+  // how they feel, not refused, since the model asked how to play them.
+  const known = getNpcByName(campaign.id, args.name);
+  if (known && (known.metAt || known.attitude !== "indifferent")) {
+    const npc = markNpcMet(
+      upsertNpc({ campaignId: campaign.id, name: args.name, trait: args.trait, location: args.location, gender: toldGender(args.gender) }).id,
+    ) ?? known;
+    return {
+      ok: true,
+      npc: npc.name,
+      attitude: npc.attitude,
+      rolled: false,
+      note: known.metAt
+        ? `${npc.name} already knows the party and is ${npc.attitude}; a first impression is not rolled twice. Narrate them true to it: a social_check, or set_npc when the story itself changes how they feel, moves it.`
+        : `${npc.name}'s attitude was already set before this meeting: ${npc.attitude}. Narrate the greeting in that light: a social_check, or set_npc when the story itself changes how they feel, moves it.`,
+    };
   }
   const modifier = args.modifier ?? 0;
   // A penalty is written as 2d6-3, never 2d6+-3, which no dice parser reads.
@@ -287,18 +324,16 @@ export function handleNpcReaction(
   // Strictness leans the stranger a step (docs/vtt-parity-implementation-
   // plan.md 9.2): warmer when lenient, warier when harsh.
   const attitude = shiftAttitude(reactionAttitude(outcome.total), reactionBias(campaign.gameSettings.gm?.strictness ?? "standard"));
-  const npc = bootstrapAgency(
-    campaign,
-    upsertNpc({
-      campaignId: campaign.id,
-      name: args.name,
-      attitude,
-      trait: args.trait,
-      location: args.location,
-      gender: toldGender(args.gender),
-    }),
-    {},
-  );
+  const registered = upsertNpc({
+    campaignId: campaign.id,
+    name: args.name,
+    attitude,
+    trait: args.trait,
+    location: args.location,
+    gender: toldGender(args.gender),
+  });
+  // The roll is the meeting.
+  const npc = bootstrapAgency(campaign, markNpcMet(registered.id) ?? registered, {});
   return {
     ok: true,
     npc: npc.name,
@@ -323,27 +358,31 @@ export function handleSocialCheck(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof socialCheckSchema>;
   try {
     args = socialCheckSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: social_check needs characterId, npc, and approach." };
+    return { error: "Invalid arguments: social_check needs characterId, npc, and approach.", retry: true };
   }
   const stale = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = stale ? getSheetById(stale.id) ?? stale : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
-  const npc = getNpcByName(campaign.id, args.npc);
+  // A lasting companion is reached through the row behind their sheet
+  // (#503 Phase 0.1), so a companion can be talked round like anyone else.
+  const companion = sheets.find((entry) => entry.isCompanion && textKey(entry.name) === textKey(args.npc));
+  const npc = (companion ? companionNpcFor(companion) : null) ?? getNpcByName(campaign.id, args.npc);
   if (!npc) {
     return {
       error: `No tracked NPC named "${args.npc}".${nearestNpcHint(nearestNpcName(campaign.id, args.npc))} Register them with set_npc or npc_reaction first.`,
+      retry: true,
     };
   }
   const skill = approachSkill(args.approach);
   if (!skill) {
-    return { error: "approach must be persuade, deceive, or intimidate." };
+    return { error: "approach must be persuade, deceive, or intimidate.", retry: true };
   }
 
   // Held carriers (Bardic Inspiration, Help, Guidance) and lasting effects
@@ -354,7 +393,7 @@ export function handleSocialCheck(
     rollExtrasFor(campaign, sheet, "skill_check"),
   );
   if ("error" in resolved || "autoFail" in resolved) {
-    return { error: "error" in resolved ? resolved.error : `${sheet.name} cannot make that check.` };
+    return "error" in resolved ? resolved : { error: `${sheet.name} cannot make that check.`, refused: "rules" };
   }
   spendRollCarriers(campaign.id, sheet.id, resolved.spendInspiration);
   // A faction's member leans on the party's standing with that faction
@@ -368,11 +407,13 @@ export function handleSocialCheck(
     campaignId: campaign.id,
     characterId: sheet.id,
     characterName: sheet.name,
-    subjectKind: "npc",
+    subjectKind: npc.companionSheetId ? "companion" : "npc",
     subjectName: npc.name,
-    subjectId: npc.id,
+    subjectId: companion?.id ?? npc.id,
   });
-  const standingModifier = approvalRollModifier(relationship.approval);
+  // An NPC keeping up an act is swayed as the warmth they show would be
+  // (src/lib/dm/scheme-logic.ts): the roll's modifier is on the table.
+  const standingModifier = approvalRollModifier(outwardApproval(relationship));
   const rolled = rollExpression(
     standingModifier === 0
       ? resolved.expression
@@ -389,6 +430,8 @@ export function handleSocialCheck(
   });
   publishRoll(campaign.id, roll);
   turn.rollIds.push(roll.id);
+  // Talking someone round, or failing to, is dealing with them.
+  markNpcMet(npc.id);
 
   const outcome = resolveSocialCheck(rolled.total, npc.attitude);
   // The one-shift-per-exchange guard: an attitude that already moved this
@@ -465,7 +508,8 @@ function buildSocialNote(
 // toward the party, and a bounded agency fragment (personality leans, goals,
 // pressure). How they feel about individual characters is the approval meter
 // and renders in its own section.
-export function npcRosterForPrompt(campaignId: string): Array<{
+// `romance`: who they are drawn to rides only at a romance table.
+export function npcRosterForPrompt(campaignId: string, options: { romance?: boolean } = {}): Array<{
   name: string;
   attitude: Attitude;
   trait: string;
@@ -474,6 +518,7 @@ export function npcRosterForPrompt(campaignId: string): Array<{
   aliases: string[];
   witnessNote: string;
   statBlock: string;
+  identity: string;
 }> {
   // Facts are read once for the whole roster; witness notes are per-NPC.
   const facts = listActiveFacts(campaignId).map((fact) => ({
@@ -483,8 +528,9 @@ export function npcRosterForPrompt(campaignId: string): Array<{
     witnessedBy: fact.witnessedBy,
   }));
   // Archived NPCs stay out of the prompt until someone names them again
-  // (src/lib/dm/npc-archive-logic.ts). They are never deleted.
-  return listNpcs(campaignId)
+  // (src/lib/dm/npc-archive-logic.ts). They are never deleted. A companion
+  // in the party is in the Party block, not here.
+  return listCastNpcs(campaignId)
     .filter((npc) => !npc.archived)
     .map((npc) => ({
     name: npc.name,
@@ -499,7 +545,15 @@ export function npcRosterForPrompt(campaignId: string): Array<{
     witnessNote: renderWitnessNote(npc.name, facts),
     // The stat block they fight with (start_encounter takes their name).
     statBlock: npc.statBlock,
+    // Their gender, and at a romance table who they are drawn to (issue
+    // 501), so romance follows who people are. Blank says nothing.
+    identity: npcIdentity(npc, options.romance ?? false),
   }));
+}
+
+function npcIdentity(npc: Npc, romance: boolean): string {
+  const drawn = romance ? attractionWords(npc.attraction) : "";
+  return [npc.gender, drawn ? `drawn to ${drawn}` : ""].filter(Boolean).join(", ");
 }
 
 const ATTITUDE_LADDER = ["hostile", "indifferent", "friendly"] as const;

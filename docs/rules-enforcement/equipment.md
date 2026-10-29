@@ -68,11 +68,14 @@ Inventory and encumbrance
 Currency
 - Stored as whole gold plus 0 to 99 copper. Deliberate rule, declared in `srd/currency.ts`:
   `modify_gold` never refuses a loss, it empties the purse and reports `short`. The paying
-  paths (purchase, buy_item, deposit, withdraw, trade) refuse.
+  paths (purchase, at a shop or not, deposit, withdraw, trade) refuse.
 
 Shops and trade
 - ODM's own rules (rules-coverage "Commerce"): markup ladder 0.8 to 2, keeper buys at half
-  list, one haggle per character per shop, haggle DC by settlement size.
+  list, one haggle per character per shop, haggle DC by settlement size. A won haggle lowers
+  the price a step, a failure holds it, a failure by 5 or more raises it a step (two for
+  Intimidation), and the price is for the characters at the counter only. Deception works
+  once per shop.
 - Trades are validated at offer and again at acceptance, inside one transaction.
 
 Magic items
@@ -131,7 +134,7 @@ Severity high
    line 87 (the snapshot beats the SRD table). Same path for armour and magic effects.
    `homebrew/gear.ts normalizeWeapon` puts no bound on the dice.
    Fix: hydrate only rows that carry a `homebrew:` slug, require the campaign to have admitted
-   the entry (DM approval or campaign-scoped homebrew), and bound weapon dice.
+   the entry (GM approval or campaign-scoped homebrew), and bound weapon dice.
 
 5. homebrew-snapshot-from-the-client (test-enforce-magic-items)
    Rule: the gear snapshot on an equipment row is the server's to write.
@@ -287,7 +290,8 @@ Severity low
 - party_award conserving every coin for party sizes 1 to 4 and eight hoard sizes; common purse
   and shared pack conserving totals.
 - Shops through the player route: price to the copper at every markup, one copper short,
-  stock limits, acting only for one's own character, cross-campaign shop refused, haggle once.
+  stock limits, acting only for one's own character, cross-campaign shop refused, haggle once,
+  a held or bad haggle by its margin, a haggled price shared only with those present.
 - Trades through the routes: revalidation on accept from both sides, only the counterparty
   accepts, double accept refused, double-offered goods move once, conservation of coin and
   items across a mixed sequence.
@@ -308,7 +312,7 @@ Severity low
 ## Could not test, and why
 
 - pack-priced half-list sale through the player route without the content pack: the route
-  passes no priceCp, so it is covered by the DM tool with priceCp and, beside the pack, by the
+  passes no priceCp, so it is covered by the GM tool with priceCp and, beside the pack, by the
   Longsword case (guarded by an actual pack lookup).
 - Library sync as a separate write path for the attunement cap: it lands in the same
   createSheet the creation gap covers; not given its own case.

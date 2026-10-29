@@ -7,18 +7,18 @@
 // of cast-tools.ts, which re-exports it; this module imports mutations (for
 // the slot spend) and must never be imported by it.
 
-import { magicImmunityProblem } from "@/lib/dm/monster-traits";
+import { magicImmunityNote } from "@/lib/dm/monster-traits";
 import { describeConditionDuration } from "@/lib/dm/condition-logic";
 import { z } from "zod";
 import { placeSpellZone } from "@/lib/dm/zone-cast";
 import { zoneArgsSchema, zonePlacement } from "@/lib/dm/zone-args";
 import { bindsWorthResisting } from "@/lib/dm/legendary-logic";
 import type { Campaign } from "@/lib/db/campaigns";
-import { getActiveEncounter, getEnemy, recordEncounterTarget } from "@/lib/db/encounters";
+import { getActiveEncounter, recordEncounterTarget } from "@/lib/db/encounters";
 import { getSheetById } from "@/lib/db/sheets";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { isValidExpression } from "@/lib/dice";
-import { spellSaveDcFor } from "@/lib/srd";
+import { spellSaveDcFor, castsSpells } from "@/lib/srd";
 import { spellDamageFor, spellFactsFor, spellMechanicsFor } from "@/lib/content";
 import { castRedirect } from "@/lib/dm/cast-redirect";
 
@@ -26,9 +26,12 @@ export { castRedirect };
 import { conditionEffectsFor } from "@/lib/srd/condition-effects";
 import { conditionUntargetable } from "@/lib/srd/condition-effect-queries";
 import type { SaveAbility } from "@/lib/bestiary/statblock";
-import { applyDmMutation, canonicalCondition } from "@/lib/dm/mutations";
-import { publishEncounter, resolveEnemyRef } from "@/lib/dm/enemy-damage";
-import { resolveSheetRef } from "@/lib/dm/rolls";
+import { applyDmMutation, canonicalCondition, castBarred } from "@/lib/dm/mutations";
+import { publishEncounter } from "@/lib/dm/enemy-damage";
+import { getFoe, resolveTargetFoe } from "@/lib/dm/sheet-foe";
+import { hostileTo, unknownCombatantRef } from "@/lib/dm/combatant";
+import { isSheetFoe } from "@/lib/dm/combat-sides-logic";
+import { resolveSheetRef, unknownSheetRef } from "@/lib/dm/rolls";
 import { normalizeAbility } from "@/lib/dm/arg-coerce";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { planSpellFx } from "@/lib/battlemap/fx-plan";
@@ -36,9 +39,11 @@ import { publishFx, tokenPosition } from "@/lib/dm/fx";
 import { rollEnemySave, settleFailedSave } from "@/lib/dm/forced-save";
 import { charmedBy } from "@/lib/dm/enemy-profile";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
-import { spellReachProblem } from "@/lib/dm/cast-reach";
+import { castToNoEffect, spellReachProblem, spellWardOn } from "@/lib/dm/cast-reach";
 import { landSpellDamage } from "@/lib/dm/cast-at-enemy-damage";
 import { spellConditionMeta } from "@/lib/dm/spell-effects";
+import { textKey } from "@/lib/language/text-logic";
+import { areaShareProblem, markRepeatStruck, openAreaCast, recordAreaShare, repeatStrikeProblem } from "@/lib/dm/area-casting";
 // What the spell does beyond damage and condition (src/lib/dm/spell-riders.ts).
 import { afterEnemySave, chosenCondition, conditionMetaFor, heatMetalGrip } from "@/lib/dm/spell-riders";
 import { layOnEnemy, spellAutoSave, spellSaveOptions, turnEndMark } from "@/lib/dm/spell-riders";
@@ -48,6 +53,10 @@ import { overchannelProblem, payOverchannel } from "@/lib/dm/caster-features";
 import { maximumOf } from "@/lib/dm/heal-spell";
 import { castingHold } from "@/lib/dm/spell-planes";
 import { castShapeAtEnemy, enemyShapeSpellFor } from "@/lib/dm/enemy-polymorph";
+import { handleCastBuff } from "@/lib/dm/cast-buff";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { spellHeldProblem } from "@/lib/dm/cast-rules";
+import { conditionNameRefusal } from "@/lib/dm/set-condition";
 
 const castArgsSchema = z.object({
   characterId: z.string(),
@@ -78,10 +87,14 @@ export function handleCastAtEnemy(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+  // Hellish Rebuke resolved by use_reaction once its trigger is checked
+  // (src/lib/dm/reaction-spells.ts), which spends the reaction itself.
+  options: { asReaction?: boolean } = {},
+): ToolResult {
+  const via = options.asReaction ? "reaction" : "enemy";
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter." };
+    return { error: "No active encounter: cast_at_enemy aims at an enemy in a fight. Call start_encounter first.", retry: true };
   }
   let args: z.infer<typeof castArgsSchema>;
   try {
@@ -89,49 +102,57 @@ export function handleCastAtEnemy(
   } catch {
     return {
       error: "Invalid arguments: cast_at_enemy needs characterId, targetEnemyId, spell, and saveAbility.",
+      retry: true,
     };
   }
   const staleSheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = staleSheet ? (getSheetById(staleSheet.id) ?? staleSheet) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
   // A reaction spell is asked by the cast guard's reaction gate instead,
   // which judges one answering the hit that dropped the caster as they stood
   // before it (issue 233).
   if (sheet.currentHp <= 0 && spellFactsFor(args.spell, spellAuthorsFor(campaign))?.castingTime !== "reaction") {
-    return { error: `${sheet.name} is at 0 HP and cannot cast.` };
+    return { error: `${sheet.name} is at 0 HP and cannot cast.`, refused: "rules" };
   }
-  if (!sheet.spellcasting) {
-    return { error: `${sheet.name} cannot cast spells.` };
+  if (!castsSpells(sheet)) {
+    return { error: `${sheet.name} cannot cast spells.`, refused: "rules" };
   }
   // Multiclass: the DC follows the class whose list carries the spell.
   const dc = spellSaveDcFor(sheet, args.spell ?? "");
-  if (dc === null) {
-    return { error: `${sheet.name} has no spell save DC.` };
-  }
-  const enemy = resolveEnemyRef(encounter.id, args.targetEnemyId);
+  // The target is any combatant (src/lib/dm/combatant.ts): an enemy, or a
+  // character fighting on the other side, who saves and takes the spell as
+  // the character it is (sheet-foe.ts).
+  const enemy = resolveTargetFoe(campaign.id, encounter, args.targetEnemyId);
   if (!enemy) {
-    return { error: "Unknown targetEnemyId; use one from GAME STATE." };
+    return unknownCombatantRef(campaign.id, encounter, "targetEnemyId", args.targetEnemyId);
+  }
+  if (isSheetFoe(enemy) && !hostileTo(encounter, { kind: "sheet", id: sheet.id }, { kind: "sheet", id: enemy.id })) {
+    return { error: `${enemy.displayName} fights on ${sheet.name}'s side: cast_at_enemy does not aim at an ally. Nothing was spent.`, refused: "rules" };
+  }
+  const barred = castBarred(campaign, turn.id, { characterId: sheet.id, spell: args.spell, ...(args.level ? { level: args.level } : {}), via }, sheets, sheetsById);
+  if (barred) {
+    return barred;
   }
   if (enemy.status !== "alive") {
-    return { error: `${enemy.displayName} is already ${enemy.status}.` };
+    return { error: `${enemy.displayName} is already ${enemy.status}. Ask the player which living enemy in GAME STATE to target instead.`, retry: true };
   }
   // SRD 5.1, Charmed: no harmful magic at the charmer (monsters workstream).
   if (charmedBy(sheet.conditions, sheet.conditionMeta, enemy.id)) {
-    return { error: `${sheet.name} is charmed by ${enemy.displayName} and cannot target it with harmful magic. Nothing was spent; pick another target.` };
+    return { error: `${sheet.name} is charmed by ${enemy.displayName} and cannot target it with harmful magic. Nothing was spent; pick another target.`, refused: "rules" };
   }
   // A caster Etherealness or Maze took away reaches nobody here (spell-planes.ts).
   const away = castingHold(sheet);
   if (away) {
-    return { error: away };
+    return away;
   }
   const sealed = conditionUntargetable(enemy.conditions);
   if (sealed) {
-    return { error: `${enemy.displayName} is ${sealed} and nothing from outside reaches it until the spell ends. Nothing was spent.` };
+    return { error: `${enemy.displayName} is ${sealed} and nothing from outside reaches it until the spell ends. Nothing was spent; pick another target.`, refused: "rules" };
   }
   if (enemy.conditions.includes("banished")) {
-    return { error: `${enemy.displayName} is banished to another plane and cannot be targeted until the spell ends. Nothing was spent.` };
+    return { error: `${enemy.displayName} is banished to another plane and cannot be targeted until the spell ends. Nothing was spent; pick another target.`, refused: "rules" };
   }
   // The content pack decides how a known spell resolves; the model's
   // arguments are corrected rather than trusted. Unknown spells resolve only
@@ -143,10 +164,17 @@ export function handleCastAtEnemy(
       caster: sheet,
       spell: resolvedMech.name,
       level: args.level,
-      target: { kind: "enemy", id: enemy.id },
+      target: { kind: isSheetFoe(enemy) ? "sheet" : "enemy", id: enemy.id },
       endSpell: args.endSpell,
       reason: args.reason,
     });
+  }
+  // A spell the engine casts on characters as a buff (Polymorph, Enlarge/
+  // Reduce), at a character on the other side: its own path on the sheet,
+  // with the save an unwilling creature makes (hostile-buffs.ts).
+  if (resolvedMech?.mech.buff && isSheetFoe(enemy)) {
+    const asBuff = { characterId: sheet.id, spell: args.spell, targetCharacterIds: [enemy.id], variant: args.variant, level: args.level, reason: args.reason };
+    return handleCastBuff(campaign, turn, JSON.stringify(asBuff), sheets, sheetsById);
   }
   // Polymorph and True Polymorph: the beast in variant (enemy-polymorph.ts).
   // A table's workshop copy turns its target by the spell it runs as.
@@ -157,13 +185,19 @@ export function handleCastAtEnemy(
   }
   const redirect = castRedirect(resolvedMech, "save");
   if (redirect) {
-    return { error: redirect };
+    return redirect;
   }
   const facts = spellFactsFor(args.spell, authors);
   const mech = resolvedMech?.mech ?? null;
   const corrections: string[] = [];
+  // A name the server does not know is read against the sheet first: a typo
+  // or another language is fixed from the caster's list, not sent a save.
+  const unheld = !mech && !facts ? spellHeldProblem(sheet, args.spell, null) : null;
+  if (unheld) {
+    return { ...unheld, error: `${unheld.error} Nothing was spent.` };
+  }
   if (!mech?.save && !args.saveAbility && mech?.resolution !== "auto") {
-    return { error: "cast_at_enemy needs saveAbility for a spell the server does not know." };
+    return { error: "cast_at_enemy needs saveAbility for a spell the server does not know.", retry: true };
   }
   let ability = (mech?.save ?? args.saveAbility ?? "wis") as SaveAbility;
   if (mech?.save && args.saveAbility && mech.save !== args.saveAbility) {
@@ -200,9 +234,16 @@ export function handleCastAtEnemy(
   // chooses among a spell's variants (Blindness/Deafness).
   const mechCondition = mech?.condition ?? null;
   const wanted = args.condition ? canonicalCondition(args.condition) : null;
+  const misnamed = !mechCondition && args.condition ? conditionNameRefusal(args.condition) : null;
+  if (misnamed) {
+    return misnamed;
+  }
   // Command's word, Eyebite's form: the caller's pick among what the spell
   // offers (src/lib/dm/spell-riders.ts).
   const picked = mechCondition ? chosenCondition(mechCondition, args.condition ?? null) : null;
+  if (picked && "error" in picked) {
+    return picked;
+  }
   const conditions = pool
     ? [canonicalCondition(pool.condition)]
     : picked
@@ -211,11 +252,11 @@ export function handleCastAtEnemy(
         ? [wanted]
         : [];
   if (!pool && !(named?.dice ?? callerDice) && !conditions.length && !mech?.riders) {
-    return { error: "cast_at_enemy needs damage and/or condition; otherwise nothing happens." };
+    return { error: "cast_at_enemy needs damage and/or condition; otherwise nothing happens.", retry: true };
   }
   const guessed = named?.dice ?? callerDice;
   if (guessed && !isValidExpression(guessed)) {
-    return { error: `Invalid damage expression "${guessed}".` };
+    return { error: `Invalid damage expression "${guessed}".`, retry: true };
   }
   const pickedWord = picked && (picked.extra.length || picked.name !== mechCondition?.name);
   if (mechCondition && wanted && !conditions.includes(wanted) && !pickedWord) {
@@ -228,29 +269,26 @@ export function handleCastAtEnemy(
   const immuneTo = [main, mech?.immuneIfImmuneTo].find(
     (name): name is string => Boolean(name && enemy.stats.conditionImmune.toLowerCase().includes(name)),
   );
-  if (immuneTo && !pool) {
-    return {
-      error: `${enemy.displayName} is immune to ${immuneTo} (immunities: ${enemy.stats.conditionImmune}); the spell cannot take hold. The slot was not spent.`,
-    };
-  }
-  // Hold Person holds a humanoid and nothing else; Command does nothing to
-  // the undead.
+  // A spell that only lays the condition is cast, and spent, and does
+  // nothing; one that also deals damage deals it, the condition dropped
+  // where it is laid (src/lib/dm/spell-riders.ts layOnEnemy).
+  const immune = immuneTo && !pool && !guessed ? `${enemy.displayName} is immune to ${immuneTo}: ${spellName} has no effect on it.` : null;
+  // Hold Person holds a humanoid and nothing else.
   const creatureType = (enemy.stats.type ?? "").toLowerCase();
   // A stat block that names no type is not refused on a guess.
   if (creatureType && mech?.targetTypes?.length && !mech.targetTypes.some((type) => creatureType.includes(type))) {
     return {
-      error: `${spellName} affects only ${mech.targetTypes.join(" or ")} creatures, and ${enemy.displayName} is ${creatureType ? `a ${creatureType}` : "not one"}. The slot was not spent; pick another target or another spell.`,
+      error: `${spellName} affects only ${mech.targetTypes.join(" or ")} creatures, and ${enemy.displayName} is ${creatureType ? `a ${creatureType}` : "not one"}. Nothing was spent; pick another target or another spell.`,
+      refused: "rules",
     };
   }
-  if (creatureType && mech?.immuneTypes?.some((type) => creatureType.includes(type))) {
-    return {
-      error: `${spellName} has no effect on ${creatureType} creatures, and ${enemy.displayName} is one. The slot was not spent; pick another target or another spell.`,
-    };
-  }
+  // Hold Monster and Command on the undead, Blight on a construct: cast, and
+  // spent, to no effect (SRD 5.1).
+  const spared = creatureType && mech?.immuneTypes?.some((type) => creatureType.includes(type)) ? `${spellName} has no effect on ${creatureType} creatures, and ${enemy.displayName} is one.` : null;
   if (args.overchannel) {
     const problem = overchannelProblem(sheet, facts, Boolean(named?.dice ?? callerDice));
     if (problem) {
-      return { error: `${problem} Nothing was spent.` };
+      return { ...problem, error: `${problem.error} Nothing was spent.` };
     }
   }
   const reach = spellReachProblem({
@@ -262,13 +300,19 @@ export function handleCastAtEnemy(
     facts,
   });
   if (reach) {
-    return { error: reach };
+    return reach;
   }
-  // Limited Magic Immunity (the rakshasa): a spell of its level or lower
-  // never touches it (src/lib/dm/monster-traits.ts).
-  const shrugged = magicImmunityProblem(enemy, spellName, args.level ?? facts?.level ?? 0);
-  if (shrugged) {
-    return { error: shrugged };
+  const ward = spellWardOn({ encounterId: encounter.id, casterId: sheet.id, targetId: enemy.id, targetName: enemy.displayName, facts });
+  // A concentration area coming again strikes a creature once a turn, on an
+  // event; another creature of one area casting fits its one placement
+  // (src/lib/dm/area-casting.ts).
+  const target = { id: enemy.id, name: enemy.displayName };
+  const repeating = mech?.repeat === "free" && textKey(sheet.concentratingOn ?? "") === textKey(spellName);
+  const area = repeating
+    ? repeatStrikeProblem(encounter, { spell: spellName, casterId: sheet.id, target })
+    : areaShareProblem({ encounter, caster: sheet, spell: spellName, authors, rangeFeet: facts?.range.kind === "feet" ? facts.range.feet : null, rangeSelf: facts?.range.kind === "self", target, ...(args.atX !== undefined && args.atY !== undefined ? { at: { x: args.atX, y: args.atY } } : {}) });
+  if (area) {
+    return area;
   }
 
   // The cast itself, through the one guard (src/lib/dm/cast-guard.ts): who
@@ -284,9 +328,7 @@ export function handleCastAtEnemy(
       ...(args.level ? { level: args.level } : {}),
       // Magic Missile: the darts named, or every dart the casting holds.
       ...(mech?.darts ? { uses: args.darts ?? 20 } : {}),
-      // A material priced per Hit Die of the target (Imprisonment).
-      units: hitDiceOf(enemy),
-      via: "enemy",
+      via,
       reason: (args.reason ?? "").slice(0, 200),
     }),
     sheets,
@@ -319,6 +361,13 @@ export function handleCastAtEnemy(
     ...(cast.shares ? { shares: cast.shares } : {}),
     ...(cast.continuing ? { continuing: cast.continuing } : {}),
   };
+  // A ward around the target, an immunity to the spell's condition or
+  // creature type, or Limited Magic Immunity (the rakshasa, src/lib/dm/monster-traits.ts): the
+  // spell is cast, and spent, and does nothing to it (SRD 5.1).
+  const noEffect = ward ?? immune ?? spared ?? magicImmunityNote(enemy, spellName, slotLevel ?? facts?.level ?? 0);
+  if (noEffect) {
+    return { ok: true, ...base, ...castToNoEffect(noEffect) };
+  }
   const source = { spell: spellName, casterId: sheet.id, slotLevel: slotLevel ?? null };
 
   if (pool) {
@@ -360,6 +409,7 @@ export function handleCastAtEnemy(
     const save = rollEnemySave(campaign.id, enemy, ability, dc, {
       magical: true,
       resist,
+      against: conditions,
       ...spellSaveOptions(mech, enemy),
       record: { turn, detail: `${enemy.displayName}: ${ability.toUpperCase()} save against ${spellName}` },
     });
@@ -382,7 +432,9 @@ export function handleCastAtEnemy(
 
   const hpBefore = enemy.currentHp;
   // The dice, the riders, the save's share and the kill (cast-at-enemy-damage.ts).
-  const damageDealt = damageExpression
+  // A later creature of one area casting takes its one roll.
+  const sharedRoll = cast.continuing ? openAreaCast(getActiveEncounter(campaign.id) ?? encounter, sheet.id, spellName)?.roll : undefined;
+  const landed = damageExpression
     ? landSpellDamage({
         campaign,
         turn,
@@ -403,8 +455,10 @@ export function handleCastAtEnemy(
         base,
         sheets,
         sheetsById,
+        ...(sharedRoll !== undefined ? { sharedRoll } : {}),
       })
-    : 0;
+    : null;
+  const damageDealt = landed?.dealt ?? 0;
 
   // The beam and burst on the board, coloured by the damage type, and the
   // target line for the round. Nothing to draw without a board.
@@ -488,7 +542,7 @@ export function handleCastAtEnemy(
     caster: sheet,
     enemy,
     saved: saved || beyondReach,
-    taken: Math.max(0, hpBefore - (getEnemy(enemy.id)?.currentHp ?? hpBefore)),
+    taken: Math.max(0, hpBefore - (getFoe(enemy.id)?.currentHp ?? hpBefore)),
     dc,
     sheets,
     sheetsById,
@@ -501,15 +555,14 @@ export function handleCastAtEnemy(
   }
   // A spell that stays on the ground is laid around its target (src/lib/dm/zone-cast.ts).
   // A later share of the same casting (a second creature in the web) leaves it where it is.
-  const area = cast.continuing ? null : placeSpellZone(campaign, { spell: spellName, runsAs: resolvedMech?.runsAs ?? facts?.runsAs, caster: { kind: "pc", id: sheet.id, name: sheet.name }, slotLevel: slotLevel ?? null, dc, caught: [enemy.id], ...zonePlacement(args) });
-  return { ok: true, ...base, ...(area ? { area } : {}) };
-}
-
-// A creature's Hit Dice, as its block is built: hit points over the average
-// of its size's hit die plus its Constitution modifier (SRD 5.1, Monsters).
-const SIZE_DIE: Record<string, number> = { tiny: 2.5, small: 3.5, medium: 4.5, large: 5.5, huge: 6.5, gargantuan: 10.5 };
-function hitDiceOf(enemy: { maxHp: number; stats: { size?: string; abilities?: { con?: number } } }): number {
-  const die = SIZE_DIE[(enemy.stats.size ?? "medium").toLowerCase()] ?? 4.5;
-  const con = Math.floor(((enemy.stats.abilities?.con ?? 10) - 10) / 2);
-  return Math.max(1, Math.round(enemy.maxHp / Math.max(1, die + con)));
+  // A free repeat is the caster moving the area over the creature it names
+  // (Moonbeam's beam), keeping who it struck this turn.
+  const zone = cast.continuing ? null : placeSpellZone(campaign, { spell: spellName, runsAs: resolvedMech?.runsAs ?? facts?.runsAs, caster: { kind: "pc", id: sheet.id, name: sheet.name }, slotLevel: slotLevel ?? null, dc, caught: [enemy.id], ...zonePlacement(args) });
+  // What the next call of this casting must agree with: who the area has
+  // caught and its one roll; a recurring area's strike for this turn.
+  recordAreaShare(campaign.id, sheet.id, spellName, enemy.id, landed?.rolled ?? null);
+  if (mech?.repeat === "free") {
+    markRepeatStruck(campaign, spellName, sheet.id, [enemy.id]);
+  }
+  return { ok: true, ...base, ...(zone ? { area: zone } : {}) };
 }

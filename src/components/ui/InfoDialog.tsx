@@ -10,6 +10,7 @@ import { cn } from "@/lib/cn";
 import { Dialog } from "@/components/ui/Dialog";
 import type { ItemSheet } from "@/lib/help/item-sheet";
 import { firstSentence, parseRulesBlocks } from "@/lib/help/rules-text";
+import { textKey } from "@/lib/language/text-logic";
 
 // The "what does this do?" affordance, used everywhere a game term appears.
 //
@@ -127,13 +128,13 @@ function ContentBody({ reference }: { reference: ContentRef }) {
         }
         // The slug guessed from the name missed, or the row it found carries
         // no text. Search by name and take an exact match.
-        const wanted = (reference.name ?? reference.slug).trim().toLowerCase();
+        const wanted = textKey(reference.name ?? reference.slug);
         const search = await fetch(
           `/api/content/${reference.kind}?q=${encodeURIComponent(wanted)}&limit=20&mechanics=1${scopeQuery(campaignId, "&")}`,
         );
         const results = search.ok ? ((await search.json()).results ?? []) : [];
         const hit = results.find(
-          (entry: { name: string }) => entry.name.trim().toLowerCase() === wanted,
+          (entry: { name: string }) => textKey(entry.name) === wanted,
         );
         if (!cancelled) {
           setState({ text: describeContentEntry(hit?.data), loading: false });
@@ -218,7 +219,7 @@ function ItemBody({ reference }: { reference: ContentRef }) {
     let cancelled = false;
     async function load() {
       const name = (reference.name ?? reference.slug).trim();
-      const wanted = name.toLowerCase();
+      const wanted = textKey(name);
       const readJson = async (response: Response) => (response.ok ? response.json() : null);
       try {
         const [{ buildItemSheet }, direct, search] = await Promise.all([
@@ -227,7 +228,7 @@ function ItemBody({ reference }: { reference: ContentRef }) {
           fetch(`/api/content/items?q=${encodeURIComponent(wanted)}&limit=20${scopeQuery(campaignId, "&")}`).then(readJson).catch(() => null),
         ]);
         const hits = ((search?.results ?? []) as Array<{ name: string; data?: Record<string, unknown> }>)
-          .filter((entry) => entry.name.trim().toLowerCase() === wanted)
+          .filter((entry) => textKey(entry.name) === wanted)
           .map((entry) => entry.data);
         const sheet = buildItemSheet(name, [direct?.entry?.data, ...hits]);
         if (!cancelled) {
@@ -403,8 +404,10 @@ export function InfoButton({
           setOpen(true);
         }}
         aria-label={`What is ${label}?`}
+        // tap-reach: the glyph stays small in its line, a finger gets 40 px
+        // round it (audit WA-08).
         className={cn(
-          "inline-flex shrink-0 items-center justify-center rounded-full text-stone-500 transition-colors hover:text-amber-200",
+          "tap-reach inline-flex shrink-0 items-center justify-center rounded-full text-stone-500 transition-colors hover:text-amber-200",
           className,
         )}
       >
@@ -494,6 +497,7 @@ export function InfoDialog({
   note,
   text,
   reference,
+  icon,
   children,
 }: {
   open: boolean;
@@ -503,14 +507,59 @@ export function InfoDialog({
   note?: string;
   text?: string | null;
   reference?: ContentRef;
+  // The thing's painting. An action card's rectangular painting (from
+  // cardArtwork, src/lib/battlemap/card-art.ts) spans the top at its own
+  // 256x128; a round icon sits beside the meta line.
+  icon?: IconRef;
   children?: ReactNode;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={title} width="w-[min(92vw,32rem)]">
-      {meta ? (
-        <p className="reveal mb-3 text-xs uppercase tracking-wide text-amber-200/70">{meta}</p>
+      <InfoBody meta={meta} note={note} text={text} reference={reference} icon={icon}>
+        {children}
+      </InfoBody>
+    </Dialog>
+  );
+}
+
+// What the info dialog shows under its title, for the places that show the
+// same write-up without a dialog (the builder's picks beside its steps).
+export function InfoBody({
+  meta,
+  note,
+  text,
+  reference,
+  icon,
+  children,
+  large,
+}: {
+  meta?: string;
+  note?: string;
+  text?: string | null;
+  reference?: ContentRef;
+  icon?: IconRef;
+  children?: ReactNode;
+  // The text at 1rem, where it is read beside the picks rather than in a
+  // dialog opened to read it.
+  large?: boolean;
+}) {
+  const metaLine = meta ? <p className="reveal text-xs uppercase tracking-wide text-amber-200/70">{meta}</p> : null;
+  return (
+    <>
+      {icon?.kind === "action" ? (
+        <div className="mb-3 space-y-2">
+          <GameIcon icon={icon} size="mx-auto flex h-32 w-64 max-w-full" />
+          {metaLine}
+        </div>
+      ) : icon ? (
+        <div className="mb-3 flex items-center gap-3">
+          <GameIcon icon={icon} size="size-16" />
+          {metaLine}
+        </div>
+      ) : metaLine ? (
+        <div className="mb-3">{metaLine}</div>
       ) : null}
-      <div className="space-y-2 text-sm leading-relaxed text-stone-400">
+      <div className={cn("space-y-2 leading-relaxed text-stone-400", large ? "text-base" : "text-sm")}>
         {note ? <div className="rounded border border-amber-300/20 bg-amber-300/5 px-2.5 py-1.5 text-stone-300">{renderRules(note)}</div> : null}
         {text?.trim() ? (
           renderRules(text)
@@ -521,6 +570,6 @@ export function InfoDialog({
         ) : null}
         {children}
       </div>
-    </Dialog>
+    </>
   );
 }

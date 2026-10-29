@@ -2,6 +2,9 @@
 // (src/lib/srd/authored-effects.ts). Kept apart from the data and the readers
 // so both data files and every reader import the same words without a cycle.
 
+import type { CheckAbout, SaveAgainstValue } from "@/lib/dm/roll-about";
+import type { ItemTag } from "@/lib/schemas/item-tags";
+
 export type Ability = "str" | "dex" | "con" | "int" | "wis" | "cha";
 
 // A number or dice that grow with the level of the class that granted the
@@ -28,6 +31,9 @@ export type Gate = {
   // another feature of the same sheet ("Armor Model (Guardian)").
   choice?: string;
   choiceOf?: { feature: string; value: string };
+  // The class that granted the feature has reached this level (a part of
+  // the feature that arrives later: Spiritual Focus's d6 from 6th level).
+  level?: number;
 };
 
 type Base = { gate?: Gate; note?: string };
@@ -39,9 +45,9 @@ export type AuthoredEffect = Base &
     | { kind: "resist"; types: string[] | "all"; except?: string[]; nonmagical?: boolean; spells?: boolean }
     | { kind: "immune_damage"; types: string[] }
     | { kind: "immune_condition"; conditions: string[] }
-    // Advantage on a save: against what the save resists (a pattern over
-    // the roll's `against`), or every save of an ability.
-    | { kind: "save_adv"; against?: string; ability?: Ability }
+    // Advantage on a save: against what the save resists (one of the
+    // roll's `against` values, or magic), or every save of an ability.
+    | { kind: "save_adv"; against?: SaveAgainstValue[]; magical?: true; ability?: Ability }
     | { kind: "save_prof"; abilities: Ability[] }
     | { kind: "save_bonus"; amount: number }
     // A save of one ability uses another ability's modifier when higher.
@@ -53,9 +59,9 @@ export type AuthoredEffect = Base &
     | { kind: "move"; fly?: number | "walk"; swim?: number | "walk" }
     | { kind: "init_adv" }
     | { kind: "init_ability"; ability: Ability }
-    // Advantage on checks: named skills, or checks of an ability whose
-    // reason matches a pattern ("push|pull|lift").
-    | { kind: "check_adv"; skills?: string[]; abilities?: Ability[]; reason?: string }
+    // Advantage on checks: named skills, or checks of an ability about one
+    // circumstance (the roll's `about`).
+    | { kind: "check_adv"; skills?: string[]; abilities?: Ability[]; about?: CheckAbout }
     // A critical hit against the holder is a normal hit.
     | { kind: "crit_immune" }
     // The holder's damage of these types ignores resistance.
@@ -63,6 +69,32 @@ export type AuthoredEffect = Base &
     // Attacks against the holder by creatures of these types are at
     // disadvantage.
     | { kind: "attacked_disadv"; from: string[] }
+    // A creature of these types that targets the holder with an attack must
+    // first save against the holder's spell save DC or lose the attack
+    // (Among the Dead: undead, Wisdom).
+    | { kind: "ward_vs"; types: string[]; save: Ability }
+    // Opportunity attacks against the holder are made at disadvantage
+    // (Totem Spirit: Eagle).
+    | { kind: "oa_disadv" }
+    // The holder uses this ability for the attack and damage rolls of the
+    // weapon the feature's option names, when it is higher (Hex Warrior:
+    // Charisma, "Hex Warrior (Longsword)").
+    | { kind: "weapon_ability"; ability: Ability; magicOnly?: boolean }
+    // Darkvision to this range, or `orAdd` more feet when the holder already
+    // sees in the dark (Umbral Sight: 60, or 30 more).
+    | { kind: "darkvision"; feet: number; orAdd?: number }
+    // An ability modifier (at least +1) added to the damage of the holder's weapon attacks
+    // (Aura of Hate: Charisma, melee; Song of Victory: Intelligence, melee,
+    // while bladesinging).
+    | { kind: "damage_ability"; ability: Ability; when: "melee" | "weapon"; requiresCondition?: string }
+    // The proficiency bonus added to initiative (Aura of the Sentinel).
+    | { kind: "init_prof" }
+    // A d20 at or below `floor` - 1 counts as `floor` on checks with these
+    // skills (Silver Tongue: 10 on Persuasion and Deception).
+    | { kind: "check_floor"; skills: string[]; floor: number }
+    // A spell of 1st level or higher that kills heals the holder twice its
+    // level, three times for necromancy, once a turn (Grim Harvest).
+    | { kind: "grim_harvest" }
     // The holder's attacks have advantage: against a creature that has not
     // taken a turn in the fight yet, against one the holder frightened,
     // against one the holder distracted, or against creatures of these types.
@@ -125,7 +157,7 @@ export type AuthoredEffect = Base &
         typeFrom?: { condition: string; map: Record<string, string> };
       }
     // A creature that hits the holder takes damage back.
-    | { kind: "retaliate"; formula: Formula | "half_dealt"; type: string }
+    | { kind: "retaliate"; formula: Formula | "half_dealt"; type: string; melee?: boolean }
     // Enemies starting their turn near the holder take damage (Aura of
     // Conquest: only frightened ones).
     | { kind: "enemy_turn_damage"; formula: Formula; type: string; rangeFt: number | Array<[number, number]>; frightenedOnly?: boolean }
@@ -165,15 +197,20 @@ export type AuthoredEffect = Base &
         damageTypes?: string[];
         healing?: boolean;
         classes?: string[];
-        item?: string;
+        // Cantrips only (Potent Spellcasting).
+        cantrips?: boolean;
+        // Cast through a carried item that is one of these
+        // (src/lib/srd/item-tags.ts).
+        items?: ItemTag[];
       }
     // Casting the spell gives temporary hit points, and damage never breaks
     // the concentration on it (Grasping Tentacles).
-    | { kind: "concentration_guard"; spell: string; tempHp: Formula }
+    // `school`: every spell of that school (Focused Conjuration).
+    | { kind: "concentration_guard"; spell?: string; school?: string; tempHp: Formula }
     // A single-target spell of the school and level range strikes a second
-    // creature within 5 feet of the first (Improved Reaper), at the cost the
-    // authored text names in hit points per spell level.
-    | { kind: "twin_spell"; school: string; maxLevel: number; costPerLevel: string }
+    // creature within 5 feet of the first (Improved Reaper: 1st to 5th level
+    // necromancy; Reaper: a necromancy cantrip; Moon Fire: sacred flame).
+    | { kind: "twin_spell"; school: string; maxLevel: number; minLevel?: number; spells?: string[] }
     // pc_attack rapidStrike: an attack with advantage forgoes it for one more
     // attack of the action, once a turn (Rapid Strike).
     | { kind: "rapid_strike" }
@@ -193,6 +230,19 @@ export type AuthoredEffect = Base &
     // What the holder summons with a conjuration spell arrives with these
     // temporary hit points (Durable Summons, src/lib/dm/summon-cast.ts).
     | { kind: "summon_temp_hp"; amount: number; school: string }
+    // Casting a spell of this school with a slot of `minLevel` or higher
+    // gives back one spent slot of a lower level, `maxLevel` at most (Expert
+    // Divination: divination, 2nd, 5th).
+    | { kind: "slot_refund"; school: string; minLevel: number; maxLevel: number }
+    // What the holder summons with a spell, of these creature types, gains
+    // this many hit points per Hit Die (Mighty Summoner: 2, beasts and fey).
+    | { kind: "summon_hp_per_hd"; amount: number; types: string[] }
+    // The attacks of the holder's companion of these kinds count as magical
+    // (Exceptional Training: the beast companion).
+    | { kind: "pet_magical"; pets: Array<"familiar" | "beast_companion" | "drake" | "other"> }
+    // Indomitable's reroll of an Intelligence, Wisdom or Charisma save lets
+    // one ally in range that failed the same save reroll it too (Bulwark).
+    | { kind: "indomitable_ally"; rangeFt: number }
     // The steel defender grows sturdier: its armor class rises by this much
     // (Improved Defender, src/lib/dm/summon-defender.ts).
     | { kind: "defender_upgrade"; ac: number }
@@ -247,7 +297,9 @@ export type SpendDoes =
       // quarry, src/lib/dm/attack-marks.ts): Target Lock, Quarry.
       quarry?: boolean;
       // The spend's own burst (Arms of the Astral Self, Avenging Angel).
-      burst?: { save: Ability; dcAbility: Ability | "spell"; rangeFt: number; dice?: Formula; type?: string; condition?: string; rounds?: number };
+      // `mark`: a second condition each creature that failed carries
+      // (Avenging Angel: "menaced", which gives every attacker advantage).
+      burst?: { save: Ability; dcAbility: Ability | "spell"; rangeFt: number; dice?: Formula; type?: string; condition?: string; mark?: string; rounds?: number };
     }
   // Choose an option for the feature, outside a fight: the feature is
   // renamed "Feature (Option)", which the passive effects read.
@@ -282,8 +334,9 @@ export type SpendDoes =
   | { kind: "flourish" }
   // Storm Aura's three environments.
   | { kind: "storm_aura" }
-  // Cauterizing Flames: heal an ally or burn an enemy.
-  | { kind: "flames"; formula: Formula; type: string }
+  // Cauterizing Flames: heal an ally or burn an enemy. `healOnly`: it only
+  // heals (Hand of Healing).
+  | { kind: "flames"; formula: Formula; type: string; healOnly?: boolean }
   // A variant word picks one of several spends.
   | { kind: "variants"; options: Record<string, { does: SpendDoes; action?: SpendAction }> }
   // Insightful Fighting: an Insight check against the creature's Deception.
@@ -297,7 +350,9 @@ export type SpendDoes =
   | { kind: "summon"; form: string }
   // Nothing the engine moves: the spend pays its cost and the text says
   // what happens (Spirit Totem's move, the cannon's ballista option).
-  | { kind: "note"; text: string };
+  | { kind: "note"; text: string }
+  // Spent dice come back to a pool (Psionic Recovery: one Psionic Energy die).
+  | { kind: "restore"; pool: string; amount: number };
 
 export type SpendAction = "action" | "bonus" | "reaction" | "none";
 
@@ -327,17 +382,22 @@ export type AuthoredSpend = {
 export type ReactionDoes =
   // Less damage from the last hit on the holder or an ally in range.
   // "ward": the holder's Arcane Ward takes what it can (Projected Ward).
-  | { kind: "reduce"; amount: Formula | "half" | "slot5" | "psionic_int" | "ward"; who: "self" | "ally" | "either"; rangeFt?: number; types?: string[] }
+  // `reflect`: with that feature held, the damage prevented strikes the
+  // attacker (Spirit Shield with Vengeful Ancestors).
+  | { kind: "reduce"; amount: Formula | "half" | "slot5" | "psionic_int" | "ward"; who: "self" | "ally" | "either"; rangeFt?: number; types?: string[]; reflect?: { feature: string; type: string } }
   // A bonus to AC (or the Bardic Inspiration die) against the last hit.
   | { kind: "ac_vs_hit"; amount: number | "bardic" }
-  // The attack that hit is rolled again at disadvantage.
-  | { kind: "disadv_vs_hit" }
+  // The attack that hit is rolled again at disadvantage. `notVsAdvantage`:
+  // not against an attack rolled with advantage (Shadowy Dodge).
+  | { kind: "disadv_vs_hit"; notVsAdvantage?: boolean }
   // Resistance to the last hit's damage when it is one of these types.
   | { kind: "resist_instance"; types: string[]; who: "either"; rangeFt: number }
   // The holder takes the hit an ally in range took.
   // `share`: "halved", the holder takes half of it and the ally none
   // (Penance Shared); "split", each takes half (Blood Bond).
-  | { kind: "take_for_ally"; rangeFt: number | Array<[number, number]>; share?: "halved" | "split" }
+  // `resistFrom`: from this class level the holder resists what it takes
+  // (Protective Bond with Expansive Bond).
+  | { kind: "take_for_ally"; rangeFt: number | Array<[number, number]>; share?: "halved" | "split"; resistFrom?: number }
   // Damage back at a creature: the attacker, or the named enemy.
   | {
       kind: "strike_back";
@@ -357,7 +417,12 @@ export type ReactionDoes =
   // The attack's die is lowered by a die (Bend Luck).
   | { kind: "attack_penalty"; die: string }
   // The last hit on the holder lands on the creature beside them instead.
-  | { kind: "redirect" }
+  // `save`: the attacker first saves against the holder's DC and keeps its
+  // target on a success (Instinctive Charm).
+  | { kind: "redirect"; save?: { ability: Ability; dcAbility: Ability | "spell" }; rangeFt?: number }
+  // The hit misses on this die or higher (Armor of Hexes: a d6, 4 or more),
+  // against a creature the holder marked with this condition.
+  | { kind: "chance_miss"; die: string; min: number; vsMark?: string }
   // The last hit is declared a miss, for a level of exhaustion.
   | { kind: "force_miss"; exhaustion: number }
   // A move off the holder's turn, up to half their speed, drawing no
@@ -388,6 +453,10 @@ export type AuthoredEntry = {
   // The counter authored-resources.json holds for it, when the feature is
   // limited-use as well.
   counter?: string;
+  // An engine outside this layer applies it (the subclass spell table, the
+  // beast forms, the maneuver die): the file and the call it makes there,
+  // which the tests hold to the file.
+  heldBy?: { file: string; call: string };
   // Pure roleplay or information, or a mechanic an engine outside this
   // layer must hold first: said why, never left blank.
   narrated?: string;

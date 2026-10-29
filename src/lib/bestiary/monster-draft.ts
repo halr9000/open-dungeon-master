@@ -2,15 +2,9 @@ import { isValidExpression } from "@/lib/dice";
 import { xpForCr } from "@/lib/srd/encounter-math";
 import { synthesizeStats } from "@/lib/bestiary/synthesize";
 import { crLabel, deriveCr, expectedFor, type DerivedCr } from "@/lib/bestiary/derive-cr";
-import {
-  creatureTypeOf,
-  normalizeCreatureType,
-  normalizePrintedBlock,
-  type EnemyAttack,
-  type EnemySaveMods,
-  type EnemyStats,
-  type SaveAbility,
-} from "@/lib/bestiary/statblock";
+import { creatureTypeOf, normalizeCreatureType } from "@/lib/bestiary/creature-type";
+import { normalizePrintedBlock } from "@/lib/bestiary/printed-block";
+import type { EnemyAttack, EnemySaveMods, EnemyStats, SaveAbility } from "@/lib/bestiary/statblock";
 import {
   checkAttackExtras,
   checkRegeneration,
@@ -18,6 +12,8 @@ import {
   checkSpecials,
   checkSpellcasting,
 } from "@/lib/bestiary/block-check";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { HOMEBREW_NAME_MAX } from "@/lib/schemas/homebrew";
 
 // The monster a person writes, and the rules for turning it into the stat
 // block the engine fights with.
@@ -100,18 +96,18 @@ function text(value: unknown, max: number): string {
 // An attack whose damage the dice engine cannot parse is not a weaker
 // attack, it is an attack that throws mid-fight. Refused at the boundary,
 // where a person can still fix it.
-export function checkAttack(raw: unknown): { attack: EnemyAttack } | { error: string } {
+export function checkAttack(raw: unknown): { attack: EnemyAttack } | ToolError {
   const source = (raw ?? {}) as Partial<EnemyAttack>;
   const name = text(source.name, ATTACK_NAME_MAX);
   if (!name) {
-    return { error: "An attack needs a name." };
+    return { error: "An attack needs a name.", retry: true };
   }
   const damage = String(source.damage ?? "").replace(/\s+/g, "");
   if (!damage) {
-    return { error: `${name} has no damage.` };
+    return { error: `${name} has no damage.`, retry: true };
   }
   if (!isValidExpression(damage)) {
-    return { error: `"${damage}" is not a dice expression the table can roll.` };
+    return { error: `"${damage}" is not a dice expression the table can roll.`, retry: true };
   }
   // Reach, range, the dice riding the hit and what a hit does besides
   // damage: the engine reads every one (src/lib/dm/enemy-profile.ts,
@@ -140,7 +136,7 @@ function normalizeSaves(raw: unknown): EnemySaveMods {
 
 // ---- the draft ----
 
-export type DraftCheck = { draft: MonsterDraft } | { error: string };
+export type DraftCheck = { draft: MonsterDraft } | ToolError;
 
 // Everything a client can send, checked. The one rule with teeth is the
 // damage expression; the rest clamps, because a DM who types 900 hit points
@@ -149,7 +145,7 @@ export function checkMonsterDraft(raw: unknown): DraftCheck {
   const source = (raw ?? {}) as Record<string, unknown>;
   const name = text(source.name, MONSTER_NAME_MAX);
   if (!name) {
-    return { error: "A monster needs a name." };
+    return { error: "A monster needs a name.", retry: true };
   }
 
   const attacks: EnemyAttack[] = [];
@@ -204,6 +200,13 @@ export function checkMonsterDraft(raw: unknown): DraftCheck {
     immune: text(source.immune, RESIST_MAX),
     vulnerable: text(source.vulnerable, RESIST_MAX),
     conditionImmune: text(source.conditionImmune, RESIST_MAX),
+    // A lair's printed options, kept by a copy (lair_action offers them).
+    ...(Array.isArray(source.lairOptions) && source.lairOptions.some((line) => text(line, FULL_TRAIT_MAX))
+      ? { lairOptions: source.lairOptions.map((line) => text(line, FULL_TRAIT_MAX)).filter(Boolean).slice(0, 8) }
+      : {}),
+    // Black Flag's condition resistances, kept by a copy (forced-save.ts).
+    ...(text(source.conditionResist, RESIST_MAX) ? { conditionResist: text(source.conditionResist, RESIST_MAX) } : {}),
+    ...(text(source.conditionVulnerable, RESIST_MAX) ? { conditionVulnerable: text(source.conditionVulnerable, RESIST_MAX) } : {}),
     cr,
     // Never taken from the client: XP is a function of CR and a row where
     // they disagree would quietly break every encounter budget it appears in.
@@ -211,6 +214,8 @@ export function checkMonsterDraft(raw: unknown): DraftCheck {
     attacksPerTurn: clamp(source.attacksPerTurn, 1, MAX_SWINGS, 1),
     size,
     type,
+    // The type's bracket tags ("shapechanger"), which Polymorph reads.
+    ...(text(source.subtype, 80) ? { subtype: text(source.subtype, 80).toLowerCase() } : {}),
     ...(routines.length ? { routines } : {}),
     ...(specials.value.length ? { specials: specials.value } : {}),
     ...(spellcasting ? { spellcasting } : {}),
@@ -284,7 +289,7 @@ function normalizeBlockExtras(
     out.alignment = alignment;
   }
   if (Array.isArray(source.spells)) {
-    const spells = [...new Set(source.spells.map((spell) => text(spell, 60)).filter(Boolean))].slice(0, 40);
+    const spells = [...new Set(source.spells.map((spell) => text(spell, HOMEBREW_NAME_MAX)).filter(Boolean))].slice(0, 40);
     if (spells.length) {
       out.spells = spells;
     }

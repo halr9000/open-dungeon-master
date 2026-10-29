@@ -1,5 +1,6 @@
 import type { CampaignKind } from "@/lib/workshop/kind";
 import { OFFER_NOTE_PREFIX } from "@/lib/dm/proposal-logic";
+import { PACT_REVEAL_PREFIX } from "@/lib/dm/pact-logic";
 import { isNarration } from "@/lib/dm/ooc-question";
 
 export type SessionUser = {
@@ -123,9 +124,23 @@ export function isFloorExempt(kind: InputKind): boolean {
 // styles them as a lead note.
 export const LEAD_NOTE_PREFIX = "[Party lead direction] ";
 
+// The table note Begin posts. The table reads only this; the instruction
+// that asks the AI DM for the opening scene travels with it in the prompt
+// alone (src/lib/dm/prompt.ts), where the table never sees it.
+export const ADVENTURE_BEGINS_NOTE = "The party is assembled and the adventure begins.";
+export const OPENING_SCENE_CUE = "Introduce the opening scene, set the premise, and give the party their first decision.";
+
 // Marks the system message a halted DM turn writes. The client pairs it with
 // the message's dmTurnId to offer the lead a retry of that exact turn.
-export const DM_HALTED_PREFIX = "The DM ran into a problem: ";
+export const DM_HALTED_PREFIX = "The GM ran into a problem: ";
+// The same mark in the wording halted turns were written with before the
+// role was called the GM; those messages stay in old transcripts.
+const LEGACY_DM_HALTED_PREFIX = "The DM ran into a problem: ";
+
+// The halted-turn mark a system message starts with, either wording, or "".
+export function haltedTurnPrefix(content: string): string {
+  return [DM_HALTED_PREFIX, LEGACY_DM_HALTED_PREFIX].find((prefix) => content.startsWith(prefix)) ?? "";
+}
 
 // Marks the system message announcing a mid-game joiner's new character.
 // The lead's "new adventurer" banner derives from it: shown until a DM
@@ -136,7 +151,7 @@ export const JOIN_NOTE_PREFIX = "[New adventurer] ";
 // a settled offer) come off; the lead's direction keeps its prefix because
 // the transcript draws that one as a card of its own.
 export function systemNoteWords(content: string): string {
-  for (const prefix of [JOIN_NOTE_PREFIX, OFFER_NOTE_PREFIX]) {
+  for (const prefix of [JOIN_NOTE_PREFIX, OFFER_NOTE_PREFIX, PACT_REVEAL_PREFIX]) {
     if (content.startsWith(prefix)) {
       return content.slice(prefix.length);
     }

@@ -13,7 +13,7 @@ import type { Speaker, SpokenLine } from "@/lib/dm/speech";
 import { closeLiveNarration, openLiveNarration, pushLiveNarration, renderSpeech } from "@/lib/tts-render";
 import { castUnvoiced, voiceRoster, type RosterEntry } from "@/lib/tts-roster";
 import { baseCreatureName, planSpeech, speechRequests, type CastVoice } from "@/lib/tts-segments";
-import { foldName } from "@/lib/language/text-logic";
+import { textKey } from "@/lib/language/text-logic";
 
 // Narration TTS on the server's speech backend (src/lib/tts-backend.ts: the
 // local Kokoro-FastAPI service on :8880 unless the admin chose another).
@@ -63,16 +63,6 @@ function castOf(roster: RosterEntry[]): CastVoice[] {
   }));
 }
 
-// The cast's own voices (docs/vtt-parity-implementation-plan.md 8.2, issue
-// 97), read when the job runs so a voice picked a moment ago is heard.
-export function castVoices(campaignId: string): CastVoice[] {
-  try {
-    return castOf(voiceRoster(campaignId)).filter((entry) => entry.voiceId);
-  } catch {
-    return [];
-  }
-}
-
 // Who speaks in this passage without a voice yet: the person it is spoken
 // as, else the speakers stored with its lines.
 export function unvoicedSpeakers(
@@ -83,13 +73,39 @@ export function unvoicedSpeakers(
   const keys = new Set<string>();
   const who = speaker && speaker.kind !== "narrator" ? [speaker] : lines.map((entry) => entry.speaker);
   for (const person of who) {
-    const wanted = [foldName(person.name), foldName(baseCreatureName(person.name))];
-    const entry = roster.find((candidate) => wanted.includes(foldName(candidate.name)));
+    const wanted = [textKey(person.name), textKey(baseCreatureName(person.name))];
+    const entry = roster.find((candidate) => wanted.includes(textKey(candidate.name)));
     if (entry && !entry.voice) {
       keys.add(entry.key);
     }
   }
   return keys;
+}
+
+// Narration that has fallen behind. A table's passages are read in the
+// order they were written, so one stalled speech request used to hold every
+// later passage behind it, and the voice drifted further from the text with
+// each turn. A passage that has waited longer than this on its lane, with a
+// newer passage for the same table queued behind it, is skipped instead:
+// the table hears the current scene, not a backlog. In ordinary play a
+// passage waits a few seconds at most, so nothing is skipped. A passage a
+// player asked for by name (the replay button) is always read.
+const STALE_NARRATION_MS = 20_000;
+
+declare global {
+  var __odmNarrationLatest: Map<string, number> | undefined;
+  var __odmNarrationStaleMs: number | undefined;
+}
+
+let narrationSeq = 0;
+
+export function setNarrationStaleMsForTests(ms: number | undefined) {
+  globalThis.__odmNarrationStaleMs = ms;
+}
+
+// Pure, for the tests: whether a passage about to start should be skipped.
+export function narrationOvertaken(waitedMs: number, newerQueued: boolean, onDemand: boolean, staleMs = STALE_NARRATION_MS): boolean {
+  return !onDemand && newerQueued && waitedMs > staleMs;
 }
 
 export function enqueueNarrationAudio(
@@ -102,6 +118,8 @@ export function enqueueNarrationAudio(
   narration: NarrationSettings | string,
   // The person the whole message is spoken as, when the DM said so.
   speaker: Speaker | null = null,
+  // A player asked for this passage (the replay button): never skipped.
+  options: { onDemand?: boolean } = {},
 ) {
   const settings: NarrationSettings = typeof narration === "string" ? { ttsVoice: narration } : narration;
   const speech = stripForSpeech(text);
@@ -111,9 +129,23 @@ export function enqueueNarrationAudio(
     return Promise.resolve();
   }
   publishMediaStatus(campaignId, "tts", messageId, "queued");
+  const latest = (globalThis.__odmNarrationLatest ??= new Map());
+  const seq = ++narrationSeq;
+  latest.set(campaignId, seq);
+  const queuedAt = Date.now();
   return enqueueMediaJob(
     `tts ${messageId}`,
     async () => {
+      const newest = latest.get(campaignId) ?? seq;
+      if (newest === seq) {
+        latest.delete(campaignId);
+      }
+      const staleMs = globalThis.__odmNarrationStaleMs ?? STALE_NARRATION_MS;
+      if (narrationOvertaken(Date.now() - queuedAt, newest > seq, options.onDemand === true, staleMs)) {
+        console.warn(`[tts] skipped ${messageId}: narration fell behind and a newer passage is waiting`);
+        publishMediaStatus(campaignId, "tts", messageId, "skipped", "Skipped to catch up with the story. Replay it to hear it.");
+        return;
+      }
       publishMediaStatus(campaignId, "tts", messageId, "generating");
       // Read once per passage, so every clip goes to the same server and
       // model even if the admin saves a change halfway through.

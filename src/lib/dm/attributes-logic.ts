@@ -16,7 +16,7 @@
 // scripts/test-attributes.mjs can load it and the client can validate a value
 // before sending it.
 
-import { compareNames } from "../language/text-logic.ts";
+import { compareNames, slugOf } from "../language/text-logic.ts";
 
 export const ATTRIBUTE_TYPES = ["text", "number", "boolean", "resource", "formula"] as const;
 export type AttributeType = (typeof ATTRIBUTE_TYPES)[number];
@@ -31,7 +31,7 @@ export const ATTRIBUTE_TYPE_LABELS: Record<AttributeType, string> = {
 
 export const ATTRIBUTE_TYPE_HINTS: Record<AttributeType, string> = {
   text: "A word or a line. A motto, a password, a colour.",
-  number: "One number, which the DM can nudge up or down.",
+  number: "One number, which the GM can nudge up or down.",
   boolean: "On or off. Whether the gate is barred.",
   resource: "A counter with a maximum. Ritual progress, barrels of oil, a clock.",
   formula: "A dice expression the table can roll. 2d6+1, 1d100.",
@@ -67,11 +67,7 @@ export type Attribute = {
 };
 
 export function attributeKey(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, NAME_MAX);
+  return slugOf(label).slice(0, NAME_MAX);
 }
 
 // A dice expression, in the same shape src/lib/dice.ts accepts. Checked here

@@ -12,6 +12,7 @@ import type { MapSkin } from "@/lib/battlemap/skins";
 import type { AmbientLight, TokenKind } from "@/lib/battlemap/types";
 import type { TargetEdge } from "@/lib/battlemap/view-tactics";
 import type { ViewZone } from "@/lib/dm/zone-view";
+import type { MapAddonView } from "@/lib/addons/map-view";
 
 export type PlayerMapView = {
   mapId: string;
@@ -31,6 +32,8 @@ export type PlayerMapView = {
   // What the board is painted with when it has no backdrop; empty means the
   // setting and theme decide. Cosmetic, so it is the same for every viewer.
   skin: MapSkin;
+  // What a map addon left for its board view, or null (src/lib/addons/map-view.ts).
+  addonView?: MapAddonView | null;
   visible: number[];
   explored: number[];
   tokens: Array<{
@@ -52,6 +55,10 @@ export type PlayerMapView = {
     // The painted object a prop or bystander is drawn as, or "" for the
     // plain figure (public/assets/props/manifest.json ids).
     stamp: string;
+    // The side a creature fights on when it is not its kind's (issue 503):
+    // "foe" for a character turned against the party, "party" for a
+    // creature the party dominates. The rim follows it. Absent otherwise.
+    side?: "party" | "foe";
   }>;
   lights: Array<{ x: number; y: number; radius: number }>;
   reachable: number[];
@@ -72,6 +79,10 @@ export type PlayerMapView = {
     drag: { factor: 1 | 2; names: string[] } | null;
   };
   budgetLeft: number;
+  // The viewer's last walk this turn while it can still be taken back
+  // (src/lib/battlemap/move-undo.ts): how far it went. Absent otherwise, and
+  // from an older server.
+  undoMove?: { feet: number };
   myTokenId: string | null;
   round: number;
   currentTurnName: string;
@@ -89,6 +100,14 @@ export type PlayerMapView = {
   // patches of light and the overlay picture are the DM's alone: a player
   // sees a locked or secret door as the wall the engine treats it as.
   labels: MapLabel[];
+  // Things dropped on this board (issue #424, src/lib/db/dropped-items.ts),
+  // on squares this viewer has seen: where each lies, who let it fall, and
+  // whether the viewer's own token stands within 5 ft of it (pick it up).
+  // A fallen enemy's hold lies on its square. Absent from an older server.
+  drops?: Array<{ id: string; name: string; x: number; y: number; by: string; reach: boolean }>;
+  // Who rides what: the party's mounts by character id, the mount's name
+  // (src/lib/db/mounts.ts). The Hand's Dismount card reads it.
+  mounts?: Record<string, string>;
   // Marks drawn on the board: everyone's, and the DM's own for the DM.
   drawings: MapDrawing[];
   doors?: DoorStates;

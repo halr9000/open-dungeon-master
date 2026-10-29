@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Listed } from "@/app/campaigns/[campaignId]/PanelKit";
-import { readLoad, useLoadStatus } from "@/lib/load-state";
+import { Listed, PanelError } from "@/app/campaigns/[campaignId]/PanelKit";
+import { readLoad, readWrite, useLoadStatus } from "@/lib/load-state";
 import {
   Archive,
   ArchiveRestore,
@@ -31,8 +31,10 @@ import { Sheet } from "@/components/ui/Sheet";
 import { RelationGraph as RelationGraphView } from "@/app/campaigns/[campaignId]/RelationGraph";
 import { CastChips, CastRows, type Npc } from "@/app/workshop/cast/CastList";
 import { useTourPrepare } from "@/lib/tours/prepare";
+import { WorldEntryLink, useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
+import { useUnsavedDraft } from "@/app/workshop/unsaved";
 import { NpcEditorFields } from "@/app/workshop/cast/NpcEditorFields";
-import { compareNames } from "@/lib/language/text-logic";
+import { compareNames, textKey } from "@/lib/language/text-logic";
 
 // The NPC forge.
 //
@@ -57,9 +59,18 @@ import { compareNames } from "@/lib/language/text-logic";
 export function DmNpcForgePanel({
   campaignId,
   layout = "chips",
+  openId,
+  onWorldEntry,
+  refreshKey = 0,
 }: {
   campaignId: string;
   layout?: "chips" | "rows";
+  // Bumped when the Cast changed elsewhere (the workshop's live versions).
+  refreshKey?: number;
+  // In the workshop only (src/app/workshop/world/WorldEntryLink.tsx): the
+  // record to open on arrival, and the way to its WorldForge entry.
+  openId?: string | null;
+  onWorldEntry?: (id: string) => void;
 }) {
   const [npcs, setNpcs] = useState<Npc[]>([]);
   const [graph, setGraph] = useState<RelationGraph>({ nodes: [], edges: [] });
@@ -119,7 +130,7 @@ export function DmNpcForgePanel({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshKey]);
 
   // Places come from the overworld and the geography lore; both lists are
   // read once, and a world with neither simply offers no dropdown.
@@ -151,10 +162,18 @@ export function DmNpcForgePanel({
   }, [campaignId]);
 
   const selected = npcs.find((npc) => npc.id === selectedId) ?? null;
+  useOpenOnArrival(openId, loaded ? npcs : null, open);
+  // In the workshop, an editor with changes is asked about before leaving.
+  useUnsavedDraft(
+    Boolean(onWorldEntry) && rows && editorOpen &&
+      JSON.stringify(draft) !== JSON.stringify(selected ? draftFrom(selected as Parameters<typeof draftFrom>[0]) : blankDraft()),
+  );
 
   // The tour's "open the editor" step, answered where the editor is a sheet.
   useTourPrepare((name) => {
-    if (name === "open-npc-editor" && rows && !editorOpen) open(null);
+    if (name !== "open-npc-editor") return;
+    if (rows && !editorOpen) open(null);
+    return true;
   });
 
   function open(npc: Npc | null) {
@@ -172,6 +191,15 @@ export function DmNpcForgePanel({
     }
   }
 
+  // Every write goes through readWrite (WA-05): a refusal or a request that
+  // never arrived is said, and the form keeps what was typed. With no
+  // answer the change may have landed, so the cast is read again; a second
+  // create of the same name is refused by the server, never doubled.
+  function failed(sent: { error: string; unanswered: boolean }) {
+    setError(sent.unanswered ? `${sent.error} The cast was read again; check it before you try again.` : sent.error);
+    if (sent.unanswered) void load();
+  }
+
   async function save() {
     setBusy(true);
     setError("");
@@ -179,19 +207,21 @@ export function DmNpcForgePanel({
       const url = selected
         ? `/api/campaigns/${campaignId}/dm/npcs/${selected.id}`
         : `/api/campaigns/${campaignId}/dm/npcs`;
-      const response = await fetch(url, {
-        method: selected ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draft }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError((payload as { error?: string }).error ?? "That did not save.");
+      const sent = await readWrite<{ npc?: { id: string } }>(
+        fetch(url, {
+          method: selected ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ draft }),
+        }),
+        "That did not save.",
+      );
+      if (sent.error !== null) {
+        failed(sent);
         return;
       }
       await load();
-      if (!selected && payload.npc) {
-        setSelectedId(payload.npc.id);
+      if (!selected && sent.payload.npc) {
+        setSelectedId(sent.payload.npc.id);
       }
     } finally {
       setBusy(false);
@@ -203,12 +233,20 @@ export function DmNpcForgePanel({
       return;
     }
     setBusy(true);
+    setError("");
     try {
-      await fetch(`/api/campaigns/${campaignId}/dm/npcs/${selected.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/npcs/${selected.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        "That did not save.",
+      );
+      if (sent.error !== null) {
+        failed(sent);
+        return;
+      }
       await load();
     } finally {
       setBusy(false);
@@ -220,9 +258,13 @@ export function DmNpcForgePanel({
       return;
     }
     setBusy(true);
+    setError("");
     try {
-      await fetch(`/api/campaigns/${campaignId}/dm/npcs/${selected.id}`, { method: "DELETE" });
-      setError("");
+      const sent = await readWrite(fetch(`/api/campaigns/${campaignId}/dm/npcs/${selected.id}`, { method: "DELETE" }), "That could not be deleted.");
+      if (sent.error !== null) {
+        failed(sent);
+        return;
+      }
       setSelectedId("");
       setDraft(blankDraft());
       setEditorOpen(false);
@@ -243,20 +285,20 @@ export function DmNpcForgePanel({
     setError("");
     try {
       const base = draftFrom(selected as Parameters<typeof draftFrom>[0]);
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/npcs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draft: { ...base, name: `${base.name} (copy)`.slice(0, 80) } }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError((payload as { error?: string }).error ?? "That could not be copied.");
+      const sent = await readWrite<{ npc?: Parameters<typeof draftFrom>[0] & { id: string } }>(
+        fetch(`/api/campaigns/${campaignId}/dm/npcs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ draft: { ...base, name: `${base.name} (copy)`.slice(0, 80) } }),
+        }),
+        "That could not be copied.",
+      );
+      if (sent.error !== null) {
+        failed(sent);
         return;
       }
       await load();
-      const created = (
-        payload as { npc?: Parameters<typeof draftFrom>[0] & { id: string } }
-      ).npc;
+      const created = sent.payload.npc;
       if (created) {
         setSelectedId(created.id);
         setDraft(draftFrom(created));
@@ -349,6 +391,7 @@ export function DmNpcForgePanel({
         factions={factions}
       />
 
+      {onWorldEntry && selected ? <WorldEntryLink onOpen={() => onWorldEntry(selected.id)} /> : null}
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
@@ -410,8 +453,8 @@ export function DmNpcForgePanel({
               disabled={busy} aria-busy={busy}
               title={
                 selected.archived
-                  ? "Put them back in the DM's prompt"
-                  : "Keep them, but take them out of the DM's prompt"
+                  ? "Put them back in the GM's prompt"
+                  : "Keep them, but take them out of the GM's prompt"
               }
               onClick={() => void patch({ archived: !selected.archived })}
               className={cn(ui.btnSmall, "min-h-9 gap-1 px-2 py-1 text-xs")}
@@ -447,7 +490,7 @@ export function DmNpcForgePanel({
         ) : null}
       </div>
 
-      {error ? <p className="motion-shake text-[11px] text-red-400">{error}</p> : null}
+      {error ? <PanelError className="text-[11px]">{error}</PanelError> : null}
     </div>
   );
 
@@ -471,7 +514,7 @@ export function DmNpcForgePanel({
           portraits={new Map(npcs.filter((npc) => npc.portraitUrl).map((npc) => [npc.name, npc.portraitUrl]))}
           factionOf={new Map(npcs.filter((npc) => npc.factionId).map((npc) => [npc.name, factions.find((faction) => faction.id === npc.factionId)?.name ?? ""]))}
           onOpen={(name) => {
-            const npc = npcs.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+            const npc = npcs.find((entry) => textKey(entry.name) === textKey(name));
             if (npc) {
               open(npc);
             }

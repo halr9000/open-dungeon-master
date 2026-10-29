@@ -5,6 +5,26 @@ import type { AuthoredEntry } from "@/lib/srd/authored-effects-types";
 
 export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
   // ---- druid ----
+  // Combat Wild Shape spends Wild Shape's own uses: the change as a bonus
+  // action (src/lib/dm/resource-turn.ts) and a slot burned for 1d8 per
+  // level while transformed (src/lib/dm/mutations.ts).
+  "druid::Combat Wild Shape": {
+    subclass: "Circle of the Moon",
+    counter: "wild_shape",
+  },
+  // The Circle of the Land's terrain, chosen when the druid joins it: its
+  // circle spells are the chosen land's (class-features.json choiceSpells).
+  "druid::Circle Spells": {
+    subclass: "Circle of the Land",
+    spends: [
+      {
+        name: "Circle Land",
+        aliases: ["Circle Spells", "Land"],
+        fight: "out",
+        does: { kind: "choose", options: ["Arctic", "Coast", "Desert", "Forest", "Grassland", "Mountain", "Swamp", "Underdark"] },
+      },
+    ],
+  },
   "druid::Halo of Spores": {
     subclass: "Circle of Spores",
     reactions: [
@@ -70,7 +90,7 @@ export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
         damageTypes: ["fire"],
         healing: true,
         gate: { condition: "wildfire spirit" },
-        note: "Casting from the spirit's space is the DM's to place.",
+        note: "Casting from the spirit's space is the GM's to place.",
       },
     ],
   },
@@ -109,7 +129,7 @@ export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
   // ---- fighter ----
   "fighter::Know Your Enemy": {
     subclass: "Battle Master",
-    narrated: "Information the DM gives after a minute of watching: nothing on a sheet changes.",
+    narrated: "Information the GM gives after a minute of watching: nothing on a sheet changes.",
   },
   "fighter::Relentless": {
     subclass: "Battle Master",
@@ -140,7 +160,7 @@ export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
   },
   "fighter::Born to the Saddle": {
     subclass: "Cavalier",
-    effects: [{ kind: "save_adv", against: "mount|dismount|unseat|saddle|thrown from|knocked off|fall from" }],
+    effects: [{ kind: "save_adv", against: ["dismount"] }],
   },
   "fighter::Unwavering Mark": {
     subclass: "Cavalier",
@@ -167,7 +187,7 @@ export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
   },
   "fighter::Rapid Strike": {
     subclass: "Samurai",
-    effects: [{ kind: "rapid_strike", note: "The extra attack's target is the same creature; the DM keeps to that." }],
+    effects: [{ kind: "rapid_strike", note: "The extra attack's target is the same creature; the GM keeps to that." }],
   },
   "fighter::Manifest Echo": {
     subclass: "Echo Knight",
@@ -177,6 +197,21 @@ export const AUTHORED_DATA_A2: Record<string, AuthoredEntry> = {
   "fighter::Legion of One": {
     subclass: "Echo Knight",
     effects: [{ kind: "init_refill", resource: "sub_unleash_incarnation" }],
+  },
+  // Every Psionic Energy die returns on a long rest; once per short or long
+  // rest a bonus action regains one (Tasha's).
+  "fighter::Psionic Power (Psi Warrior)": {
+    subclass: "Psi Warrior",
+    counter: "sub_psionic_energy",
+    spends: [
+      {
+        name: "Psionic Recovery",
+        aliases: ["Regain Psionic Energy"],
+        pool: { id: "sub_psionic_recovery" },
+        action: "bonus",
+        does: { kind: "restore", pool: "sub_psionic_energy", amount: 1 },
+      },
+    ],
   },
   "fighter::Protective Field": {
     subclass: "Psi Warrior",

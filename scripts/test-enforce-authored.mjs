@@ -12,7 +12,7 @@
 //            (Unyielding Spirit), save_bonus + ac while concentrating
 //            (Durable Magic), save_swap (Elegant Courtier), speed (Superior
 //            Mobility), init_adv (Ambush Master), init_ability (Rakish
-//            Audacity), attacked_disadv (Among the Dead), attack_adv and
+//            Audacity), ward_vs (Among the Dead), attack_adv and
 //            auto_crit (Assassinate), rider (Gathered Swarm), mark (Ancestral
 //            Protectors), init_refill (Relentless), kill_temp_hp (Touch of
 //            Death), turn_heal (Protective Spirit), rest_temp_hp (Celestial
@@ -97,7 +97,7 @@ await test("Soul of the Forge: resistance to fire damage, and +1 AC while wearin
   assert.equal(hp(forge), 55);
 });
 
-await test("Saint of Forge and Fire and Oceanic Soul: immunity to fire and to cold damage.", async () => {
+await test("Saint of Forge and Fire: immunity to fire damage; Oceanic Soul: resistance to cold damage.", async () => {
   const saint = hero({ class: "cleric", subclass: "Forge Domain", level: 17 });
   const deep = hero({ class: "warlock", subclass: "The Fathomless", level: 6 });
   fresh(saint.id, { currentHp: 60 });
@@ -105,7 +105,7 @@ await test("Saint of Forge and Fire and Oceanic Soul: immunity to fire and to co
   await world.invoke("apply_damage", { characterId: saint.id, amount: 12, type: "fire" });
   await world.invoke("apply_damage", { characterId: deep.id, amount: 12, type: "cold" });
   assert.equal(hp(saint), 60);
-  assert.equal(hp(deep), 60);
+  assert.equal(hp(deep), 54, "Oceanic Soul resists cold (issue 474), it is not immune");
 });
 
 const spore = hero({ class: "druid", subclass: "Circle of Spores", level: 14 });
@@ -190,15 +190,20 @@ await test("Ambush Master gives advantage on initiative; Rakish Audacity adds Ch
 
 // ---- passive: attacks ----
 
-await test("Among the Dead: an undead creature attacks the warlock at disadvantage.", async () => {
+await test("Among the Dead: an undead creature saves before it attacks the warlock, and loses the attack on a failure.", async () => {
   const undying = hero({ class: "warlock", subclass: "The Undying", level: 1 });
   const [enemy] = await stage(undying);
   kit.setEnemy(enemy.id, { stats: { type: "undead" } });
   world.patch(undying.id, { ac: 12, acOverride: true });
-  await enemyHits(enemy, undying, [15, 12, 3]);
-  const roll = rollBy("attack", undying.id, enemy);
-  assert.equal(roll.advantage, "disadvantage");
-  assert.equal(d20Faces(roll).length, 2);
+  const before = hp(undying);
+  const lost = await enemyHits(enemy, undying, [2, 19, 6]);
+  assert.match(lost.note ?? "", /attack is lost/);
+  assert.equal(hp(undying), before);
+  // A save made is good for 24 hours: the next swing goes ahead, unsaved.
+  await enemyHits(enemy, undying, [19, 15, 6]);
+  assert.equal(rollBy("attack", undying.id, enemy).advantage, "none");
+  await enemyHits(enemy, undying, [15, 6]);
+  assert.deepEqual(d20Faces(rollBy("attack", undying.id, enemy)), [15], "no save the second time");
 });
 
 const assassin = hero({ class: "rogue", subclass: "Assassin", level: 3, abilities: { dex: 16 }, equipment: [{ name: "Shortsword", qty: 1 }] });
@@ -420,7 +425,7 @@ await test("Hound of Ill Omen: 3 sorcery points, and the hunted creature saves a
   world.clearDice();
   // Burning Hands' 3d6, then the creature's save: 18 and 2, the lower kept.
   world.dice(5, 5, 5, 18, 2);
-  const blast = await world.invoke("aoe_damage", { casterId: shadow.id, spell: "Burning Hands", level: 1, enemyIds: [enemy.id], saveAbility: "dex", dc: 14 });
+  const blast = await world.invoke("aoe_damage", { casterCharacterId: shadow.id, spell: "Burning Hands", level: 1, enemyIds: [enemy.id], saveAbility: "dex", dc: 14 });
   world.clearDice();
   assert.equal(blast.ok, true, blast.error);
   assert.equal(kit.enemy(enemy.id).currentHp, 300 - 15, "the lower die stands: a failed save, full damage");
@@ -462,6 +467,27 @@ await test("Spectral Defense: a reaction halves the damage of the attack that hi
   const out = await react(walker, "Spectral Defense");
   assert.equal(out.ok, true, out.error);
   assert.equal(hp(walker), 56);
+});
+
+await test("Dampen Elements: a reaction gives resistance against the fire hit; on a creature that already resists fire it is taken and changes nothing.", async () => {
+  const druidic = hero({ class: "cleric", subclass: "Nature Domain", level: 6 });
+  const tiefling = hero({ class: "fighter", level: 6, race: "Tiefling" });
+  const fire = { stats: { attacks: [{ name: "Fire Lash", toHit: 4, damage: "1d6+2", type: "fire" }] } };
+  for (const [target, resists] of [[druidic, false], [tiefling, true]]) {
+    const [enemy] = await stage(target);
+    kit.setEnemy(enemy.id, fire);
+    fresh(target.id, { currentHp: 60, ac: 12, acOverride: true });
+    kit.place(druidic.id, 5, 4);
+    await enemyHits(enemy, target, [15, 6]);
+    assert.equal(hp(target), resists ? 56 : 52);
+    const out = await react(druidic, "Dampen Elements", target === druidic ? {} : { targetCharacterId: target.id });
+    assert.equal(out.ok, true, out.error);
+    assert.equal(hp(target), 56);
+    assert.ok(world.encounter().reactionsUsed.includes(druidic.id), "the reaction was not taken");
+    if (resists) {
+      assert.match(String(out.result.applied), /already resists fire damage/);
+    }
+  }
 });
 
 await test("Spirit Shield: a raging Ancestral Guardian's reaction takes 2d6 off an ally's hit.", async () => {

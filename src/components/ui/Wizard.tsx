@@ -33,6 +33,7 @@ import { ui } from "@/lib/ui";
 // comes back to: `jumpAhead` lets a diamond ahead be tapped once every gate
 // before it passes, and `finishFromAnyStep` offers the done button on every
 // step once every gate passes (an edit of something already complete).
+// `stepNames` prints each step's short label under its diamond.
 
 export type WizardStep = {
   key: string;
@@ -50,6 +51,9 @@ export type WizardStep = {
   // a tap on the held button (or on the message) goes to the missing pick.
   blocker?: string | null;
   onBlocked?: () => void;
+  // A quieter way on from this step, beside Back ("Skip for now", "Save and
+  // finish later"): the step decides what it saves, if anything.
+  secondary?: { label: ReactNode; onClick: () => void; title?: string };
 };
 
 // Something the wizard should say above the steps until the player has seen
@@ -79,6 +83,7 @@ export function Wizard({
   notice,
   jumpAhead = false,
   finishFromAnyStep = false,
+  stepNames = false,
 }: {
   steps: WizardStep[];
   title: ReactNode;
@@ -96,6 +101,7 @@ export function Wizard({
   notice?: WizardNotice;
   jumpAhead?: boolean;
   finishFromAnyStep?: boolean;
+  stepNames?: boolean;
 }) {
   const [internalStep, setInternalStep] = useState(0);
   const controlled = controlledStep !== undefined;
@@ -196,26 +202,28 @@ export function Wizard({
   return (
     <div className={cn("flex h-full min-h-0 w-full flex-col", wipe && "relative", className)}>
       <header className="shrink-0">
-        <div className="flex items-center gap-2">
+        <div data-wizard-head="" className="flex items-center gap-2">
           {step > 0 || onCancel ? (
             <button
               type="button"
               onClick={back}
-              className="-ml-1.5 rounded-md p-1.5 text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200"
+              // 44px to tap, drawn as before: the negative margin keeps the
+              // header where it was.
+              className="-my-2 -ml-3 flex size-11 shrink-0 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-800 hover:text-stone-200"
               aria-label={step === 0 ? "Cancel" : "Back"}
             >
               <ChevronLeft className="size-4" />
             </button>
           ) : null}
-          <h2 className="min-w-0 flex-1 truncate font-display text-lg tracking-wide text-amber-100">
+          <h2 data-wizard-title="" className="min-w-0 flex-1 truncate font-display text-lg tracking-wide text-amber-100">
             {title}
           </h2>
           {aside ? (
-            <span className="mx-1 hidden min-w-0 shrink truncate font-mono text-[10px] text-stone-600 sm:inline">
+            <span data-wizard-aside="" className="mx-1 hidden min-w-0 shrink truncate font-mono text-xs text-stone-400 sm:inline">
               {aside}
             </span>
           ) : null}
-          <span className="eyebrow shrink-0 text-[10px] text-stone-500" aria-live="polite">
+          <span className="eyebrow shrink-0 text-xs text-stone-400" aria-live="polite">
             Step {step + 1} / {total}
             {variant === "diamonds" && current ? (
               // The gold step title sits right under the header on a phone,
@@ -232,6 +240,7 @@ export function Wizard({
             current={step}
             onSelect={go}
             reachable={jumpAhead ? reachable : undefined}
+            named={stepNames}
           />
         ) : (
           <div
@@ -257,7 +266,7 @@ export function Wizard({
               <button
                 type="button"
                 onClick={showNotice}
-                className="shrink-0 whitespace-nowrap font-mono text-[10px] text-amber-300 underline-offset-2 hover:text-amber-200 hover:underline"
+                className="-my-2 min-h-11 shrink-0 whitespace-nowrap px-1 font-mono text-xs text-amber-300 underline-offset-2 hover:text-amber-200 hover:underline"
               >
                 Show me
               </button>
@@ -266,7 +275,7 @@ export function Wizard({
               type="button"
               onClick={notice.onDismiss}
               aria-label="Dismiss"
-              className="-mr-1 shrink-0 rounded p-0.5 text-stone-500 transition-colors hover:text-stone-300"
+              className="-my-2 -mr-3 flex size-11 shrink-0 items-center justify-center rounded text-stone-400 transition-colors hover:text-stone-200"
             >
               <X className="size-3.5" />
             </button>
@@ -319,7 +328,11 @@ export function Wizard({
         </div>
       </div>
 
-      <footer className="mt-4 flex shrink-0 items-center justify-end gap-2">
+      {/* On a phone the reason Continue is held takes a line of its own
+          above the buttons, and a long label ("Continue as" a homebrew
+          species) ends in an ellipsis inside its button rather than
+          running out of it. */}
+      <footer className="mt-4 flex shrink-0 flex-wrap items-center justify-end gap-2">
         {blocker ? (
           // The reason Continue is held, right next to it. A button when the
           // step can take the player to the pick, a plain line otherwise.
@@ -328,16 +341,30 @@ export function Wizard({
               type="button"
               id={blockerId}
               onClick={current.onBlocked}
-              className="wizard-blocker reveal min-w-0 flex-1 text-left text-xs text-amber-300/90 underline-offset-2 hover:text-amber-200 hover:underline"
+              className="wizard-blocker reveal min-w-0 flex-1 text-left text-xs text-amber-300/90 underline-offset-2 hover:text-amber-200 hover:underline max-sm:basis-full"
             >
               <span role="status">{blocker}</span>
-              <span className="ml-1 whitespace-nowrap font-mono text-[10px] text-stone-500">Show me</span>
+              <span className="ml-1 whitespace-nowrap font-mono text-xs text-stone-400">Show me</span>
             </button>
           ) : (
-            <p id={blockerId} role="status" className="wizard-blocker reveal min-w-0 flex-1 text-xs text-amber-300/90">
+            <p id={blockerId} role="status" className="wizard-blocker reveal min-w-0 flex-1 text-xs text-amber-300/90 max-sm:basis-full">
               {blocker}
             </p>
           )
+        ) : null}
+        {current?.secondary ? (
+          <button
+            type="button"
+            onClick={current.secondary.onClick}
+            title={current.secondary.title}
+            data-wizard-secondary=""
+            className={cn(
+              "motion-press min-h-11 shrink-0 px-2 text-xs text-stone-400 underline-offset-2 transition-colors hover:text-amber-200 hover:underline",
+              !blocker && "mr-auto",
+            )}
+          >
+            {current.secondary.label}
+          </button>
         ) : null}
         {step > 0 ? (
           <button type="button" onClick={back} className={ui.btnSecondary}>
@@ -356,7 +383,14 @@ export function Wizard({
           title={blocker ?? undefined}
           className={cn(
             finishEarly ? ui.btnSecondary : ui.btnPrimary,
-            "wizard-continue",
+            // On a phone the label is the button's own text, cut with an
+            // ellipsis: a span inside a held button is read apart from it.
+            // Beside Back it takes the rest of the row and a long label is
+            // cut. Beside Save changes it starts at its label's width
+            // (flex-auto, not flex-1), so the footer wraps rather than cut
+            // it: it read "C..." there on a phone at enlarged text.
+            "wizard-continue min-w-0 max-w-full max-sm:block max-sm:truncate max-sm:text-center max-sm:leading-10",
+            finishEarly ? "max-sm:flex-auto" : "max-sm:flex-1",
             blocker && "wizard-continue-held",
           )}
         >

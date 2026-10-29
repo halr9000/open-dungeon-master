@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@/lib/model-client";
-import { markToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // What the table reads when a DM turn ends with no narration at all.
 //
@@ -10,9 +10,14 @@ import { markToolError } from "@/lib/dm/tool-errors";
 // now says which: the refusal's reason when there was one, what a spell cast
 // is missing when the message was one, and a plain hint otherwise. Refusals
 // from the DM's other tools stay hidden: their text can name things the
-// table is not meant to see.
+// table is not meant to see. A player action that went through and was then
+// never narrated (the model's last call wrote a tool call instead of prose)
+// says it went through: "try again" there asked for a second attack or a
+// second purchase.
 
 export const EMPTY_TURN_LINE = "The moment hangs there, waiting on the party's next move.";
+export const RESOLVED_TURN_LINE =
+  "Your action went through, and its dice and changes are on the table, but the GM gave no narration for it. Go on with your next move.";
 
 const PLAYER_ACTION_TOOLS = new Set([
   "cast_at_enemy",
@@ -24,6 +29,10 @@ const PLAYER_ACTION_TOOLS = new Set([
   "use_item",
   "use_reaction",
 ]);
+
+// What a player buys goes through these: done once, it must not be asked for
+// again.
+const PURCHASE_TOOLS = new Set(["purchase", "buy_item"]);
 
 const CARDS_HINT = "You can also play it from the cards in your hand.";
 
@@ -41,9 +50,12 @@ export type EmptyTurnPlayer = {
 type ToolCallLike = { id?: string; name?: string; function?: { name?: string } };
 
 export function emptyTurnLine(conversation: ChatMessage[], player?: EmptyTurnPlayer | null): string {
-  const refusal = lastActionRefusal(conversation);
-  if (refusal) {
-    return `The DM could not resolve that: ${refusal} ${CARDS_HINT}`;
+  const outcome = lastActionOutcome(conversation);
+  if (outcome?.refusal) {
+    return `The GM could not resolve that: ${outcome.refusal} ${CARDS_HINT}`;
+  }
+  if (outcome?.resolved) {
+    return RESOLVED_TURN_LINE;
   }
   if (player && player.text.trim()) {
     return explainLooseAction(player);
@@ -51,7 +63,9 @@ export function emptyTurnLine(conversation: ChatMessage[], player?: EmptyTurnPla
   return EMPTY_TURN_LINE;
 }
 
-function lastActionRefusal(conversation: ChatMessage[]): string | null {
+// The latest player action this turn: refused by the rules (its reason), or
+// gone through. A retry or a limit coaches the model and is passed over.
+function lastActionOutcome(conversation: ChatMessage[]): { refusal?: string; resolved?: boolean } | null {
   const names = new Map<string, string>();
   for (const message of conversation) {
     if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) {
@@ -69,7 +83,8 @@ function lastActionRefusal(conversation: ChatMessage[]): string | null {
     if (message.role !== "tool" || !message.tool_call_id || typeof message.content !== "string") {
       continue;
     }
-    if (!PLAYER_ACTION_TOOLS.has(names.get(message.tool_call_id) ?? "")) {
+    const name = names.get(message.tool_call_id) ?? "";
+    if (!PLAYER_ACTION_TOOLS.has(name) && !PURCHASE_TOOLS.has(name)) {
       continue;
     }
     let parsed: unknown;
@@ -78,13 +93,18 @@ function lastActionRefusal(conversation: ChatMessage[]): string | null {
     } catch {
       continue;
     }
-    const error = (parsed as { error?: unknown } | null)?.error;
-    // Only the rules saying no is the player's business. An argument fault
-    // (a wrong id the model sent) coaches the model and means nothing at
-    // the table, and a cap on the turn is not their character failing.
-    if (typeof error === "string" && error.trim() && markToolError(parsed as Record<string, unknown>).refused === "rules") {
-      return firstSentences(error);
+    const { error, refused } = (parsed ?? {}) as { error?: unknown; refused?: unknown };
+    // Only the rules saying no is the player's business. A retry (a wrong id
+    // the model sent, a choice to ask for) coaches the model and means
+    // nothing at the table, and a cap on the turn is not their character
+    // failing.
+    if (typeof error === "string" && error.trim()) {
+      if (refused === "rules" && PLAYER_ACTION_TOOLS.has(name)) {
+        return { refusal: firstSentences(error) };
+      }
+      continue;
     }
+    return { resolved: true };
   }
   return null;
 }
@@ -94,20 +114,20 @@ function lastActionRefusal(conversation: ChatMessage[]): string | null {
 // now, and its slot level. No word list reads the message, so every table
 // language gets the same hint.
 function explainLooseAction(player: EmptyTurnPlayer): string {
-  const lower = player.text.trim().toLowerCase();
+  const lower = textKey(player.text);
   const named = [...player.spells]
     .sort((a, b) => b.length - a.length)
-    .find((spell) => lower.includes(spell.trim().toLowerCase()));
+    .find((spell) => lower.includes(textKey(spell)));
   if (!named) {
-    return `The DM had no answer to that. Try again saying plainly what your character does, and to whom or what; for a spell, its name as it is on your sheet, the slot level and the target. ${CARDS_HINT}`;
+    return `The GM had no answer to that. Try again saying plainly what your character does, and to whom or what; for a spell, its name as it is on your sheet, the slot level and the target. ${CARDS_HINT}`;
   }
   const waiting = player.notReady?.(named);
   if (waiting) {
-    return `The DM could not resolve that: ${waiting}`;
+    return `The GM could not resolve that: ${waiting}`;
   }
   const level = player.levelOf(named);
   const slot = level === 0 ? "" : ` using a level ${level ?? 1} slot`;
-  return `The DM could not resolve ${named}. Try again with the spell, slot and target spelled out, for example "I cast ${named}${slot} on myself." ${CARDS_HINT}`;
+  return `The GM could not resolve ${named}. Try again with the spell, slot and target spelled out, for example "I cast ${named}${slot} on myself." ${CARDS_HINT}`;
 }
 
 // Tool errors often go on to coach the model ("spend the slot with

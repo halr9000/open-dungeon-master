@@ -42,6 +42,8 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { heldHelp } from "@/lib/dm/help-logic";
 import { authoredAttackSituation } from "@/lib/dm/authored-hooks";
 import { hasFeralSenses, seenTargetConditions } from "@/lib/dm/attack-features";
+import { textKey } from "@/lib/language/text-logic";
+import { sheetCreatureType } from "@/lib/dm/summon-rules";
 
 // An unspent Bardic Inspiration die: the size rides in the condition name,
 // "bardic inspiration (d8)", as use_resource writes it.
@@ -127,6 +129,9 @@ export function attackSituation(input: {
     melee: !atRange,
     adjacent: geometry.withinFiveFeet,
     requested: input.requested ?? "none",
+    // What the attacker is, for a ward against some kinds (Protection from
+    // Evil and Good on the target turns a fiend steed's hoof aside).
+    attackerType: sheetCreatureType(sheet),
   });
   // Light on a mapped fight: who can see whom (src/lib/dm/attack-light.ts).
   const sight = attackSight({
@@ -209,7 +214,7 @@ export function attackSituation(input: {
   }
   // The Grappler feat: advantage against the creature its holder grapples.
   const grappling =
-    sheet.feats.some((feat) => feat.trim().toLowerCase() === "grappler") &&
+    sheet.feats.some((feat) => textKey(feat) === "grappler") &&
     enemy.conditions.some(
       (entry) =>
         entry.trim().toLowerCase() === "grappled" &&
@@ -298,13 +303,15 @@ export function attackSituation(input: {
   }
   // Under the water: weapons not made for it (src/lib/dm/underwater.ts).
   const underwater = kind !== "spell" && isImmersed(campaign.id, sheet.id)
-    ? underwaterSwing({ weapon: profile.weapon, melee: !atRange, swims: swimsFrom(undefined, sheet.features), beyondNormal: spatials.longRange })
+    ? underwaterSwing({ weapon: profile.weapon, base: profile.base, melee: !atRange, swims: swimsFrom(undefined, sheet.features), beyondNormal: spatials.longRange })
     : null;
   if (underwater?.note) {
     conditionContext.notes.push(underwater.note);
   }
-  const advantage: Advantage = mergeAdvantage([
-    conditionContext.advantage,
+  // Every source, kept for the plan's last ones (a feint, Powerful
+  // Attacker): advantage and disadvantage cancel once over them all.
+  const sources: Advantage[] = [
+    ...conditionContext.sources,
     exhaustion.advantage,
     ...(load?.disadvantage ? ["disadvantage" as const] : []),
     ...attackRiders.advantageSources,
@@ -325,6 +332,6 @@ export function attackSituation(input: {
     ...(armorUntrained ? ["disadvantage" as const] : []),
     ...(gale.disadvantage ? ["disadvantage" as const] : []),
     ...(underwater?.disadvantage ? ["disadvantage" as const] : []),
-  ]);
-  return { context: conditionContext, advantage, helped, attackRiders };
+  ];
+  return { context: conditionContext, advantage: mergeAdvantage(sources), sources, helped, attackRiders };
 }

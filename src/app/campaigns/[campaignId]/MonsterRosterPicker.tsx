@@ -6,9 +6,10 @@ import { cn } from "@/lib/cn";
 import { MonsterTile } from "@/lib/ui";
 import { crLabel } from "@/lib/bestiary/derive-cr";
 import { addToRoster, formatRoster, parseRoster } from "@/lib/dm/encounter-template-logic";
+import { textKey } from "@/lib/language/text-logic";
 
 const input =
-  "rounded-md border border-stone-700 bg-stone-950 px-2 py-1 text-xs text-stone-200 focus:border-amber-500/50 focus:outline-none";
+  "rounded-md border border-stone-700 bg-stone-950 px-2 py-1 text-xs text-stone-200 focus:border-amber-500/50 focus:outline-none pointer-coarse:min-h-10";
 
 const chip = "rounded-full border px-2 py-0.5 text-[10px] transition-colors duration-150";
 
@@ -31,7 +32,7 @@ export function MonsterRosterPicker({
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<
-    Array<{ slug: string; name: string; cr: number; type: string; art?: string }>
+    Array<{ slug: string; name: string; cr: number; type: string; art?: string; rosterName?: string }>
   >([]);
   // The table's setting, for the boss plate on high-rating results.
   const [genre, setGenre] = useState("");
@@ -59,6 +60,7 @@ export function MonsterRosterPicker({
               monsters: Array<{
                 draft: { name: string; stats: { cr: number; type?: string } };
                 slug: string;
+                rosterName?: string;
               }>;
               genre?: string;
             } | null,
@@ -71,13 +73,14 @@ export function MonsterRosterPicker({
             // the one they came looking for.
             const mine = payload.monsters
               .filter((monster) =>
-                monster.draft.name.toLowerCase().includes(term.toLowerCase()),
+                textKey(monster.draft.name).includes(textKey(term)),
               )
               .map((monster) => ({
                 slug: monster.slug,
                 name: monster.draft.name,
                 cr: monster.draft.stats.cr,
                 type: monster.draft.stats.type ?? "",
+                rosterName: monster.rosterName,
               }));
             setResults([...mine, ...payload.found].slice(0, 24));
           },
@@ -117,7 +120,7 @@ export function MonsterRosterPicker({
             <button
               key={entry.slug}
               type="button"
-              onClick={() => onChange(formatRoster(addToRoster(parseRoster(roster), entry.name)))}
+              onClick={() => onChange(formatRoster(addToRoster(parseRoster(roster), entry.rosterName ?? entry.name)))}
               className={cn(chip, "border-stone-700 text-stone-400 hover:text-amber-100")}
             >
               <Plus className="mr-0.5 inline size-2.5" />

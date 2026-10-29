@@ -10,7 +10,9 @@
 //
 // The multiplier is the only thing this adds. Everything else goes through
 // the paths that already exist, so resistances, immunities, temp hit points,
-// death saves and concentration all resolve exactly as they always do.
+// death saves and concentration all resolve exactly as they always do. The
+// model and the console reach it through apply_damage with targets (issue
+// #471); split_damage stays its name in the engine.
 import { z } from "zod";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import { applyDmMutation } from "@/lib/dm/mutations";
@@ -18,6 +20,7 @@ import { applyEnemyDamage, resolveEnemyRef } from "@/lib/dm/enemy-damage";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
 
 export const SPLIT_DAMAGE_TOOL_NAMES = ["split_damage"] as const;
 
@@ -28,8 +31,6 @@ const MULTIPLIERS = {
   double: 2,
 } as const;
 
-export type DamageShare = keyof typeof MULTIPLIERS;
-
 const targetSchema = z.object({
   enemyId: z.string().optional(),
   characterId: z.string().optional(),
@@ -37,50 +38,13 @@ const targetSchema = z.object({
 });
 
 const splitSchema = z.object({
-  amount: z.coerce.number().int().min(1).max(500),
+  amount: z.coerce.number().int().min(1).max(200),
   type: z.string().max(30).optional(),
+  magical: z.coerce.boolean().optional(),
+  source: z.enum(["hazard", "environment"]).optional(),
   targets: z.array(targetSchema).min(1).max(20),
   reason: z.string().optional(),
 });
-
-export const splitDamageTool = {
-  type: "function",
-  function: {
-    name: "split_damage",
-    description:
-      "Apply ONE damage total to several creatures at once, each at their own share of it: full, half, double, or none. Use it when the same blow lands differently on different targets for a reason no saving throw covers (cover, a revealed immunity, someone diving clear). The server halves and doubles, then applies each share through the ordinary damage rules, so resistances, temporary hit points and death saves all still resolve themselves. For an area effect with a save, use aoe_damage.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        amount: {
-          type: "integer",
-          minimum: 1,
-          maximum: 500,
-          description: "The damage the server rolled this turn, before any share is taken of it.",
-        },
-        dice: { type: "string", description: "Dice the server rolls for the total ('8d6'). Instead of amount." },
-        type: { type: "string", description: "Damage type (slashing, fire)." },
-        targets: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              enemyId: { type: "string" },
-              characterId: { type: "string" },
-              share: { type: "string", enum: ["none", "half", "full", "double"] },
-            },
-          },
-          description: "One entry per creature: its id, and how much of the total it takes.",
-        },
-        reason: { type: "string" },
-      },
-      required: ["targets"],
-    },
-  },
-} as const;
 
 export function handleSplitDamage(
   campaign: Campaign,
@@ -88,14 +52,22 @@ export function handleSplitDamage(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof splitSchema>;
   try {
     args = splitSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "split_damage needs an amount and at least one target." };
+    return { error: "apply_damage with targets needs an amount (or dice) and at least one target.", retry: true };
   }
 
+  // The rule damage_enemy holds (encounter-tools.ts): the model hurts an
+  // enemy here only with a hazard or the environment, never a blow.
+  if (turn.actor === "ai" && args.targets.some((target) => target.enemyId) && args.source === undefined) {
+    return {
+      error: "apply_damage on an enemy takes only harm no creature's attack deals: send source 'hazard' or 'environment' with the reason. A character's attack is pc_attack; a spell is cast_at_enemy or aoe_damage.",
+      retry: true,
+    };
+  }
   const encounter = getActiveEncounter(campaign.id);
   const applied: string[] = [];
   const skipped: string[] = [];
@@ -135,11 +107,12 @@ export function handleSplitDamage(
         sheets,
         sheetsById,
         args.type,
+        { magical: args.magical === true },
       );
       applied.push(
         "error" in result
           ? `${enemy.displayName}: ${String(result.error)}`
-          : `${enemy.displayName} takes ${amount}${result.dead ? " and falls" : ""}`,
+          : `${enemy.displayName} takes ${typeof result.damageApplied === "number" ? result.damageApplied : amount}${result.dead ? " and falls" : ""}`,
       );
       continue;
     }
@@ -153,6 +126,7 @@ export function handleSplitDamage(
           characterId: target.characterId,
           amount,
           type: args.type,
+          ...(args.magical ? { magical: true } : {}),
           reason: args.reason,
         }),
         sheets,
@@ -162,7 +136,7 @@ export function handleSplitDamage(
       applied.push(
         "error" in outcome.result
           ? `${name}: ${String(outcome.result.error)}`
-          : `${name} takes ${amount}`,
+          : `${name} is dealt ${amount}${typeof outcome.result.resistance === "string" ? ` (${outcome.result.resistance})` : ""}, now ${String(outcome.result.hp)} HP`,
       );
       continue;
     }
@@ -171,7 +145,7 @@ export function handleSplitDamage(
   }
 
   if (!applied.length && !skipped.length) {
-    return { error: "None of those targets could be found." };
+    return { error: "None of those targets could be found.", retry: true };
   }
   return {
     ok: true,

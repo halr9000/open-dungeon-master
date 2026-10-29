@@ -16,6 +16,7 @@ import { findClass, findRace } from "@/lib/srd";
 import { applyFeatIncrease } from "@/lib/srd/feat-effects";
 import { expertiseSlotsFor } from "@/lib/srd/features";
 import { freeCantripCount } from "@/lib/srd/free-cantrips";
+import type { RacialCantripChoices } from "@/lib/srd/racial-cantrips";
 import {
   fixedDieValue,
   hpBonusPerLevelFor,
@@ -36,17 +37,17 @@ import {
 } from "@/lib/srd/spell-prep";
 import { bundledSpellSchool } from "@/lib/srd/spell-facts";
 import {
-  THIRD_CASTER_ABILITY,
-  THIRD_CASTER_LIST,
-  isThirdCaster,
+  thirdCasterAbility,
+  thirdCasterList,
+  thirdCasterProfileOf,
   thirdCasterOutside,
   thirdCasterSchoolProblem,
+  type ThirdCasterSetting,
 } from "@/lib/srd/third-caster";
 import { featureHitPoints, holdsFeature, withPrimalChampion } from "@/lib/srd/trait-rules";
+import { textKey } from "@/lib/language/text-logic";
 
 type ClassRow = { id: string; subclass: string; level: number };
-
-const lower = (value: string) => value.trim().toLowerCase();
 
 // The scores after this level: the improvements chosen (and a half-feat's
 // point), then Primal Champion at barbarian 20, in the server's order.
@@ -70,7 +71,7 @@ export function abilitiesAfterLevel(
     }
   }
   const primalChampion =
-    lower(leveled.id) === "barbarian" && leveled.level === 20 && !holdsFeature(sheet, "primal champion");
+    textKey(leveled.id) === "barbarian" && leveled.level === 20 && !holdsFeature(sheet, "primal champion");
   if (primalChampion) {
     abilities = withPrimalChampion(abilities);
   }
@@ -176,21 +177,25 @@ function arcanumTop(list: string, level: number): number {
   return level >= 17 ? 9 : level >= 15 ? 8 : level >= 13 ? 7 : level >= 11 ? 6 : 0;
 }
 
-// The chosen class's casting at its new level. An Eldritch Knight or Arcane
-// Trickster casts from the wizard's list with Intelligence and knows its
+// The chosen class's casting at its new level. A third caster (an Eldritch
+// Knight, an Arcane Trickster, a workshop or pack subclass casting by their
+// rules) casts from its profile's list with its ability and knows its
 // spells; every count comes from src/lib/srd/spell-prep.ts.
 export function casterPreview(input: {
   classId: string;
   subclass: string;
+  progression?: ThirdCasterSetting;
   level: number;
   abilitiesAfter: AbilityScores;
 }): CasterPreview {
-  const third = isThirdCaster(input.classId, input.subclass);
   const klass = findClass(input.classId);
-  const ability = third
-    ? THIRD_CASTER_ABILITY
+  const profile =
+    !klass || klass.casterType === "none" ? thirdCasterProfileOf(input.classId, input.subclass, input.progression) : null;
+  const third = profile !== null;
+  const ability = profile
+    ? thirdCasterAbility(profile)
     : ((klass?.casterType !== "none" ? klass?.spellAbility : null) ?? null);
-  const list = third ? THIRD_CASTER_LIST : spellClassFor(input.classId);
+  const list = profile ? thirdCasterList(profile) : spellClassFor(input.classId);
   const style: SpellStyle = third ? "known" : spellStyleFor(input.classId);
   if (!ability) {
     return { casts: false, list, ability: null, style, maxLevel: 0, cantripCap: null, spellCap: null };
@@ -206,6 +211,9 @@ export function casterPreview(input: {
     cantrips: [],
     pending: [],
     spellbook: [],
+    // The counts read the profile too: a workshop subclass's name names no
+    // third caster, so without it every cap below came out 0.
+    ...(input.progression ? { progression: input.progression } : {}),
   };
   const cantripCap = cantripCapOf(view);
   const spellCap = spellCapOf(view, input.abilitiesAfter);
@@ -218,10 +226,14 @@ export function casterPreview(input: {
 // Cantrips in this list that the race gave, which the class count leaves
 // out (src/lib/srd/free-cantrips.ts; the level-up route uses the same).
 export function freeCantripsIn(
-  sheet: Pick<CharacterSheet, "race" | "level"> & { racialChoices?: { cantrip?: string } | null },
+  sheet: Pick<CharacterSheet, "race" | "level"> & { racialChoices?: RacialCantripChoices },
   cantrips: string[],
+  // The species' cantrip count as the server reads it (the level-up route):
+  // a homebrew species is not in the bundled list, and a table's sheet does
+  // not keep the picks. Unknown until the route answers.
+  speciesCount: number | null = null,
 ): number {
-  const racial = findRace(srdRaceId(sheet.race))?.cantripChoice?.count ?? 0;
+  const racial = speciesCount ?? findRace(srdRaceId(sheet.race))?.cantripChoice?.count ?? 0;
   return freeCantripCount(
     {
       race: sheet.race,
@@ -240,6 +252,7 @@ export function freeCantripsIn(
 export function thirdCasterPickRefusal(input: {
   classId: string;
   subclass: string;
+  progression?: ThirdCasterSetting;
   level: number;
   known: string[];
   picks: string[];
@@ -250,8 +263,9 @@ export function thirdCasterPickRefusal(input: {
   return thirdCasterSchoolProblem({
     classId: input.classId,
     subclass: input.subclass,
+    profile: input.progression,
     level: input.level,
     spells: [...input.known, ...input.picks, input.adding].map(of),
-    heldOutside: thirdCasterOutside(input.classId, input.known.map(of)),
+    heldOutside: thirdCasterOutside(input.classId, input.known.map(of), input.progression),
   });
 }

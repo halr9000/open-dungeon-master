@@ -38,14 +38,14 @@ await test("A wizard's two Signature Spells are each cast once at 3rd level with
   const { world, sheets: [wizard], enemies: [goblin] } = await table([caster("wizard", "int", ["Fireball", "Counterspell"], [], 20)]);
   grant(world, wizard.id, "Signature Spells: Fireball, Counterspell");
   world.dice(...new Array(8).fill(1), 1);
-  const first = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15 });
+  const first = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15 });
   world.clearDice();
   assert.equal(first.ok, true, first.error);
   assert.equal(world.sheet(wizard.id).spellcasting.slots["3"].used, 0);
   const { freshTurn } = await import("./lib/enforce-spells.mjs");
   await freshTurn(world);
   world.dice(...new Array(8).fill(1), 1);
-  await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15 });
+  await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15 });
   world.clearDice();
   assert.equal(world.sheet(wizard.id).spellcasting.slots["3"].used, 1);
 });
@@ -55,7 +55,7 @@ await test("An evoker's Sculpt Spells lets allies caught in the wizard's evocati
   grant(world, wizard.id, "Sculpt Spells");
   const before = world.sheet(fighter.id).currentHp;
   world.dice(...new Array(8).fill(3), 1);
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], characterIds: [fighter.id], saveAbility: "dex", dc: 15, level: 3 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], characterIds: [fighter.id], saveAbility: "dex", dc: 15, level: 3 });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.equal(hurt(world, goblin.id), 24);
@@ -66,7 +66,7 @@ await test("Overchannel deals a 1st to 5th level evocation's maximum damage; a s
   const { world, sheets: [wizard], enemies: [goblin] } = await table([caster("wizard", "int", ["Fireball"], [], 14)]);
   grant(world, wizard.id, "Overchannel");
   world.dice(1);
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 3, overchannel: true });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 3, overchannel: true });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.equal(hurt(world, goblin.id), 48);
@@ -74,7 +74,7 @@ await test("Overchannel deals a 1st to 5th level evocation's maximum damage; a s
   await freshTurn(world);
   const hp = world.sheet(wizard.id).currentHp;
   world.dice(1, ...new Array(6).fill(1));
-  await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 3, overchannel: true });
+  await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Fireball", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 3, overchannel: true });
   world.clearDice();
   assert.equal(hp - world.sheet(wizard.id).currentHp, 6);
 });
@@ -94,16 +94,22 @@ await test("a Life cleric's 17th level grant is the feature Supreme Healing, and
 
 // ---- a fall, a save, a trait ----
 
-await test("A creature under Feather Fall takes no falling damage and does not land prone.", async () => {
+await test("Feather Fall answers a fall (SRD 5.1: a reaction when a creature falls): the falling damage comes back and the creature does not land prone; cast ahead of a fall it is pointed to use_reaction.", async () => {
   const world = await openWorld();
   const wizard = world.addHero(caster("wizard", "int", ["Feather Fall"]));
   const fighter = world.addHero(FIGHTER);
-  const cast = await world.invoke("cast_buff", { characterId: wizard.id, spell: "Feather Fall", targetCharacterIds: [fighter.id], level: 1 });
-  assert.equal(cast.ok, true, cast.error);
+  const ahead = await world.invoke("cast_buff", { characterId: wizard.id, spell: "Feather Fall", targetCharacterIds: [fighter.id], level: 1 });
+  assert.equal(ahead.ok, false);
+  assert.match(String(ahead.error), /Feather Fall is cast as a reaction: use_reaction/);
+  const early = await world.invoke("use_reaction", { characterId: wizard.id, feature: "Feather Fall", targetCharacterId: fighter.id, level: 1 });
+  assert.match(String(early.error), /call apply_hazard falling for .* first, then send this use_reaction again/, "sent before the fall, it is told the order");
   const before = world.sheet(fighter.id).currentHp;
   world.dice(6, 6, 6, 6, 6, 6);
-  await world.invoke("apply_hazard", { type: "falling", feet: 60, characterIds: [fighter.id] });
+  const fall = await world.invoke("apply_hazard", { type: "falling", feet: 60, characterIds: [fighter.id] });
+  assert.match(fall.result.note, /Feather Fall or Slow Fall answers it now: use_reaction/, "the fall points a party that can slow it to the reaction");
   world.clearDice();
+  const cast = await world.invoke("use_reaction", { characterId: wizard.id, feature: "Feather Fall", targetCharacterId: fighter.id, level: 1 });
+  assert.equal(cast.ok, true, cast.error);
   assert.equal(world.sheet(fighter.id).currentHp, before);
   assert.ok(!world.sheet(fighter.id).conditions.includes("prone"));
 });
@@ -150,7 +156,7 @@ await test("The AI's advantage on request_roll counts only with a named circumst
   world.clearDice();
   assert.equal(d20s(world.diceLog()), 1, "no reason named: a straight roll");
   world.dice(10, 10);
-  await invokeAsAi(world, "request_roll", { characterId: fighter.id, kind: "skill_check", skill: "athletics", dc: 13, advantage: "advantage", advantageReason: "a rope tied off to the post above" });
+  await invokeAsAi(world, "request_roll", { characterId: fighter.id, kind: "skill_check", skill: "athletics", dc: 13, advantage: "advantage", advantageSource: "other", advantageReason: "a rope tied off to the post above" });
   world.clearDice();
   assert.equal(d20s(world.diceLog()), 2);
   world.dice(10, 10);

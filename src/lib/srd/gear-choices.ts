@@ -22,11 +22,11 @@
 // Anything else stays as written, as before. Pure, and shared by the builder
 // (what the chips show) and the server (what the free kit is), so the two
 // can never disagree about what the character carries.
+import { fitItemName } from "@/lib/schemas/sheet";
 import { matchGear, resolveGearLine } from "@/lib/srd/adventuring-gear";
 import type { KitItem } from "@/lib/srd/starting-kit";
 import { ARTISANS_TOOLS, GAMING_SETS, MUSICAL_INSTRUMENTS, splitToolGrants } from "@/lib/srd/tool-choices";
-
-const lower = (value: string) => value.trim().toLowerCase();
+import { textKey } from "@/lib/language/text-logic";
 
 // ---- a tool-kind line, filled from the character's training ----
 
@@ -42,7 +42,7 @@ const TOOL_KINDS: ToolKind[] = [
 // rather than a named item: "of your choice", "to match your choice of tool
 // proficiency", or the bare "a set of dice or deck of cards".
 export function isToolChoiceLine(line: string): boolean {
-  const text = lower(line);
+  const text = line.trim().toLowerCase();
   if (/to match your choice of tool proficiency/.test(text)) {
     return true;
   }
@@ -68,23 +68,22 @@ export function fillToolLine(
   line: string,
   input: { tools: string[]; backgroundTools: string[]; used: Set<string> },
 ): string | null {
-  const text = lower(line);
-  const held = input.tools.map(lower);
+  const text = line.trim().toLowerCase();
   const choices = splitToolGrants(input.backgroundTools).choices;
-  const preferred = new Set(choices.flatMap((choice) => choice.from.map(lower)));
+  const preferred = new Set(choices.flatMap((choice) => choice.from.map(textKey)));
   let pool: string[];
   if (/to match your choice of tool proficiency/.test(text)) {
     pool = [...preferred];
   } else {
     const kinds = TOOL_KINDS.filter((kind) => kind.pattern.test(text));
-    pool = kinds.flatMap((kind) => kind.from.map(lower));
+    pool = kinds.flatMap((kind) => kind.from.map(textKey));
   }
-  const candidates = held.filter((tool) => pool.includes(tool) && !input.used.has(tool));
-  const pick = candidates.find((tool) => preferred.has(tool)) ?? candidates[0];
+  const candidates = input.tools.filter((tool) => pool.includes(textKey(tool)) && !input.used.has(textKey(tool)));
+  const pick = candidates.find((tool) => preferred.has(textKey(tool))) ?? candidates[0];
   if (!pick) {
     return null;
   }
-  input.used.add(pick);
+  input.used.add(textKey(pick));
   return toolItemName(pick);
 }
 
@@ -103,7 +102,7 @@ export type GearAlternative = {
 // The tools a kind phrase ("artisan's tools", "other musical instrument",
 // "gaming set") may come to, or null when the phrase is not a kind.
 function kindOptions(phrase: string): string[] | null {
-  const text = lower(phrase).replace(/^(?:other|any|another)\s+/, "");
+  const text = phrase.trim().toLowerCase().replace(/^(?:other|any|another)\s+/, "");
   const kinds = TOOL_KINDS.filter((kind) => kind.pattern.test(text));
   if (!kinds.length || resolveGearLine(phrase).resolved) {
     return null;
@@ -205,14 +204,18 @@ export function gearAlternatives(line: string): GearAlternative[] | null {
   }
   // "Lute or other musical instrument": the kind is the instruments the
   // line did not already name.
-  const named = new Set(alternatives.filter((entry) => !entry.options).flatMap((entry) => entry.items.map((item) => lower(item.name))));
+  const named = new Set(alternatives.filter((entry) => !entry.options).flatMap((entry) => entry.items.map((item) => textKey(item.name))));
   for (const entry of alternatives) {
     if (entry.options && named.size) {
-      entry.options = entry.options.filter((name) => !named.has(lower(name)));
+      entry.options = entry.options.filter((name) => !named.has(textKey(name)));
       entry.items = [{ name: entry.options[0], qty: 1 }];
     }
   }
-  return alternatives;
+  // "A donkey or mule with bit and bridle": SRD 5.1 sells the donkey and the
+  // mule as one row, so both sides are the same goods and there is nothing
+  // to choose; the line reads whole.
+  const kits = new Set(alternatives.map((entry) => (entry.options ? `?${entry.label}` : entry.items.map((item) => `${textKey(item.name)} ${item.qty}`).sort().join("|"))));
+  return kits.size > 1 ? alternatives : null;
 }
 
 // A "tool of your choice" line as a kind choice, for when no training can
@@ -298,11 +301,11 @@ export function expandBackgroundGear(
     }
     const asked = (input.picks[choices.length] ?? "").trim();
     // A pick is the alternative's words, or, for a kind, the tool's name.
-    let chosen = asked ? alternatives.findIndex((entry) => lower(entry.label) === lower(asked)) : 0;
+    let chosen = asked ? alternatives.findIndex((entry) => textKey(entry.label) === textKey(asked)) : 0;
     let named: string | undefined;
     if (asked && chosen < 0) {
-      chosen = alternatives.findIndex((entry) => entry.options?.some((name) => lower(name) === lower(asked)));
-      named = alternatives[chosen]?.options?.find((name) => lower(name) === lower(asked));
+      chosen = alternatives.findIndex((entry) => entry.options?.some((name) => textKey(name) === textKey(asked)));
+      named = alternatives[chosen]?.options?.find((name) => textKey(name) === textKey(asked));
     }
     if (chosen < 0) {
       problems.push(
@@ -314,12 +317,12 @@ export function expandBackgroundGear(
     if (taken.options) {
       // Unnamed: a tool of the kind the character is trained with, not yet
       // handed out by another line, else the kind's first.
-      const held = input.tools.map(lower);
+      const held = input.tools.map(textKey);
       const tool =
         named ??
-        taken.options.find((name) => held.includes(lower(name)) && !used.has(lower(name))) ??
+        taken.options.find((name) => held.includes(textKey(name)) && !used.has(textKey(name))) ??
         taken.options[0];
-      used.add(lower(tool));
+      used.add(textKey(tool));
       alternatives = alternatives.map((entry, at) => (at === chosen ? { ...entry, items: [{ name: tool, qty: 1 }] } : entry));
     }
     choices.push({ line, alternatives, chosen, pick: taken.options ? alternatives[chosen].items[0].name : taken.label });
@@ -329,5 +332,9 @@ export function expandBackgroundGear(
       }
     }
   }
-  return { names, choices, toolLines, problems };
+  // Each name as the sheet can hold it: a line kept as the book wrote it may
+  // say more than an item's name (a content pack's Lyceum Student carries "A
+  // writing kit (small pouch with a quill, ink, folded parchment, and a small
+  // penknife)"), and the builder and the server fit it the same way.
+  return { names: names.map(fitItemName), choices, toolLines, problems };
 }

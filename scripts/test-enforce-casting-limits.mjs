@@ -42,7 +42,7 @@ const castsOf = (hero, enemy) => [
   ["use_spell_slot", { characterId: hero.id, level: 1, spell: "Magic Missile" }],
   ["cast_at_enemy", { characterId: hero.id, targetEnemyId: enemy.id, spell: "Hold Person", saveAbility: "wis", level: 2 }],
   ["cast_buff", { characterId: hero.id, spell: "Blur" }],
-  ["aoe_damage", { damage: "3d6", saveAbility: "dex", dc: 14, enemyIds: [enemy.id], casterId: hero.id, spell: "Burning Hands", level: 1 }],
+  ["aoe_damage", { damage: "3d6", saveAbility: "dex", dc: 14, enemyIds: [enemy.id], casterCharacterId: hero.id, spell: "Burning Hands", level: 1 }],
 ];
 
 // Which of the casts went through while the caster was in `state`.
@@ -200,7 +200,7 @@ await test("casting a spell spends its casting time from the turn", async () => 
   assert.equal(first.ok, true, first.error);
   const spent = world.encounter().turnBudget?.actionUsed === true;
   world.dice(1, 1, 1, 1, 1, 1, 1, 1, 1);
-  const second = await world.invoke("aoe_damage", { damage: "8d6", saveAbility: "dex", dc: 14, enemyIds: [enemy.id], casterId: hero.id, spell: pack ? "Fireball" : "Burning Hands", level: 3 });
+  const second = await world.invoke("aoe_damage", { damage: "8d6", saveAbility: "dex", dc: 14, enemyIds: [enemy.id], casterCharacterId: hero.id, spell: pack ? "Fireball" : "Burning Hands", level: 3 });
   world.clearDice();
   assert.ok(spent, "Hold Person left the action unspent in the turn budget");
   assert.equal(second.ok, false, "a second levelled spell was cast with the same action");
@@ -354,7 +354,7 @@ const sorcererOf = (extra = {}) =>
     class: "sorcerer",
     abilities: { cha: 16, con: 14, dex: 14 },
     ...extra,
-    spellcasting: { ability: "cha", prepared: ["Magic Missile", "Shield", "Hold Person", "Misty Step", "Fireball"], spellbook: [] },
+    spellcasting: { ability: "cha", prepared: ["Magic Missile", "Shield", "Hold Person", "Misty Step", "Fireball", "Feather Fall"], spellbook: [] },
   });
 const { world: quick, sheets: [sorc], enemies: [mark] } = await table([sorcererOf()]);
 const budgetNow = () => quick.encounter().turnBudget;
@@ -397,12 +397,16 @@ await test("Quickened Spell is refused without the option, with too few points, 
 await test("a reaction spell on one's own turn: not after a bonus action spell, and none after it", async () => {
   quick.patch(sorc.id, { spellcasting: { ...quick.sheet(sorc.id).spellcasting, slots: slotsOf(FULL_CASTER_SLOTS[4]) } });
   await freshTurn(quick);
+  // Feather Fall answers a fall on their own turn (a reaction spell is cast through use_reaction).
+  const fall = () => quick.invoke("apply_hazard", { type: "falling", feet: 10, characterIds: [sorc.id] });
   const step = await quick.invoke("use_spell_slot", { characterId: sorc.id, spell: "Misty Step", level: 2 });
   assert.equal(step.ok, true, step.error);
-  const shield = await quick.invoke("use_spell_slot", { characterId: sorc.id, spell: "Shield", level: 1 });
-  assert.match(String(shield.error), /bonus action/);
+  await fall();
+  const feather = await quick.invoke("use_reaction", { characterId: sorc.id, feature: "Feather Fall", level: 1 });
+  assert.match(String(feather.error), /bonus action/);
   await freshTurn(quick);
-  const first = await quick.invoke("use_spell_slot", { characterId: sorc.id, spell: "Shield", level: 1 });
+  await fall();
+  const first = await quick.invoke("use_reaction", { characterId: sorc.id, feature: "Feather Fall", level: 1 });
   assert.equal(first.ok, true, first.error);
   const after = await quick.invoke("use_spell_slot", { characterId: sorc.id, spell: "Misty Step", level: 2 });
   assert.ok(after.error, "a bonus action spell after a reaction spell on the same turn");

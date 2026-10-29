@@ -85,7 +85,7 @@ await test("The claims reader, which only a machine reads, never carries the dir
       label: "test",
       text: "Tirate per l'iniziativa!",
       kinds: ["fight_start"],
-      outcomes: guardOutcomes([], null),
+      outcomes: guardOutcomes([], null, "english"),
       sheets: [],
     }),
   );
@@ -223,13 +223,20 @@ const CLASSIFIED = {
   "src/lib/dm/ask.ts": { prose: 2, machine: 0 },
   "src/lib/dm/assist.ts": { prose: 2, machine: 0 },
   "src/lib/dm/beats.ts": { prose: 1, machine: 0 },
-  "src/lib/dm/chapter-close.ts": { prose: 1, machine: 0 },
+  // The chapter summary, and the span accounts a long chapter is condensed
+  // into first (in the table's language, since the summary is built on them).
+  "src/lib/dm/chapter-close.ts": { prose: 2, machine: 0 },
   "src/lib/dm/compaction.ts": { prose: 2, machine: 0 },
   "src/lib/dm/lore-check.ts": { prose: 1, machine: 0 },
   "src/lib/dm/npc-suggest.ts": { prose: 1, machine: 0 },
   "src/lib/dm/overworld-describe.ts": { prose: 1, machine: 0 },
   "src/lib/dm/recap.ts": { prose: 1, machine: 0 },
   "src/lib/dm/setup.ts": { prose: 1, machine: 0 },
+  // The party backstory's draft button: a draft the players edit.
+  "src/lib/dm/party-draft.ts": { prose: 1, machine: 0 },
+  // The AI-drafted pregens: names, concepts and backstories the players read,
+  // in a JSON shape the engine reads (src/lib/dm/pregen-draft.ts).
+  "src/lib/dm/pregen-draft.ts": { prose: 1, machine: 0 },
   "src/lib/dm/world-arc.ts": { prose: 1, machine: 0 },
   // WorldForge's forge, ask and draft, through one helper.
   "src/lib/dm/world-ai.ts": { prose: 1, machine: 0 },
@@ -241,6 +248,13 @@ const CLASSIFIED = {
   "src/lib/image-english.ts": { prose: 0, machine: 1 },
   // The rules desk has no campaign, so no table language.
   "src/lib/reference/desk.ts": { prose: 0, machine: 1 },
+  // An addon's sampling request: the addon writes the whole prompt and reads
+  // the reply as data (a stat block's fields, say), often for a workshop
+  // import that has no table yet.
+  "src/lib/addons/sampling.ts": { prose: 0, machine: 1 },
+  // The next turn's rules sent ahead (src/lib/dm/turn-warmup.ts): its reply
+  // is thrown away, and the rules are the turn's own, directive included.
+  "src/lib/dm/turn-warmup.ts": { prose: 0, machine: 1 },
   // The routers themselves.
   "src/lib/dm/model.ts": { prose: 0, machine: 0, router: true },
 };

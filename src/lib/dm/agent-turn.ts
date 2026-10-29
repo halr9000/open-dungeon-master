@@ -18,6 +18,7 @@ import type { Campaign } from "@/lib/db/campaigns";
 import { guardOutcomes, ruleClaims } from "@/lib/dm/engine-boundary";
 import { liveStateFor, readClaims } from "@/lib/dm/claims";
 import { guardKinds } from "@/lib/dm/narration-guard";
+import { AGENT_MARK } from "@/lib/dm/agent-mark";
 import { hasQuotedLine, type SpokenLine } from "@/lib/dm/speech";
 import { modelTextLines } from "@/lib/dm/speech-lines";
 
@@ -29,8 +30,7 @@ export function isAgentRequest(request: Request): boolean {
 
 // A turn row the agent's calls hang on is marked by its first message, so
 // it is never mistaken for a storyteller turn (whose first message is the
-// system prompt).
-const AGENT_MARK = "[agent program in the DM seat]";
+// system prompt): src/lib/dm/agent-mark.ts.
 
 export function isAgentTurn(turn: Pick<DmTurn, "conversation">): boolean {
   return turn.conversation[0]?.content === AGENT_MARK;
@@ -49,6 +49,26 @@ function findAgentTurn(campaignId: string): DmTurn | null {
     }
   }
   return null;
+}
+
+// How long into a break an agent program's running turn may still finish.
+// The storyteller's turn ends on its own within that; an agent's turn ends
+// when it narrates, and one that never did would otherwise play on through
+// the whole break.
+const AGENT_TURN_FINISH_MS = 5 * 60_000;
+
+// Whether the agent program's open turn began before `at` (ms since the
+// epoch), the start of a break, and the break is young enough for it to be
+// finishing. A table break lets that turn finish, its calls and its
+// narration, as it lets the storyteller's running turn finish; a turn the
+// agent would open during the break waits for Resume
+// (src/lib/dm/table-break.ts).
+export function agentTurnBegunBefore(campaignId: string, at: number): boolean {
+  if (Date.now() - at > AGENT_TURN_FINISH_MS) {
+    return false;
+  }
+  const turn = findAgentTurn(campaignId);
+  return turn !== null && Date.parse(turn.createdAt) < at;
 }
 
 export function agentTurnFor(campaignId: string): DmTurn {
@@ -90,7 +110,7 @@ export async function readAgentNarration(
 ): Promise<{ problem: string | null; lines: SpokenLine[] }> {
   const turn = findAgentTurn(campaign.id);
   const sheets = listSheets(campaign.id);
-  const outcomes = guardOutcomes(turn?.conversation ?? [], liveStateFor(campaign.id));
+  const outcomes = guardOutcomes(turn?.conversation ?? [], liveStateFor(campaign.id), campaign.gameSettings.tableLanguage);
   const guarded = guardKinds(campaign, outcomes, sheets);
   const claims = await readClaims(campaign, {
     label: `agent turn ${turn?.id ?? "(none yet)"}`,

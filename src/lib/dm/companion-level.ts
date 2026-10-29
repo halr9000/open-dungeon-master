@@ -36,6 +36,9 @@ import { levelUpSpells } from "@/lib/srd/level-up-spells";
 import { classListFor } from "@/lib/srd/multiclass";
 import { checklistSpellsOn } from "@/lib/srd/spell-lists";
 import { casterViewsOf, spellStyleFor, type CasterView } from "@/lib/srd/spell-prep";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { subclassLevelFor, subclassNamesFor, subclassSpellsFor } from "@/lib/srd/features";
 
 // A companion's sheet is made and levelled by the same rules as a player's:
 // the legality check at the door (src/lib/characters/admit.ts, the "engine"
@@ -44,8 +47,6 @@ import { casterViewsOf, spellStyleFor, type CasterView } from "@/lib/srd/spell-p
 // companion-build.ts), and this module is where those choices meet the
 // database. Must not import turn.ts, loop.ts, encounter-tools.ts,
 // enemy-damage.ts or mutations.ts, for the reason companion-tools.ts gives.
-
-const lower = (value: string) => value.trim().toLowerCase();
 
 function emptyView(classId: string, ability: CasterView["ability"], level: number): CasterView {
   return {
@@ -74,7 +75,7 @@ export type CompanionDraft = {
 
 export type CompanionSheet =
   | { ok: true; sheet: CreateSheetInput; notes: string[] }
-  | { ok: false; error: string };
+  | ({ ok: false } & ToolError);
 
 // A drafted companion as a legal character of its level: the improvements
 // its class has earned by then, a spell list the class's tables allow, and
@@ -87,7 +88,8 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
     // A class no table describes has nothing to be derived from.
     return { ok: true, sheet: draft.sheet, notes };
   }
-  const classes = [{ id: klass.id, subclass: "", level }];
+  const subclass = companionSubclass(klass.id, level, draft.sheet.subclass);
+  const classes = [{ id: klass.id, subclass, level }];
   const asiChoices = companionImprovements(
     draft.sheet.abilities,
     abilityPriority(klass),
@@ -96,7 +98,7 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
   const abilities = applyAsiChoices(draft.sheet.abilities, asiChoices);
 
   let spellcasting: Spellcasting = null;
-  const [casting] = castingClassesOf(classes, classGrantsFor);
+  const [casting] = castingClassesOf(classes, classGrantsFor, subclassExtrasFor(tableAuthors(campaign.id)));
   if (casting) {
     const spellOf = (name: string) => spellFactsFor(name, tableAuthors(campaign.id));
     const before = emptyView(klass.id, casting.ability, level);
@@ -106,11 +108,13 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
       abilities,
       firstLevel: true,
       freeCantrips: 0,
-      candidates: checklistSpellsOn(casting.list),
+      // The subclass's always-prepared spells come free: a choice spent on
+      // one would be a choice lost.
+      candidates: withoutGranted(checklistSpellsOn(casting.list), subclassSpellsFor(klass.id, subclass, level, subclassExtrasFor(tableAuthors(campaign.id)))),
       wanted: draft.wantedSpells.map((name) => spellOf(name)?.name ?? name),
     });
     const passed = draft.wantedSpells.filter(
-      (name) => !picks.some((pick) => lower(pick) === lower(spellOf(name)?.name ?? name)),
+      (name) => !picks.some((pick) => textKey(pick) === textKey(spellOf(name)?.name ?? name)),
     );
     if (passed.length) {
       notes.push(
@@ -120,7 +124,7 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
     const filed = levelUpSpells({
       before,
       level,
-      subclass: "",
+      subclass,
       list: casting.list,
       firstLevel: true,
       abilities,
@@ -142,14 +146,33 @@ export function legalCompanionSheet(draft: CompanionDraft): CompanionSheet {
   const admitted = admitSheet({
     door: "engine",
     level,
-    sheet: { ...draft.sheet, abilities, asiChoices, spellcasting },
+    sheet: { ...draft.sheet, subclass, abilities, asiChoices, spellcasting },
     userId: campaign.ownerUserId,
     campaign,
   });
   if (!admitted.ok) {
-    return { ok: false, error: admitted.problems[0] ?? "That companion is not within the rules." };
+    return { ok: false, error: admitted.problems[0] ?? "That companion is not within the rules.", retry: true };
   }
   return { ok: true, sheet: admitted.sheet, notes };
+}
+
+// A spell list without the spells a subclass already grants.
+function withoutGranted<T extends string | { name: string }>(candidates: T[], granted: string[]): T[] {
+  const free = new Set(granted.map(textKey));
+  return candidates.filter((candidate) => !free.has(textKey(typeof candidate === "string" ? candidate : candidate.name)));
+}
+
+// The subclass a companion holds at a class level: the one whoever made it
+// named, else, from the level the class takes one (SRD 5.1: a paladin swears
+// an oath at 3rd level), the class's SRD subclass, so a companion is never a
+// level 5 paladin with no oath. Below that level, none.
+export function companionSubclass(classId: string, classLevel: number, named: string | null | undefined): string {
+  const held = String(named ?? "").trim();
+  if (held) {
+    return held;
+  }
+  const at = subclassLevelFor(classId);
+  return at !== null && classLevel >= at ? (subclassNamesFor(classId)[0] ?? "") : "";
 }
 
 function contextFor(campaign: Campaign, sheet: CharacterSheet): LevelUpContext {
@@ -196,12 +219,15 @@ function levelOnce(campaign: Campaign, sheet: CharacterSheet): CharacterSheet | 
   const abilities = applyAsiChoices(sheet.abilities, asiChoices);
 
   let picks: string[] = [];
-  const casting = castingClassesOf(after, classGrantsFor).find(
-    (entry) => lower(entry.entry.id) === lower(leading.id),
+  // The table's workshop subclasses: one that casts as an Eldritch Knight,
+  // or hands out always-prepared spells, does so for a companion too.
+  const extras = subclassExtrasFor(tableAuthors(campaign.id));
+  const casting = castingClassesOf(after, classGrantsFor, extras, sheet.spellcasting).find(
+    (entry) => textKey(entry.entry.id) === textKey(leading.id),
   );
   if (casting) {
-    const held = casterViewsOf(sheet).find(
-      (view) => !sheet.spellcasting?.casters?.length || lower(view.classId) === lower(leading.id),
+    const held = casterViewsOf(sheet, extras).find(
+      (view) => !sheet.spellcasting?.casters?.length || textKey(view.classId) === textKey(leading.id),
     );
     picks = companionSpellPicks({
       before: held
@@ -211,13 +237,19 @@ function levelOnce(campaign: Campaign, sheet: CharacterSheet): CharacterSheet | 
       abilities,
       firstLevel: !held,
       freeCantrips: 0,
-      candidates: checklistSpellsOn(casting.list),
+      candidates: withoutGranted(
+        checklistSpellsOn(casting.list),
+        subclassSpellsFor(leading.id, companionSubclass(leading.id, leading.level + 1, leading.subclass), leading.level + 1, extras),
+      ),
     });
   }
 
+  // The class's subclass, once it reaches the level that grants one.
+  const subclass = companionSubclass(leading.id, leading.level + 1, leading.subclass);
   const request: LevelUpRequest = {
     level: sheet.level + 1,
     levelUpClass: leading.id,
+    ...(subclass && subclass !== leading.subclass ? { subclass } : {}),
     ...(asiChoices.length ? { asiChoices } : {}),
   };
   const context = contextFor(campaign, sheet);
@@ -246,8 +278,8 @@ function improvedScores(before: AbilityScores, after: AbilityScores): string {
 // Companions have no level-up dialog, so an XP award that crosses a level
 // threshold levels them on the spot, one level after another, each built
 // from the companion's own choices: hit points by the table's method, the
-// improvements its class has earned, new spells for a caster. A subclass is
-// a matter of who the character is, and stays as whoever made them left it.
+// improvements its class has earned, new spells for a caster, and the
+// class's subclass when it reaches one (companionSubclass).
 export function autoLevelCompanion(campaign: Campaign, sheetId: string): string | null {
   const start = getSheetById(sheetId);
   if (!start?.isCompanion) {

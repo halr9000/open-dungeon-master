@@ -10,6 +10,10 @@
 // Healing, up to `maxLevel`). `dc` is the item's own save DC; absent, the
 // wielder's own spell save DC (the staffs say "using your spell save DC").
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { rowName, type RowItem } from "@/lib/srd/item-row";
+
 export type ItemSpell = {
   spell: string;
   charges: number;
@@ -101,10 +105,6 @@ const ROWS: ItemSpellRow[] = [
   ] },
 ];
 
-function key(text: string): string {
-  return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
 // The spells an item casts, or an empty list for one the table does not
 // know.
 export function itemSpellsOf(itemName: string): ItemSpell[] {
@@ -113,39 +113,41 @@ export function itemSpellsOf(itemName: string): ItemSpell[] {
 }
 
 // The spells a carried row casts: a workshop item's own list when it carries
-// one (src/lib/homebrew/item-data.ts), else the table's by name.
-export function itemSpellsOfRow(item: { name: string; gear?: unknown }): ItemSpell[] {
+// one (src/lib/homebrew/item-data.ts), else the table's by its row
+// (src/lib/srd/item-row.ts), so a "Bacchetta dei dardi" listed as a Wand of
+// Magic Missiles casts them.
+export function itemSpellsOfRow(item: RowItem & { gear?: unknown }): ItemSpell[] {
   const own = (item.gear as { spells?: ItemSpell[] } | undefined)?.spells;
-  return Array.isArray(own) && own.length ? own : itemSpellsOf(item.name);
+  return Array.isArray(own) && own.length ? own : itemSpellsOf(rowName(item));
 }
 
 // What casting `spell` from this item costs for `charges` spent (the fewest
 // it takes when none are named), or an error sentence.
 export function itemSpellCast(
-  item: string | { name: string; gear?: unknown },
+  item: string | (RowItem & { gear?: unknown }),
   spell: string,
   charges: number | undefined,
-): { spell: string; charges: number; level: number; dc?: number } | { error: string } {
+): { spell: string; charges: number; level: number; dc?: number } | ToolError {
   const itemName = typeof item === "string" ? item : item.name;
   const spells = typeof item === "string" ? itemSpellsOf(item) : itemSpellsOfRow(item);
   if (!spells.length) {
-    return { error: `${itemName} casts no spell the server knows; spend its charges without a spell and resolve what it does with the tool for it.` };
+    return { error: `${itemName} casts no spell the server knows; spend its charges without a spell and resolve what it does with the tool for it.`, retry: true };
   }
-  const wanted = key(spell);
-  const row = spells.find((entry) => key(entry.spell) === wanted);
+  const wanted = textKey(spell);
+  const row = spells.find((entry) => textKey(entry.spell) === wanted);
   if (!row) {
-    return { error: `${itemName} casts ${spells.map((entry) => `${entry.spell} (${entry.charges} charge${entry.charges === 1 ? "" : "s"})`).join(", ")}, not ${spell}.` };
+    return { error: `${itemName} casts ${spells.map((entry) => `${entry.spell} (${entry.charges} charge${entry.charges === 1 ? "" : "s"})`).join(", ")}, not ${spell}.`, retry: true };
   }
   const spent = Math.max(row.charges, Math.round(charges ?? row.charges));
   if (!row.perCharge && spent !== row.charges) {
-    return { error: `${row.spell} from ${itemName} costs ${row.charges} charge${row.charges === 1 ? "" : "s"}, no more and no fewer.` };
+    return { error: `${row.spell} from ${itemName} costs ${row.charges} charge${row.charges === 1 ? "" : "s"}, no more and no fewer.`, retry: true };
   }
   const level = row.perCharge ? row.level + (spent - row.charges) : row.level;
   if (row.maxLevel && level > row.maxLevel) {
-    return { error: `${row.spell} from ${itemName} is cast at most at level ${row.maxLevel}, ${row.maxLevel - row.level + row.charges} charges.` };
+    return { error: `${row.spell} from ${itemName} is cast at most at level ${row.maxLevel}, ${row.maxLevel - row.level + row.charges} charges.`, retry: true };
   }
   if (level > 9) {
-    return { error: `A spell has no level above 9; spend fewer charges on ${row.spell}.` };
+    return { error: `A spell has no level above 9; spend fewer charges on ${row.spell}.`, retry: true };
   }
   return { spell: row.spell, charges: spent, level, ...(row.dc ? { dc: row.dc } : {}) };
 }

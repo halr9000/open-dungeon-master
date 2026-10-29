@@ -2,7 +2,10 @@
 // (SRD 5.1). Pure: src/lib/dm/summon-cast.ts asks summonPlan before anything
 // is spent, and spawns what it answers.
 
-import { findSummonForm, type SummonForm } from "@/lib/srd/summon-forms";
+import { findSummonForm, summonFormsHolding, summonFormsOf, type SummonForm } from "@/lib/srd/summon-forms";
+import { formatCr, formList } from "@/lib/srd/beast-forms";
+import { holdingHint, type ToolError } from "@/lib/dm/tool-errors";
+import { textKey, words } from "@/lib/language/text-logic";
 
 const HOUR = 600;
 const DAY = 14400;
@@ -53,6 +56,9 @@ export type SummonSpell = {
   single?: boolean;
   // Find Steed: an Intelligence below 6 becomes 6.
   minInt?: number;
+  // Find Steed: the kind of creature it is instead of its own, the caster's
+  // choice ("a fey warhorse"), the first when none is named.
+  kinds?: string[];
   // Phantom Steed's speed.
   speed?: number;
   // Faithful Hound: it acts at the start of its caster's turn (its entry
@@ -124,8 +130,9 @@ export const SUMMON_SPELLS: SummonSpell[] = [
   {
     name: "Find Steed", school: "conjuration", level: 2, concentration: false, rounds: null,
     forms: ["Warhorse", "Pony", "Camel", "Elk", "Mastiff"], base: 1, single: true, minInt: 6,
+    kinds: ["celestial", "fey", "fiend"],
     initiative: "caster",
-    note: "A celestial, fey or fiend steed with the chosen form's statistics (Intelligence at least 6), until dismissed or dropped to 0 hit points; one at a time.",
+    note: "A celestial, fey or fiend steed (the caster's choice: 'fey warhorse'; celestial when none is named) with the chosen form's statistics (Intelligence at least 6), until dismissed or dropped to 0 hit points; one at a time.",
   },
   {
     name: "Phantom Steed", school: "illusion", level: 3, concentration: false, rounds: HOUR, forms: ["Riding Horse"], base: 1,
@@ -160,25 +167,59 @@ export const SUMMON_SPELLS: SummonSpell[] = [
   },
 ];
 
-const key = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
 // A summoning spell spent through a bare slot would leave its creatures to be
 // invented: the refusal that sends it to cast_buff, or null.
-export function summonSlotProblem(spell: string): string | null {
+export function summonSlotProblem(spell: string): ToolError | null {
   const summoning = summonSpellFor(spell);
   return summoning
-    ? `${summoning.name} brings its creatures in with their stat blocks: cast it with cast_buff, the creature in variant (and count for fewer). Nothing was spent.`
+    ? { error: `${summoning.name} brings its creatures in with their stat blocks: cast it with cast_buff, the creature in variant (and count for fewer). Nothing was spent.`, retry: true }
     : null;
 }
 
 export function summonSpellFor(spell: string): SummonSpell | null {
-  const wanted = key(spell);
-  return SUMMON_SPELLS.find((entry) => key(entry.name) === wanted) ?? null;
+  const wanted = textKey(spell);
+  return SUMMON_SPELLS.find((entry) => textKey(entry.name) === wanted) ?? null;
 }
 
-const crLabel = (cr: number) => (cr === 0.125 ? "1/8" : cr === 0.25 ? "1/4" : cr === 0.5 ? "1/2" : String(cr));
 
 export type SummonPlan = { form: SummonForm; count: number; spell: SummonSpell };
+
+// The kind a spell lets its caster choose, read off the name asked for
+// ("fey warhorse", "elk (fiend)"), and the name with it taken out; the
+// spell's first kind when none is named.
+function chosenKind(spell: SummonSpell, named: string): { kind: string | null; rest: string } {
+  const kinds = spell.kinds;
+  if (!kinds) {
+    return { kind: null, rest: named };
+  }
+  const said = words(named);
+  return {
+    kind: kinds.find((kind) => said.some((word) => textKey(word) === kind)) ?? kinds[0],
+    rest: said.filter((word) => !kinds.includes(textKey(word))).join(" "),
+  };
+}
+
+// The highest challenge rating a casting from `slotLevel` calls, for a spell
+// that calls by challenge rating.
+function crCeiling(spell: SummonSpell, slotLevel: number): number | null {
+  if (spell.byCr) {
+    return spell.byCr[0][0];
+  }
+  if (spell.maxCr === undefined) {
+    return null;
+  }
+  const bySlot = [...(spell.maxCrBySlot ?? [])].reverse().find(([slot]) => slotLevel >= slot)?.[1];
+  return bySlot ?? spell.maxCr + (spell.crPerSlot ?? 0) * Math.max(0, slotLevel - spell.level);
+}
+
+// The creatures a casting can be asked for, by name and challenge rating.
+function callable(spell: SummonSpell, slotLevel: number): string {
+  if (spell.forms) {
+    return spell.forms.join(", ");
+  }
+  const ceiling = crCeiling(spell, slotLevel);
+  return formList(summonFormsOf(spell.types ?? [], ceiling ?? Infinity));
+}
 
 // What one casting of `spell` from `slotLevel` makes of the form the caller
 // names, or the rule it breaks. `wanted` caps the count below the most the
@@ -188,36 +229,36 @@ export function summonPlan(
   slotLevel: number,
   formName: string,
   wanted?: number,
-): SummonPlan | { error: string } {
+): SummonPlan | ToolError {
   const above = Math.max(0, slotLevel - spell.level);
-  const named = formName.trim();
-  // A spell with a fixed list reads the caller's word against that list
-  // first, so "spider" is Giant Insect's Giant Spider.
-  const fromList = spell.forms?.map((name) => findSummonForm(name)).find((form) => form && key(form.name).includes(key(named)));
-  const form = fromList ?? (named ? findSummonForm(named) : spell.forms?.length === 1 ? findSummonForm(spell.forms[0]) : null);
-  if (!form) {
-    const offer = spell.forms?.join(", ") ?? `a ${spell.types?.join(" or ")} the server knows`;
-    return { error: `${spell.name} needs the creature in variant (${offer}); "${named}" is not one the server has a stat block for. Nothing was spent.` };
+  const { kind, rest: named } = chosenKind(spell, formName.trim());
+  const found = named ? findSummonForm(named) : spell.forms?.length === 1 ? findSummonForm(spell.forms[0]) : null;
+  if (!found) {
+    const asked = named ? `${spell.name} has no stat block here for "${named}"; it calls` : `${spell.name} needs the creature in variant`;
+    const hint = named ? holdingHint(named, summonFormsHolding(named)) : "";
+    const kinds = spell.kinds ? ` as a ${spell.kinds.join(", a ")} (named with it: "${spell.kinds[1]} ${(spell.forms?.[0] ?? "").toLowerCase()}"; ${spell.kinds[0]} when none is named)` : "";
+    return { error: `${asked}: ${callable(spell, slotLevel)}${kinds}.${hint} Ask the player which, unless they named one. Nothing was spent.`, retry: true };
   }
+  // Find Steed's steed has the form's statistics, but is the kind chosen.
+  const form = kind ? { ...found, type: kind } : found;
   if (spell.forms && !spell.forms.includes(form.name)) {
-    return { error: `${spell.name} makes ${spell.forms.join(", ")}, not a ${form.name}. Nothing was spent.` };
+    return { error: `${spell.name} makes ${spell.forms.join(", ")}, not a ${form.name}. Nothing was spent.`, retry: true };
   }
   if (spell.types && !spell.types.includes(form.type)) {
-    return { error: `${spell.name} calls a ${spell.types.join(" or ")}; a ${form.name} is a ${form.type}. Nothing was spent.` };
+    return { error: `${spell.name} calls a ${spell.types.join(" or ")}; a ${form.name} is a ${form.type}. Nothing was spent.`, retry: true };
   }
   let most = 1;
   if (spell.byCr) {
     const tier = [...spell.byCr].reverse().find(([cr]) => form.cr <= cr);
     if (!tier) {
-      return { error: `${spell.name} calls creatures of challenge rating ${crLabel(spell.byCr[0][0])} or lower; a ${form.name} is CR ${crLabel(form.cr)}. Nothing was spent.` };
+      return { error: `${spell.name} calls creatures of challenge rating ${formatCr(spell.byCr[0][0])} or lower; a ${form.name} is CR ${formatCr(form.cr)}. Nothing was spent.`, retry: true };
     }
     const factor = [...(spell.multiplier ?? [])].reverse().find(([slot]) => slotLevel >= slot)?.[1] ?? 1;
     most = tier[1] * factor;
   } else if (spell.maxCr !== undefined) {
-    const bySlot = [...(spell.maxCrBySlot ?? [])].reverse().find(([slot]) => slotLevel >= slot)?.[1];
-    const ceiling = bySlot ?? spell.maxCr + (spell.crPerSlot ?? 0) * above;
+    const ceiling = crCeiling(spell, slotLevel) ?? spell.maxCr;
     if (form.cr > ceiling) {
-      return { error: `${spell.name} from a level ${slotLevel} slot calls a creature of challenge rating ${crLabel(ceiling)} or lower; a ${form.name} is CR ${crLabel(form.cr)}. Nothing was spent.` };
+      return { error: `${spell.name} from a level ${slotLevel} slot calls a creature of challenge rating ${formatCr(ceiling)} or lower; a ${form.name} is CR ${formatCr(form.cr)}. Nothing was spent.`, retry: true };
     }
   } else if (spell.countByForm) {
     most = spell.countByForm[form.name] ?? 1;
@@ -225,7 +266,7 @@ export function summonPlan(
     const row = [...spell.bySlot].reverse().find(([slot]) => slotLevel >= slot)?.[1] ?? {};
     const allowed = row[form.name];
     if (!allowed) {
-      return { error: `${spell.name} from a level ${slotLevel} slot makes ${Object.entries(row).map(([name, count]) => `${count} ${name.toLowerCase()}s`).join(" or ")}; not a ${form.name}. Nothing was spent.` };
+      return { error: `${spell.name} from a level ${slotLevel} slot makes ${Object.entries(row).map(([name, count]) => `${count} ${name.toLowerCase()}s`).join(" or ")}; not a ${form.name}. Nothing was spent.`, retry: true };
     }
     most = allowed;
   } else if (spell.objectBudget) {

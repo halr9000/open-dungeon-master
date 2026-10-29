@@ -16,6 +16,7 @@ import { LoreImageField, VisibilitySelect } from "@/app/workshop/lore/LoreFields
 import { CATEGORY_LABELS, type LoreDraft } from "@/app/workshop/lore/types";
 import { DictateField } from "@/components/DictateField";
 import { appendDictation } from "@/lib/dictation";
+import { textKey } from "@/lib/language/text-logic";
 
 // The binder's author form (docs/vtt-parity-implementation-plan.md
 // sections 5.1 to 5.6): who reads it, how it is dressed, the picture and
@@ -95,8 +96,8 @@ export function LoreEditorForm({
     if (!complete) {
       return [];
     }
-    const needle = complete.query.toLowerCase();
-    return linkable.filter((option) => option.value.toLowerCase().includes(needle)).slice(0, 8);
+    const needle = textKey(complete.query);
+    return linkable.filter((option) => textKey(option.value).includes(needle)).slice(0, 8);
   }, [complete, linkable]);
 
   async function uploadPdf(file: File) {
@@ -321,7 +322,7 @@ export function LoreEditorForm({
             </button>
           </>
         ) : null}
-        <span className="text-[11px] text-stone-500">Tag it &quot;rules&quot; and the DM can quote it.</span>
+        <span className="text-[11px] text-stone-500">Tag it &quot;rules&quot; and the GM can quote it.</span>
         {pdfError ? <span className="motion-shake inline-block text-[11px] text-red-400">{pdfError}</span> : null}
       </div>
       <SectionHead title="Tags" glyph="tab-facts" className="mb-0 pt-1" />

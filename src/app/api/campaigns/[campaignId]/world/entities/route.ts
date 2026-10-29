@@ -1,6 +1,7 @@
 import { isErrorResponse, requireStoryAuthority } from "@/lib/campaign-api";
 import { createWorldEntity } from "@/lib/db/world-forge";
 import { publishEphemeral } from "@/lib/events";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,5 +20,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ cam
     return Response.json({ error: result.error }, { status: result.status ?? 400 });
   }
   publishEphemeral(campaignId, result.entity.shelf === "faction" ? "factions_updated" : "world_updated", { at: Date.now() });
+  recordsChanged(campaignId, result.entity.shelf, "world");
   return Response.json(result);
 }

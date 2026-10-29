@@ -1,4 +1,7 @@
-import { dungeonDelverNotices } from "@/lib/srd/feat-combat";
+import { dungeonDelverNotices, hasDungeonDelver } from "@/lib/srd/feat-combat";
+import { CHECK_KEY_PROPERTIES, named, NONE } from "@/lib/dm/roll-about";
+import { CHECK_KEY_FIELDS } from "@/lib/dm/roll-args";
+import { askedFields, unnamedTraitFields } from "@/lib/dm/roll-feature-riders";
 import { z } from "zod";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { getSheetById } from "@/lib/db/sheets";
@@ -29,6 +32,8 @@ import { weatherPerceptionRider } from "@/lib/srd/weather";
 import { obscuredFor, silencedImmunity } from "@/lib/dm/zone-rules";
 import { senseCheckFailure } from "@/lib/srd/sense-checks";
 import { sightRotPenalty } from "@/lib/srd/afflictions";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { npcDeceiver, seeThroughActs } from "@/lib/dm/scheme-tools";
 
 // Two exploration-pillar tools that were pure narration before: a group skill
 // check resolved by the 5e "half the group succeeds" rule, and a passive
@@ -87,6 +92,7 @@ export const checkTools: ToolDef[] = [
           },
           dc: { type: "integer", description: "An exact DC, only when a specific number is called for." },
           reason: { type: "string", description: "Short note on what the group is attempting." },
+          ...CHECK_KEY_PROPERTIES,
         },
         required: [],
       },
@@ -106,28 +112,28 @@ export const checkTools: ToolDef[] = [
             type: "string",
             enum: ["perception", "insight", "investigation"],
             description:
-              "Which passive score decides it: perception (traps, ambushers, sounds), insight (a lie, a hidden motive), investigation (a concealed mechanism or clue). Default 'perception'.",
+              "Which passive score decides it. Default: 'perception'. Perception: traps, ambushers, sounds; insight: a lie, a hidden motive; investigation: a concealed mechanism or clue.",
           },
           by: {
             type: "string",
             enum: ["sight", "hearing"],
             description:
-              "Perception only: whether the thing is seen or heard. Default 'sight'. Off the battle map the server applies the light of the place (dim light -5, and in darkness a character with no darkvision and no lit torch or lantern sees nothing) and a fast travel pace -5; a sound ignores the light.",
+              "Perception only: whether the thing is seen or heard. Default: 'sight'. Off the battle map the server applies the light of the place (dim light -5, and in darkness a character with no darkvision and no lit torch or lantern sees nothing) and a fast travel pace -5; a sound ignores the light.",
           },
           light: {
             type: "string",
             enum: ["bright", "dim", "dark"],
             description:
-              "Off the battle map, the light where the party is, when you know it: a lamplit hall is bright, a moonlit glade dim, an unlit crypt dark. Omit it and the server reads the current location: an underground place is dark, a building lit, the open air follows the hour of the day.",
+              "Off the battle map, the light where the party is, when you know it. A lamplit hall is bright, a moonlit glade dim, an unlit crypt dark. Omit it and the server reads the current location: underground is dark, a building lit, the open air follows the hour.",
           },
           againstEnemyId: {
             type: "string",
             description:
-              "A creature of the running fight hiding (or lying, for insight), exact enemyId from GAME STATE: the server rolls its own Stealth (or Deception) check from its stat block as the DC. Out of a fight, use againstMonster.",
+              "A creature of the running fight hiding (or lying, for insight): exact enemyId from GAME STATE. The server rolls its own Stealth (or Deception) check from its stat block as the DC. Out of a fight, use againstMonster.",
           },
           againstMonster: {
             type: "string",
-            description: "Out of a fight: the stat block of the creature that hides or lies (a goblin, a bandit, a spy); the server rolls its Stealth or Deception as the DC.",
+            description: "Out of a fight, who hides or lies: a bestiary creature, or for insight a tracked NPC's exact name. It holds SRD creatures and NPC stat blocks (a goblin, a bandit, a spy); for insight an AI companion's exact name works too. The server rolls its Stealth or Deception as the DC.",
           },
           difficulty: {
             type: "string",
@@ -135,6 +141,11 @@ export const checkTools: ToolDef[] = [
             description: "How hard the thing is to spot; the server sets the DC. Prefer this over dc.",
           },
           dc: { type: "integer", description: "An exact spot DC, only when a specific number is called for." },
+          about: {
+            type: "string",
+            enum: ["traps_and_secret_doors", NONE],
+            description: "Perception or investigation: 'traps_and_secret_doors' for a trap or a secret door, or 'none'. A character tested with Dungeon Delver notices those more easily; the server asks for it when they are tested.",
+          },
           characterIds: {
             type: "array",
             items: { type: "string" },
@@ -154,12 +165,12 @@ function resolveDc(
   difficulty: unknown,
   dc: unknown,
   shift = 0,
-): { dc: number; label: string } | { error: string } {
+): { dc: number; label: string } | ToolError {
   const explicit = typeof dc === "number" && Number.isFinite(dc) ? Math.round(dc) : null;
   const tier = normalizeDifficulty(difficulty);
   const value = explicit ?? (tier ? dcForDifficulty(tier, shift) : null);
   if (value === null) {
-    return { error: "Pass a difficulty tier (very_easy .. nearly_impossible) or an exact dc." };
+    return { error: "Pass a difficulty tier (very_easy .. nearly_impossible) or an exact dc.", retry: true };
   }
   return { dc: value, label: difficultyOfDc(value) };
 }
@@ -193,6 +204,7 @@ function publishRoll(campaignId: string, roll: ReturnType<typeof insertRoll>) {
 // ---- group_check ----
 
 const groupCheckSchema = z.object({
+  ...CHECK_KEY_FIELDS,
   skill: z.string().optional(),
   ability: z.enum(["str", "dex", "con", "int", "wis", "cha"]).optional(),
   characterIds: z.array(z.string()).optional(),
@@ -207,20 +219,20 @@ export function handleGroupCheck(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof groupCheckSchema>;
   try {
     args = groupCheckSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: group_check needs a skill or ability and a difficulty." };
+    return { error: "Invalid arguments: group_check needs a skill or ability and a difficulty.", retry: true };
   }
   if (!args.skill && !args.ability) {
-    return { error: "group_check needs a skill (e.g. stealth) or an ability (e.g. str)." };
+    return { error: "group_check needs a skill (e.g. stealth) or an ability (e.g. str).", retry: true };
   }
   // A normal or fast march allows no stealth (src/lib/dm/roll-gates.ts).
   const marching = marchStealthProblem(campaign.id, args.skill);
   if (marching) {
-    return { error: marching };
+    return marching;
   }
   const dc = resolveDc(args.difficulty, args.dc, strictnessShift(campaign.gameSettings.gm?.strictness ?? "standard"));
   if ("error" in dc) {
@@ -228,16 +240,34 @@ export function handleGroupCheck(
   }
   const targets = resolveTargets(args.characterIds, sheets, sheetsById);
   if (!targets.length) {
-    return { error: "No valid characters for the group check; use characterIds from GAME STATE." };
+    return { error: "No valid characters for the group check; use characterIds from GAME STATE.", retry: true };
+  }
+  const kind = args.skill ? "skill_check" : "ability_check";
+  // A trait a participant holds that a field the model left unnamed would
+  // call on, asked for before anyone rolls, as request_roll asks
+  // (src/lib/srd/roll-keys.ts).
+  if (turn.actor === "ai") {
+    const keyed = { kind, skill: args.skill, ability: args.ability, about: args.about, creature: args.creature, terrain: args.terrain, by: args.by } as RollArgs;
+    const holders = targets.map((sheet) => ({ sheet, gaps: unnamedTraitFields(getSheetById(sheet.id) ?? sheet, keyed) })).filter((entry) => entry.gaps.length);
+    if (holders.length) {
+      return {
+        error: `${holders.map((entry) => entry.sheet.name).join(" and ")} ${holders.length > 1 ? "hold" : "holds"} a trait this check can call on. Name ${askedFields(holders.flatMap((entry) => entry.gaps))}, as the fiction is, and send the check again. Nothing was rolled.`,
+        retry: true,
+      };
+    }
   }
 
   const results: Array<{ name: string; total: number; success: boolean }> = [];
   for (const stale of targets) {
     const sheet = getSheetById(stale.id) ?? stale;
     const rollArgs = {
-      kind: args.skill ? "skill_check" : "ability_check",
+      kind,
       skill: args.skill,
       ability: args.ability,
+      about: args.about,
+      creature: args.creature,
+      terrain: args.terrain,
+      by: args.by,
     } as unknown as RollArgs;
     // The dead take no part, and count as a failure for the group.
     if (sheet.deathSaves?.dead) {
@@ -262,7 +292,7 @@ export function handleGroupCheck(
       campaignId: campaign.id,
       characterId: sheet.id,
       requestedBy: "dm",
-      kind: args.skill ? "skill_check" : "ability_check",
+      kind,
       detail: `${sheet.name}: group ${args.skill ?? args.ability} check`,
       dc: dc.dc,
       result: rolled,
@@ -300,6 +330,7 @@ const checkNoticeSchema = z.object({
   difficulty: z.unknown().optional(),
   dc: z.unknown().optional(),
   characterIds: z.array(z.string()).optional(),
+  about: z.enum(["traps_and_secret_doors", NONE]).optional(),
   reason: z.string().optional(),
 });
 
@@ -337,7 +368,7 @@ function passiveModifier(
   // Items that ride checks (Eyes of the Eagle, a Stone of Good Luck).
   const items = itemCheckRiders(sheet.equipment, sense);
   const state = mergeAdvantage([
-    rollDerivation(sheet.conditions, "skill_check", ability).advantage,
+    ...rollDerivation(sheet.conditions, "skill_check", ability).sources,
     exhaustionRollState(sheet.exhaustion ?? 0, "skill_check").advantage,
     ...conditionRollRiders(sheet.conditions, "check", ability).advantageSources,
     ...(effect.effectAdvantage ? ["advantage" as const] : []),
@@ -353,25 +384,44 @@ function passiveModifier(
 
 export function handleCheckNotice(
   campaign: Campaign,
+  turn: DmTurn,
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof checkNoticeSchema>;
   try {
     args = checkNoticeSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: check_notice needs a difficulty and optionally a sense." };
+    return { error: "Invalid arguments: check_notice needs a difficulty and optionally a sense.", retry: true };
   }
   const sense = args.sense ?? "perception";
   const targets = resolveTargets(args.characterIds, sheets, sheetsById);
   if (!targets.length) {
-    return { error: "No valid characters to test; use characterIds from GAME STATE." };
+    return { error: "No valid characters to test; use characterIds from GAME STATE.", retry: true };
+  }
+  // Dungeon Delver reads what the hidden thing is: a model's call that leaves
+  // it unnamed while a character tested holds the feat is asked for it, so
+  // the feat is never lost to an omission (as request_roll's fields are,
+  // src/lib/srd/roll-keys.ts).
+  const delvers = turn.actor === "ai" && sense !== "insight" && args.about === undefined ? targets.filter((sheet) => hasDungeonDelver(sheet)) : [];
+  if (delvers.length) {
+    return {
+      error: `${delvers.map((sheet) => sheet.name).join(" and ")} ${delvers.length > 1 ? "hold" : "holds"} a trait this check can call on. Name about: 'traps_and_secret_doors' or 'none', as the fiction is, and send the check again. Nothing was rolled.`,
+      retry: true,
+    };
   }
   // A creature that hides or lies sets the DC with its own roll (SRD 5.1,
   // Contests; src/lib/dm/roll-gates.ts); a tie goes to the one noticing.
   let contest: ReturnType<typeof rollContest> | null = null;
-  if (args.againstEnemyId || args.againstMonster) {
+  // A tracked NPC's lie or act (issue 501), named where a stat block would
+  // be: their Deception sets the DC, from their stat block or their nature
+  // (src/lib/dm/scheme-tools.ts). No parameter of its own, so the compact
+  // core costs nothing more.
+  const deceiver = sense === "insight" && args.againstMonster && !args.againstEnemyId ? npcDeceiver(campaign, args.againstMonster, sheets) : null;
+  if (deceiver) {
+    contest = rollContest(campaign, null, deceiver, { skill: sense, hiding: true, contestSkill: "deception" });
+  } else if (args.againstEnemyId || args.againstMonster) {
     const opponent = contestOpponent(campaign, { enemyId: args.againstEnemyId, monster: args.againstMonster });
     if ("error" in opponent) {
       return opponent;
@@ -417,6 +467,7 @@ export function handleCheckNotice(
       })
     : null;
   const noticedBy: string[] = [];
+  const noticers: CharacterSheet[] = [];
   const missedBy: string[] = [];
   const shifts: string[] = [];
   for (const sheet of targets) {
@@ -462,18 +513,21 @@ export function handleCheckNotice(
       shifts.push(`${sheet.name}: ${veiled}`);
     }
     // Dungeon Delver: advantage (+5 passive) to notice a trap or a secret door.
-    const delver = sense !== "insight" && dungeonDelverNotices(fresh, typeof args.reason === "string" ? args.reason : undefined) ? 5 : 0;
+    const delver = sense !== "insight" && dungeonDelverNotices(fresh, named(args.about)) ? 5 : 0;
     if (delver) {
       shifts.push(`${sheet.name}: Dungeon Delver, +5`);
     }
     const passive = passiveScore(campaign, fresh, sense) + weather.passiveMod + sight.shift - (veiled ? 5 : 0) + delver;
     if (passive >= dc.dc) {
       noticedBy.push(sheet.name);
+      noticers.push(fresh);
     } else {
       missedBy.push(sheet.name);
     }
   }
   const anyNoticed = noticedBy.length > 0;
+  // Whoever beat an NPC's act sees through it, and only their player is told.
+  const seenThrough = deceiver && noticers.length ? seeThroughActs(campaign, turn, deceiver.name, noticers) : [];
   return {
     ok: true,
     sense,
@@ -485,7 +539,10 @@ export function handleCheckNotice(
     ...(weather.note ? { weather: weather.note } : {}),
     ...(contest ? { contest: `${contest.name} rolled ${contest.skill} ${contest.total}: that is the DC.` } : {}),
     ...(shifts.length ? { applied: shifts } : {}),
-    note: anyNoticed
+    ...(seenThrough.length ? { seenThrough } : {}),
+    note: seenThrough.length
+      ? `${seenThrough.join(" ")} Tell no one else: play the act on as before, and let those players decide what to do with it.`
+      : anyNoticed
       ? `${noticedBy.join(", ")} notice${noticedBy.length === 1 ? "s" : ""} it (passive ${sense} vs DC ${dc.dc}); ${missedBy.length ? `${missedBy.join(", ")} do not` : "everyone catches it"}. Reveal it only to those who noticed.`
       : `No one notices it: every passive ${sense} is under DC ${dc.dc}. Keep it hidden; do not describe it.`,
   };

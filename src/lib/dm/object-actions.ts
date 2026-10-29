@@ -23,16 +23,18 @@ import type { DmTurn } from "@/lib/db/dm-turns";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { spendAction } from "@/lib/dm/action-budget";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
 import { canAct } from "@/lib/dm/can-act";
 import { rollCharacterCheck } from "@/lib/dm/contest-roll";
 import { findCarriedItem, itemUseProblem } from "@/lib/dm/item-logic";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
-import { READIED, READIED_WORDS, RELEASE_TOOLS, readiedHeld, type Readiable } from "@/lib/dm/readied-kinds";
+import { READIED, READIED_WORDS, RELEASE_TOOLS, type Readiable } from "@/lib/dm/readied-kinds";
 import { dropReadied, readiedReleaseFor } from "@/lib/dm/readied-release";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { hasItemTag } from "@/lib/srd/item-tags";
 
 // Haste's extra action names this use by these words (action-budget.ts).
 const USE_AN_OBJECT = "use an object";
@@ -51,23 +53,23 @@ export function prepareUseItem(
   sheet: CharacterSheet,
   target: CharacterSheet,
   itemName: string,
-): { error: string } | { commit: () => Record<string, unknown> } {
+): ToolError | { commit: () => ToolResult } {
   const carried = findCarriedItem(sheet.equipment, itemName);
-  const problem = carried ? itemUseProblem(carried.name) : null;
+  const problem = carried ? itemUseProblem(carried) : null;
   if (problem) {
-    return { error: `${sheet.name} does not use up ${carried?.name ?? itemName}: ${problem}` };
+    return { ...problem, error: `${sheet.name} does not use up ${carried?.name ?? itemName}: ${problem.error}` };
   }
   const encounter = getActiveEncounter(campaign.id);
   // Off their turn, the use of an item they readied is their reaction, and
   // nothing of the acting combatant's turn (readied-release.ts).
   const readied = readiedReleaseFor(sheet, encounter, "item");
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (!readied) {
     const allowed = canAct({ sheet, encounter, kind: "action" });
     if (!allowed.ok) {
-      return { error: allowed.error };
+      return toolError(allowed);
     }
   }
   if (target.id !== sheet.id && encounter) {
@@ -75,6 +77,7 @@ export function prepareUseItem(
     if (apart !== null && apart > 1) {
       return {
         error: `${target.name} is ${apart * 5} ft from ${sheet.name}; feeding them a potion needs them within 5 ft. ${sheet.name} moves next to them first.`,
+        retry: true,
       };
     }
   }
@@ -85,7 +88,7 @@ export function prepareUseItem(
     encounter,
     sheet.id,
     attacksAllowedFor(sheet),
-    conditionExtraActions(sheet.conditions),
+    conditionTurnShape(sheet.conditions),
   );
   if (!budget || !encounter) {
     return { commit: () => ({}) };
@@ -93,14 +96,13 @@ export function prepareUseItem(
   // Rapid Drinker drinks a potion as a bonus action; Poisoner coats a
   // weapon as one (src/lib/srd/feat-combat.ts).
   const name = carried?.name ?? itemName;
-  const asBonus =
-    (drinksAsBonusAction(sheet) && /\b(?:potion|elixir|philter)\b/i.test(name)) ||
-    (coatsAsBonusAction(sheet) && isBasicPoison(name, sheet.campaignId));
+  const drinking = drinksAsBonusAction(sheet) && Boolean(carried && hasItemTag(carried, "potion"));
+  const asBonus = drinking || (coatsAsBonusAction(sheet) && isBasicPoison(carried ?? { name }, sheet.campaignId));
   const price = asBonus
-    ? spendAction(budget, "bonus", `${drinksAsBonusAction(sheet) && /\b(?:potion|elixir|philter)\b/i.test(name) ? "Rapid Drinker" : "Poisoner"} (${USE_AN_OBJECT})`, sheet.name)
+    ? spendAction(budget, "bonus", `${drinking ? "Rapid Drinker" : "Poisoner"} (${USE_AN_OBJECT})`, sheet.name)
     : spendAction(budget, "action", USE_AN_OBJECT, sheet.name);
   if (!price.ok) {
-    return { error: price.error };
+    return toolError(price);
   }
   return {
     commit: () => {
@@ -128,11 +130,12 @@ export function objectAction(
   // What it costs, for the result: a Thief's Fast Hands makes it the bonus
   // action.
   cost = "their action",
-): Record<string, unknown> {
+): ToolResult {
   const carried = item ? findCarriedItem(sheet.equipment, item) : null;
-  if (carried && !itemUseProblem(carried.name)) {
+  if (carried && !itemUseProblem(carried)) {
     return {
       error: `${carried.name} is used up when it is used: call use_item for it, which spends ${sheet.name}'s action (Use an Object) itself.`,
+      retry: true,
     };
   }
   priced.spend();
@@ -181,14 +184,15 @@ export function readyAction(
   inFight: boolean,
   priced: Priced,
   holds: Exclude<Readiable, "spell"> = "attack",
-): Record<string, unknown> {
+): ToolResult {
   const named = (trigger ?? "").trim();
   if (!inFight) {
-    return { error: "Ready is an action in a fight, where turns are taken in order; there is no active fight." };
+    return { error: "Ready is an action in a fight, where turns are taken in order; there is no active fight.", refused: "rules" };
   }
   if (!named) {
     return {
       error: "Ready needs the trigger it waits for, e.g. trigger: 'when the goblin steps through the door'. Nothing was spent.",
+      retry: true,
     };
   }
   priced.spend();
@@ -209,11 +213,6 @@ export function readyAction(
     trigger: named.slice(0, 80),
     applied: `${sheet.name} has readied ${READIED_WORDS[holds]} until the start of their next turn, for: ${named.slice(0, 80)}. You judge the trigger. When it happens, release it off their turn with ${RELEASE_TOOLS[holds]}: the server spends their reaction and nothing of the acting combatant's turn. Any other action, or a second release, is refused. If the trigger never comes, the readied action is lost.`,
   };
-}
-
-// The trigger of the readied action a character holds, or null.
-export function readiedTrigger(sheet: CharacterSheet): string | null {
-  return readiedHeld(sheet)?.trigger ?? null;
 }
 
 // Spends a readied action: the off-turn attack it allowed has been made.

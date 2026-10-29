@@ -3,6 +3,7 @@
 // builder shows them; it never lets them be typed, because the server works
 // them out again from the same choices when the character is saved.
 import { fixedDieValue, type HpMethod } from "@/lib/srd/hit-points";
+import { formatPrice } from "@/lib/srd/currency";
 import { describeWealthDice, startingWealthDice } from "@/lib/srd/starting-wealth";
 import type { PurseView } from "./EquipmentSection";
 import type { TableRulesState } from "./useTableRules";
@@ -58,7 +59,14 @@ export function armorClassLine(ac: number, parts: string[] | undefined): Derived
 
 // The purse as the gear step and the review show it.
 export function purseViewFor(input: {
-  purse: { gold: number; copper: number; spentCopper: number; problems: string[]; method: string };
+  purse: {
+    gold: number;
+    copper: number;
+    spentCopper: number;
+    problems: string[];
+    method: string;
+    receipt?: PurseView["receipt"];
+  };
   keepsStoredGear: boolean;
   backgroundName: string;
   backgroundPurse: number;
@@ -67,7 +75,7 @@ export function purseViewFor(input: {
   table: TableRulesState;
 }): PurseView {
   const { purse, table } = input;
-  const spent = purse.spentCopper ? ` Bought: ${formatCopper(purse.spentCopper)}.` : "";
+  const spent = purse.spentCopper ? ` Bought: ${formatPrice(purse.spentCopper)}.` : "";
   const rolledTable = !input.keepsStoredGear && purse.method === "rolled";
   const dice = describeWealthDice(startingWealthDice(input.classId));
   const source = input.keepsStoredGear
@@ -82,6 +90,7 @@ export function purseViewFor(input: {
     copper: purse.copper,
     source,
     problems: [...new Set(purse.problems)],
+    ...(purse.receipt ? { receipt: purse.receipt } : {}),
     wealth: rolledTable
       ? {
           dice,
@@ -94,8 +103,3 @@ export function purseViewFor(input: {
   };
 }
 
-function formatCopper(copper: number): string {
-  const gold = Math.floor(copper / 100);
-  const rest = copper % 100;
-  return [gold ? `${gold} gp` : "", rest ? `${rest} cp` : ""].filter(Boolean).join(" ") || "0 gp";
-}

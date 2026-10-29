@@ -1,14 +1,18 @@
+import { defaultSide, type CombatSide } from "@/lib/dm/combat-sides-logic";
+import { sideOf } from "@/lib/dm/combatant";
 import { legendaryProfile } from "@/lib/dm/legendary-logic";
 import { enemyActionsView, type PublicEnemyActions } from "@/lib/dm/enemy-actions-view";
 import { enemyActedThisRound, isSurprised } from "@/lib/dm/can-act";
-import { isCompanionUserId } from "@/lib/db/users";
+import { getCampaignById } from "@/lib/db/campaigns";
+import { dmPlaysTurn } from "@/lib/dm/companion-command";
 import { freshLastHit, type LastHit } from "@/lib/dm/last-hit";
 import { conditionNote, conditionNoteLine, namesLookup } from "@/lib/battlemap/condition-notes";
 import { healthState, type HealthState } from "@/lib/bestiary/health";
-import { creatureTypeOf } from "@/lib/bestiary/statblock";
+import { creatureTypeOf } from "@/lib/bestiary/creature-type";
 import { isRegeneratingDown } from "@/lib/dm/regeneration";
 import { REGENERATION_STOPPED } from "@/lib/dm/monster-abilities";
 import { getBattleMapForEncounter, listHiddenRefIds } from "@/lib/db/battle-maps";
+import { ENEMY_TURN_NAME, turnOwner } from "@/lib/dm/turn-owner";
 import {
   getActiveEncounter,
   listEnemies,
@@ -111,10 +115,19 @@ export type PublicEncounter = {
   // a guess. Only ever a player character's: nothing here is hidden from the
   // table, and an enemy's economy stays the DM's.
   turn?: PublicTurn;
-  // Who the pointer rests on, so a client can ask the engine's own canAct
+  // Whose turn it is, so a client can ask the engine's own canAct
   // (src/lib/dm/can-act.ts) the question the server will ask. The id is a
-  // character's; any other combatant is named but not identified.
+  // character's; any other combatant is named but not identified. While the
+  // enemies the pointer walked past still have their turns, it is theirs and
+  // not the player's the pointer already rests on (src/lib/dm/turn-owner.ts):
+  // the enemy side is named then, with no id and nobody's name.
   acting?: { id: string; name: string } | null;
+  // While the enemies hold the turn: the player whose turn follows theirs.
+  upNext?: { id: string; name: string };
+  // While the enemies hold the turn: the ones it is held for, by id, as this
+  // viewer may know them (a hidden one is left out of a player's), so the
+  // trackers light their rows.
+  enemiesUp?: string[];
   // Characters surprised in round 1: those who may not act yet, and those who
   // may not react yet (isSurprised in can-act.ts, asked on the server).
   surprised?: { acting: string[]; reacting: string[] };
@@ -122,6 +135,12 @@ export type PublicEncounter = {
   // reaction is spent on somebody else's turn, so it lives here and not in
   // the turn budget.
   reactionsUsed?: string[];
+  // Every view: the combatants fighting on the side their kind does not (a
+  // companion turned on the party: "foe"; a creature the party dominates:
+  // "party"), by id, so the tracker and the board's token rims follow the
+  // server (src/lib/dm/combatant.ts). Absent when everyone is on their
+  // kind's side; a combatant hidden from this viewer is left out.
+  sides?: Record<string, CombatSide>;
   // The attacks a reaction may still answer (src/lib/dm/last-hit.ts): one
   // per character hit this turn, while the engine would accept a reaction
   // to it. Absent keys mean nothing to answer.
@@ -154,6 +173,9 @@ export type PublicTurn = {
   // (issue 210).
   lightMeleeAttack?: boolean;
   oneHandMeleeAttack?: boolean;
+  // The turn's free object interaction is spent (issue #424): a draw, a
+  // pick-up or a hand-over now takes the Use an Object action.
+  interactionUsed?: boolean;
 };
 
 export type PublicLastHit = {
@@ -197,26 +219,34 @@ function turnView(encounter: Encounter): { turn?: PublicTurn } {
       ...(budget.castThisAction ? { castThisAction: true } : {}),
       lightMeleeAttack: Boolean(budget.lightMeleeAttack),
       oneHandMeleeAttack: Boolean(budget.oneHandMeleeAttack ?? budget.lightMeleeAttack),
+      ...(budget.interaction ? { interactionUsed: true } : {}),
     },
   };
 }
 
 // The engine's own reading of whose turn it is, surprise and spent
 // reactions, for the characters only: an enemy's id or its reaction is the
-// DM's business, and a hidden one must not be given away.
+// DM's business, and a hidden one must not be given away. Whose turn it is
+// comes from turnOwner, which the board's turn name and token read too, so
+// the two projections cannot disagree: they used to name the player up next
+// while the enemies before them still had their turns.
 function actingView(encounter: Encounter, hidden: Set<string>, showNumbers: boolean) {
   const pcIds = encounter.order
     .filter((entry) => entry.kind === "pc")
     .map((entry) => orderEntryId(entry));
-  const current = encounter.orderReady ? encounter.order[encounter.turnIndex] : undefined;
+  const owner = turnOwner(encounter);
+  const current = owner.next;
   const concealed = current && !showNumbers && hidden.has(orderEntryId(current));
+  const pointer = current
+    ? { id: current.kind === "pc" ? current.characterId : "", name: concealed ? "someone unseen" : current.name }
+    : null;
+  const enemiesFirst = owner.enemies.length > 0;
   return {
-    acting: current
-      ? {
-          id: current.kind === "pc" ? current.characterId : "",
-          name: concealed ? "someone unseen" : current.name,
-        }
-      : null,
+    acting: enemiesFirst ? { id: "", name: ENEMY_TURN_NAME } : pointer,
+    // Every view: the floor is held for the enemies' turns.
+    ...(enemiesFirst ? { enemyTurns: true } : {}),
+    ...(enemiesFirst && pointer ? { upNext: pointer } : {}),
+    ...(enemiesFirst ? { enemiesUp: owner.enemies.filter((id) => showNumbers || !hidden.has(id)) } : {}),
     surprised: {
       acting: pcIds.filter((id) => isSurprised(encounter, id)),
       reacting: pcIds.filter((id) => isSurprised(encounter, id, true)),
@@ -338,12 +368,37 @@ export function publicEncounter(
       : {}),
     ...turnView(encounter),
     ...actingView(encounter, hidden, showNumbers),
-    ...(encounter.orderReady && encounter.legendary.due?.length ? { enemyTurns: true } : {}),
     ...(showNumbers ? dmTurnView(encounter, enemies) : {}),
     ...(options.lastHits?.length
       ? { lastHits: options.lastHits.map((record) => lastHitView(record, hidden, showNumbers)) }
       : {}),
+    ...sidesView(encounter, enemies, hidden, showNumbers),
   };
+}
+
+// The side exceptions every client draws, a domination's included.
+function sidesView(encounter: Encounter, enemies: EncounterEnemy[], hidden: Set<string>, showNumbers: boolean): { sides?: Record<string, CombatSide> } {
+  const sides: Record<string, CombatSide> = {};
+  const seen = new Set<string>();
+  const note = (kind: "sheet" | "enemy", id: string, holder?: EncounterEnemy) => {
+    if (seen.has(id) || (!showNumbers && hidden.has(id))) {
+      return;
+    }
+    seen.add(id);
+    const side = sideOf(encounter, kind, id, holder);
+    if (side !== defaultSide(kind)) {
+      sides[id] = side;
+    }
+  };
+  for (const entry of encounter.order) {
+    if (entry.kind === "pc") {
+      note("sheet", entry.characterId);
+    }
+  }
+  for (const enemy of enemies) {
+    note("enemy", enemy.id, enemy);
+  }
+  return Object.keys(sides).length ? { sides } : {};
 }
 
 // What the person running the fight is waiting on: the rolls so far while
@@ -360,9 +415,11 @@ function dmTurnView(encounter: Encounter, enemies: EncounterEnemy[]) {
     names.has(id) ? [{ id, name: names.get(id) as string, acted: enemyActedThisRound(encounter, id) }] : [],
   );
   const current = encounter.order[encounter.turnIndex];
+  const campaign = getCampaignById(encounter.campaignId);
   return {
     ...(due.length ? { enemiesDue: due } : {}),
-    ...(current?.kind === "pc" && isCompanionUserId(current.userId)
+    // A companion turn for the DM to play; one a player commands is theirs.
+    ...(current?.kind === "pc" && campaign && dmPlaysTurn(campaign, current)
       ? { companionTurn: { id: current.characterId, name: current.name } }
       : {}),
   };

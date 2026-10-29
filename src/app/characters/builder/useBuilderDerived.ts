@@ -1,47 +1,64 @@
-"use client";
-
-import { expertiseAllowed } from "@/lib/srd/features";
-import { useMemo } from "react";
+import type { Genre } from "@/lib/schemas/game-settings";
+import { expertiseAllowed, subclassExpandedSpellsFor, subclassSpellListsFor } from "@/lib/srd/features";
+import { useMemo as useReactMemo, type DependencyList } from "react";
 import { starterSpellsFor } from "@/lib/help";
 import type { Ability, AbilityScores, AsiChoice, EquipmentItem } from "@/lib/schemas/sheet";
 import { acBreakdownFor, computeSheetDerived } from "@/lib/srd";
 import { applyAsiChoices, asiLevelsFor, asiSlotsTakenInPlay } from "@/lib/srd/asi";
-import { derivedMaxHp, hpBonusPerLevelFor, hpRange, type HpMethod } from "@/lib/srd/hit-points";
-import { featureHitPoints, reachesPrimalChampion, withPrimalChampion } from "@/lib/srd/trait-rules";
-import { hpBonusPerLevel, racialFeatCount } from "@/lib/srd/race-id";
+import type { HpMethod } from "@/lib/srd/hit-points";
+import { reachesPrimalChampion, withPrimalChampion } from "@/lib/srd/trait-rules";
+import { racialFeatCount } from "@/lib/srd/race-id";
 import { innateCantripsFor } from "@/lib/srd/racial-grants";
 import { halfFeatPicks, scoresWithHalfFeats, settledHalfFeats } from "@/lib/srd/legality/half-feats";
 import {
+  gearNameKey,
   layeredPrice,
   judgeStartingGear,
   type StartingWealthMethod,
 } from "@/lib/srd/starting-wealth";
 import { suggestArmor } from "@/lib/srd/armor";
 import { classFeaturesFor, subclassSpellsFor } from "@/lib/srd/features";
-import { fightingStyleSlots } from "@/lib/srd/feature-effects";
+import { fightingStyleChoices, fightingStyleSlots } from "@/lib/srd/feature-effects";
 import { openOptionSlots, optionFeatureName, type OptionSlot } from "@/lib/srd/options";
 import { spellStyleFor, spellbookAllowance, type SpellStyle } from "@/lib/srd/spell-prep";
 import {
   chooseKitOption as withKitOption,
   classKitFor,
+  kitLineOfSlot,
   kitNames,
   pickKitSlot as withKitPick,
+  removedAfterKitChange,
   resolveKit,
   startingKitFor,
   type KitTraining,
 } from "@/lib/srd/starting-kit";
 import { suggestWeapons } from "@/lib/srd/weapons";
 import { abilityGains } from "./abilityGains";
-import { builderCasting, builderSpellAdvice } from "./casting";
+import { builderCasting, builderSpellAdvice, builderSpellSlots } from "./casting";
 import { grantedSkillSources } from "./reconcile";
 import { authoredFeatDesc } from "@/lib/srd/feat-effects";
 import { applyFeatGrants, featGrantSpec, type FeatGrantSpec } from "@/lib/srd/feat-grants";
-import { applySubclassTraining, subclassGrants } from "@/lib/srd/subclass-training";
+import { applySubclassTraining, grantsForHeldTraining, subclassGrants } from "@/lib/srd/subclass-training";
 import { featSpellGrants, featSpellNames } from "@/lib/srd/feat-spells";
 import { expandBackgroundGear } from "@/lib/srd/gear-choices";
 import { splitToolGrants, type ToolChoice } from "@/lib/srd/tool-choices";
+import { builderHitPoints } from "./builderHp";
+import { bundledSpellSupply } from "./spellSupply";
+import { buildReceipt, settleQty, weaponLineFor, withAddedQty } from "./receiptMath";
+import { combatRiders, fightingStyleFeatureName } from "@/lib/srd/feature-effects";
 import type { BackgroundOption, ClassOption, RaceOption } from "./useBuilderOptions";
 import type { BuilderState, EquipmentItem as BuilderItem } from "./useBuilderState";
+import { textKey } from "@/lib/language/text-logic";
+
+// The derivation memoises each value with React's useMemo while the wizard
+// renders. Not marked "use client", so the server can run the same body
+// once, outside any render, through deriveBuilder below: the AI DM's
+// drafted pregens (src/lib/characters/pregen-drafts.ts) are built by the
+// quick-build engine against exactly the numbers the wizard would show.
+let memoize: <T>(compute: () => T, deps: DependencyList) => T = useReactMemo;
+function useMemo<T>(compute: () => T, deps: DependencyList): T {
+  return memoize(compute, deps);
+}
 
 // Everything the builder computes from its fields: final abilities, the sheet
 // preview, the auto loadout and AC, spell counts and the class option slots.
@@ -60,19 +77,25 @@ export type TableRules = {
 // The class's and background's tool grants with the player's picks placed on
 // the open ones they fit. Nothing is picked for the player: `left` is what
 // each open grant still waits for, and the class step holds until it is 0.
+// A tool the hero already has from elsewhere (`held`: the ancestry's tools
+// and its tool pick) fills no open grant, as the library's door counts it
+// (src/lib/srd/legality/proficiencies.ts): a dwarf's brewer's supplies are
+// not also a folk hero's artisan's tools.
 export function resolveToolPicks(
   grants: string[],
   picks: string[],
+  held: string[] = [],
 ): { fixed: string[]; choices: ToolChoice[]; chosen: string[]; left: number[] } {
   const { fixed, choices } = splitToolGrants(grants);
-  const taken = new Set(fixed.map((tool) => tool.toLowerCase()));
+  const taken = new Set([...fixed, ...held].filter(Boolean).map((tool) => textKey(tool)));
   const left = choices.map((choice) => choice.count);
   const chosen: string[] = [];
-  for (const pick of picks.map((tool) => tool.trim().toLowerCase())) {
-    const slot = choices.findIndex((choice, index) => left[index] > 0 && choice.from.includes(pick));
-    if (slot >= 0 && !chosen.includes(pick) && !taken.has(pick)) {
+  for (const pick of picks.map((tool) => textKey(tool))) {
+    const slot = choices.findIndex((choice, index) => left[index] > 0 && choice.from.some((tool) => textKey(tool) === pick));
+    const tool = slot >= 0 ? choices[slot].from.find((entry) => textKey(entry) === pick) : undefined;
+    if (tool !== undefined && !chosen.includes(tool) && !taken.has(pick)) {
       left[slot] -= 1;
-      chosen.push(pick);
+      chosen.push(tool);
     }
   }
   return { fixed, choices, chosen, left };
@@ -86,6 +109,7 @@ export function useBuilderDerived({
   fixedLevel,
   rules,
   featDescs,
+  genre,
 }: {
   state: BuilderState;
   race: RaceOption | undefined;
@@ -93,6 +117,10 @@ export function useBuilderDerived({
   background: BackgroundOption | undefined;
   fixedLevel?: number;
   rules?: TableRules;
+  // The table's genre, when the character is made for one: its setting's
+  // armor is suggested to any class trained for it, as the class's own
+  // genre's is (issue #434: a fighter at a cyberpunk table saw no vest).
+  genre?: Genre;
   // The text of content-pack feats the builder has fetched, by lower-case
   // name (useFeatDescs); ODM's own feats are bundled. What a feat grants is
   // read from its text (src/lib/srd/feat-grants.ts).
@@ -175,7 +203,7 @@ export function useBuilderDerived({
   // pack's as fetched (useFeatDescs). What its grants and its ability
   // point are read from.
   const featDescOf = useMemo(
-    () => (name: string) => featDescs?.[name.trim().toLowerCase()] ?? authoredFeatDesc(name) ?? "",
+    () => (name: string) => featDescs?.[textKey(name)] ?? authoredFeatDesc(name) ?? "",
     [featDescs],
   );
   // The scores the server will STORE, with those points in, and the saving
@@ -264,8 +292,8 @@ export function useBuilderDerived({
   );
 
   const toolGrants = useMemo(
-    () => resolveToolPicks([...(klass?.tools ?? []), ...(background?.tools ?? [])], toolPicks),
-    [klass, background, toolPicks],
+    () => resolveToolPicks([...(klass?.tools ?? []), ...(background?.tools ?? [])], toolPicks, [...(race?.tools ?? []), racialTool]),
+    [klass, background, toolPicks, race, racialTool],
   );
   // Every tool the character is trained with, the list the sheet carries;
   // the background's kit fills its "of your choice" lines from it.
@@ -298,9 +326,17 @@ export function useBuilderDerived({
   // What the chosen subclass trains the character in by this level (issue
   // 251), each grant shaped as a feat's so the class step asks for its picks
   // with the feat pickers (src/lib/srd/subclass-training.ts).
+  // A skill or language the character already has becomes a pick (Royal
+  // Envoy's Persuasion, Draconic Disciple's Draconic).
   const subclassTraining = useMemo(
-    () => (klass && subclass ? subclassGrants([{ id: klass.id, level: effectiveLevel, subclass }]) : []),
-    [klass, subclass, effectiveLevel],
+    () =>
+      klass && subclass
+        ? grantsForHeldTraining(subclassGrants([{ id: klass.id, level: effectiveLevel, subclass }]), {
+            skills: proficientSkills,
+            languages: [...(race?.languages ?? []), ...(background?.knownLanguages ?? []), ...bonusLanguages.filter(Boolean), ...(klass.languages ?? [])],
+          })
+        : [],
+    [klass, subclass, effectiveLevel, proficientSkills, race, background, bonusLanguages],
   );
   const training = useMemo(() => {
     const skills = proficientSkills;
@@ -337,8 +373,39 @@ export function useBuilderDerived({
     return applySubclassTraining({ proficiencies: withFeats, grants: subclassTraining, choices: featChoices, strict: false }).proficiencies;
   }, [proficientSkills, klass, race, background, expertisePicks, bonusLanguages, trainedTools, featNames, featDescOf, featChoices, subclassTraining]);
 
+  // Hit points as the server will work them out (builderHp.ts): lineage,
+  // feats, Draconic Resilience and the table's method. A table that rolls
+  // them rolls on the server when the character is saved, so the figure is
+  // the fixed value and `range` what the dice may give. A stored character
+  // keeps the hit points it came home with (hpOverride) only while the
+  // server would.
+  const storedHp = state.storedHp;
+  const hp = useMemo(() => {
+    if (!shownAbilities || !klass) {
+      return null;
+    }
+    return builderHitPoints({
+      hitDie: klass.hitDie,
+      classId: klass.id,
+      subclass: subclass ?? "",
+      level: effectiveLevel,
+      con: shownAbilities.con,
+      raceId: race?.id ?? null,
+      feats: [
+        ...state.feats,
+        ...activeAsiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : [])),
+      ],
+      method: rules?.hpMethod ?? null,
+      stored: hpOverride !== null && storedHp ? { maxHp: hpOverride, ...storedHp } : null,
+    });
+  }, [shownAbilities, klass, subclass, effectiveLevel, race, state.feats, activeAsiChoices, rules?.hpMethod, hpOverride, storedHp]);
+
+  // The slots the save stores (casting.ts), so the preview and the build
+  // math table show them rather than an empty book.
+  const spellSlots = useMemo(() => builderSpellSlots(klass, subclass, effectiveLevel), [klass, subclass, effectiveLevel]);
+
   const preview = useMemo(() => {
-    if (!shownAbilities || !race || !klass || !background) {
+    if (!shownAbilities || !race || !klass || !background || !hp) {
       return null;
     }
     const trained = training;
@@ -360,30 +427,13 @@ export function useBuilderDerived({
       ],
       proficiencies: { ...trained, saves },
       spellcasting: castingAbility
-        ? { ability: castingAbility, slots: {}, prepared: [], known: [], cantrips: [] }
+        ? { ability: castingAbility, slots: spellSlots, prepared: [], known: [], cantrips: [] }
         : null,
     });
-    // Hit points are the server's to derive, by the table's method; this is
-    // the same arithmetic, shown. A table that rolls them rolls on the
-    // server when the character is saved, so the figure here is the fixed
-    // value and `hpRange` what the dice may give. A stored character keeps
-    // the hit points it came home with (hpOverride) until the server says
-    // otherwise.
-    const hpInput = {
-      classes: [{ die: klass.hitDie, level: effectiveLevel }],
-      con: shownAbilities.con,
-      perLevelBonus: hpBonusPerLevelFor(hpBonusPerLevel(race.id) > 0, [
-        ...state.feats,
-        ...activeAsiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : [])),
-      ]),
-      // Draconic Resilience, as the server adds it (src/lib/srd/trait-rules.ts).
-      extraHp: featureHitPoints({ class: klass.id, subclass: subclass ?? "", level: effectiveLevel }),
-    };
-    const method = rules?.hpMethod ?? "average";
-    const maxHp =
-      hpOverride ?? derivedMaxHp(method === "max" ? "max" : "average", hpInput);
-    return { proficiencies: trained, derived, maxHp, hpMethod: method, hpRange: hpRange(hpInput) };
-  }, [shownAbilities, halfFeats, race, klass, subclass, background, training, effectiveLevel, hpOverride, rules?.hpMethod, state.feats, activeAsiChoices]);
+    // Hit points are the server's to derive; `hp` is the same arithmetic,
+    // shown, and the explainer reads it too.
+    return { proficiencies: trained, derived, maxHp: hp.maxHp, hpMethod: hp.method, hpRange: hp.range, hpKept: hp.kept };
+  }, [shownAbilities, halfFeats, race, klass, subclass, background, training, effectiveLevel, hp, state.feats, activeAsiChoices, spellSlots]);
 
   // The class's starting equipment rides along automatically (removable
   // chips): the book's list with the either-or choices the player made on
@@ -430,12 +480,12 @@ export function useBuilderDerived({
     }
     return [
       ...suggestWeapons(klass.weapons).map((weapon) => ({ name: weapon.name, note: weapon.damage })),
-      ...suggestArmor(klass.armor, klass.genres).map((armor) => ({
+      ...suggestArmor(klass.armor, [...(klass.genres ?? []), ...(genre ? [genre] : [])]).map((armor) => ({
         name: armor.name,
         note: armor.category === "shield" ? `+${armor.baseAc} AC` : `AC ${armor.baseAc}`,
       })),
     ];
-  }, [klass]);
+  }, [klass, genre]);
   const fullEquipment = useMemo(() => {
     if (keepsStoredGear) {
       return equipment;
@@ -492,7 +542,22 @@ export function useBuilderDerived({
         );
     const verdict = judgeStartingGear({ equipment: fullEquipment, freeKit, coinCopper, priceOf });
     const left = Math.max(0, coinCopper - verdict.spentCopper);
+    // How many of each name the kits put in the pack, as fullEquipment
+    // merged them: those copies leave together, through the removed names.
+    const preAdded = new Map<string, number>();
+    if (!keepsStoredGear) {
+      const kitted = [
+        ...autoLoadout.filter((item) => !removedAutoNames.includes(item.name)),
+        ...backgroundKit.names.filter((itemName) => !removedAutoNames.includes(itemName)).map((itemName) => ({ name: itemName, qty: 1 })),
+      ];
+      for (const item of kitted) {
+        const name = gearNameKey(item.name);
+        preAdded.set(name, (preAdded.get(name) ?? 0) + item.qty);
+      }
+    }
+    const receipt = buildReceipt({ equipment: fullEquipment, preAdded, freeKit, coinCopper, priceOf });
     return {
+      receipt,
       method: wealthMethod,
       coinCopper,
       spentCopper: verdict.spentCopper,
@@ -505,7 +570,7 @@ export function useBuilderDerived({
       gold: Math.floor(left / 100),
       copper: left % 100,
     };
-  }, [equipment, fullEquipment, autoLoadout, startingKit, backgroundKit, background, keepsStoredGear, wealthMethod, rules?.wealthRoll, state.gold]);
+  }, [equipment, fullEquipment, autoLoadout, removedAutoNames, startingKit, backgroundKit, background, keepsStoredGear, wealthMethod, rules?.wealthRoll, state.gold]);
 
   // AC is derived from the gear above, never typed: equipping a breastplate
   // moves the number here and on the sheet. Pinning an armor class is a
@@ -525,6 +590,48 @@ export function useBuilderDerived({
   }, [klass, preview, shownAbilities, fullEquipment, subclass, effectiveLevel]);
   const ac = acInfo?.ac ?? acOverride ?? 10;
 
+  // The receipt the gear step shows (src/app/characters/builder/
+  // receiptMath.ts), with a to-hit and damage line on each weapon worked
+  // as the sheet's attack cards work it: the class's features and fighting
+  // styles for riders, Martial Arts only with no armor and no shield.
+  const { setEquipment, setRemovedAutoNames, stylePicks } = state;
+  const gearReceipt = useMemo(() => {
+    const riders = klass
+      ? combatRiders({
+          class: klass.id,
+          level: effectiveLevel,
+          features: [
+            ...classFeaturesFor(klass.id, subclass, effectiveLevel),
+            ...stylePicks.map((id) => ({ name: fightingStyleFeatureName(id) })),
+          ],
+        })
+      : null;
+    const martialArts = !acInfo?.armorName && !acInfo?.shieldName;
+    const rows = purse.receipt.rows.map((row) => {
+      const item = fullEquipment.find((entry) => entry.name === row.name);
+      return preview && riders && item
+        ? { ...row, weapon: weaponLineFor(item, preview.derived, preview.proficiencies.weapons ?? [], riders, martialArts) }
+        : row;
+    });
+    // A typed or stepped quantity: copies over the kit's are the player's
+    // own added entry; none at all removes the kit's copies too.
+    const setQty = (itemName: string, wanted: number) => {
+      const row = rows.find((entry) => entry.name === itemName);
+      if (!row) {
+        return;
+      }
+      const qty = settleQty(row, wanted);
+      setEquipment((current) => withAddedQty(current, itemName, Math.max(0, qty - row.preAdded), row.slug));
+      if (qty === 0 && row.preAdded > 0) {
+        setRemovedAutoNames((removed) => (removed.includes(itemName) ? removed : [...removed, itemName]));
+      }
+    };
+    return { ...purse.receipt, rows, setQty };
+  }, [purse.receipt, fullEquipment, preview, klass, subclass, effectiveLevel, stylePicks, acInfo, setEquipment, setRemovedAutoNames]);
+  // The purse the steps read carries the finished receipt, so the gear step
+  // shows it through the purse view it already builds.
+  const shownPurse = useMemo(() => ({ ...purse, receipt: gearReceipt }), [purse, gearReceipt]);
+
   // What this class and subclass actually hand the character at this level.
   // Showing them turns a blind dropdown choice into an informed one.
   const grantedFeatures = useMemo(
@@ -534,6 +641,8 @@ export function useBuilderDerived({
   // Fighting styles the class has earned by this level. Stored on the sheet
   // as "choice"-sourced features so the level-up regrant preserves them.
   const styleSlots = useMemo(() => fightingStyleSlots(grantedFeatures), [grantedFeatures]);
+  // The styles those slots allow (a Swords bard: Dueling or Two-Weapon Fighting).
+  const styleChoices = useMemo(() => fightingStyleChoices(grantedFeatures), [grantedFeatures]);
 
   // Invocations, maneuvers, metamagic, pact boons, infusions, runes and
   // elemental disciplines: the pick-lists that used to be feature names with
@@ -546,11 +655,13 @@ export function useBuilderDerived({
             classId: klass.id,
             subclass,
             level: effectiveLevel,
-            features: optionPicks.map((optionName) => ({ name: optionName })),
+            // The class's own features too: a workshop subclass that
+            // borrowed Combat Superiority opens maneuvers by it.
+            features: [...grantedFeatures, ...optionPicks.map((optionName) => ({ name: optionName }))],
             feats: featNames,
           })
         : [],
-    [klass, subclass, effectiveLevel, optionPicks, featNames],
+    [klass, subclass, effectiveLevel, grantedFeatures, optionPicks, featNames],
   );
 
   // Spell lists and advice go through the borrowed SRD list for catalog
@@ -560,6 +671,15 @@ export function useBuilderDerived({
   const casting = useMemo(() => builderCasting(klass, subclass, effectiveLevel), [klass, subclass, effectiveLevel]);
   const spellSearchClass = casting.list;
   const maxSpellLevel = casting.maxSpellLevel;
+  // What the subclass adds to that list: a warlock patron's expanded spells,
+  // a Divine Soul's cleric list (src/lib/srd/spell-prep.ts widerListOf).
+  const spellWider = useMemo(
+    () =>
+      klass && casting.casts
+        ? { spells: subclassExpandedSpellsFor(klass.id, subclass, effectiveLevel), lists: subclassSpellListsFor(klass.id, subclass) }
+        : { spells: [], lists: [] },
+    [klass, subclass, effectiveLevel, casting.casts],
+  );
   // A class that casts, and has something to cast at this level. A level 1
   // paladin or ranger has a spellcasting ability and no spells, no cantrips
   // and no slots: showing them a spell step with a level 0 search and an
@@ -571,9 +691,13 @@ export function useBuilderDerived({
       ? builderSpellAdvice(casting, klass, subclass, effectiveLevel, shownAbilities)
       : null;
   // Opening suggestions, so a player who has never seen a 5e spell list is
-  // not left staring at an empty search box.
+  // not left staring at an empty search box. A third caster gets picks from
+  // its own two schools, not the wizard's, which its school rule would refuse.
   const starters = useMemo(
-    () => (casts && klass ? starterSpellsFor(casting.third ? casting.list : klass.id) : null),
+    () =>
+      casts && klass
+        ? starterSpellsFor(casting.profile ?? klass.id)
+        : null,
     [klass, casts, casting],
   );
   // Domain, circle, oath and patron spells: always prepared, free, and worth
@@ -608,19 +732,19 @@ export function useBuilderDerived({
   // count leaves them out, as the sheet and a level-up already did (issue
   // #118: a tiefling cleric filled with Thaumaturgy left play two cantrips
   // down).
-  const racialCantripPick = state.racialCantrip;
+  const racialCantripPicks = state.racialCantrips;
   const racialCantrips = useMemo(() => {
     const own = race ? innateCantripsFor(race.id, effectiveLevel) : [];
     const seen = new Set<string>();
-    return [...(racialCantripPick ? [racialCantripPick] : []), ...own].filter((name) => {
-      const key = name.trim().toLowerCase();
+    return [...racialCantripPicks, ...own].filter((name) => {
+      const key = textKey(name);
       if (!key || seen.has(key)) {
         return false;
       }
       seen.add(key);
       return true;
     });
-  }, [race, effectiveLevel, racialCantripPick]);
+  }, [race, effectiveLevel, racialCantripPicks]);
   // The spells the feats teach (src/lib/srd/feat-spells.ts) are known the
   // same way: shown granted, left out of the class's counts.
   const featSpells = useMemo(
@@ -636,20 +760,35 @@ export function useBuilderDerived({
     [featNames, featDescOf, featChoices],
   );
   const chosenCantrips = useMemo(() => {
-    const free = new Set([...racialCantrips, ...featSpells.cantrips].map((name) => name.trim().toLowerCase()));
-    return cantrips.filter((name) => !free.has(name.trim().toLowerCase()));
+    const free = new Set([...racialCantrips, ...featSpells.cantrips].map((name) => textKey(name)));
+    return cantrips.filter((name) => !free.has(textKey(name)));
   }, [cantrips, racialCantrips, featSpells]);
   const chosenSpells = useMemo(() => {
-    const free = new Set(subclassSpells.map((spellName) => spellName.toLowerCase()));
-    return spells.filter((spellName) => !free.has(spellName.toLowerCase()));
+    const free = new Set(subclassSpells.map((spellName) => textKey(spellName)));
+    return spells.filter((spellName) => !free.has(textKey(spellName)));
   }, [spells, subclassSpells]);
   const chosenPrepared = useMemo(() => {
     if (spellStyle !== "spellbook") {
       return chosenSpells;
     }
-    const book = new Set(spells.map((spellName) => spellName.toLowerCase()));
-    return bookPrepared.filter((spellName) => book.has(spellName.toLowerCase()));
+    const book = new Set(spells.map((spellName) => textKey(spellName)));
+    return bookPrepared.filter((spellName) => book.has(textKey(spellName)));
   }, [spellStyle, chosenSpells, spells, bookPrepared]);
+  // How many spells the bundled list can give this caster (spellSupply.ts):
+  // the spell step's gate asks for no more than exist. A third caster is
+  // held to its schools instead, and its list is the wizard's.
+  const spellSupply = useMemo(
+    () =>
+      casts && !casting.third
+        ? bundledSpellSupply({
+            spellClass: spellSearchClass,
+            maxSpellLevel,
+            wider: spellWider,
+            free: [...racialCantrips, ...featSpells.cantrips, ...featSpells.spells, ...subclassSpells],
+          })
+        : null,
+    [casts, casting.third, spellSearchClass, maxSpellLevel, spellWider, racialCantrips, featSpells, subclassSpells],
+  );
 
   return {
     effectiveLevel,
@@ -671,19 +810,23 @@ export function useBuilderDerived({
     subclassTraining,
     training,
     preview,
+    hp,
+    spellSlots,
     equipmentSuggestions,
     classKit,
     kitChoices,
     kitTraining,
     backgroundKit,
     fullEquipment,
-    purse,
+    purse: shownPurse,
     acInfo,
     ac,
     grantedFeatures,
     styleSlots,
+    styleChoices,
     optionSlots,
     spellSearchClass,
+    spellWider,
     casts,
     spellAdvice,
     cantripAdvice,
@@ -697,11 +840,26 @@ export function useBuilderDerived({
     chosenPrepared,
     spellStyle,
     spellbookAdvice,
+    spellSupply,
     maxSpellLevel,
   };
 }
 
 export type BuilderDerived = ReturnType<typeof useBuilderDerived>;
+
+// useBuilderDerived run once outside a render, each memo simply computed:
+// what scripts/lib/enforce-builder.mjs does for the test suites, without
+// reaching into React. Synchronous, so no render can interleave.
+export function deriveBuilder(input: Parameters<typeof useBuilderDerived>[0]): BuilderDerived {
+  const before = memoize;
+  memoize = (compute) => compute();
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- no hook state is read: every memo is computed in place
+    return useBuilderDerived(input);
+  } finally {
+    memoize = before;
+  }
+}
 
 // Action helpers that close over the state setters. Plain functions rather
 // than hooks so the steps can call them from any handler.
@@ -769,22 +927,27 @@ export function builderActions(
       }
     },
     // An either-or line of the class's starting equipment, and the weapon
-    // named for an "any simple weapon" slot. Kit items the player removed
-    // come back with a new choice, since the choice is about them.
+    // named for an "any simple weapon" slot. The items of that line the
+    // player removed come back with a new choice, since the choice is about
+    // them; a removal from any other line stands.
     chooseKitOption(line: number, option: number) {
       const kit = klass ? classKitFor(klass.id) : null;
       if (kit) {
-        state.setKitChoices((current) => withKitOption(kit, current, line, option));
-        state.setRemovedAutoNames([]);
+        const before = state.kitChoices;
+        const after = withKitOption(kit, before, line, option);
+        state.setKitChoices(after);
+        state.setRemovedAutoNames((removed) => removedAfterKitChange(kit, before, after, line, removed));
       }
     },
     pickKitSlot(index: number, name: string) {
       const kit = klass ? classKitFor(klass.id) : null;
       if (kit) {
-        state.setKitChoices((current) =>
-          withKitPick(resolveKit(kit, current, { armor: [], weapons: [] }).choices, index, name),
+        const before = state.kitChoices;
+        const after = withKitPick(resolveKit(kit, before, { armor: [], weapons: [] }).choices, index, name);
+        state.setKitChoices(after);
+        state.setRemovedAutoNames((removed) =>
+          removedAfterKitChange(kit, before, after, kitLineOfSlot(kit, before, index), removed),
         );
-        state.setRemovedAutoNames([]);
       }
     },
     // One either-or line of the background's kit answered, by the words of

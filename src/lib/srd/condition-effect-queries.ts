@@ -15,11 +15,6 @@ export function conditionsSpentAgainst(targetConditions: string[]): string[] {
     .map(({ condition }) => condition);
 }
 
-// The condition that costs the holder its action, or null.
-export function conditionStopsAction(conditions: string[]): string | null {
-  return activeConditionEffects(conditions).find(({ row }) => row.noAction)?.condition ?? null;
-}
-
 // The conditions the holder's effects keep off it, each with the effect that
 // does it. `sourceType` is the creature type of whatever lays the condition
 // (Protection from Evil and Good answers only some).
@@ -92,7 +87,7 @@ export function conditionUntargetable(conditions: string[]): string | null {
 export function spellTurnHold(conditions: string[], kind: string): string | null {
   const acting = kind === "action" || kind === "attack" || kind === "cast";
   for (const { row, condition } of activeConditionEffects(conditions)) {
-    if ((row.noAction && acting) || (row.noAttacks && kind === "attack") || (row.noCasting && kind === "cast")) {
+    if ((row.noAction && acting) || (row.noMove && kind === "move") || (row.noAttacks && kind === "attack") || (row.noCasting && kind === "cast")) {
       return condition;
     }
   }

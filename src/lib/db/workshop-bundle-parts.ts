@@ -17,7 +17,7 @@ import { normalizeLabels as normalizeOverworldLabels, normalizePaths, normalizeS
 import type { WorkshopBundle } from "@/lib/workshop/bundle";
 import { createCharacter } from "@/lib/db/characters";
 import { savePackDraft } from "@/lib/db/world-pack-drafts";
-import { landedSheet, writeShelfArrivals, type ShelfArrival } from "@/lib/db/workshop-bundle-shelf";
+import { landedSheet, pregenRefusal, writeShelfArrivals, type ShelfArrival } from "@/lib/db/workshop-bundle-shelf";
 import { insertShop } from "@/lib/db/shops";
 import { getClock } from "@/lib/db/clock";
 
@@ -265,7 +265,7 @@ export function sharedHomesFor(userId: string, bundle: WorkshopBundle): SharedHo
 // are, and is kept beside it under the bundle's name otherwise, with the new
 // workshop pointed at it (src/lib/db/workshop-bundle-shelf.ts), so neither
 // the importer's old adventures nor this one change under them.
-export function writeBundleShelf(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfArrival {
+export function writeBundleShelf(userId: string, workshopId: string, bundle: WorkshopBundle): ShelfArrival & { entryFor: (kind: string, name: string) => string | null } {
   const arrival = writeShelfArrivals(userId, workshopId, bundle);
   let copied = arrival.copied;
 
@@ -275,8 +275,15 @@ export function writeBundleShelf(userId: string, workshopId: string, bundle: Wor
   }
 
   // Pregens land in the importer's library, filed under the new workshop,
-  // through the module that populates a sheet's features on creation.
+  // through the module that populates a sheet's features on creation. One
+  // whose species this server refused is named beside the species instead.
+  const refused = [...arrival.refused];
   for (const pregen of bundle.pregens) {
+    const refusal = pregenRefusal(pregen.name, pregen.sheet, arrival);
+    if (refusal) {
+      refused.push(refusal);
+      continue;
+    }
     createCharacter(
       userId,
       pregen.level,
@@ -286,5 +293,6 @@ export function writeBundleShelf(userId: string, workshopId: string, bundle: Wor
     );
     copied += 1;
   }
-  return { copied, reused: arrival.reused, renamed: arrival.renamed };
+  // Where each monster and entry landed, for the World entries' links.
+  return { copied, reused: arrival.reused, renamed: arrival.renamed, refused, entryFor: arrival.entryFor };
 }

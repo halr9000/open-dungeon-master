@@ -20,6 +20,8 @@ import { carryMultiplier, encumbranceFor, type CarriedItem } from "@/lib/srd/enc
 import { sizeForRace } from "@/lib/srd";
 import { magicItemRiders, type Wearer } from "@/lib/srd/magic-items";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { rowName } from "@/lib/srd/item-row";
 
 type Carrier = Pick<CharacterSheet, "name" | "abilities" | "race" | "gold"> & Partial<Wearer>;
 
@@ -29,7 +31,7 @@ export function weighed(equipment: CarriedItem[]): CarriedItem[] {
     if (typeof item.weight === "number" && item.weight > 0) {
       return item;
     }
-    const weight = itemWeightByName(item.name);
+    const weight = itemWeightByName(rowName(item));
     return weight === null ? item : { ...item, weight };
   });
 }
@@ -52,13 +54,13 @@ export function capacityProblem(
   after: CarriedItem[],
   what: string,
   gold?: number,
-): string | null {
+): ToolError | null {
   const now = loadOf(sheet, sheet.equipment);
   const then = loadOf(sheet, after, gold);
   if (!then.overCapacity || then.carriedLb <= now.carriedLb) {
     return null;
   }
-  return `${sheet.name} can carry ${then.capacityLb} lb (Strength x 15) and would be carrying ${then.carriedLb} lb with ${what}. They cannot carry it: give it to someone else, leave something behind, or drag it (the lift tool) at 5 feet.`;
+  return { error: `${sheet.name} can carry ${then.capacityLb} lb (Strength x 15) and would be carrying ${then.carriedLb} lb with ${what}. They cannot carry it: give it to someone else, leave something behind, or drag it (the lift tool) at 5 feet. Ask the player which.`, retry: true };
 }
 
 // A character's carrying capacity and push, drag or lift limit, in pounds.
@@ -67,9 +69,4 @@ export function liftLimits(sheet: Carrier & { equipment: CarriedItem[] }): { cap
   const strength = Math.max(1, Math.floor(sheet.abilities.str || 1), set);
   const multiplier = carryMultiplier(sheet.race ? sizeForRace(sheet.race) : undefined);
   return { capacityLb: strength * 15 * multiplier, liftLb: strength * 30 * multiplier };
-}
-
-// Whether a character carries past their capacity right now.
-export function overCapacity(sheet: Carrier & { equipment: CarriedItem[] }): boolean {
-  return loadOf(sheet, sheet.equipment).overCapacity;
 }

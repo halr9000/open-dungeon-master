@@ -45,10 +45,23 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   // Every seat learns the DM stepped out; the brief handed to the AI stays with
   // the seats that hold the story's secrets.
   dm_cover_changed: SEAT,
+  // An effect the party cannot tell is there (set_effect's visible: false)
+  // is left out of every seat's list but the DM seats', as GET /dm/effects
+  // already left it out; the event used to carry every effect to everyone.
+  effects_updated: SEAT,
+  // A sheet's audit row: the change to a character's notes or opt-ins is
+  // blanked for every seat that may not read the sheet's own (sheet-view.ts).
+  sheet_audit: SEAT,
 
   // ---- the DM seats alone ----
   // The record of the DM's hands on the board names hidden pieces.
   dm_board_action: { kind: "dm", right: "fullMap" },
+  // The DM's own bookkeeping on the world (/dm/attributes): read only
+  // through a DM route (requireDm), hidden by default, and listened for by no
+  // player screen, so it goes to the DM seats alone, the seats holding the
+  // whole map (an AI table's lead holds the story's secrets, not this
+  // route). It used to reach every seat with each hidden value in full.
+  attributes_updated: { kind: "dm", right: "fullMap" },
 
   // ---- the whole table ----
   // Narration and the transcript.
@@ -58,6 +71,8 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   dm_draft_reset: TABLE,
   dm_draft_seq: TABLE,
   dm_status: TABLE,
+  // What the DM's job is doing and since when (src/lib/dm/queue.ts).
+  dm_job: TABLE,
   dm_intent_queued: TABLE,
   dm_seat_changed: TABLE,
   utility_calls: TABLE,
@@ -81,12 +96,10 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   roll_pending: TABLE,
   map_ping: TABLE,
   camera: TABLE,
-  effects_updated: TABLE,
   mounts_updated: TABLE,
-  // Characters: deletions, audit deltas (the pre-image stays server-side),
+  // Characters: deletions, undo marks (the pre-image stays server-side),
   // level-ups, the party roster, coins moving, a relationship's record.
   sheet_deleted: TABLE,
-  sheet_audit: TABLE,
   audit_reverted: TABLE,
   level_up_available: TABLE,
   party_updated: TABLE,
@@ -94,13 +107,18 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   coins: TABLE,
   character_event: TABLE,
   relationships_updated: TABLE,
-  attributes_updated: TABLE,
-  // Offers and trades are party knowledge.
-  item_proposal_added: TABLE,
-  item_proposal_resolved: TABLE,
+  // Offers and trades are party knowledge, except an owner-only offer (a
+  // pact's approach, issue 503), sent only to its own player and whoever
+  // runs the story.
+  item_proposal_added: SEAT,
+  item_proposal_resolved: SEAT,
   // A coordinated plan is drafted in the open, for the party to fit its
   // moves together (issue 254); nothing in it is the DM's secret.
   coordination_updated: TABLE,
+  // Wait for the table (src/lib/dm/table-wait.ts): who the DM waits on and
+  // who passed. Both are what every seat already sees across the table.
+  table_wait: TABLE,
+  table_pass: TABLE,
   // A disputed ruling and its outcome: who objected and to what is the
   // table's business, and the vote is the table's.
   ruling_disputed: TABLE,
@@ -114,10 +132,18 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   facts_updated: TABLE,
   quests_updated: TABLE,
   lore_updated: TABLE,
+  // The party's Atlas changed (src/lib/db/party-atlas.ts): sent only when
+  // what players see did, and carrying nothing, so each seat asks for its
+  // own view.
+  party_atlas_updated: TABLE,
   factions_updated: TABLE,
   // The table's WorldForge changed (src/lib/worldforge/model.ts). The ping
   // carries nothing, but the document is the DM's, so only DM seats refetch.
   world_updated: { kind: "dm", right: "secretStory" },
+  // Which kinds of record changed (src/lib/workshop/record-events.ts), for
+  // the workshop's tools to refetch. Only the kinds travel, and only to DM
+  // seats, like world_updated.
+  records_changed: { kind: "dm", right: "secretStory" },
   pins_updated: TABLE,
   npc_updated: TABLE,
   location_updated: TABLE,
@@ -145,6 +171,9 @@ export const EVENT_AUDIENCE: Readonly<Record<string, Audience>> = {
   // Safety: the X-card is for everyone by definition.
   x_card: TABLE,
   safety_resumed: TABLE,
+  // A table break names who paused: everyone is told, as at a real table.
+  table_paused: TABLE,
+  table_resumed: TABLE,
   // Media and sound.
   image_ready: TABLE,
   media_status: TABLE,

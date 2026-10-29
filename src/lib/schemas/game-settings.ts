@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   CAMPAIGN_LENGTHS,
   COMPANION_SETTINGS,
+  CONSCIENCE_SETTINGS,
   DICE_POLICIES,
   DM_MODES,
   GENRES,
@@ -12,33 +13,16 @@ import {
 import { parseKeepingValid } from "@/lib/schemas/parse-keeping-valid";
 
 // The option lists and their labels live in ./game-settings-options (no
-// zod) so the campaign wizard can draw them without the validator; they
-// are re-exported here because this is where everything else finds them.
+// zod) so the campaign wizard can draw them without the validator; the
+// genres and the setting types are re-exported here, where the schema's
+// readers find them.
 export {
-  CAMPAIGN_LENGTH_LABELS,
-  CAMPAIGN_LENGTHS,
-  COMPANION_LABELS,
-  COMPANION_SETTINGS,
-  DICE_POLICIES,
-  DM_MODE_HINTS,
-  DM_MODE_LABELS,
-  DM_MODES,
   GENRES,
-  HP_METHOD_LABELS,
-  HP_METHODS,
-  STARTING_WEALTH,
-  STARTING_WEALTH_LABELS,
-  TABLE_LANGUAGE_HELP,
-  TABLE_LANGUAGE_LABELS,
-  TABLE_LANGUAGE_NAMES,
-  TABLE_LANGUAGES,
   type CampaignLengthSetting,
-  type CompanionSetting,
+  type ConscienceSetting,
   type DicePolicy,
   type DmModeSetting,
   type Genre,
-  type HpMethodSetting,
-  type StartingWealthSetting,
   type TableLanguage,
 } from "@/lib/schemas/game-settings-options";
 
@@ -156,6 +140,15 @@ export const gameSettingsSchema = z.object({
   // After each DM narration, block do and say for everyone until the party
   // lead opens responses. OOC and lead directions stay available.
   holdSubmissions: z.boolean().default(false),
+  // Wait for the table (src/lib/dm/table-wait.ts): after a narration on an
+  // open floor, the AI DM's next turn waits until every present player has
+  // acted or passed, or waitForTableSeconds have passed since the latest
+  // answer (each post or pass restarts the clock), then one turn reads them
+  // all. On by default, as a person running the table waits for everyone:
+  // a player alone at the table is answered at once (nobody else is present
+  // to wait for), and the lead can set "Answers the first post" instead.
+  waitForTable: z.boolean().default(true),
+  waitForTableSeconds: z.number().int().min(15).max(900).default(300),
   // Human-DM story capture: how much play may pass with nothing written down
   // before the console nudges the DM to record a beat. Two units because a
   // session has two tempos (src/lib/dm/beat-cadence.ts); either one at 0 turns
@@ -186,6 +179,13 @@ export const gameSettingsSchema = z.object({
   // courting, together, betrothed, married). Requires relationships to be
   // on. Intimate scenes always fade to black; there is no explicit mode.
   romance: z.enum(["on", "off"]).default("on"),
+  // How far a lasting AI companion's conscience may go when the party's
+  // deeds break what it holds to (issue 503, src/lib/dm/conscience-logic.ts):
+  // off judges by standing alone; talk objects, warns and sets ultimatums
+  // but never leaves; leave lets a companion past its breaking point walk
+  // out; turn lets it turn on the party too. Read only while relationships
+  // are on and a lasting companion travels with the party.
+  companionConscience: z.enum(CONSCIENCE_SETTINGS).default("leave"),
   // When on, DM-initiated item and gold changes to player characters become
   // pending offers the owning player accepts or declines instead of applying
   // immediately (src/lib/dm/proposal-logic.ts). Off preserves auto-apply.
@@ -203,6 +203,17 @@ export const gameSettingsSchema = z.object({
   // call when the prose and the engine disagree (src/lib/dm/engine-boundary.ts).
   // On by default; off costs nothing but the check.
   narrationGuard: z.boolean().default(true),
+  // How long the AI DM's narration runs, and the lead's own notes on how it
+  // should write (issue #383): the model-agnostic way to fit a table's prose
+  // to its model and its taste, where a per-model prompt would go stale.
+  // Standard and blank change nothing in the prompt.
+  narrationLength: z.enum(["short", "standard", "rich"]).default("standard"),
+  styleNotes: z.string().trim().max(500).default(""),
+  // How often the AI DM's world brings a fight (issue #432): the encounter
+  // dice of the world tick (src/lib/dm/world-tick-logic.ts pacedTickConfig),
+  // what an encounter spark asks for, and one pacing line in the prompt.
+  // Balanced is the dice as they were and changes nothing in the prompt.
+  combatPace: z.enum(["rare", "balanced", "frequent"]).default("balanced"),
   // Optional 5e variant rules the server engines and DM prompt honor.
   // Rendered as one line each in the prompt by src/lib/dm/rules-logic.ts.
   // Optional turn stages (src/lib/dm/stages.ts). All default on; this exists
@@ -386,7 +397,7 @@ export type LastingCompanionBlock = {
   remedy: string;
 };
 
-const ALLIES_ROW = "Setup tab, Game settings, Allies";
+const ALLIES_ROW = "Settings tab, Table settings, Allies";
 export const MAX_COMPANIONS_CAP = 4;
 
 export function lastingCompanionBlock(
@@ -396,7 +407,7 @@ export function lastingCompanionBlock(
   humanDm = false,
 ): LastingCompanionBlock | null {
   const mode = resolveCompanionMode(settings, partySize, humanDm);
-  const allow = `To allow one, set AI companions to "Party members and guests" (${ALLIES_ROW}). That setting lets the DM keep other lasting companions at this table too.`;
+  const allow = `To allow one, set AI companions to "Party members and guests" (${ALLIES_ROW}). That setting lets the GM keep other lasting companions at this table too.`;
   if (mode === "off") {
     return { code: "off", reason: "AI companions is set to Off at this table, so no companion can join the party.", remedy: allow };
   }

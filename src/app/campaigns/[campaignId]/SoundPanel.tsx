@@ -362,8 +362,9 @@ export function SoundDialog({
 // The header's sound control: the painting opens the panel; on sm+ the
 // master slider sits beside it, as it always did, for the listener who
 // only ever wanted it quieter.
-export function SoundControl({ ambience, steering }: { ambience: AmbienceAudio; steering: SoundSteering }) {
-  const [open, setOpen] = useState(false);
+// What the table's sound is doing, for the header's tip and the phone's
+// table menu: "Sound: Rain, Tavern music", or why there is none.
+export function soundSummary(ambience: AmbienceAudio): { quiet: boolean; playing: string; tip: string } {
   const quiet = ambience.muted || !ambience.unlocked;
   const bed = ambience.state.bed ? cueById(ambience.state.bed)?.label : null;
   const music = ambience.state.music ? cueById(ambience.state.music)?.label : null;
@@ -375,6 +376,12 @@ export function SoundControl({ ambience, steering }: { ambience: AmbienceAudio; 
       : playing
         ? `Sound: ${playing}`
         : "Sound: nothing playing";
+  return { quiet, playing, tip };
+}
+
+export function SoundControl({ ambience, steering }: { ambience: AmbienceAudio; steering: SoundSteering }) {
+  const [open, setOpen] = useState(false);
+  const { quiet, playing, tip } = soundSummary(ambience);
   return (
     <>
       <div className="flex items-center">

@@ -4,6 +4,7 @@ import { publishCast } from "@/lib/dm/cast";
 import { normalizeNpcVoice } from "@/lib/npcs/forge";
 import { castUnvoiced, setRosterVoice, voiceRoster, type RosterEntry } from "@/lib/tts-roster";
 import { baseCreatureName } from "@/lib/tts-segments";
+import { textKey } from "@/lib/language/text-logic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,13 +65,13 @@ export async function PUT(request: Request, { params }: { params: Promise<{ camp
   // A monster may be given a voice before it ever stands on the board.
   if (!entry && key.startsWith("monster:") && all) {
     const name = baseCreatureName(key.slice("monster:".length));
-    entry = { key: `monster:${name.toLowerCase()}`, name, kind: "monster", ownerUserId: "" };
+    entry = { key: `monster:${textKey(name)}`, name, kind: "monster", ownerUserId: "" };
   }
   if (!entry) {
     return Response.json({ error: "No one by that name at this table." }, { status: 404 });
   }
   if (!all && entry.ownerUserId !== context.user.id) {
-    return Response.json({ error: "Only the Dungeon Master can choose that voice." }, { status: 403 });
+    return Response.json({ error: "Only the Game Master can choose that voice." }, { status: 403 });
   }
   if (!setRosterVoice(campaignId, entry, voice)) {
     return Response.json({ error: "No one by that name at this table." }, { status: 404 });
@@ -89,7 +90,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ ca
     return context;
   }
   if (!runsTheTable(context)) {
-    return Response.json({ error: "Only the Dungeon Master can cast the table." }, { status: 403 });
+    return Response.json({ error: "Only the Game Master can cast the table." }, { status: 403 });
   }
   const cast = await castUnvoiced(campaignId, voiceRoster(campaignId), context.campaign.gameSettings.ttsVoice);
   return Response.json({ roster: visibleRoster(context), cast });

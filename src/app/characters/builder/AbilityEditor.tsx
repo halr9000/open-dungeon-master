@@ -1,7 +1,7 @@
 "use client";
 
 import { Dices } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import { GameTerm } from "@/components/ui/GameTerm";
 import { CountPop } from "@/components/ui/Reveal";
 import { cn } from "@/lib/cn";
@@ -17,9 +17,12 @@ import {
   assignStandard,
   canRerollPool,
   placeFromPool,
+  poolHighlight,
   poolSum,
   rollTier,
+  rollWord,
   scoresFromSlots,
+  throwName,
   type PoolEntry,
   type PoolSlots,
 } from "./abilityDice";
@@ -28,7 +31,9 @@ import { HelpDot, MethodInfoDialog, type HpExplainerInput } from "./AbilityExpla
 import { AbilitySummary } from "./AbilitySummary";
 import { DiceDefs, DiceRow } from "./Dice";
 import { fetchOpenAbilityPool, requestAbilityPool, type AbilityPoolAnswer } from "./useTableRules";
+import { useRovingGroup } from "./roving";
 import { useContentCampaign } from "@/lib/content-scope";
+import { prefersStillMotion } from "@/lib/effects-mode";
 import { rerollWords } from "@/lib/srd/ability-rerolls";
 
 export const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
@@ -130,6 +135,8 @@ export default function AbilityEditor({
   const [held, setHeld] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<Ability | "tray" | null>(null);
   const [methodInfoOpen, setMethodInfoOpen] = useState(false);
+  // The three ways are one tab stop, with the arrows between them (F16).
+  const methodKeys = useRovingGroup({ keys: METHODS.map((entry) => entry.id), chosen: method });
   // The dice are the server's: while it answers the throw button waits, and
   // a refusal is shown in its words beside the tray.
   const [asking, setAsking] = useState(false);
@@ -148,6 +155,7 @@ export default function AbilityEditor({
   // the server has answered.
   const [rerollBelow, setRerollBelow] = useState(REROLL_BELOW);
   const words = rerollWords(rerollBelow, Boolean(campaignId));
+  const poolNoteId = useId();
   function learnRule(answer: { rerollBelow: number }) {
     setRerollBelow(answer.rerollBelow);
   }
@@ -203,6 +211,7 @@ export default function AbilityEditor({
   const placedCount = ABILITY_KEYS.filter((key) => slots[key] !== null).length;
   const complete = ABILITY_KEYS.every((key) => scores[key] !== null);
   const total = pool ? poolSum(pool) : 0;
+  const highlight = pool ? poolHighlight(pool) : null;
   const rerollOpen = canRerollPool(pool, rerollBelow);
   const keptDate =
     keptAt ? new Date(keptAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
@@ -244,7 +253,9 @@ export default function AbilityEditor({
       return;
     }
     setKeptAt(undefined);
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // The toss is decoration: under reduced motion or low effects the six
+    // land at once.
+    const still = prefersStillMotion();
     const thrown = answer.pool;
     for (const id of timers.current) window.clearTimeout(id);
     timers.current = [];
@@ -329,13 +340,15 @@ export default function AbilityEditor({
         <h2 className="eyebrow w-full text-xs text-amber-200/90 sm:w-auto">
           <GameTerm id="ability_score">Ability scores</GameTerm>
         </h2>
-        <div className="method-switch">
+        <div className="method-switch" onKeyDown={methodKeys.onKeyDown} onFocus={methodKeys.onFocus}>
           {METHODS.map((entry) => (
             <button
               key={entry.id}
               type="button"
               onClick={() => (entry.id === method ? undefined : switchMethod(entry.id))}
               aria-pressed={method === entry.id}
+              tabIndex={methodKeys.tabIndex(entry.id)}
+              data-roving-item={entry.id}
               className="method-option"
             >
               <span>{entry.label}</span>
@@ -350,16 +363,16 @@ export default function AbilityEditor({
           />
         </div>
         {method === "pointbuy" ? (
-          <span className={cn("font-mono text-[11px]", remaining < 0 ? "text-red-400" : "text-stone-400")} aria-live="polite">
+          <span className={cn("font-mono text-[0.875rem]", remaining < 0 ? "text-red-400" : "text-stone-400")} aria-live="polite">
             {remaining} points left
           </span>
         ) : null}
         {method === "roll" ? (
           <>
             <span className="inline-flex items-center gap-2">
-              <span className="eyebrow text-[10px] tracking-[0.18em] text-amber-500/80">4d6 drop lowest</span>
+              <span className="eyebrow text-[0.875rem] tracking-[0.18em] text-amber-500/80">4d6 drop lowest</span>
               {pool ? (
-                <span className="font-mono text-[10.5px] text-stone-500" aria-live="polite">
+                <span className="font-mono text-[0.875rem] text-stone-500" aria-live="polite">
                   {placedCount} / 6 placed
                 </span>
               ) : null}
@@ -368,10 +381,17 @@ export default function AbilityEditor({
               <button
                 type="button"
                 onClick={throwPool}
-                disabled={anyRolling || asking || !rerollOpen}
+                // A closed reroll stays in the tab order (aria-disabled) and
+                // points at the note under the tray that says why it is shut.
+                disabled={anyRolling || asking}
+                aria-disabled={!rerollOpen || undefined}
+                aria-describedby={poolNoteId}
                 aria-busy={asking}
                 title={rerollOpen ? words.openTitle : words.closedTitle}
-                className={cn(ui.btnSmall, "ml-auto px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40")}
+                className={cn(
+                  ui.btnSmall,
+                  "ml-auto px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40",
+                )}
               >
                 <Dices className="size-3.5" /> Reroll
               </button>
@@ -422,10 +442,12 @@ export default function AbilityEditor({
                       data-phase={anyRolling ? phase : undefined}
                       data-held={inHand || undefined}
                       data-placed={owner ? true : undefined}
-                      draggable={!anyRolling}
-                      disabled={anyRolling}
+                      // Each throw wakes as soon as its own dice land, not
+                      // when the last of the six does.
+                      draggable={!rolling}
+                      disabled={rolling}
                       aria-pressed={inHand}
-                      aria-label={`Throw of ${entry.total}${owner ? `, on ${ABILITY_LABELS[owner]}` : ", not placed"}`}
+                      aria-label={throwName(entry, owner ? ABILITY_LABELS[owner] : null)}
                       onClick={() => setHeld(inHand ? null : index)}
                       onDragStart={(event) => startDrag(event, index)}
                       onDragEnd={() => {
@@ -449,12 +471,17 @@ export default function AbilityEditor({
                       <span className={cn("dice-total", `roll-tier-${rollTier(entry.total)}`)} data-phase={rolling ? "rolling" : undefined}>
                         {entry.total}
                       </span>
+                      {rolling ? null : (
+                        <span className={cn("pool-tier", `roll-tier-${rollTier(entry.total)}`)} aria-hidden="true">
+                          {rollWord(entry.total)}
+                        </span>
+                      )}
                       <span className="pool-tag">{owner ? owner.toUpperCase() : inHand ? "in hand" : "free"}</span>
                     </button>
                   );
                 })}
               </div>
-              <p className="pool-note" aria-live="polite">
+              <p id={poolNoteId} className="pool-note" aria-live="polite">
                 {anyRolling ? (
                   "The dice are in the air…"
                 ) : (
@@ -464,6 +491,9 @@ export default function AbilityEditor({
                         <span className="text-amber-200">Your kept roll{keptDate ? ` from ${keptDate}` : ""}.</span>
                         <span className="text-stone-600"> · </span>
                       </>
+                    ) : null}
+                    {highlight ? (
+                      <span className="pool-highlight block">{highlight}</span>
                     ) : null}
                     <span className="font-mono text-amber-200">Total {total}</span>
                     <span className="text-stone-600"> · </span>
@@ -481,7 +511,7 @@ export default function AbilityEditor({
             </>
           ) : (
             <div className="pool-empty">
-              <p className="font-display text-[15px] font-semibold text-stone-100">Six throws of four dice</p>
+              <p className="font-display text-lg font-semibold text-stone-100">Six throws of four dice</p>
               <p className="max-w-sm text-xs text-stone-400">
                 Each throw keeps its best three. All six land at once, then you decide which ability gets which.
               </p>
@@ -494,7 +524,7 @@ export default function AbilityEditor({
               >
                 <Dices className={cn("size-4", asking && "animate-spin")} /> {asking ? "Rolling..." : "Roll the dice"}
               </button>
-              <p className="max-w-sm text-[11px] text-stone-500">
+              <p className="max-w-sm text-sm text-stone-500">
                 The server throws the dice and keeps them, so a rolled hero is one the table can trust.
               </p>
             </div>
@@ -542,7 +572,7 @@ export default function AbilityEditor({
           ];
           const label = ABILITY_LABELS[ability];
           const slot = method === "roll" ? slots[ability] : null;
-          const armed = method === "roll" && held !== null && !anyRolling;
+          const armed = method === "roll" && held !== null;
           return (
             <div
               key={ability}
@@ -560,11 +590,11 @@ export default function AbilityEditor({
                   controls keep one line in the builder's column; with feats
                   and improvements the notes wrap between whole pieces. */}
               <span className="flex min-w-0 flex-[1_1_104px] flex-col gap-px">
-                <span className="truncate font-display text-[13.5px] font-semibold text-stone-100">
+                <span className="truncate font-display text-base font-semibold text-stone-100">
                   <GameTerm id={ability}>{label}</GameTerm>
                 </span>
                 {notes.length ? (
-                  <span className="flex flex-wrap gap-x-1 font-mono text-[10px] leading-snug text-stone-400" data-ability-notes={ability}>
+                  <span className="flex flex-wrap gap-x-1 font-mono text-[0.875rem] leading-snug text-stone-400" data-ability-notes={ability}>
                     {notes.map((note, index) => (
                       <span key={note.key} className={cn("whitespace-nowrap", note.motion)}>
                         {index ? <span className="text-stone-600">· </span> : null}
@@ -581,8 +611,14 @@ export default function AbilityEditor({
                   className="pool-socket"
                   data-filled={slot !== null || undefined}
                   data-held={slot !== null && held === slot ? true : undefined}
-                  disabled={!pool || anyRolling || (slot === null && held === null)}
-                  draggable={slot !== null && !anyRolling}
+                  // An empty socket with nothing in hand stays reachable
+                  // (aria-disabled) and its name says what to do first.
+                  // Open while later throws are still landing: only a landed
+                  // throw can be in hand.
+                  disabled={!pool}
+                  aria-disabled={(slot === null && held === null) || undefined}
+                  aria-describedby={pool ? poolNoteId : undefined}
+                  draggable={slot !== null}
                   onClick={() => tapSocket(ability)}
                   onDragStart={slot !== null ? (event) => startDrag(event, slot) : undefined}
                   onDragEnd={() => {
@@ -594,7 +630,7 @@ export default function AbilityEditor({
                       ? `${label} holds ${assigned}. ${held === slot ? "Tap again to send it back to the tray" : held !== null ? "Tap to swap" : "Tap to pick it up"}`
                       : held !== null
                         ? `Place the held throw on ${label}`
-                        : `${label} is empty`
+                        : `${label} is empty. Pick up a throw from the tray first, then place it here`
                   }
                 >
                   {slot !== null && assigned !== null ? (
@@ -608,25 +644,12 @@ export default function AbilityEditor({
               ) : null}
 
               {method === "standard" ? (
-                <span className="flex min-w-[192px] flex-[1_1_192px] items-center gap-[5px]" role="group" aria-label={`${label} score`}>
-                  {STANDARD_ARRAY.map((value) => {
-                    const mine = assigned === value;
-                    const taken = !mine && ABILITY_KEYS.some((key) => scores[key] === value);
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        onClick={() => onScoresChange(assignStandard(scores, ability, value))}
-                        aria-pressed={mine}
-                        aria-label={`${label} ${value}${taken ? ", held by another ability" : ""}`}
-                        data-taken={taken || undefined}
-                        className="slot-button"
-                      >
-                        {value}
-                      </button>
-                    );
-                  })}
-                </span>
+                <StandardArrayRow
+                  label={label}
+                  assigned={assigned}
+                  isTaken={(value) => ABILITY_KEYS.some((key) => key !== ability && scores[key] === value)}
+                  onAssign={(value) => onScoresChange(assignStandard(scores, ability, value))}
+                />
               ) : null}
 
               {method === "pointbuy" ? (
@@ -641,8 +664,8 @@ export default function AbilityEditor({
                     −
                   </button>
                   <span className="flex flex-1 flex-col items-center leading-none" aria-live="polite">
-                    <span className="font-display text-[19px] font-bold text-amber-100">{assigned ?? POINT_BUY_MIN}</span>
-                    <span className="mt-0.5 font-mono text-[9px] text-stone-500">
+                    <span className="font-display text-[1.1875rem] font-bold text-amber-100">{assigned ?? POINT_BUY_MIN}</span>
+                    <span className="mt-0.5 font-mono text-[0.875rem] text-stone-500">
                       costs {pointBuyCost(assigned ?? POINT_BUY_MIN)}
                     </span>
                   </span>
@@ -688,5 +711,51 @@ export default function AbilityEditor({
         current={method}
       />
     </section>
+  );
+}
+
+// One ability's row of the standard array: a labelled group of six toggle
+// buttons that is one tab stop, the arrows and Home and End moving along it
+// and Enter or Space assigning (F16). Six abilities were thirty-six stops.
+export function StandardArrayRow({
+  label,
+  assigned,
+  isTaken,
+  onAssign,
+}: {
+  label: string;
+  assigned: number | null | undefined;
+  isTaken: (value: number) => boolean;
+  onAssign: (value: number) => void;
+}) {
+  const roving = useRovingGroup({ keys: STANDARD_ARRAY.map(String), chosen: assigned == null ? null : String(assigned) });
+  return (
+    <span
+      className="flex min-w-[192px] flex-[1_1_192px] items-center gap-[5px]"
+      role="group"
+      aria-label={`${label} score`}
+      onKeyDown={roving.onKeyDown}
+      onFocus={roving.onFocus}
+    >
+      {STANDARD_ARRAY.map((value) => {
+        const mine = assigned === value;
+        const taken = !mine && isTaken(value);
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onAssign(value)}
+            aria-pressed={mine}
+            aria-label={`${label} ${value}${taken ? ", held by another ability" : ""}`}
+            data-taken={taken || undefined}
+            tabIndex={roving.tabIndex(String(value))}
+            data-roving-item={value}
+            className="slot-button"
+          >
+            {value}
+          </button>
+        );
+      })}
+    </span>
   );
 }

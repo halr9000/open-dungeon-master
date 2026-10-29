@@ -21,6 +21,9 @@ const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 
 const { ADJUDICATIONS, ADJUDICATION_NAMES, adjudication, checkArgs, consoleAdjudications } =
   await import("../src/lib/dm/invoke-catalog.ts");
+// Names retired into a merged tool (issue #471): still engine actions, never
+// offered, so neither a form of their own nor a tool the scan should count.
+const { RETIRED_TOOLS } = await import("../src/lib/dm/tool-merge-logic.ts");
 
 let passed = 0;
 function test(name, fn) {
@@ -69,6 +72,7 @@ const TOOL_SOURCES = [
   "src/lib/dm/scene-tools.ts",
   "src/lib/dm/ambience-tools.ts",
   "src/lib/dm/mount-tools.ts",
+  "src/lib/dm/gear-tool.ts",
   "src/lib/dm/resource-tools.ts",
   "src/lib/dm/resource-tool-defs.ts",
   "src/lib/dm/companion-tools.ts",
@@ -83,13 +87,16 @@ const TOOL_SOURCES = [
   "src/lib/dm/settlement-tools.ts",
   "src/lib/dm/split-damage.ts",
   "src/lib/dm/explore-tools.ts",
+  "src/lib/dm/merged-tool-defs.ts",
   "src/lib/image-tool.ts",
 ];
 
 const aiToolNames = new Set();
 for (const source of TOOL_SOURCES) {
   for (const name of toolNamesIn(source)) {
-    aiToolNames.add(name);
+    if (!Object.hasOwn(RETIRED_TOOLS, name)) {
+      aiToolNames.add(name);
+    }
   }
 }
 
@@ -214,6 +221,17 @@ test("every catalog entry reaches a handler through the façade", () => {
   const dispatchable = new Set([...routedBySet, ...cases]);
   const orphans = ADJUDICATION_NAMES.filter((name) => !dispatchable.has(name)).sort();
   assert.deepEqual(orphans, [], `catalog entries with no dispatch arm: ${orphans.join(", ")}`);
+});
+
+test("every retired name still reaches its handler, and the tool that took its place has a form", () => {
+  const cases = new Set(
+    [...read("src/lib/dm/invoke-dispatch.ts").matchAll(/case "([a-z_]+)":/g)].map((match) => match[1]),
+  );
+  for (const [retired, merged] of Object.entries(RETIRED_TOOLS)) {
+    assert.ok(!ADJUDICATION_NAMES.includes(retired), `${retired} is retired and offers no form of its own`);
+    assert.ok(ADJUDICATION_NAMES.includes(merged), `${merged}, which took ${retired}'s place, has a form`);
+    assert.ok(routedBySet.has(retired) || cases.has(retired), `${retired} still has a dispatch arm`);
+  }
 });
 
 // ---- every form sends the fields its handler reads ----
@@ -385,11 +403,12 @@ const FOLDED_BY_THE_HANDLER = {
 
 // Fields only a person is offered: the handler reads them, and the model's
 // tool definition leaves them out on purpose (who may see a roll or a quest,
-// which handout to take down).
+// which handout to take down, an uploaded picture no prompt names).
 const FOR_A_PERSON_ONLY = {
   request_roll: ["visibility"],
   set_quest: ["visibility"],
   dismiss_handout: ["handoutId"],
+  show_handout: ["imagePath"],
 };
 
 function formDrift(entry) {
@@ -410,9 +429,48 @@ function formDrift(entry) {
 const { COMBAT_ADJUDICATIONS } = await import("../src/lib/dm/catalog-combat.ts");
 const COMBAT_NAMES = new Set(COMBAT_ADJUDICATIONS.map((entry) => entry.name));
 
+// A console built from an older catalog (the client apps compile the
+// server's screens) still sends the names its forms had; normalizeArgs maps
+// each onto the name the handler reads, and the old one is gone.
+const { normalizeArgs } = await import("../src/lib/dm/invoke.ts");
+const OLDER_FORM_NAMES = [
+  ["aoe_damage", { casterId: "c1" }, { casterCharacterId: "c1" }],
+  ["aoe_damage", { ability: "Fire Breath" }, { enemyAbility: "Fire Breath" }],
+  ["aoe_damage", { sculpt: ["c1"] }, { sparedCharacterIds: ["c1"] }],
+  ["cast_at_player", { ability: "Poison Spit" }, { enemyAbility: "Poison Spit" }],
+  ["move_token", { tokenName: "Bram", casterId: "c1" }, { token: "Bram", casterCharacterId: "c1" }],
+  ["set_movement", { tokenName: "Bram" }, { token: "Bram" }],
+  ["party_award", { amount: 50, delta: 10, name: "Rope" }, { xp: 50, gold: 10, item: "Rope" }],
+  ["party_stash", { amount: 10, name: "Rope" }, { gold: 10, item: "Rope" }],
+  ["haggle", { present: ["c2"] }, { presentCharacterIds: ["c2"] }],
+  ["afflict", { kind: "disease", dc: 12 }, { kind: "disease", saveDc: 12 }],
+  ["afflict", { kind: "madness", name: "short" }, { kind: "madness", duration: "short" }],
+  ["take_action", { action: "escape", enemyId: "e1" }, { action: "escape", escapingEnemyId: "e1" }],
+  ["set_quest", { questId: "q1", status: "done" }, { quest: "q1", status: "done" }],
+  ["tick_objective", { questId: "q1", objectiveId: "o1" }, { quest: "q1", objective: "o1" }],
+  ["show_handout", { loreId: "l1" }, { lore: "l1" }],
+  ["grant_item", { name: "Rope" }, { item: "Rope" }],
+  ["remove_item", { name: "Rope" }, { item: "Rope" }],
+  ["reveal_item", { name: "an ornate ring" }, { item: "an ornate ring" }],
+  ["use_spell_slot", { name: "Cure Wounds" }, { spell: "Cure Wounds" }],
+  ["learn_spell", { name: "Shield" }, { spell: "Shield" }],
+];
+test("an older form's field names reach the names the handler reads", () => {
+  for (const [name, sent, read] of OLDER_FORM_NAMES) {
+    assert.deepEqual(normalizeArgs(adjudication(name), sent), read, name);
+    for (const key of Object.keys(read)) {
+      assert.ok(toolProperties(name).keys.includes(key), `${name} defines no ${key}`);
+    }
+    // The model is offered only the new name; afflict keeps name for a disease or a poison.
+    for (const key of Object.keys(sent).filter((key) => !(key in read) && !(name === "afflict" && key === "name"))) {
+      assert.ok(!toolProperties(name).keys.includes(key), `${name} still offers ${key}`);
+    }
+  }
+});
+
 test("the property scan reads the tools it is pointed at", () => {
   assert.deepEqual(toolProperties("take_action").keys.sort(), [
-    "action", "bonus", "characterId", "enemyId", "item", "level", "readied", "reason", "shove", "skill",
+    "action", "bonus", "characterId", "escapingEnemyId", "item", "level", "readied", "reason", "shove", "skill",
     "spell", "targetCharacterId", "targetEnemyId", "trigger",
   ]);
   assert.ok(toolProperties("apply_damage").keys.includes("amount"));
@@ -468,7 +526,7 @@ test("every combat form sends only fields its handler reads", () => {
 
 // What the model is told to send and the handler does without: end_encounter
 // reads the outcome off the roster when none is given
-// (src/lib/dm/encounter-logic.ts coerceEncounterOutcome).
+// (src/lib/dm/encounter-logic.ts resolveEncounterOutcome).
 const HANDLER_FILLS_IN = {
   end_encounter: ["outcome"],
 };
@@ -578,6 +636,25 @@ const OMITTED_ON_PURPOSE = {
   // A person runs one character's downtime per form; the model may batch
   // several in activities, each with the same fields the form offers.
   downtime: ["activities"],
+  // A person's advantage stands as their ruling; only the AI names where it
+  // comes from (src/lib/dm/pc-attack-options.ts claimedAdvantage). A person
+  // walks the token on the board and ends the turn from the initiative bar;
+  // approach and endTurn carry the move and the end a player declared around
+  // their attack on the AI's one call (src/lib/dm/pc-attack-approach.ts).
+  pc_attack: ["advantageSource", "approach", "endTurn"],
+  enemy_attack: ["advantageSource"],
+  request_roll: ["advantageSource"],
+  // What a companion holds to is set by the class and alignment the form
+  // does offer; the model alone may replace it, as a list of objects no form
+  // field takes (issue 503). A hidden employer is a storyteller secret the
+  // model sets, and a person running the table writes it in the story's
+  // own notes rather than in a console form.
+  add_companion: ["values", "agenda"],
+  // Where a place sits in the region (issue 548). A person files an area
+  // under a bigger place from that area's menu on the Map tab, and puts a
+  // new place where it belongs by dragging it on the region map; the model
+  // has neither, so only it says these on the call.
+  move_party: ["partOf", "direction", "distance"],
 };
 
 function formOmissions(entry) {
@@ -627,9 +704,6 @@ test("every form offers every field its handler reads, or names why not", () => 
 const REQUIRED_BY_THE_FORM_ONLY = {
   // The façade folds the flat fields into modifiers (FOLDED_BY_THE_FACADE).
   set_effect: ["field"],
-  // The handler refuses a move with no hands in it ("someone has to be
-  // handing it over or taking it"), so the form asks up front.
-  party_stash: ["characterId"],
   // The handler refuses downtime without a character and an activity unless
   // activities lists several; the form runs one character, so it asks.
   downtime: ["characterId", "activity"],
@@ -738,11 +812,12 @@ test("a condition pick takes a story condition and a damage type pick a homebrew
 
 test("multi-target forms pick creatures instead of typing ids (U:UD5)", () => {
   assert.equal(adjudication("aoe_damage").fields.find((field) => field.name === "enemyIds").kind, "enemies");
-  assert.equal(adjudication("split_damage").fields.find((field) => field.name === "targets").kind, "shares");
-  for (const name of ["move_token", "teleport_token", "set_movement"]) {
-    assert.equal(adjudication(name).fields.find((field) => field.name === "tokenName").kind, "combatant", name);
+  // The damage tray is apply_damage's targets now (issue #471).
+  assert.equal(adjudication("apply_damage").fields.find((field) => field.name === "targets").kind, "shares");
+  for (const name of ["move_token", "set_movement"]) {
+    assert.equal(adjudication(name).fields.find((field) => field.name === "token").kind, "combatant", name);
   }
-  const split = adjudication("split_damage");
+  const split = adjudication("apply_damage");
   assert.equal(checkArgs(split, { amount: 9, targets: [{ enemyId: "e1", share: "half" }] }), null);
   assert.match(checkArgs(split, { amount: 9, targets: ["e1 half"] }), /list of rows/);
   const rest = adjudication("take_rest");
@@ -753,7 +828,7 @@ test("the lair switch, a player's area spell and chosen hit dice reach the conso
   const start = adjudication("start_encounter");
   assert.equal(start.fields.find((field) => field.name === "lair")?.kind, "boolean");
   const aoe = adjudication("aoe_damage");
-  for (const name of ["casterId", "spell", "level", "casterEnemyId"]) {
+  for (const name of ["casterCharacterId", "spell", "level", "casterEnemyId"]) {
     assert.ok(aoe.fields.some((field) => field.name === name), `aoe_damage.${name}`);
   }
   assert.equal(aoe.fields.find((field) => field.name === "damage").required, undefined);
@@ -870,15 +945,21 @@ const SCORES = { str: 10, dex: 12, con: 14, int: 8, wis: 13, cha: 15 };
 test("Correct a sheet turns a named field and its value into the sheet's own key", () => {
   assert.deepEqual(foldFieldValue({ field: "level", value: "5" }, SCORES), { args: { level: 5 } });
   assert.deepEqual(foldFieldValue({ field: "alignment", value: " LG " }, SCORES), { args: { alignment: "LG" } });
-  assert.deepEqual(foldFieldValue({ field: "Max HP", value: 40 }, SCORES), { args: { maxHp: 40 } });
-  assert.deepEqual(foldFieldValue({ field: "hp", value: "1,000" }, SCORES), { args: { currentHp: 1000 } });
+  assert.deepEqual(foldFieldValue({ field: "maxHp", value: 40 }, SCORES), { args: { maxHp: 40 } });
+  assert.deepEqual(foldFieldValue({ field: "currentHp", value: "1,000" }, SCORES), { args: { currentHp: 1000 } });
   assert.deepEqual(foldFieldValue({ field: "str", value: "16" }, SCORES), {
     args: { abilities: { ...SCORES, str: 16 } },
   });
   assert.deepEqual(foldFieldValue({ field: "conditions", value: "poisoned, prone" }, SCORES), {
     args: { conditions: ["poisoned", "prone"] },
   });
-  assert.deepEqual(foldFieldValue({ field: "conditions", value: "none" }, SCORES), { args: { conditions: [] } });
+  assert.deepEqual(foldFieldValue({ field: "conditions", value: "" }, SCORES), { args: { conditions: [] } });
+  // A field is its key, as the form's select sends it: a word for one, in
+  // any language, is no field, and a word typed as the list is its entry.
+  for (const field of ["Max HP", "hp", "pv max", "punti ferita"]) {
+    assert.match(foldFieldValue({ field, value: 40 }, SCORES).error, /no field called/, field);
+  }
+  assert.deepEqual(foldFieldValue({ field: "conditions", value: "none" }, SCORES), { args: { conditions: ["none"] } });
   // The model's own keys pass through, and win over the pair beside them.
   assert.deepEqual(foldFieldValue({ level: 3, gold: 10 }, SCORES), { args: { level: 3, gold: 10 } });
   assert.deepEqual(foldFieldValue({ field: "level", value: 9, level: 4 }, SCORES), { args: { level: 4 } });
@@ -887,6 +968,15 @@ test("Correct a sheet turns a named field and its value into the sheet's own key
   assert.match(foldFieldValue({ field: "level", value: "five" }, SCORES).error, /whole number/);
   assert.match(foldFieldValue({ field: "level", value: "4.5" }, SCORES).error, /whole number/);
   assert.match(foldFieldValue({ field: "level" }, SCORES).error, /becomes/);
+  // Left empty, only the list is answered: a name or a number is asked for
+  // again, and a value left out is no answer at all (table audit
+  // 2026-10-26, T09).
+  for (const field of ["alignment", "name", "level", "str"]) {
+    assert.match(foldFieldValue({ field, value: "" }, SCORES).error, /becomes/, field);
+    assert.match(foldFieldValue({ field, value: "  " }, SCORES).error, /becomes/, field);
+  }
+  assert.match(foldFieldValue({ field: "conditions" }, SCORES).error, /becomes/);
+  assert.deepEqual(foldFieldValue({ field: "conditions", value: "  " }, SCORES), { args: { conditions: [] } });
   // Every field the form offers is one the fold knows.
   for (const field of UPDATE_SHEET_FIELDS) {
     const value = field.kind === "text" ? "x" : field.kind === "list" ? "prone" : "3";

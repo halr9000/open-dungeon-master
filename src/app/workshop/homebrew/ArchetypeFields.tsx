@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { subclassLevelFor } from "@/lib/srd/features";
 import { Check, Plus, Search, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
@@ -12,6 +13,16 @@ import { CLASS_IDS } from "@/app/workshop/homebrew/types";
 import { engineRunsFeature, subclassFeatureCatalog, type CatalogFeature } from "@/lib/workshop/feature-catalog";
 import { addChip, rowIcon } from "@/app/workshop/kit";
 import type { Data } from "@/app/workshop/homebrew/draft";
+import { textKey } from "@/lib/language/text-logic";
+import {
+  THIRD_CASTER_PROFILES,
+  defaultThirdCasterProfile,
+  isThirdCasterProfile,
+  thirdCasterProfileForFeature,
+} from "@/lib/srd/third-caster";
+import { subclassMayCast } from "@/lib/srd/features";
+import { FEATURE_LIMITS, SUBCLASS_SPELLS_PER_LEVEL } from "@/lib/homebrew/class-data";
+import { featureCounts } from "@/lib/homebrew/limits";
 
 // A subclass: its class, its features by level and the always-prepared
 // spells it hands out (a domain's, an oath's). A character who takes it is
@@ -24,14 +35,19 @@ type Flat = { level: number; feature: FeatureRow };
 
 const capital = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
-function BorrowFeature({ onPick, taken }: { onPick: (feature: CatalogFeature) => void; taken: Set<string> }) {
+const ABILITY_NAMES = { int: "Intelligence", wis: "Wisdom", cha: "Charisma" } as const;
+
+// A class with Spellcasting of its own: its subclass's spells join that.
+const casterClass = (classId: string) => !subclassMayCast(classId);
+
+function BorrowFeature({ onPick, taken, full }: { onPick: (feature: CatalogFeature) => void; taken: Set<string>; full: Set<number> }) {
   const [query, setQuery] = useState("");
   const all = subclassFeatureCatalog();
   const results = useMemo(() => {
-    const wanted = query.trim().toLowerCase();
+    const wanted = textKey(query);
     if (wanted.length < 2) return [];
     return all
-      .filter((entry) => entry.name.toLowerCase().includes(wanted) || entry.subclass.toLowerCase().includes(wanted))
+      .filter((entry) => textKey(entry.name).includes(wanted) || textKey(entry.subclass).includes(wanted))
       .slice(0, 24);
   }, [all, query]);
   return (
@@ -50,16 +66,18 @@ function BorrowFeature({ onPick, taken }: { onPick: (feature: CatalogFeature) =>
         <ul className="reveal stagger-up max-h-64 space-y-1 overflow-y-auto rounded-lg border border-stone-800 bg-stone-950/60 p-1.5">
           {results.map((entry) => {
             const key = `${entry.classId}/${entry.subclass}/${entry.name}`;
-            const done = taken.has(entry.name.toLowerCase());
+            const done = taken.has(textKey(entry.name));
+            const levelFull = !done && full.has(entry.level);
             return (
               <li key={key} className="flex items-start gap-2">
                 <button
                   type="button"
-                  disabled={done}
+                  disabled={done || levelFull}
                   onClick={() => onPick(entry)}
                   className={cn(ui.btnSmall, addChip, "shrink-0", done && "border-emerald-500/40 text-emerald-200")}
                 >
-                  {done ? <Check className="size-3" /> : <Plus className="size-3" />} Level {entry.level}
+                  {done ? <Check className="size-3" /> : levelFull ? null : <Plus className="size-3" />} Level {entry.level}
+                  {levelFull ? " full" : ""}
                 </button>
                 <span className="min-w-0 text-[11px] leading-snug text-stone-400">
                   <span className="text-stone-200">{entry.name}</span> ({capital(entry.classId)}, {entry.subclass})
@@ -74,7 +92,19 @@ function BorrowFeature({ onPick, taken }: { onPick: (feature: CatalogFeature) =>
   );
 }
 
-function SpellLists({ data, set }: { data: Data; set: (patch: Data) => void }) {
+function SpellLists({
+  data,
+  set,
+  castsNothing,
+  classLabel,
+}: {
+  data: Data;
+  set: (patch: Data) => void;
+  // The class casts nothing and the subclass brings no Spellcasting: its
+  // always-prepared spells have nothing to be cast with.
+  castsNothing: boolean;
+  classLabel: string;
+}) {
   const spells = (data.spells ?? {}) as Record<string, string[]>;
   const rows = Object.entries(spells).sort(([a], [b]) => Number(a) - Number(b));
   const put = (next: Record<string, string[]>) => set({ spells: Object.keys(next).length ? next : undefined });
@@ -84,7 +114,9 @@ function SpellLists({ data, set }: { data: Data; set: (patch: Data) => void }) {
       <SectionHead title="Always-prepared spells" glyph="rest-spell-slot" className="mb-1" />
       {rows.map(([at, names]) => (
         <div key={at} className="live-in flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="w-16 text-stone-400">Level {at}</span>
+          <span className="w-28 shrink-0 text-stone-400">
+            Level {at} ({names.length} of {SUBCLASS_SPELLS_PER_LEVEL})
+          </span>
           {names.map((name) => (
             <span key={name} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-1.5 py-0.5 text-stone-200">
               {name}
@@ -111,24 +143,45 @@ function SpellLists({ data, set }: { data: Data; set: (patch: Data) => void }) {
           At class level
           <NumberStepper size="sm" label="Class level the spells arrive at" min={1} max={20} value={level} onChange={setLevel} />
         </span>
-        <ContentPick
-          kind="spells"
-          label="Find a spell the subclass always has prepared"
-          placeholder="Add a spell..."
-          className="min-w-48 flex-1"
-          onPick={(entry) => {
-            const list = spells[String(level)] ?? [];
-            if (list.some((name) => name.toLowerCase() === entry.name.toLowerCase())) return;
-            put({ ...spells, [String(level)]: [...list, entry.name] });
-          }}
-        />
+        {(spells[String(level)] ?? []).length < SUBCLASS_SPELLS_PER_LEVEL ? (
+          <ContentPick
+            kind="spells"
+            label="Find a spell the subclass always has prepared"
+            placeholder="Add a spell..."
+            className="min-w-48 flex-1"
+            onPick={(entry) => {
+              const list = spells[String(level)] ?? [];
+              if (list.some((name) => textKey(name) === textKey(entry.name))) return;
+              put({ ...spells, [String(level)]: [...list, entry.name] });
+            }}
+          />
+        ) : (
+          <span role="status" className="live-in text-[11px] text-stone-400">
+            Level {level} holds {SUBCLASS_SPELLS_PER_LEVEL}, the most a level keeps.
+          </span>
+        )}
       </div>
-      <p className="text-[11px] text-stone-500">Prepared for free from that level on, and never counted against the class&apos;s own prepared spells.</p>
+      {castsNothing && rows.length ? (
+        <p className="reveal text-[11px] text-amber-300/90">
+          A {classLabel} casts nothing of its own, so these spells have no slots to be cast with. Choose a spellcasting progression above, or they are words for the GM.
+        </p>
+      ) : (
+        <p className="text-[11px] text-stone-500">Prepared for free from that level on, and never counted against the class&apos;s own prepared spells.</p>
+      )}
     </div>
   );
 }
 
-export function ArchetypeFields({ data, set }: { data: Data; set: (patch: Data) => void }) {
+export function ArchetypeFields({
+  data,
+  set,
+  workshopClasses = [],
+}: {
+  data: Data;
+  set: (patch: Data) => void;
+  // The author's own classes (homebrew kind "class"), which a subclass can sit under.
+  workshopClasses?: Array<{ id: string; name: string; subclassLevel?: number }>;
+}) {
   const classId = String(data.classSlug ?? "fighter");
   const levels = (data.levels ?? {}) as Record<string, FeatureRow[]>;
   const flat: Flat[] = Object.entries(levels)
@@ -141,18 +194,59 @@ export function ArchetypeFields({ data, set }: { data: Data; set: (patch: Data) 
     }
     set({ levels: grouped });
   };
-  const taken = new Set(flat.map((row) => row.feature.n.trim().toLowerCase()));
+  const taken = new Set(flat.map((row) => textKey(row.feature.n)));
+  const counts = featureCounts(levels);
+  const full = new Set([...counts].filter(([, count]) => count >= FEATURE_LIMITS.perLevel).map(([level]) => level));
+  // A subclass of a class that casts nothing itself may cast as an Eldritch
+  // Knight or an Arcane Trickster does. A copy of either, or a subclass that
+  // borrowed their Spellcasting, casts by its rules until turned off
+  // (src/lib/srd/subclass-tables.ts castingProfileOf).
+  const ownClass = workshopClasses.find((klass) => klass.id === classId);
+  const classLabel = ownClass?.name ?? capital(classId);
+  const mayCast = subclassMayCast(classId);
+  const spellcastingRow = flat.find((row) => thirdCasterProfileForFeature(row.feature.n));
+  const featureProfile = spellcastingRow ? thirdCasterProfileForFeature(spellcastingRow.feature.n) : null;
+  const stored = data.castingProfile;
+  const casting = isThirdCasterProfile(stored)
+    ? stored
+    : stored === "third-caster"
+      ? defaultThirdCasterProfile(classId)
+      : stored === "none"
+        ? "none"
+        : (featureProfile ?? "none");
+  const rules = THIRD_CASTER_PROFILES.find((profile) => profile.id === casting);
 
   return (
     <div className="space-y-3">
       <SelectField
         label="Class"
         value={classId}
-        options={CLASS_IDS.map((value) => ({ value, label: capital(value) }))}
+        options={[...CLASS_IDS.map((value) => ({ value: value as string, label: capital(value) })), ...workshopClasses.map((klass) => ({ value: klass.id, label: klass.name }))]}
         onChange={(classSlug) => set({ classSlug })}
         className="w-56"
-        hint="The builder offers it under this class."
+        hint={`The builder offers it under this class from level ${ownClass?.subclassLevel ?? subclassLevelFor(classId) ?? 3}.`}
       />
+      {mayCast ? (
+        <SelectField
+          label="Spellcasting progression"
+          value={casting}
+          options={[
+            { value: "none", label: "No subclass spellcasting" },
+            ...THIRD_CASTER_PROFILES.map((profile) => ({
+              value: profile.id,
+              label: `${profile.label} rules: ${capital(profile.list)} spells, ${ABILITY_NAMES[profile.ability]}`,
+            })),
+          ]}
+          onChange={(value) =>
+            set({ castingProfile: isThirdCasterProfile(value) ? value : featureProfile ? "none" : undefined })
+          }
+          hint={
+            rules
+              ? `${!stored && spellcastingRow ? `On because the subclass has ${spellcastingRow.feature.n.trim()}: ` : ""}${ABILITY_NAMES[rules.ability]}, ${rules.list} spells, a third of a full caster's slots, and spells mostly from ${rules.schools[0]} and ${rules.schools[1]}.`
+              : `A ${capital(classId)} casts nothing of its own; its subclass can cast as a third caster, from the wizard, cleric or druid list.`
+          }
+        />
+      ) : null}
       <div className="space-y-1.5 text-sm">
         <SectionHead title="Features by level" glyph="rest-level-up" className="mb-1" />
         {flat.map((row, index) => {
@@ -177,7 +271,7 @@ export function ArchetypeFields({ data, set }: { data: Data; set: (patch: Data) 
                     className={cn(ui.input, "w-full text-sm sm:w-56")}
                   />
                   {tag ? (
-                    <span className="reveal-pop rounded-full border border-emerald-500/40 px-2 py-0.5 text-[10px] text-emerald-200" title="A feature of this name is run by the server, not just read by the DM.">
+                    <span className="reveal-pop rounded-full border border-emerald-500/40 px-2 py-0.5 text-[10px] text-emerald-200" title="A feature of this name is run by the server, not just read by the GM.">
                       The engine runs it {tag}
                     </span>
                   ) : null}
@@ -205,12 +299,20 @@ export function ArchetypeFields({ data, set }: { data: Data; set: (patch: Data) 
         >
           <Plus className="size-3" /> Add a feature
         </button>
-        <BorrowFeature taken={taken} onPick={(entry) => write([...flat, { level: entry.level, feature: { n: entry.name, d: entry.text } }])} />
+        {[...counts]
+          .filter(([, count]) => count > FEATURE_LIMITS.perLevel)
+          .sort(([a], [b]) => a - b)
+          .map(([level, count]) => (
+            <p key={level} role="alert" className="live-in text-[11px] text-red-300">
+              Level {level} has {count} features; a level keeps {FEATURE_LIMITS.perLevel}.
+            </p>
+          ))}
+        <BorrowFeature taken={taken} full={full} onPick={(entry) => write([...flat, { level: entry.level, feature: { n: entry.name, d: entry.text } }])} />
         <p className="text-[11px] text-stone-500">
-          Granted by name when a character takes this subclass. A borrowed feature keeps its name so the engine runs it; renaming it makes it words for the DM.
+          Granted by name when a character takes this subclass. A borrowed feature keeps its name so the engine runs it; renaming it makes it words for the GM.
         </p>
       </div>
-      <SpellLists data={data} set={set} />
+      <SpellLists data={data} set={set} castsNothing={casting === "none" && !casterClass(classId)} classLabel={classLabel} />
     </div>
   );
 }

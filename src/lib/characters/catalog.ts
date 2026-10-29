@@ -27,7 +27,7 @@ import { defaultRng } from "@/lib/dice";
 import type { GameSettings } from "@/lib/schemas/game-settings";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import authoredFeatsJson from "@/lib/srd/authored-feats.json";
-import { bundledSubclassName } from "@/lib/srd/features";
+import { bundledSubclassName, subclassNamesFor } from "@/lib/srd/features";
 import { packFeatText } from "@/lib/srd/feat-text";
 import { racialFeatCount } from "@/lib/srd/race-id";
 import { checklistSpell } from "@/lib/srd/spell-lists";
@@ -47,22 +47,27 @@ import type {
   RaceGrants,
   SpellFacts,
 } from "@/lib/srd/legality/types";
+import type { OlderBuilder } from "@/lib/srd/legality/older-builder";
+import { textKey } from "@/lib/language/text-logic";
+import { PLAYED_DOCUMENTS_SQL } from "@/lib/content/edition";
 
-const lower = (value: string) => value.trim().toLowerCase();
 const AUTHORED_FEATS = (authoredFeatsJson as { feats: FeatFacts[] }).feats;
 
 // ---- classes, races, backgrounds ----
 
-export function classGrantsFor(classId: string): ClassGrants | null {
-  const id = lower(classId);
+// `authors`: whose workshop classes count (a table's, or one person's own
+// shelf); a forgotten one still answers for the sheet that holds it.
+export function classGrantsFor(classId: string, authors?: string | string[]): ClassGrants | null {
+  const id = textKey(classId);
   // The bundled row first: it is the one the engines' own tables are keyed
   // by, and the pack's copy of an SRD class says the same in prose.
   const bundled = srdClassOptions().find((option) => option.id === id);
   if (bundled) {
     return bundled;
   }
-  const rows = listClasses({ limit: 200 }) as ContentRow[];
-  return packClassOptions(rows).find((option) => lower(option.id) === id) ?? null;
+  const userIds = Array.isArray(authors) ? authors : authors ? [authors] : [];
+  const rows = listClasses({ limit: 200, userIds, includeArchived: true }) as ContentRow[];
+  return packClassOptions(rows).find((option) => textKey(option.id) === id) ?? null;
 }
 
 // Every row a race id may mean, the likeliest first. A sheet built from the
@@ -123,7 +128,7 @@ export function backgroundGrantsFor(
   const options = mergedBackgroundOptions(rows);
   return (
     options.find((option) => option.id === id) ??
-    options.find((option) => lower(option.id).replace(/-/g, "_") === lower(id).replace(/-/g, "_")) ??
+    options.find((option) => textKey(option.id) === textKey(id)) ??
     null
   );
 }
@@ -132,12 +137,7 @@ export function backgroundGrantsFor(
 
 let priceIndex: Map<string, ItemPrice> | null = null;
 
-const priceKey = (name: string) =>
-  name
-    .toLowerCase()
-    .replace(/\(\s*\d+\s*\)\s*$/, " ")
-    .replace(/[^a-z0-9+]+/g, " ")
-    .trim();
+const priceKey = (name: string) => textKey(name.replace(/\(\s*\d+\s*\)\s*$/, " "));
 
 // Name to price, built once from the pack's items. A name the pack lists as
 // mundane gear is mundane, whatever else shares it (a Potion of Healing is
@@ -150,7 +150,7 @@ function packPrices(): Map<string, ItemPrice> {
   const index = new Map<string, ItemPrice>();
   const db = getContentDb();
   if (db) {
-    const rows = db.prepare(`SELECT name, kind, cost FROM items`).all() as Array<{
+    const rows = db.prepare(`SELECT name, kind, cost FROM items WHERE ${PLAYED_DOCUMENTS_SQL}`).all() as Array<{
       name: string;
       kind: string;
       cost: string | null;
@@ -192,8 +192,8 @@ export function spellFactsFor(name: string, authors?: Authors): SpellFacts | nul
     return {
       name: published?.name ?? listed!.name,
       level: published?.level ?? listed!.level,
-      classes: [...new Set([...(published?.classes ?? []), ...(listed?.classes ?? [])].map(lower))],
-      school: published?.school ? lower(published.school) : bundledSpellSchool(published?.name ?? listed!.name),
+      classes: [...new Set([...(published?.classes ?? []), ...(listed?.classes ?? [])].map(textKey))],
+      school: published?.school ? textKey(published.school) : bundledSpellSchool(published?.name ?? listed!.name),
       ...(published ? { ritual: published.ritual } : {}),
     };
   }
@@ -204,21 +204,21 @@ export function spellFactsFor(name: string, authors?: Authors): SpellFacts | nul
     (entry) => entry.source === "homebrew" && spellNameMatches(entry, wanted),
   );
   return brewed
-    ? { name: brewed.name, level: brewed.level, classes: brewed.classes.map(lower), school: brewed.school ? lower(brewed.school) : null, ritual: brewed.ritual }
+    ? { name: brewed.name, level: brewed.level, classes: brewed.classes.map(textKey), school: brewed.school ? textKey(brewed.school) : null, ritual: brewed.ritual }
     : null;
 }
 
 export function featFactsFor(name: string, authors?: Authors): FeatFacts | null {
-  const wanted = lower(name);
+  const wanted = textKey(name);
   if (!wanted) {
     return null;
   }
-  const authored = AUTHORED_FEATS.find((feat) => lower(feat.name) === wanted);
+  const authored = AUTHORED_FEATS.find((feat) => textKey(feat.name) === wanted);
   if (authored) {
     return { name: authored.name, prerequisite: authored.prerequisite ?? "", desc: authored.desc ?? "" };
   }
   const found = searchFeats({ q: name.trim(), limit: 50, userIds: authorIds(authors), includeArchived: true }).find(
-    (entry) => lower(entry.name) === wanted,
+    (entry) => textKey(entry.name) === wanted,
   );
   if (!found) {
     return null;
@@ -226,13 +226,6 @@ export function featFactsFor(name: string, authors?: Authors): FeatFacts | null 
   const text = packFeatText(found.data);
   const runsAs = found.source === "homebrew" && typeof found.data.runsAs === "string" ? found.data.runsAs : "";
   return { name: found.name, prerequisite: text.prerequisite, desc: text.desc, ...(runsAs ? { runsAs } : {}) };
-}
-
-// A feat's text as one string, wherever the pack keeps it (src/lib/srd/
-// feat-text.ts), so the grants in it (feat-grants.ts, feat-spells.ts) are
-// found.
-export function packFeatDesc(data: Record<string, unknown>): string {
-  return packFeatText(data).desc;
 }
 
 export function subclassIsOffered(
@@ -243,10 +236,25 @@ export function subclassIsOffered(
   if (bundledSubclassName(classId, name)) {
     return true;
   }
-  const wanted = lower(name);
+  const wanted = textKey(name);
   return listArchetypes(classId, { limit: 200, userIds: authorIds(authors), includeArchived: true }).some(
-    (entry) => lower(entry.name) === wanted || lower(entry.slug) === wanted,
+    (entry) => textKey(entry.name) === wanted || textKey(entry.slug) === wanted,
   );
+}
+
+// The subclasses a class may pick at this table, by name: the bundled ones
+// with their feature tables first, then the content pack's and the table's
+// workshop archetypes, as the level-up dialog lists them. A forgotten
+// (archived) entry still answers subclassIsOffered for a sheet that holds
+// it, but is not offered to a new pick.
+export function offeredSubclasses(classId: string, authors?: Authors): string[] {
+  const names = [...subclassNamesFor(classId)];
+  for (const entry of listArchetypes(classId, { limit: 200, userIds: authorIds(authors) })) {
+    if (!names.some((name) => textKey(name) === textKey(entry.name))) {
+      names.push(entry.name);
+    }
+  }
+  return names;
 }
 
 // ---- the context ----
@@ -262,6 +270,9 @@ export type ContextInput = {
   // own shelf.
   campaign?: { id: string; ownerUserId: string; gameSettings: GameSettings } | null;
   baseline?: { sheet: CreateSheetInput; level: number } | null;
+  // What the page that built the sheet had no field for, read off the
+  // request (src/lib/srd/legality/older-builder.ts olderBuilderOf).
+  olderBuilder?: OlderBuilder | null;
 };
 
 // Whose homebrew a character is judged against: the same scope the pickers
@@ -293,7 +304,7 @@ export function legalityContextFor(input: ContextInput): LegalityContext {
     level: input.level,
     hpMethod: settings ? (settings.hpMethod ?? "average") : null,
     startingWealth: settings?.startingWealth ?? "equipment",
-    classOf: classGrantsFor,
+    classOf: (classId) => classGrantsFor(classId, owner),
     race: raceGrantsFor(input.sheet.race, owner),
     background: backgroundGrantsFor(input.sheet.background, owner),
     baseline: input.baseline ?? null,
@@ -308,5 +319,6 @@ export function legalityContextFor(input: ContextInput): LegalityContext {
     subclassOffered: (classId, name) => subclassIsOffered(classId, name, owner),
     subclassExtras: subclassExtrasFor(owner),
     rollDie: defaultRng,
+    olderBuilder: input.olderBuilder ?? null,
   };
 }

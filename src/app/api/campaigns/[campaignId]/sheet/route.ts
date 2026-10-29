@@ -8,9 +8,13 @@ import {
   type MemberContext,
 } from "@/lib/campaign-api";
 import { seatAddedSheet } from "@/lib/character-seat";
-import { JOIN_NOTE_PREFIX } from "@/lib/campaign-types";
 import { admitSheet, refusal } from "@/lib/characters/admit";
-import { allocateSeq, listMembers, setMemberReady } from "@/lib/db/campaigns";
+import { olderBuilderOf } from "@/lib/srd/legality/older-builder";
+import { admitLibraryForSeat } from "@/lib/characters/seat-preview";
+import { hasSeatPicks, seatPicksSchema, type SeatPicks } from "@/lib/characters/seat-picks";
+import { announceMidGameJoin } from "@/lib/characters/mid-game-join";
+import { listMembers, setMemberReady } from "@/lib/db/campaigns";
+import { pregenSeatRefusal, recordPregenSeat } from "@/lib/db/pregen-offers";
 import {
   companionRoleRefusal,
   createCharacter,
@@ -19,7 +23,6 @@ import {
   updateCharacter,
   updateCharacterPortrait,
 } from "@/lib/db/characters";
-import { insertCampaignMessage } from "@/lib/db/messages";
 import {
   createSheet,
   deleteSheetById,
@@ -42,32 +45,33 @@ import { rollCard } from "@/lib/dm/roll-card";
 import { buildLevelUp } from "@/lib/srd/level-up";
 import { freeCantripCount } from "@/lib/srd/free-cantrips";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { publishPersisted, publishWithSeq } from "@/lib/events";
-
-// A character arriving after the adventure started gets a table note so the
-// DM writes them into the story on its next turn.
-function announceMidGameJoin(context: MemberContext, sheet: CharacterSheet) {
-  if (context.campaign.status !== "active") {
-    return;
-  }
-  const campaignId = context.campaign.id;
-  const seq = allocateSeq(campaignId);
-  const backstoryHint = sheet.backstory
-    ? ` Their backstory: ${sheet.backstory.slice(0, 200)}`
-    : "";
-  const message = insertCampaignMessage({
-    campaignId,
-    seq,
-    authorType: "system",
-    glyph: "system-party",
-    content: `${JOIN_NOTE_PREFIX}${context.user.username} has joined the party as ${sheet.name}, a ${sheet.race.replaceAll("_", " ")} ${sheet.class}.${backstoryHint} Introduce them into the scene at the next natural moment.`,
-  });
-  publishWithSeq(campaignId, seq, "message_added", { message });
-}
+import { publishPersisted } from "@/lib/events";
 
 const fromLibrarySchema = z.object({
   libraryCharacterId: z.string().min(1),
 });
+
+// The owed choices a player picked on the confirm sheet (JoinConfirmDialog,
+// src/lib/characters/seat-picks.ts), sent beside the library character.
+function picksOf(raw: unknown): { picks: SeatPicks | null } | { error: Response } {
+  const sent = raw && typeof raw === "object" ? (raw as { picks?: unknown }).picks : undefined;
+  if (sent === undefined || sent === null) {
+    return { picks: null };
+  }
+  const parsed = seatPicksSchema.safeParse(sent);
+  return parsed.success
+    ? { picks: parsed.data }
+    : { error: Response.json({ error: parsed.error.issues[0]?.message || "Those picks could not be read." }, { status: 400 }) };
+}
+
+// The library door with the picks made: the hero is adapted and admitted
+// as ever, then the picks are applied and judged (seat-preview.ts).
+function admitWith(context: MemberContext, picks: SeatPicks | null) {
+  return hasSeatPicks(picks)
+    ? (character: Parameters<typeof admitLibraryForSeat>[0], _campaign: unknown, userId: string, level: number) =>
+        admitLibraryForSeat(character, context.campaign, userId, level, picks)
+    : undefined;
+}
 
 const editSchema = z.object({
   editLibraryCharacterId: z.string().min(1),
@@ -159,18 +163,33 @@ export async function POST(
   // Path 1: pick an existing library character (adapted to campaign level).
   const fromLibrary = fromLibrarySchema.safeParse(raw);
   if (fromLibrary.success) {
+    const picked = picksOf(raw);
+    if ("error" in picked) {
+      return picked.error;
+    }
     const reused = listSheetsForUser(campaignId, context.user.id).some((entry) => entry.libraryCharacterId === fromLibrary.data.libraryCharacterId && !entry.isCompanion);
     if (!reused && getSheetForUser(campaignId, context.user.id) && context.campaign.gameSettings.multiCharacter === "off") {
       return Response.json({ error: "You already have a character in this campaign." }, { status: 409 });
+    }
+    // One player per pregen per table (src/lib/db/pregen-offers.ts): a copy of
+    // a DM's offered pregen does not sit where another sheet plays it.
+    const library = reused ? null : getCharacterForUser(context.user.id, fromLibrary.data.libraryCharacterId);
+    const held = library ? pregenSeatRefusal(campaignId, library, context.user.id) : null;
+    if (held) {
+      return Response.json({ error: held }, { status: 409 });
     }
     const result = instantiateIntoCampaign(
       fromLibrary.data.libraryCharacterId,
       campaignId,
       context.user.id,
       context.campaign.startingLevel,
+      admitWith(context, picked.picks),
     );
     if ("error" in result) {
       return Response.json(result, { status: 400 });
+    }
+    if (library) {
+      recordPregenSeat(campaignId, library, context.user.id, result.id);
     }
     seatAddedSheet(context.campaign, context.user.id, result.id);
     publishPersisted(campaignId, "sheet_updated", { sheet: result });
@@ -199,6 +218,7 @@ export async function POST(
     sheet: parsed.data,
     userId: targetUserId,
     campaign: context.campaign,
+    olderBuilder: olderBuilderOf(raw),
   });
   if (!admitted.ok) {
     return refusal(admitted.problems);
@@ -261,6 +281,10 @@ export async function PUT(
   // along; a render only queues if it has none yet.
   const fromLibrary = fromLibrarySchema.safeParse(raw);
   if (fromLibrary.success) {
+    const picked = picksOf(raw);
+    if ("error" in picked) {
+      return picked.error;
+    }
     const character = getCharacterForUser(context.user.id, fromLibrary.data.libraryCharacterId);
     if (!character) {
       return Response.json({ error: "Character not found in your library." }, { status: 404 });
@@ -270,12 +294,27 @@ export async function PUT(
     if (character.role === "companion") {
       return Response.json({ error: companionRoleRefusal(character) }, { status: 400 });
     }
+    // Picks that are not within the rules are refused before the old sheet
+    // goes too: the switch is judged first, then made.
+    if (hasSeatPicks(picked.picks)) {
+      const judged = admitLibraryForSeat(character, context.campaign, context.user.id, Math.max(1, Math.min(20, context.campaign.startingLevel)), picked.picks);
+      if (!judged.ok) {
+        return refusal(judged.problems);
+      }
+    }
+    // A pregen someone else holds here is refused before the old sheet goes
+    // too (src/lib/db/pregen-offers.ts); the sheet given up holds nothing.
+    const held = pregenSeatRefusal(campaignId, character, context.user.id, existing.id);
+    if (held) {
+      return Response.json({ error: held }, { status: 409 });
+    }
     deleteSheetForUser(campaignId, context.user.id);
     const result = instantiateIntoCampaign(
       character.id,
       campaignId,
       context.user.id,
       context.campaign.startingLevel,
+      admitWith(context, picked.picks),
     );
     if ("error" in result) {
       // The old sheet is already gone; the lobby falls back to its
@@ -286,6 +325,7 @@ export async function PUT(
       });
       return Response.json({ error: result.error }, { status: 400 });
     }
+    recordPregenSeat(campaignId, character, context.user.id, result.id);
     queueLibraryPortrait(character);
     publishReplacement(context, existing, result);
     return Response.json({ sheet: result });
@@ -310,19 +350,6 @@ export async function PUT(
     if (character.role === "companion") {
       return Response.json({ error: companionRoleRefusal(character) }, { status: 400 });
     }
-    const edited = admitSheet({
-      door: "library",
-      level: context.campaign.startingLevel,
-      sheet: edit.data.sheet,
-      userId: context.user.id,
-      campaign: context.campaign,
-      baseline: { sheet: character.sheet, level: character.level },
-    });
-    if (!edited.ok) {
-      return refusal(edited.problems);
-    }
-    edit.data.sheet = edited.sheet;
-    edited.settle();
     // The copy this edit replaces is the one made from the character it
     // edited. At a table where the player fields several, the seat may be on
     // another of their sheets, and replacing THAT one lost it and left two
@@ -332,6 +359,26 @@ export async function PUT(
       listSheetsForUser(campaignId, context.user.id).find(
         (sheet) => sheet.libraryCharacterId === character.id && !sheet.isCompanion,
       ) ?? existing;
+    // The edited sheet takes a new id; a pregen it plays stays this player's
+    // (src/lib/db/pregen-offers.ts), and one someone else holds is refused.
+    const held = pregenSeatRefusal(campaignId, character, context.user.id, replaced.id);
+    if (held) {
+      return Response.json({ error: held }, { status: 409 });
+    }
+    const edited = admitSheet({
+      door: "library",
+      level: context.campaign.startingLevel,
+      sheet: edit.data.sheet,
+      userId: context.user.id,
+      campaign: context.campaign,
+      baseline: { sheet: character.sheet, level: character.level },
+      olderBuilder: olderBuilderOf((raw as { sheet?: unknown } | null)?.sheet),
+    });
+    if (!edited.ok) {
+      return refusal(edited.problems);
+    }
+    edit.data.sheet = edited.sheet;
+    edited.settle();
     if (character.level !== context.campaign.startingLevel) {
       deleteSheetById(campaignId, context.user.id, replaced.id);
       const sheet = createSheet(
@@ -341,6 +388,7 @@ export async function PUT(
         edit.data.sheet,
         character.id,
       );
+      recordPregenSeat(campaignId, character, context.user.id, sheet.id);
       // A portrait cleared to be redrawn is drawn from the edited sheet.
       if (!edit.data.sheet.portrait) {
         queueLibraryPortrait({ ...character, sheet: edit.data.sheet });
@@ -371,6 +419,7 @@ export async function PUT(
       });
       return Response.json({ error: result.error }, { status: 400 });
     }
+    recordPregenSeat(campaignId, updated, context.user.id, result.id);
     queueLibraryPortrait(updated);
     publishReplacement(context, replaced, result);
     return Response.json({ sheet: result });
@@ -390,6 +439,7 @@ export async function PUT(
     sheet: parsed.data,
     userId: context.user.id,
     campaign: context.campaign,
+    olderBuilder: olderBuilderOf(raw),
   });
   if (!replaced.ok) {
     return refusal(replaced.problems);
@@ -506,6 +556,18 @@ export async function PATCH(
     .filter(([, value]) => value !== undefined)
     .map(([key]) => key);
   const levelingUp = typeof parsed.data.level === "number" && parsed.data.level > sheet.level;
+  // A level the sheet already has: most often a level-up sent twice (an
+  // agent retrying after its first call went through). Refused as any other
+  // edit outside a level-up is, but said as what it is.
+  if (typeof parsed.data.level === "number" && !levelingUp && !companionPortrait) {
+    return Response.json(
+      {
+        error: `${sheet.name} is already level ${sheet.level}. ${sheet.level >= 20 ? "No character passes level 20." : `A level-up names the next level, ${sheet.level + 1}.`}`,
+        level: sheet.level,
+      },
+      { status: 403 },
+    );
+  }
   if (!levelingUp && patchedKeys.some((key) => !cosmeticKeys.has(key))) {
     return Response.json(
       {

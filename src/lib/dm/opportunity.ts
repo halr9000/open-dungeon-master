@@ -3,12 +3,17 @@ import { budgetFor } from "@/lib/dm/turn-budget";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { getActiveEncounter, getEnemy, listEnemies, saveEncounter } from "@/lib/db/encounters";
+import { isSheetFoe } from "@/lib/dm/combat-sides-logic";
+import { sideOf } from "@/lib/dm/combatant";
+import { getFoe } from "@/lib/dm/sheet-foe";
+import { enemiesStrikeWalker } from "@/lib/dm/opportunity-sides";
+import { entersReachAt, leavesReachAt } from "@/lib/dm/opportunity-reach-logic";
 
 import { getBattleMapForEncounter, getTokenByRef } from "@/lib/db/battle-maps";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
 import { insertRoll } from "@/lib/db/rolls";
 import { rollAgainst } from "@/lib/roll-labels";
-import { footprintDistance, footprintForSize, type Footprint } from "@/lib/battlemap/footprint";
+import { footprintForSize } from "@/lib/battlemap/footprint";
 
 import { d20Expression, rollExpression } from "@/lib/dice";
 import { publishWithSeq } from "@/lib/events";
@@ -19,7 +24,7 @@ import {
   weaponOf,
 } from "@/lib/dm/attack-logic";
 import { RAGING } from "@/lib/srd/class-resources";
-import { computeSheetDerived } from "@/lib/srd";
+import { acBreakdownFor, computeSheetDerived } from "@/lib/srd";
 import { matchWeapon } from "@/lib/srd/weapons";
 import { magicWeaponOfRow } from "@/lib/dm/gear-attack";
 import { combatRiders } from "@/lib/srd/feature-effects";
@@ -43,9 +48,12 @@ import { opportunityWeapon } from "@/lib/dm/enemy-profile";
 import { opportunitySight, pcOpportunitySwing, withOpportunityTurn } from "@/lib/dm/opportunity-strike";
 import { martialArtsApplies } from "@/lib/dm/pc-attack-options";
 import { applyPcDamage } from "@/lib/dm/pc-damage";
-import { blowByType, resolveOnHit } from "@/lib/dm/enemy-hit";
+import { blowByType, resolveOnHit, scaledParts } from "@/lib/dm/enemy-hit";
+import { effectOutcome } from "@/lib/dm/effect-tools";
 import { hasTrait } from "@/lib/dm/monster-abilities";
 import { enfeebledBlow, spellRetort } from "@/lib/dm/spell-retort";
+import { holdsFeature } from "@/lib/srd/feature-names";
+import { activeAuthored } from "@/lib/srd/authored-effects";
 
 // Opportunity attacks: walking out of an enemy's reach is not free. Before
 // this, a player could stroll away from a troll with no consequence at all,
@@ -82,50 +90,8 @@ export type OpportunityOutcome = {
   downedAt?: XY;
 };
 
-// The square a walker stood on when they left this reach, or null when the
-// walk never leaves it. `steps` is every square of the walk in order, the
-// starting one first.
-// The square a walk enters a reactor's reach at, or null when it never
-// does: Polearm Master's opportunity attack on a creature coming in. Reach
-// is measured between the nearest squares of the two, so an ogre's reach
-// starts at its edge and a walking ogre leaves a reach when its last square
-// does (src/lib/battlemap/footprint.ts).
-export function entersReachAt(
-  steps: XY[],
-  reactor: XY,
-  reach: number,
-  reactorFootprint: Footprint = 1,
-  moverFootprint: Footprint = 1,
-): XY | null {
-  const apart = (step: XY) => footprintDistance(reactor, reactorFootprint, step, moverFootprint);
-  for (let index = 0; index + 1 < steps.length; index += 1) {
-    const here = steps[index];
-    const next = steps[index + 1];
-    if (apart(here) > reach && apart(next) <= reach) {
-      return next;
-    }
-  }
-  return null;
-}
-
-export function leavesReachAt(
-  steps: XY[],
-  reactor: XY,
-  reach: number,
-  reactorFootprint: Footprint = 1,
-  moverFootprint: Footprint = 1,
-): XY | null {
-  const apart = (step: XY) => footprintDistance(reactor, reactorFootprint, step, moverFootprint);
-  for (let index = 0; index + 1 < steps.length; index += 1) {
-    const here = steps[index];
-    const next = steps[index + 1];
-    if (apart(here) <= reach && apart(next) > reach) {
-      return here;
-    }
-  }
-  return null;
-
-}
+// Where a walk enters or leaves a reach (opportunity-reach-logic.ts).
+export { entersReachAt, leavesReachAt };
 
 const lowered = (conditions: string[]) => conditions.map((entry) => entry.toLowerCase());
 const cannotSee = (conditions: string[]) => lowered(conditions).includes("blinded");
@@ -169,8 +135,14 @@ export function resolveOpportunityAttacks(
   const notes: string[] = [];
   let downed = false;
   let downedAt: XY | undefined;
+  // Only the other side reacts (src/lib/dm/combatant.ts): an enemy does not
+  // strike a companion that turned to its side, and the party does.
+  const moverSide = sideOf(encounter, "sheet", characterId);
 
   for (const enemy of listEnemies(encounter.id)) {
+    if (sideOf(encounter, "enemy", enemy.id, enemy) === moverSide) {
+      continue;
+    }
     // The reacting side must be able to react (Shocking Grasp and Slow take
     // the reaction away), and to see who is leaving.
     if (
@@ -235,14 +207,23 @@ export function resolveOpportunityAttacks(
     const light = lightOnAttack(sight, { attacker: enemy.displayName, target: sheet.name });
     // Escape the Horde (a Hunter ranger's Defensive Tactics): opportunity
     // attacks against them are made at disadvantage.
-    const escapes = sheet.features.some((feature) => /escape the horde/i.test(feature.name));
+    const escapes = holdsFeature(sheet, "Escape the Horde");
+    // Totem Spirit (Eagle): opportunity attacks against the raging barbarian
+    // are made at disadvantage.
+    const eagle = activeAuthored(sheet, "oa_disadv").length > 0;
+    // An active effect on its attack and damage rolls (set_effect).
+    const attackEffect = effectOutcome(campaign.id, { kind: "enemy", id: enemy.id }, "attack");
+    const damageEffect = effectOutcome(campaign.id, { kind: "enemy", id: enemy.id }, "damage").bonus;
     const advantage = mergeAdvantage([
-      context.advantage,
+      ...context.sources,
       ...light.sources,
       ...(escapes ? ["disadvantage" as const] : []),
+      ...(eagle ? ["disadvantage" as const] : []),
+      ...(attackEffect.advantage ? ["advantage" as const] : []),
+      ...(attackEffect.disadvantage ? ["disadvantage" as const] : []),
     ]);
     const targetAc = acWithEffects(campaign.id, sheet);
-    const hitOutcome = rollExpression(d20Expression(attack.toHit, advantage));
+    const hitOutcome = rollExpression(d20Expression(attack.toHit + attackEffect.bonus, advantage));
     const hitRoll = insertRoll({
       campaignId: campaign.id,
       characterId: null,
@@ -266,13 +247,14 @@ export function resolveOpportunityAttacks(
     }
     const crit = adjudicated.crit || context.autoCrit;
 
+    const rolledDamage = crit
+      ? critDamageExpression(attack.damage, 0, {
+          powerfulCritical: campaign.gameSettings.variantRules.powerfulCritical,
+          multiplyNumeric: campaign.gameSettings.variantRules.criticalDamageMods,
+        })
+      : attack.damage;
     const damageOutcome = rollExpression(
-      crit
-        ? critDamageExpression(attack.damage, 0, {
-            powerfulCritical: campaign.gameSettings.variantRules.powerfulCritical,
-            multiplyNumeric: campaign.gameSettings.variantRules.criticalDamageMods,
-          })
-        : attack.damage,
+      damageEffect > 0 ? `${rolledDamage}+${damageEffect}` : damageEffect < 0 ? `${rolledDamage}-${-damageEffect}` : rolledDamage,
     );
     const damageRoll = insertRoll({
       campaignId: campaign.id,
@@ -297,8 +279,10 @@ export function resolveOpportunityAttacks(
     // Damage like any other (src/lib/dm/pc-damage.ts): resistances, temporary
     // hit points, a beast form's pool first, Relentless Endurance, the rage
     // ending at 0, the death engine, and the concentration save.
-    const magical = hasTrait(enemy.stats, "magicWeapons");
-    const blow = blowByType(attack, damageOutcome, sheet, crit, magical);
+    // Magic Weapons, or a blow the block prints as magical ("magical
+    // bludgeoning"), as enemy_attack reads it.
+    const magical = hasTrait(enemy.stats, "magicWeapons") || attack.magical === true;
+    const blow = blowByType(attack, damageOutcome, crit);
     const rolled = enfeebledBlow(enemy, attack, false, Math.max(0, blow.amount));
     const { landed, onHit } = withOpportunityTurn(campaign.id, (turn) => {
       const hitSheets = listSheets(campaign.id);
@@ -308,6 +292,7 @@ export function resolveOpportunityAttacks(
           ? applyPcDamage(campaign, turn.id, sheet, {
               amount: rolled,
               ...(blow.type ? { type: blow.type } : {}),
+              ...(blow.parts ? { parts: scaledParts(blow.parts, rolled) } : {}),
               ...(magical ? { magical: true } : {}),
               crit,
               reason: `opportunity attack from ${enemy.displayName}`,
@@ -318,13 +303,13 @@ export function resolveOpportunityAttacks(
       return { landed: applied, onHit: rider };
     });
     const updated = getSheetById(sheet.id);
-    hitLog.swing(hitOutcome, targetAc, { hit: true, crit, raw: rolled, advantage, ...(blow.type ? { type: blow.type } : {}) });
+    hitLog.swing(hitOutcome, targetAc, { hit: true, crit, raw: rolled, advantage, ...(blow.type ? { type: blow.type } : {}), ...(blow.parts ? { parts: scaledParts(blow.parts, rolled) } : {}) });
     hitLog.close({ attacker: { kind: "enemy", id: enemy.id, name: enemy.displayName }, attack: `${attack.name} (opportunity attack)`, type: attack.type, ranged: false });
     if (updated && updated.currentHp <= 0 && !updated.wildShape) {
       downed = true;
       downedAt = leftFrom;
     }
-    const byType = blow.byType ? ` (${blow.byType.join(", ")})` : typeof landed.resistance === "string" ? ` (${landed.resistance})` : "";
+    const byType = Array.isArray(landed.damageByType) ? ` (${(landed.damageByType as string[]).join(", ")})` : typeof landed.resistance === "string" ? ` (${landed.resistance})` : "";
     const riderNote = Array.isArray(onHit?.riderCondition) ? ` ${sheet.name} is ${(onHit.riderCondition as string[]).join(" and ")}.` : "";
     notes.push(
       `${enemy.displayName} takes an opportunity attack as ${sheet.name} pulls away: ${
@@ -338,6 +323,18 @@ export function resolveOpportunityAttacks(
 
   for (const note of notes) {
     tableNote(campaign, note);
+  }
+  // The characters of the other side strike too: a party member as a
+  // turncoat walks off, a turncoat as a party member does. They post their
+  // own lines.
+  if (!downed) {
+    const struck = resolvePcOpportunityAttacks(campaign, characterId, from, to, path);
+    notes.push(...struck);
+    const mover = getSheetById(characterId);
+    if (struck.length && mover && mover.currentHp <= 0 && !mover.wildShape) {
+      downed = true;
+      downedAt = steps[steps.length - 1];
+    }
   }
   return { notes, downed, ...(downedAt ? { downedAt } : {}) };
 }
@@ -354,12 +351,12 @@ function stokeRage(sheet: NonNullable<ReturnType<typeof getSheetById>>) {
 }
 
 // The melee weapon a character strikes with when something walks away from
-// them: the best one they carry. A character carrying only a bow has no
-// opportunity attack to make. A magic weapon is its base weapon (a Flame
-// Tongue is a longsword, src/lib/dm/gear-attack.ts).
+// them: the best one they carry, one-handed beside a shield. A character
+// carrying only a bow has no opportunity attack to make. A magic weapon is
+// its base weapon (a Flame Tongue is a longsword, src/lib/dm/gear-attack.ts).
 function meleeWeaponFor(sheet: NonNullable<ReturnType<typeof getSheetById>>) {
   const weaponFor = (item: (typeof sheet.equipment)[number]) =>
-    magicWeaponOfRow(item).srd ?? weaponOf(item) ?? matchWeapon(item.name);
+    magicWeaponOfRow(item).srd ?? weaponOf(item) ?? matchWeapon(item);
   const melee = sheet.equipment.filter((item) => {
     const weapon = weaponFor(item);
     return weapon !== null && weapon.kind === "melee";
@@ -368,13 +365,19 @@ function meleeWeaponFor(sheet: NonNullable<ReturnType<typeof getSheetById>>) {
   if (!melee.length && carriesWeapon) {
     return null;
   }
-  return resolveAttackWeapon(melee, sheet.proficiencies.weapons, undefined);
+  return resolveAttackWeapon(melee, sheet.proficiencies.weapons, undefined, {
+    shieldOnArm: acBreakdownFor(sheet).shieldName !== null,
+  });
 }
 
-// The other side of the same rule: an enemy that walks out of a character's
-// reach eats a melee attack from them. Fires wherever an enemy walks (the
-// DM's move_token and the approach enemy_attack makes), and spends the
-// character's reaction out of the same list the enemy side uses.
+// The other side of the same rule: a creature that walks out of a
+// character's reach eats a melee attack from them. Fires wherever an enemy
+// walks (the DM's move_token and the approach enemy_attack makes), and for a
+// character walking away from characters of the other side (a turncoat and
+// the party, src/lib/dm/combatant.ts); spends the character's reaction out
+// of the same list the enemy side uses. `enemyId` is the walker: an enemy
+// row, or a character seen as a foe (sheet-foe.ts). Enemies of the other
+// side strike an enemy walker as well (opportunity-sides.ts).
 export function resolvePcOpportunityAttacks(
   campaign: Campaign,
   enemyId: string,
@@ -393,11 +396,16 @@ export function resolvePcOpportunityAttacks(
   const steps = [from, ...(path?.length ? path : [to])];
   const notes: string[] = [];
   // The walker's size: an ogre leaves a reach when its last square does.
-  const moverFootprint = footprintForSize(getEnemy(enemyId)?.stats.size);
+  const moverFootprint = footprintForSize(getFoe(enemyId)?.stats.size);
+  const moverKind = getEnemy(enemyId) ? "enemy" : "sheet";
+  const moverSide = sideOf(encounter, moverKind, enemyId);
 
   for (const stale of listSheets(campaign.id)) {
 
     const sheet = getSheetById(stale.id) ?? stale;
+    if (sheet.id === enemyId || sideOf(encounter, "sheet", sheet.id, sheet) === moverSide) {
+      continue;
+    }
     if (
       !canAct({ sheet, encounter, kind: "reaction" }).ok ||
       conditionBlocksReactions(sheet.conditions) ||
@@ -429,14 +437,14 @@ export function resolvePcOpportunityAttacks(
       continue;
     }
     // Polearm Master: a creature entering the polearm's reach provokes too.
-    const entering = polearmReachOpportunity(sheet, resolved.displayName) ? entersReachAt(steps, token, profile.reachTiles, 1, moverFootprint) : null;
+    const entering = polearmReachOpportunity(sheet, resolved.srd?.name) ? entersReachAt(steps, token, profile.reachTiles, 1, moverFootprint) : null;
     if (!leavesReachAt(steps, token, profile.reachTiles, 1, moverFootprint) && !entering) {
 
       continue;
     }
 
-    const enemy = listEnemies(encounter.id).find((entry) => entry.id === enemyId);
-    if (!enemy || enemy.status !== "alive") {
+    const enemy = getFoe(enemyId);
+    if (!enemy || enemy.status !== "alive" || (isSheetFoe(enemy) && enemy.currentHp <= 0)) {
       break;
     }
     if (cannotBeSeen(enemy.conditions)) {
@@ -475,6 +483,11 @@ export function resolvePcOpportunityAttacks(
 
   for (const note of notes) {
     tableNote(campaign, note);
+  }
+  // A creature the party dominates walking away from its old allies: they
+  // strike it as it goes (opportunity-sides.ts posts its own lines).
+  if (moverKind === "enemy") {
+    notes.push(...enemiesStrikeWalker(campaign.id, enemyId, steps, moverFootprint));
   }
   return notes;
 }

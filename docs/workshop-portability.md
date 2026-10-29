@@ -20,7 +20,7 @@ are `scripts/test-workshop-dependencies.mjs` (the whole path, end to end) and
    ones listed with a reason in `COPY_OVERRIDES` (src/lib/db/content-copy.ts).
    Every reference is remapped to the copy, and each copy records where it
    came from (src/lib/db/content-origins.ts).
-5. **At the table.** The human DM uses the DM console. At an AI-narrated
+5. **At the table.** The human GM uses the GM console. At an AI-narrated
    table the party lead uses the lead's desk, and the storyteller uses its
    game state and tools.
 
@@ -30,7 +30,7 @@ means the words only. **No** means not carried, with the reason.
 
 ## Records
 
-| Record | Bundle | Campaign import | Human DM | AI storyteller |
+| Record | Bundle | Campaign import | Human GM | AI storyteller |
 | --- | --- | --- | --- | --- |
 | Lore (title, body, tags, pinned, secret, style, picture) | Yes. An attached PDF stays behind. | Yes, every column. Re-embedded. | Binder | Retrieved by relevance. Pinned entries always included. Secrets marked SECRET. |
 | Places (layout, connections, map, sound) | Yes | Yes. Visited and current reset. | Places panel. One-tap deploy of its map. | Current location, and as waypoints |
@@ -43,7 +43,7 @@ means the words only. **No** means not carried, with the reason.
 | Region map (terrain, pins, roads, labels, notes, backdrop, anchors) | Yes. New since #158. | Yes. Replaces the target's, as the preview warns. | Region panel | Travel tools |
 | Storyboard cards | Yes, with picks, arrows and routes | Compiled, see below | | |
 | House rules and variant flags | Yes, as one tick | Yes, as one tick | | Rules retrieval |
-| Hand-built monsters and homebrew | Yes. Your own entry of the same name wins. | Not a campaign kind. They live on the owner's shelf. | | Resolved by slug or name for the owner |
+| Hand-built monsters and homebrew | Yes: the whole shelf, or only what the workshop uses. Your own entry of the same name wins; a different one arrives beside it under the bundle's name. | Not a kind of its own. A monster an NPC, a fight or a World entry names, and an item a World entry links to, is copied into the table owner's Bestiary or Homebrew, or the owner's identical one reused (`src/lib/db/import-monsters.ts`). The import's result names each. | | Resolved by slug or name for the table's authors |
 | World pack draft | Yes. It was dropped by every UI import before #158. | No. It is a workshop tool. | | |
 
 ## Relationships
@@ -64,7 +64,7 @@ means the words only. **No** means not carried, with the reason.
 | Arrow "then" | Index | Link | Order of the arc's beats | Beats in order |
 | Arrow "one route of several" | Index plus route | Link plus route | The route becomes a planned moment with its condition. Routes rejoin where they meet. | Moments the storyteller fires or drops |
 | Arrow "only if" | Index plus route | Link plus route | The scene becomes a planned moment with its condition | Same |
-| Roster names a hand-built monster | Monster rides along | | Resolves only for the same owner, as the preview warns | |
+| Roster names a hand-built monster | Monster rides along | | Copied into the table owner's Bestiary, or their identical one reused, and the roster pointed at it | The same monster fights |
 
 ### What a card becomes in a campaign
 
@@ -77,8 +77,8 @@ means the words only. **No** means not carried, with the reason.
 - **A reason to go:** a quest in the Quests panel. The storyteller reads that
   log; before #158 these quests went to an older log it ignored whenever an
   arc existed.
-- **Something hidden:** a DM-only note. The storyteller now reads these
-  notes as DM prep notes. Before, a secret was invisible at an AI-narrated
+- **Something hidden:** a GM-only note. The storyteller now reads these
+  notes as GM prep notes. Before, a secret was invisible at an AI-narrated
   table.
 - **Every card, whole:** a prep card (issues #301 and #302). The arc's beat
   is one line (the card's title and first line, cut at 220 characters) and a
@@ -96,7 +96,7 @@ means the words only. **No** means not carried, with the reason.
   cards that cannot join ("the last 3 of the board's cannot join it: ...")
   before the button. Those cards still land as prep cards, marked unplaced,
   and nothing pending in the arc is ever evicted to make room.
-- Each DM turn shows the main beats in a window around the `[NOW]` beat and
+- Each GM turn shows the main beats in a window around the `[NOW]` beat and
   the planned events the scene is about first (the place, the people in it,
   the fight, the party's newest line), inside a character budget. What was
   held back is listed by id in the prompt and, with the reason, in the
@@ -151,6 +151,17 @@ workshop's cast, places, maps and fights after the chapter's own, marked
 - **Kept by default.** Rows an earlier import brought from the same source
   are kept as the campaign has them, edits included. `Bring second copies`
   numbers them instead. The preview counts both.
+- **World entries.** An entry brought in again takes each value nobody
+  changed here, and keeps each value the campaign changed. Where the source
+  changed the same value too, the campaign's version stays, and the entry's
+  page says so and shows the import's version, with "Use the import's
+  version" and "Keep mine". Using it keeps the campaign's version, which
+  "Restore mine" puts back. Once used, the import's version counts as the
+  source's own, so the source's next change to it applies. Where the entry
+  cannot hold the import's version whole (a folder or an option no longer
+  here), the page says so. A later import that agrees with the campaign
+  clears the notice. Only the GM sees it. A WorldForge file brought in
+  again works the same way (`src/lib/worldforge/import-kept.ts`).
 - **Boards.** A second import of the same board does not repeat its lore,
   fights, notes or quests.
 - **Shops.** A shop an earlier import brought keeps its played shelf, its
@@ -165,7 +176,7 @@ workshop's cast, places, maps and fights after the chapter's own, marked
 
 ## Who may use the prep
 
-- **Human DM table.** The DM seat holds the prepared fights and the map
+- **Human GM table.** The GM seat holds the prepared fights and the map
   library. The lead is a player there.
 - **AI-narrated table.** The party lead holds them, from the lead's desk
   (`Prepared fights and maps`), and the Market's shops and shelves from the

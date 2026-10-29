@@ -12,7 +12,8 @@ import { navigateTo } from "@/lib/navigation";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { PIXEL_ICONS, PixelTile, ui } from "@/lib/ui";
 import CharacterBuilder, { type BuilderResult } from "@/app/characters/builder/CharacterBuilder";
-import type { BuilderRole } from "@/app/characters/builder/steps/IdentityStep";
+import LevelUpSheet from "@/app/characters/builder/LevelUpSheet";
+import type { BuilderRole } from "@/app/characters/builder/steps/FinishStep";
 import { refusalText } from "@/app/characters/builder/refusal";
 
 type LibraryCharacter = {
@@ -31,7 +32,13 @@ type LibraryCharacter = {
 // ?copyOf=<id> is "Duplicate and edit": the entry is the fresh copy, and the
 // original it came from is named and left alone.
 function EditCharacterInner({ characterId }: { characterId: string }) {
-  const copyOf = useSearchParams().get("copyOf") ?? "";
+  const search = useSearchParams();
+  const copyOf = search.get("copyOf") ?? "";
+  // "Level up" on the character's page: the level-up sheet, only what the
+  // next level brings (backlog F7). "Edit the whole build" (?whole=1) opens
+  // the full builder one level up instead.
+  const levelUp = search.get("levelUp") === "1";
+  const wholeBuild = search.get("whole") === "1";
   const [character, setCharacter] = useState<LibraryCharacter | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [loading, setLoading] = useState(true);
@@ -70,9 +77,13 @@ function EditCharacterInner({ characterId }: { characterId: string }) {
   }, [characterId, copyOf]);
 
   const tables = character?.campaigns ?? [];
+  const nextLevel = character && levelUp && character.level < 20 ? character.level + 1 : null;
   // Who plays them is settled once a table holds a copy: that copy came in
   // through the door its role opened (the server holds the same line).
   const roleEditable = tables.length === 0;
+  // The sheet levels a single class; a multiclass split levels at a table,
+  // where the class taking the level is chosen.
+  const slimSheet = Boolean(nextLevel) && !wholeBuild && (character?.sheet.classes ?? []).length <= 1;
 
   async function save(result: BuilderResult) {
     setBusy(true);
@@ -108,11 +119,14 @@ function EditCharacterInner({ characterId }: { characterId: string }) {
       return;
     }
     setDiscarding(true);
+    setError("");
     try {
-      const response = await fetch(`/api/characters/${characterId}`, { method: "DELETE" });
-      if (response.ok) {
-        navigateTo(copyOf ? `/characters/${copyOf}` : "/characters");
+      const response = await fetch(`/api/characters/${characterId}`, { method: "DELETE" }).catch(() => null);
+      if (!response?.ok) {
+        setError(`${character.name} was not deleted. Check the connection and try again.`);
+        return;
       }
+      navigateTo(copyOf ? `/characters/${copyOf}` : "/characters");
     } finally {
       setDiscarding(false);
     }
@@ -151,12 +165,26 @@ function EditCharacterInner({ characterId }: { characterId: string }) {
         <div className="mt-2 flex items-center gap-3">
           <PixelTile src={PIXEL_ICONS.characters} />
           <div className="min-w-0">
-            <GoldTitle size="text-2xl">Edit {character.name}</GoldTitle>
+            <GoldTitle size="text-2xl">
+              {nextLevel ? `${character.name} reaches level ${nextLevel}` : `Edit ${character.name}`}
+            </GoldTitle>
             <p className="text-sm text-stone-400">
               Saved to your library. Every campaign you bring them to from now on starts from this build.
             </p>
           </div>
         </div>
+        {nextLevel && slimSheet ? (
+          <p className="reveal mt-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+            Only what level {nextLevel} brings is asked here; the rest of {character.name}&apos;s build stays as it is.
+            Edit the whole build opens every step at level {nextLevel}.
+          </p>
+        ) : nextLevel ? (
+          <p className="reveal mt-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+            The build opens at level {nextLevel}, on its summary. Hit points come with the level; anything it lets{" "}
+            {character.name} choose (an ability score improvement, a subclass, new spells) is listed there as still
+            to choose, with a Fix that goes to it. Save changes takes the build once nothing is owed.
+          </p>
+        ) : null}
         {copyOf ? (
           <div className="reveal mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2">
             <p className="min-w-0 flex-1 text-xs text-amber-100">
@@ -177,13 +205,30 @@ function EditCharacterInner({ characterId }: { characterId: string }) {
             The copies already at {tables.map((table) => table.title).join(", ")} keep their own sheets; this edit does not
             reach them. When one of those tables saves its progress to your library (Save to library, or the end of its
             campaign), what it carries back is written over this edit. While a table holds a copy, they stay{" "}
-            {character.role === "companion" ? "an ally the DM plays" : "a character you play"}.
+            {character.role === "companion" ? "an ally the GM plays" : "a character you play"}.
           </p>
         ) : null}
       </header>
+      {slimSheet && nextLevel ? (
+        <LevelUpSheet
+          key={`sheet-${nextLevel}`}
+          initial={character.sheet}
+          initialLevel={character.level}
+          onSubmit={(result) => void save(result)}
+          busy={busy}
+          error={error}
+          wholeBuildHref={`/characters/${characterId}/edit?levelUp=1&whole=1`}
+          cancelHref={`/characters/${characterId}`}
+        />
+      ) : (
       <CharacterBuilder
+        // The builder takes its level once, as it mounts: a move between the
+        // edit and its level-up (?levelUp=1) is the same page, so it starts
+        // afresh at the level asked for.
+        key={nextLevel ?? "stored"}
         initial={character.sheet}
         initialLevel={character.level}
+        startLevel={nextLevel ?? undefined}
         submitLabel="Save changes"
         onSubmit={(result) => void save(result)}
         busy={busy}
@@ -191,6 +236,7 @@ function EditCharacterInner({ characterId }: { characterId: string }) {
         role={roleEditable ? { value: role, onChange: setRole } : undefined}
         onCancel={() => navigateTo(`/characters/${characterId}`)}
       />
+      )}
     </main>
   );
 }

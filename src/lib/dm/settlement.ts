@@ -9,22 +9,24 @@ import { SIZE_MARKUP, stockFromPool } from "@/lib/dm/shop-logic";
 import { stockPool } from "@/lib/dm/shop-tools";
 import { generateSettlement, seedFromText, type Settlement } from "@/lib/overworld/settlement";
 import { publishEphemeral } from "@/lib/events";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // Writing a generated settlement into a campaign (docs/vtt-parity-implementation-plan.md
 // 12.1): the people join the cast at that place, the shops open there with
 // stock from the pack, the rumours become a roll table and the hook a lore
 // entry only the DM reads. A place already peopled is left alone.
 
-export type PopulateOutcome = { ok: true; settlement: Settlement; npcs: number; shops: number } | { error: string };
+export type PopulateOutcome = { ok: true; settlement: Settlement; npcs: number; shops: number } | ToolError;
 
 export function placeIsWritten(campaign: Campaign, location: CampaignLocation): boolean {
-  const here = location.name.toLowerCase();
-  return listNpcs(campaign.id).some((npc) => npc.location.toLowerCase() === here) || listShopsAt(campaign.id, location.id, location.name).length > 0;
+  const here = textKey(location.name);
+  return listNpcs(campaign.id).some((npc) => textKey(npc.location) === here) || listShopsAt(campaign.id, location.id, location.name).length > 0;
 }
 
 export function populateSettlement(campaign: Campaign, location: CampaignLocation, options: { size?: unknown; terrain?: unknown; seed?: number; force?: boolean } = {}): PopulateOutcome {
   if (!options.force && placeIsWritten(campaign, location)) {
-    return { error: `${location.name} already has people in it.` };
+    return { error: `${location.name} already has people in it: GAME STATE lists them and its shops. Narrate from those.`, refused: "rules" };
   }
   const settlement = generateSettlement({
     name: location.name,

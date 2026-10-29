@@ -3,6 +3,7 @@ import type { DiceLook } from "@/lib/dice/dice-look";
 import { closeStreamsForSession, closeStreamsForUser } from "@/lib/live-streams";
 import { mergeLedgers, parseLedger, type TourLedger } from "@/lib/tours/account-logic";
 import { isTourId } from "@/lib/tours/registry";
+import { asciiSlugOf } from "@/lib/language/text-logic";
 
 export type UserAvatar = {
   url: string;
@@ -84,8 +85,7 @@ export function createUser(
 export function createCompanionUser(companionName: string): User {
   const db = getDatabase();
   const id = `comp_${crypto.randomUUID()}`;
-  const slug = companionName.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "companion";
-  const username = `companion-${slug}-${id.slice(5, 13)}`;
+  const username = ["companion", asciiSlugOf(companionName).slice(0, 24), id.slice(5, 13)].filter((part) => part !== "").join("-");
   db.prepare(
     `INSERT INTO users (id, username, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, 0)`,
   ).run(id, username, NO_PASSWORD_SENTINEL, nowIso());
@@ -103,6 +103,20 @@ export function createCompanionUser(companionName: string): User {
 
 export function isCompanionUserId(userId: string): boolean {
   return userId.startsWith("comp_");
+}
+
+// The bot user behind a companion's sheet, put back under the id it had: a
+// chapter rewound across a dismissal restores the sheet (src/lib/db/
+// snapshots.ts), and the sheet's user_id must name a user or the restore
+// fails whole. Users are not snapshotted, so this is the one row it needs.
+export function restoreCompanionUser(userId: string, companionName: string) {
+  if (!isCompanionUserId(userId)) {
+    return;
+  }
+  const username = ["companion", asciiSlugOf(companionName).slice(0, 24), userId.slice(5, 13)].filter((part) => part !== "").join("-");
+  getDatabase()
+    .prepare(`INSERT OR IGNORE INTO users (id, username, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, 0)`)
+    .run(userId, username, NO_PASSWORD_SENTINEL, nowIso());
 }
 
 export function deleteCompanionUser(userId: string) {
@@ -146,6 +160,9 @@ export type UserSettings = {
   // The player's virtual dice (src/lib/dice/dice-look.ts); absent means
   // the tray's original look.
   diceLook?: DiceLook;
+  // "Don't show this again" on the hero page a new character lands on
+  // after its first save (src/app/characters/[characterId]/ready).
+  skipHeroPage?: boolean;
   // The walkthroughs finished, by tour id (src/lib/tours/account-logic.ts).
   // Written only through recordFinishedTours, which merges per tour: the
   // profile PATCH replaces a key whole and does not accept this one.

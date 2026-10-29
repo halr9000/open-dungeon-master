@@ -36,7 +36,12 @@
           "sleight_of_hand"
         ]
       },
-      "blurb": "An inventor who casts through gadgets and infuses gear with magic, part tinkerer, part battlefield support."
+      "blurb": "An inventor who casts through gadgets and infuses gear with magic, part tinkerer, part battlefield support.",
+      "roles": [
+        "Support",
+        "Utility"
+      ],
+      "playsLike": "Wizard + Fighter"
     },
     {
       "id": "barbarian",
@@ -69,7 +74,12 @@
         ]
       },
       "tools": [],
-      "blurb": "A fierce warrior who rages into battle, shrugging off blows that would fell anyone else."
+      "blurb": "A fierce warrior who rages into battle, shrugging off blows that would fell anyone else.",
+      "roles": [
+        "Tank",
+        "DPS"
+      ],
+      "playsLike": "Fighter"
     },
     {
       "id": "bard",
@@ -117,7 +127,12 @@
       "tools": [
         "three musical instruments of your choice"
       ],
-      "blurb": "A performer whose music and wit are magic, inspiring allies and unsettling foes."
+      "blurb": "A performer whose music and wit are magic, inspiring allies and unsettling foes.",
+      "roles": [
+        "Support",
+        "Healer"
+      ],
+      "playsLike": "Rogue + Wizard"
     },
     {
       "id": "cleric",
@@ -148,7 +163,12 @@
         ]
       },
       "tools": [],
-      "blurb": "A champion of a god, wielding divine magic to heal, protect and smite."
+      "blurb": "A champion of a god, wielding divine magic to heal, protect and smite.",
+      "roles": [
+        "Healer",
+        "Support"
+      ],
+      "playsLike": "Cleric"
     },
     {
       "id": "druid",
@@ -196,7 +216,12 @@
       "languages": [
         "Druidic"
       ],
-      "blurb": "A keeper of the wild who commands nature's magic and takes the shapes of beasts."
+      "blurb": "A keeper of the wild who commands nature's magic and takes the shapes of beasts.",
+      "roles": [
+        "Healer",
+        "Control"
+      ],
+      "playsLike": "Cleric"
     },
     {
       "id": "fighter",
@@ -232,7 +257,12 @@
         ]
       },
       "tools": [],
-      "blurb": "A master of arms and armor, the most versatile combatant in any party."
+      "blurb": "A master of arms and armor, the most versatile combatant in any party.",
+      "roles": [
+        "Tank",
+        "DPS"
+      ],
+      "playsLike": "Fighter"
     },
     {
       "id": "monk",
@@ -263,7 +293,11 @@
       "tools": [
         "one artisan's tools or one musical instrument of your choice"
       ],
-      "blurb": "A disciplined martial artist who channels ki into speed, precision and uncanny feats."
+      "blurb": "A disciplined martial artist who channels ki into speed, precision and uncanny feats.",
+      "roles": [
+        "DPS"
+      ],
+      "playsLike": "Fighter + Rogue"
     },
     {
       "id": "paladin",
@@ -297,7 +331,12 @@
         ]
       },
       "tools": [],
-      "blurb": "A holy warrior bound by an oath, backing steel with divine smites and healing."
+      "blurb": "A holy warrior bound by an oath, backing steel with divine smites and healing.",
+      "roles": [
+        "Tank",
+        "Healer"
+      ],
+      "playsLike": "Fighter + Cleric"
     },
     {
       "id": "ranger",
@@ -332,7 +371,12 @@
         ]
       },
       "tools": [],
-      "blurb": "A hunter and tracker of the wilds, deadly with a bow and at home far from any road."
+      "blurb": "A hunter and tracker of the wilds, deadly with a bow and at home far from any road.",
+      "roles": [
+        "DPS",
+        "Utility"
+      ],
+      "playsLike": "Fighter + Rogue"
     },
     {
       "id": "rogue",
@@ -376,7 +420,12 @@
       "languages": [
         "Thieves' Cant"
       ],
-      "blurb": "A cunning specialist in stealth, skill and the devastating sneak attack."
+      "blurb": "A cunning specialist in stealth, skill and the devastating sneak attack.",
+      "roles": [
+        "DPS",
+        "Utility"
+      ],
+      "playsLike": "Rogue"
     },
     {
       "id": "sorcerer",
@@ -408,7 +457,11 @@
         ]
       },
       "tools": [],
-      "blurb": "A caster born with magic in the blood, bending raw power with metamagic."
+      "blurb": "A caster born with magic in the blood, bending raw power with metamagic.",
+      "roles": [
+        "DPS"
+      ],
+      "playsLike": "Wizard"
     },
     {
       "id": "warlock",
@@ -439,7 +492,11 @@
         ]
       },
       "tools": [],
-      "blurb": "A wielder of magic bargained from an otherworldly patron, built around eldritch invocations."
+      "blurb": "A wielder of magic bargained from an otherworldly patron, built around eldritch invocations.",
+      "roles": [
+        "DPS"
+      ],
+      "playsLike": "Wizard"
     },
     {
       "id": "wizard",
@@ -471,7 +528,12 @@
         ]
       },
       "tools": [],
-      "blurb": "A scholar of the arcane who studies spells into a spellbook and prepares them each day."
+      "blurb": "A scholar of the arcane who studies spells into a spellbook and prepares them each day.",
+      "roles": [
+        "Control",
+        "Utility"
+      ],
+      "playsLike": "Wizard"
     }
   ]
 }

@@ -67,7 +67,7 @@ export async function runContinueScene(input: {
     return { error: "Message not found.", status: 404 };
   }
   if (message.authorType !== "dm") {
-    return { error: "Only DM narration can be continued.", status: 400 };
+    return { error: "Only GM narration can be continued.", status: 400 };
   }
   // Continuing anything but the newest narration would grow a message the
   // story has already moved past, so the extension would read as a flashback
@@ -102,6 +102,7 @@ export async function runContinueScene(input: {
         // No tools at all on top of toolChoice "none": a continuation that
         // called a tool would resolve mechanics outside any turn.
         toolChoice: "none",
+        meta: { task: "continue_scene" },
       });
       if (error) {
         failure = "The model is unavailable; try again shortly.";
@@ -120,10 +121,10 @@ export async function runContinueScene(input: {
   // call (src/lib/dm/turn.ts); a continuation that was only the model's plan
   // adds nothing.
   if (continuation) {
-    continuation = withoutAsides(continuation, await readAsides(campaign, listSheets(campaign.id), turn, continuation));
+    continuation = withoutAsides(continuation, await readAsides(campaign, listSheets(campaign.id), turn, continuation), campaign.gameSettings.tableLanguage);
   }
   if (!continuation) {
-    return { error: "The DM returned nothing; try again.", status: 502 };
+    return { error: "The GM returned nothing; try again.", status: 502 };
   }
   const spoken = await modelLines(campaign, continuation, `continue ${input.messageId}`);
 

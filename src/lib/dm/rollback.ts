@@ -1,6 +1,8 @@
 import { getDatabase, nowIso } from "@/lib/db/core";
 import { allocateSeq, getCampaignById } from "@/lib/db/campaigns";
-import { insertCampaignMessage } from "@/lib/db/messages";
+import { insertCampaignMessage, listRecentMessages } from "@/lib/db/messages";
+import { markRolledBack, recordRollbackCorrections } from "@/lib/db/turn-ledger";
+import { deleteCompanionUser, isCompanionUserId } from "@/lib/db/users";
 import {
   capturePreRollbackSnapshot,
   deleteBoundarySnapshotsAfter,
@@ -9,7 +11,9 @@ import {
 } from "@/lib/db/snapshots";
 import { rollbackWarnings, type RollbackScope } from "@/lib/dm/rollback-logic";
 import { resetChapterMemory } from "@/lib/dm/chapter-close";
-import { enqueueDmJob } from "@/lib/dm/queue";
+import { requestDmTurn } from "@/lib/dm/loop";
+import { enqueueDmJobFirst, stopDmJob } from "@/lib/dm/queue";
+import { REWOUND_REASON } from "@/lib/dm/job-stage-logic";
 import { setDmStatus } from "@/lib/dm/status";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
 
@@ -61,10 +65,12 @@ export function computeRollbackScope(
       )
       .get(campaignId) as { n: number }
   ).n;
+  // An owner-only offer (a pact's approach, issue 503) is not the table's to
+  // count: the rewind's warning would tell the lead one exists.
   const pendingProposals = (
     db
       .prepare(
-        `SELECT COUNT(*) AS n FROM item_proposals WHERE campaign_id = ? AND status = 'pending'`,
+        `SELECT COUNT(*) AS n FROM item_proposals WHERE campaign_id = ? AND status = 'pending' AND owner_only = 0`,
       )
       .get(campaignId) as { n: number }
   ).n;
@@ -96,26 +102,51 @@ export function warningsForRollback(scope: RollbackScope): string[] {
 }
 
 // Runs the rewind on the campaign's DM queue so it can never interleave
-// with a narration turn. Resolves with ok=false when the snapshot vanished
-// or the campaign is gone by the time the job runs.
+// with a narration turn, ahead of whatever else is queued there: that work
+// belongs to the story the rewind undoes, and runs after it instead. Resolves
+// with ok=false when the snapshot vanished or the campaign is gone by the
+// time the job runs.
+// `userId` is who asked for the rewind: the correction ledger (issue #460)
+// keeps one row per AI turn it deletes, written before the delete. Left
+// out, nothing is recorded. `corrections` holds the rows' ids.
+type RollbackResult = { ok: boolean; error?: string; corrections?: string[] };
+
 export async function performRollback(
   campaignId: string,
   targetChapterIndex: number,
-): Promise<{ ok: boolean; error?: string }> {
-  let result: { ok: boolean; error?: string } = {
+  userId?: string,
+): Promise<RollbackResult> {
+  let result: RollbackResult = {
     ok: false,
     error: "The rewind did not run.",
   };
-  await enqueueDmJob(campaignId, async () => {
-    result = rollbackNow(campaignId, targetChapterIndex);
+  // The lead confirmed the rewind knowing a turn was in flight (the scope's
+  // inFlightTurn warning). That turn would be undone anyway, and one that is
+  // stuck would hold the rewind behind it forever (issue #383), so it is
+  // stopped first.
+  stopDmJob(campaignId, REWOUND_REASON);
+  await enqueueDmJobFirst(campaignId, async () => {
+    result = rollbackNow(campaignId, targetChapterIndex, userId);
   });
+  // Chapter 1's rewind point is the world before the opening narration was
+  // written (captured at the campaign's start, after setup and the arc), so
+  // the rewind takes the opening with it. Nothing else would ask for a new
+  // one: the table read "The story rewinds" and then sat silent until
+  // someone spoke (a 25-minute wait on 2026-10-23). The DM tells the opening
+  // again, as the campaign's start does; requestDmTurn leaves a table with a
+  // person in the DM seat to them. A rewind point that already holds a
+  // narration waits for the players as any other chapter's does.
+  if (result.ok && targetChapterIndex === 1 && !listRecentMessages(campaignId, 50).some((message) => message.authorType === "dm")) {
+    requestDmTurn(campaignId);
+  }
   return result;
 }
 
 function rollbackNow(
   campaignId: string,
   targetChapterIndex: number,
-): { ok: boolean; error?: string } {
+  byUserId: string | undefined,
+): RollbackResult {
   const campaign = getCampaignById(campaignId);
   const snapshot = getBoundarySnapshot(campaignId, targetChapterIndex);
   if (!campaign || !snapshot) {
@@ -136,7 +167,20 @@ function rollbackNow(
      WHERE campaign_id = ? AND status IN ('running','awaiting_rolls')`,
   ).run(nowIso(), campaignId);
 
-  db.transaction(() => {
+  // The bot users behind the companions at the table now: one recruited
+  // after the boundary loses its sheet to the restore, and its user goes too.
+  const botsBefore = (
+    db.prepare(`SELECT user_id FROM character_sheets WHERE campaign_id = ?`).all(campaignId) as Array<{ user_id: string }>
+  )
+    .map((row) => row.user_id)
+    .filter(isCompanionUserId);
+
+  const corrections = db.transaction(() => {
+    // The biggest correction there is, kept before its evidence goes: one
+    // ledger row per AI turn the rewind deletes (issue #460).
+    const recorded = byUserId ? recordRollbackCorrections(campaignId, byUserId, capturedAt) : [];
+    // Their narrator quality rows stay too, marked as rewound.
+    markRolledBack(campaignId, capturedAt);
     // A pin names a message and a beat sits at a seq: both belong to the
     // messages deleted below, and a pin left behind named a line nobody
     // could read. The pins go first, while the messages they name exist.
@@ -187,6 +231,13 @@ function rollbackNow(
        WHERE campaign_id = ? AND chapter_index = ?`,
     ).run(nowIso(), campaignId, targetChapterIndex);
     restoreSnapshot(campaignId, snapshot.payload);
+    const owns = db.prepare(`SELECT 1 FROM character_sheets WHERE user_id = ? LIMIT 1`);
+    for (const userId of botsBefore) {
+      if (!owns.get(userId)) {
+        deleteCompanionUser(userId);
+      }
+    }
+    return recorded;
   })();
 
   deleteBoundarySnapshotsAfter(campaignId, targetChapterIndex);
@@ -208,5 +259,5 @@ function rollbackNow(
     chapterIndex: targetChapterIndex,
     boundarySeq: boundary,
   });
-  return { ok: true };
+  return { ok: true, corrections };
 }

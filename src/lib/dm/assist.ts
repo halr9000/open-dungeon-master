@@ -22,6 +22,7 @@ import {
 } from "@/lib/dm/assist-logic";
 import { parseRollTable, TABLE_MAX_ENTRIES, type RollTableEntry } from "@/lib/dm/roll-table-logic";
 import { stripReasoningArtifacts } from "@/lib/story-prompt";
+import { textKey } from "@/lib/language/text-logic";
 
 // The DM's assist rail: read-only answers from engines that already exist.
 // Nothing here applies anything. Every function returns something the DM
@@ -115,7 +116,7 @@ export async function suggestAdjudication(
   let suggestions: SuggestedAdjudication[] = [];
   let embedded = true;
   try {
-    const [vectors, [intentVector]] = await Promise.all([catalogVectorsOnce(), embed([intent])]);
+    const [vectors, [intentVector]] = await Promise.all([catalogVectorsOnce(), embed([intent], { query: true })]);
     suggestions = rankBySimilarity(intentVector, available, vectors, SHORTLIST).map(toSuggestion);
   } catch (error) {
     embedded = false;
@@ -146,7 +147,7 @@ export async function suggestAdjudication(
           .join("\n\n"),
       },
     ],
-    { timeoutMs: arcTextTimeoutMs() },
+    { meta: { task: "assist_adjudication" }, timeoutMs: arcTextTimeoutMs() },
   );
   const parsed = error ? null : parseSuggestionJson(stripReasoningArtifacts(String(message?.content ?? "")));
   // A pick that names no action this moment allows is discarded rather than
@@ -178,7 +179,7 @@ export type StatblockMatch = {
 // useful answer.
 export function searchStatblocks(campaign: Campaign, query: string): StatblockMatch[] {
   const setting = campaign.gameSettings;
-  const trimmed = query.trim().toLowerCase();
+  const trimmed = textKey(query);
   if (!trimmed) {
     const levels = listSheets(campaign.id).map((sheet) => sheet.level);
     return suggestEnemies(setting, levels, 12).map((entry) => ({
@@ -192,10 +193,10 @@ export function searchStatblocks(campaign: Campaign, query: string): StatblockMa
   return bestiaryFor(setting)
     .filter(
       (entry) =>
-        entry.name.toLowerCase().includes(trimmed) ||
-        entry.slug.includes(trimmed) ||
-        entry.type === trimmed ||
-        entry.blurb.toLowerCase().includes(trimmed),
+        textKey(entry.name).includes(trimmed) ||
+        textKey(entry.slug).includes(trimmed) ||
+        textKey(entry.type) === trimmed ||
+        textKey(entry.blurb).includes(trimmed),
     )
     .slice(0, 12)
     .map((entry) => ({
@@ -253,7 +254,7 @@ export function quickStatblock(
 // ---- roll table generation ----
 
 const TABLE_SYSTEM =
-  "You write random tables for a tabletop RPG session. Output ONLY the rows, one per line, each beginning with its number and a full stop, like '1. A cart has thrown a wheel across the road.' No heading, no commentary, no blank lines. Each row is one concrete thing a Dungeon Master can drop straight into play, under 25 words, in the tone of the setting you are given.";
+  "You write random tables for a tabletop RPG session. Output ONLY the rows, one per line, each beginning with its number and a full stop, like '1. A cart has thrown a wheel across the road.' No heading, no commentary, no blank lines. Each row is one concrete thing a Game Master can drop straight into play, under 25 words, in the tone of the setting you are given.";
 
 export async function generateRollTable(
   campaign: Campaign,
@@ -275,7 +276,7 @@ export async function generateRollTable(
           .join("\n"),
       },
     ],
-    { timeoutMs: arcTextTimeoutMs() },
+    { meta: { task: "roll_table" }, timeoutMs: arcTextTimeoutMs() },
   );
   if (error) {
     return { entries: [], error: "The model could not be reached." };

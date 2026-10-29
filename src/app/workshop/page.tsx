@@ -19,6 +19,7 @@ import { ContextMenu } from "@/components/ui/ContextMenu";
 import { AppHeader } from "@/components/AppHeader";
 import { DEFAULT_TARGET_PARTY } from "@/lib/workshop/kind";
 import { ImportBundleButton } from "@/app/workshop/ImportBundleButton";
+import { AddonImportButton } from "@/app/workshop/AddonImportButton";
 import { WorkshopHelpDialog } from "@/components/WorkshopHelpDialog";
 import { GuidedTour } from "@/components/ui/GuidedTour";
 import type { TourEnd } from "@/lib/tours/account-logic";
@@ -49,6 +50,8 @@ export default function WorkshopListPage() {
   const [busy, setBusy] = useState(false);
   const [cloningId, setCloningId] = useState("");
   const [error, setError] = useState("");
+  // A copy or a delete that did not go through, said over the list.
+  const [listError, setListError] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [touring, setTouring] = useState(false);
 
@@ -101,6 +104,8 @@ export default function WorkshopListPage() {
         return;
       }
       navigateTo(`/workshop/${data.workshop.id}`);
+    } catch {
+      setError("Could not reach the server. Nothing was created; try again.");
     } finally {
       setBusy(false);
     }
@@ -111,9 +116,12 @@ export default function WorkshopListPage() {
   // the same region without risking the first.
   async function clone(workshop: WorkshopSummary) {
     setCloningId(workshop.id);
+    setListError("");
     try {
-      const response = await fetch(`/api/campaigns/${workshop.id}/clone`, { method: "POST" });
-      if (!response.ok) {
+      const response = await fetch(`/api/campaigns/${workshop.id}/clone`, { method: "POST" }).catch(() => null);
+      if (!response?.ok) {
+        const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+        setListError(data?.error ?? `${workshop.title} was not copied. Check the connection and try again.`);
         return;
       }
       const listed = await fetch("/api/workshops").catch(() => null);
@@ -134,10 +142,14 @@ export default function WorkshopListPage() {
     ) {
       return;
     }
-    const response = await fetch(`/api/workshops/${workshop.id}`, { method: "DELETE" });
-    if (response.ok) {
-      setWorkshops((current) => current.filter((entry) => entry.id !== workshop.id));
+    setListError("");
+    const response = await fetch(`/api/workshops/${workshop.id}`, { method: "DELETE" }).catch(() => null);
+    if (!response?.ok) {
+      const data = (await response?.json().catch(() => null)) as { error?: string } | null;
+      setListError(data?.error ?? `${workshop.title} was not deleted. Check the connection and try again.`);
+      return;
     }
+    setWorkshops((current) => current.filter((entry) => entry.id !== workshop.id));
   }
 
   return (
@@ -235,10 +247,17 @@ export default function WorkshopListPage() {
             <div data-tour="shelf-import">
               <ImportBundleButton />
             </div>
+            {/* Only drawn when an admin has switched an importer addon on. */}
+            <AddonImportButton />
           </div>
         )}
       </section>
 
+      {listError ? (
+        <p role="alert" className="motion-shake mb-3 text-sm text-red-400">
+          {listError}
+        </p>
+      ) : null}
       {loading ? (
         <PageSkeleton kind="shelf" className="px-0 py-2" />
       ) : workshops.length ? (
@@ -317,7 +336,7 @@ export default function WorkshopListPage() {
             <EmptyState
               art="map"
               title="No workshops yet."
-              hint="A workshop is yours alone. Nothing in it reaches a table until you import it."
+              hint="A workshop is yours alone: prep a game on your own time. Nothing in it reaches a table until a campaign brings it in, when it is created, from its lobby or from its Settings."
             />
           ) : null}
         </div>

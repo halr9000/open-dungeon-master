@@ -2,7 +2,7 @@
 
 import { SectionHead } from "@/components/ui/SectionHead";
 import { CONDITIONS } from "@/lib/bestiary/kit";
-import { CREATURE_TYPES } from "@/lib/bestiary/statblock";
+import { CREATURE_TYPES } from "@/lib/bestiary/creature-type";
 import { CheckField, NumberField, SelectField, TextField, ToggleChips } from "@/app/workshop/homebrew/fields";
 import { DAMAGE_TYPES } from "@/app/workshop/homebrew/types";
 import { CONDITION_BLURBS, glossaryFor } from "@/lib/help/terms";
@@ -168,7 +168,7 @@ export function SpellMechFields({ data, onChange }: { data: Mech; onChange: (nex
           {["heal", "utility", "buff"].includes(resolution) ? <HealGroup {...props} /> : null}
           {["save", "utility", "buff"].includes(resolution) ? <AuraGroup {...props} /> : null}
           {["save", "utility"].includes(resolution) ? <PoolGroup {...props} /> : null}
-          <TextField label="Note for the DM" value={String(mech.note ?? "")} onChange={(note) => setMech({ note: note || undefined })} placeholder="Up to three targets." maxLength={400} />
+          <TextField label="Note for the GM" value={String(mech.note ?? "")} onChange={(note) => setMech({ note: note || undefined })} placeholder="Up to three targets." maxLength={400} />
           <AdvancedBlock mech={mech} onChange={(next) => onChange({ ...data, mech: next })} />
         </div>
       ) : null}

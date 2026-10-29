@@ -1,8 +1,10 @@
 import { isErrorResponse, requireMember } from "@/lib/campaign-api";
-import { allocateSeq } from "@/lib/db/campaigns";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
+import { allocateSeq, capsFor } from "@/lib/db/campaigns";
 import { insertItemProposal, listOpenItemProposals } from "@/lib/db/item-proposals";
 import { getSheetById, getSheetForUser } from "@/lib/db/sheets";
 import { publicItemProposal } from "@/lib/dm/proposal-intercept";
+import { offerVisibleTo } from "@/lib/dm/proposal-view";
 import { computeTrade, normalizeTradeOffer, tradeSummary } from "@/lib/dm/trade-logic";
 import { publishPersisted } from "@/lib/events";
 
@@ -10,7 +12,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Open DM item/gold offers (inventoryApprovals). Inventory is party
-// knowledge, so every member sees the pending offers.
+// knowledge, so every member sees the pending offers, except one that is
+// owner-only (a pact's approach, issue 503): its player and the storyteller.
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ campaignId: string }> },
@@ -20,8 +23,11 @@ export async function GET(
   if (isErrorResponse(context)) {
     return context;
   }
+  const caps = capsFor(context.campaign, context.user.id);
   return Response.json({
-    proposals: listOpenItemProposals(campaignId).map(publicItemProposal),
+    proposals: listOpenItemProposals(campaignId)
+      .filter((proposal) => offerVisibleTo(proposal, context.user.id, caps))
+      .map(publicItemProposal),
   });
 }
 
@@ -39,6 +45,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ cam
   const offer = normalizeTradeOffer(raw);
   if (!offer) {
     return Response.json({ error: "Offer something, or ask for something." }, { status: 400 });
+  }
+  // A trade between characters is play, which waits out a break.
+  const paused = refuseDuringBreak(campaignId);
+  if (paused) {
+    return paused;
   }
   const from = getSheetForUser(campaignId, context.user.id);
   if (!from) {

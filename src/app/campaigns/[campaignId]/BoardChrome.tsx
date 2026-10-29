@@ -1,6 +1,7 @@
 "use client";
 
 import { EyeOff } from "lucide-react";
+import { litOrderRows, pointerOrderIndex } from "@/lib/battlemap/initiative-rows";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { GameIcon } from "@/components/ui/GameIcon";
@@ -8,6 +9,7 @@ import { conditionIconKey } from "@/lib/battlemap/condition-glyphs";
 import { HEALTH_LABEL, HEALTH_RING, type HealthWord } from "@/lib/battlemap/health-words";
 import type { StageToken } from "@/app/campaigns/[campaignId]/BoardStage";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
+import { offSide, SidePlateBand, sidesLine, SideSr } from "@/app/campaigns/[campaignId]/SideBadge";
 import type { TargetEdge } from "@/lib/battlemap/view-tactics";
 
 // The chrome on the board as a stage (docs/visual-overhaul-plan.md 5.1): the
@@ -76,14 +78,38 @@ export function InitiativeRail({
   round,
   faceOf,
   onOpen,
+  namesOnly = false,
 }: {
   encounter: PublicEncounter;
   round: number;
   faceOf: FaceLookup;
   onOpen?: () => void;
+  namesOnly?: boolean;
 }) {
   if (!encounter.orderReady || !encounter.order.length) {
     return null;
+  }
+  // The plates whose turn it is, and the pointer's own plate: they differ
+  // while the enemies before the player up next take their turns
+  // (initiative-rows.ts litOrderRows).
+  const lit = litOrderRows(encounter.order, encounter.turnIndex, encounter.acting, encounter.enemiesUp);
+  const up = lit[0] ?? Math.max(0, pointerOrderIndex(encounter.order, encounter));
+  if (namesOnly) {
+    return (
+      <div className="board-initiative-names" data-tour="battle-initiative">
+        <button type="button" onClick={onOpen} disabled={!onOpen} aria-label={`Round ${round}, open initiative order`}>
+          Round {round} · initiative
+        </button>
+        <ol tabIndex={0} aria-label="Initiative order">
+          {encounter.order.map((entry, at) => (
+            <li key={`${entry.id}-${at}`} aria-current={lit.includes(at) ? "step" : undefined} title={entry.name}>
+              {entry.name}
+              <SideSr side={offSide(encounter, entry.id, entry.kind)} />
+            </li>
+          ))}
+        </ol>
+      </div>
+    );
   }
   // A short order is shown as it stands. A longer one is a window on the
   // cycle, starting one before the current turn, so whoever is up and whoever
@@ -93,7 +119,7 @@ export function InitiativeRail({
   const NARROW = 5;
   const order = encounter.order;
   const cyclic = order.length > NARROW;
-  const start = cyclic ? (encounter.turnIndex - 1 + order.length) % order.length : 0;
+  const start = cyclic ? (up - 1 + order.length) % order.length : 0;
   const shown = Array.from({ length: Math.min(MAX, order.length) }, (_, i) => {
     const at = (start + i) % order.length;
     return { entry: order[at], at };
@@ -105,7 +131,7 @@ export function InitiativeRail({
       onClick={onOpen}
       disabled={!onOpen}
       data-tour="battle-initiative"
-      aria-label={`Round ${round}, initiative order. ${order[encounter.turnIndex]?.name ?? ""} is up. Open the order.`}
+      aria-label={`Round ${round}, initiative order. ${encounter.acting?.name ?? order[up]?.name ?? ""} is up. ${sidesLine(encounter)}Open the order.`}
       className="absolute left-2 top-2 z-10 flex flex-col items-start gap-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60 @md:left-3.5 @md:top-3.5 @md:gap-1.5"
     >
       <span className="board-eyebrow">
@@ -114,7 +140,7 @@ export function InitiativeRail({
       </span>
       <span className="flex gap-[3px] @md:gap-[5px]">
         {shown.map(({ entry, at }, index) => {
-          const current = at === encounter.turnIndex;
+          const current = lit.includes(at);
           return (
             <span
               key={`${entry.id}-${at}`}
@@ -141,6 +167,7 @@ export function InitiativeRail({
               {entry.hidden ? (
                 <EyeOff className="absolute right-0.5 top-0.5 size-2.5 text-amber-300 drop-shadow" aria-hidden="true" />
               ) : null}
+              <SidePlateBand side={offSide(encounter, entry.id, entry.kind)} />
               {current ? (
                 <span className="board-plate-current absolute inset-0 rounded-[6px] border-2 border-[#d4ab3a] @md:rounded-[7px]" />
               ) : null}
@@ -177,6 +204,7 @@ const PIPS: Array<{ key: keyof TurnHudBudget; label: string }> = [
 export function TurnHud({
   actorName,
   mine,
+  commanded = false,
   budget,
   speedLeftFeet,
   ac,
@@ -184,6 +212,8 @@ export function TurnHud({
 }: {
   actorName: string;
   mine: boolean;
+  // The turn is a companion's this player commands.
+  commanded?: boolean;
   budget?: TurnHudBudget | null;
   speedLeftFeet?: number | null;
   ac?: number | null;
@@ -199,7 +229,7 @@ export function TurnHud({
   ].filter(Boolean);
   return (
     <div className="pointer-events-none absolute right-2 top-2 z-10 flex max-w-[58%] flex-col items-end gap-1 @md:right-3.5 @md:top-3.5 @md:gap-[7px]">
-      <span className="board-eyebrow block max-w-full truncate text-right">{mine ? `${actorName} · your turn` : `${actorName}'s turn`}</span>
+      <span className="board-eyebrow block max-w-full truncate text-right">{mine ? `${actorName} · ${commanded ? "your orders" : "your turn"}` : `${actorName}'s turn`}</span>
       {mine && budget ? (
         // On a narrow board the pips and the stats sit under the rail's
         // plates instead of beside them, where there is no room.
@@ -209,15 +239,14 @@ export function TurnHud({
             return (
               <span
                 key={pip.key}
-                className={cn(
-                  // A spent pip dims over a beat instead of blinking out.
-                  "flex items-center gap-[5px] rounded-full border px-2 py-[3px] font-mono text-[9px] tracking-[0.04em] transition-colors duration-[420ms] ease-snap @md:text-[10px]",
-                  left
-                    ? "border-[rgba(212,171,58,0.55)] bg-[rgba(43,32,8,0.7)] text-[#f9ecc8]"
-                    : "border-[rgba(107,99,148,0.3)] bg-[rgba(13,11,28,0.7)] text-[#575170]",
-                )}
+                // The Hand's pips' colour and shape for the same cost (issue
+                // 529, hand.css .turn-pip): a spent pip dims over a beat
+                // instead of blinking out.
+                data-cost={pip.key}
+                data-left={left ? "true" : undefined}
+                className="turn-pip flex items-center gap-[5px] rounded-full border px-2 py-[3px] font-mono text-[9px] tracking-[0.04em] @md:text-[10px]"
               >
-                <span className={cn("size-1.5 rounded-full transition-colors duration-[420ms] ease-snap", left ? "bg-[#d4ab3a]" : "bg-[#3a3358]")} />
+                <span className="turn-pip-shape" aria-hidden="true" />
                 {pip.label}
               </span>
             );
@@ -319,6 +348,7 @@ export function TokenPlate({
   health,
   conditions,
   edge,
+  anchor,
 }: {
   token: StageToken;
   boardWidth: number;
@@ -328,12 +358,14 @@ export function TokenPlate({
   health?: HealthWord;
   conditions?: Array<{ id: string; label: string; rounds?: number; note?: string }>;
   edge?: TargetEdge;
+  // Where an addon's board view drew the figure (TokenHud.tsx says how).
+  anchor?: [number, number, number];
 }) {
-  const cx = ((token.x + footprint / 2) / boardWidth) * 100;
+  const cx = anchor ? anchor[0] * 100 : ((token.x + footprint / 2) / boardWidth) * 100;
   // Below the figure in the top half, above it in the bottom half: the plate
   // is tall now, and either way it clears the figure rather than covering it.
-  const below = token.y + footprint / 2 < boardHeight / 2;
-  const cy = ((below ? token.y + footprint : token.y) / boardHeight) * 100;
+  const below = anchor ? (anchor[1] + anchor[2]) / 2 < 0.5 : token.y + footprint / 2 < boardHeight / 2;
+  const cy = anchor ? (below ? anchor[2] : anchor[1]) * 100 : ((below ? token.y + footprint : token.y) / boardHeight) * 100;
   return (
     <div
       role="tooltip"

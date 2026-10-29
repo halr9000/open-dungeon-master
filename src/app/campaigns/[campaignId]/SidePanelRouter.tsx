@@ -1,6 +1,7 @@
 "use client";
 
-import { playingSheet, turnFromEncounter, turnHudBudget } from "@/lib/battlemap/hand-table";
+import { playingSheet, turnCharacterId, turnFromEncounter, turnHudBudget } from "@/lib/battlemap/hand-table";
+import { initiativeCharacter } from "@/lib/player-characters";
 import { BookMarked, BookOpen, Flag, Heart, History, ListChecks, ScrollText, ShoppingBag, Users } from "lucide-react";
 import { Suspense, useMemo, useState, type ReactNode } from "react";
 import type { CampaignMessage } from "@/lib/db/messages";
@@ -10,6 +11,7 @@ import type { FxEvent } from "@/lib/battlemap/fx-plan";
 import type { CameraEvent, SceneState } from "@/lib/scene/state";
 import type { MapLabel } from "@/lib/battlemap/scene";
 import { EncounterPanel } from "@/app/campaigns/[campaignId]/EncounterPanel";
+import type { DepartingSheet } from "@/app/campaigns/[campaignId]/departing";
 import { PartyPanel } from "@/app/campaigns/[campaignId]/PartyPanel";
 import { segmentsOf, speakersIn } from "@/lib/dm/speech";
 import type { CastMember } from "@/lib/dm/cast";
@@ -41,9 +43,11 @@ import type { MapPing } from "@/lib/dm/board-logic";
 import { companionSlotsFree, lastingCompanionBlock, resolveCompanionMode } from "@/lib/schemas/game-settings";
 import { hasHumanDm, partySlotCount } from "@/lib/dm/viewer";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { MarketRequest } from "@/lib/dm/table-tabs";
 import type { LeadPanel as LeadPanelComponent } from "@/app/campaigns/[campaignId]/LeadPanel";
 import type { SessionSettings as SessionSettingsComponent } from "@/app/campaigns/[campaignId]/SessionSettings";
 import { PanelLoading, panels } from "@/app/campaigns/[campaignId]/side-panel-loaders";
+import { mayWritePartyBackstory } from "@/lib/dm/party-story";
 
 // Every panel but the party roster (the tab a table opens on) is its own
 // download, fetched when its tab is first opened or, sooner, when the
@@ -51,8 +55,8 @@ import { PanelLoading, panels } from "@/app/campaigns/[campaignId]/side-panel-lo
 // behind its own Suspense, so a section's tabs stay put while it arrives.
 const {
   BattleMapPanel, BondsPanel, ContextPanel, DmConsolePanel, DmInboxPanel, DmWhisperPanel, EventLog, FactionsPanel,
-  FactsPanel, LeadPanel, LorePanel, MapPanel, MarketPanel, NotesPanel, OverworldPanel, PinsPanel, QuestsPanel,
-  SessionSettings, SideChatPanel, StoryPanel, TimelinePanel,
+  FactsPanel, LeadPanel, LorePanel, MapPanel, MarketPanel, NotesPanel, OverworldPanel, PartyAtlasPanel, PinsPanel, QuestsPanel,
+  SessionSettings, SideChatPanel, StoryPanel, TimelinePanel, WorldForgePanel,
 } = panels;
 
 // Everything the side panel's content needs. SidePanel adds the rail's own
@@ -155,8 +159,18 @@ export type SidePanelRouterProps = {
   // Bumped by the relationships_updated ephemeral; the Bonds panel refetches
   // its own scoped view when it changes.
   relationshipsVersion: number;
+  // Lasting companions whose sheet just went (issue 503): the Party panel's
+  // Gone list.
+  departingSheets?: DepartingSheet[];
   factionsVersion?: number;
+  // Bumped when the world changed (world_updated, records_changed), so the
+  // World tab reads it again.
+  worldVersion?: number;
+  // Bumped on lore_updated, so the lore list reads itself again.
+  loreVersion?: number;
   shopsVersion?: number;
+  // A Browse wares pressed in the chat: open the Market on that shop.
+  marketRequest?: MarketRequest | null;
   coins?: { characterId: string; direction: "in" | "out"; amountCp: number; at: number } | null;
   activeSheetId?: string;
   questsVersion: number;
@@ -174,7 +188,7 @@ export type SidePanelRouterProps = {
 };
 
 // Which panel the active tab shows. Every PanelTab has an explicit branch;
-// the guards on dm, lead, battle and context are belt and braces over
+// the guards on dm, lead, battle, world and context are belt and braces over
 // buildPanelTabs, so a stale selection never lands a player on a panel whose
 // route will only ever answer 403.
 export function SidePanelRouter({
@@ -230,8 +244,12 @@ export function SidePanelRouter({
   stageBoard = false,
   tab: rawTab,
   relationshipsVersion,
+  departingSheets = [],
   factionsVersion = 0,
+  worldVersion = 0,
+  loreVersion = 0,
   shopsVersion = 0,
+  marketRequest = null,
   coins = null,
   activeSheetId = "",
   questsVersion,
@@ -251,6 +269,13 @@ export function SidePanelRouter({
   // this panel reads or sets them.
   const [partySection, setPartySection] = useState<PartySection>("party");
   const [storySection, setStorySection] = useState<StorySection>("story");
+  // A Browse wares from the chat turns Party to its Market, once per press.
+  // State-from-props during render, as useSessionTabs takes a chat target.
+  const [seenMarketAt, setSeenMarketAt] = useState(0);
+  if (marketRequest && marketRequest.at !== seenMarketAt) {
+    setSeenMarketAt(marketRequest.at);
+    setPartySection("market");
+  }
 
   const partySubTabs: SubTabDef<PartySection>[] = [
     ["party", "Roster", Users],
@@ -361,7 +386,7 @@ export function SidePanelRouter({
         <div key={partySection} className="motion-tab">
           {partySection === "bonds" ? (
             <Suspense fallback={<PanelLoading />}>
-              <BondsPanel campaignId={campaignId} refreshKey={relationshipsVersion} />
+              <BondsPanel campaignId={campaignId} refreshKey={relationshipsVersion} sheets={sheets} meUserId={meUserId} />
             </Suspense>
           ) : partySection === "factions" ? (
             <Suspense fallback={<PanelLoading />}>
@@ -377,6 +402,8 @@ export function SidePanelRouter({
 
               refreshKey={shopsVersion}
               coins={coins}
+              focus={marketRequest}
+              onAskKeeper={onCompose}
             />
             </Suspense>
           ) : (
@@ -397,8 +424,21 @@ export function SidePanelRouter({
               <PartyPanel
                 sheets={sheets}
                 meUserId={meUserId}
+                departing={departingSheets}
+                goneRefreshKey={relationshipsVersion}
                 party={campaign?.party}
                 arrangesFormation={isLead || adjudicates}
+                partyStory={
+                  campaign?.gameSettings
+                    ? {
+                        canWrite: mayWritePartyBackstory({
+                          isLead,
+                          holdsDmSeat: meUserId === campaign.dmUserId || meUserId === campaign.assistantDmUserId,
+                          hasCharacter: sheets.some((sheet) => sheet.userId === meUserId && !sheet.isCompanion),
+                        }),
+                      }
+                    : undefined
+                }
                 spotlightUserIds={spotlightUserIds}
                 onlineUserIds={onlineUserIds}
                 steersStory={steersStory}
@@ -450,6 +490,12 @@ export function SidePanelRouter({
                 }
                 onOpenSettings={onOpenTab ? () => onOpenTab("settings") : undefined}
                 humanDmTable={humanDmTable}
+                romanceNotes={
+                  humanDmTable &&
+                  adjudicates &&
+                  campaign?.gameSettings?.relationships !== "off" &&
+                  campaign?.gameSettings?.romance !== "off"
+                }
                 companionGenre={campaign?.gameSettings?.genre}
                 companionWorldPack={campaign?.gameSettings?.worldPack}
                 companionLevel={(() => {
@@ -469,7 +515,9 @@ export function SidePanelRouter({
     );
   }
   if (tab === "battle" && battleMap) {
-    const playing = playingSheet(sheets, meUserId, activeSheetId);
+    // The turn's character when it is this player's (their own, or a
+    // companion they command), else the one being played.
+    const playing = initiativeCharacter(sheets, meUserId, turnCharacterId(encounter)) ?? playingSheet(sheets, meUserId, activeSheetId);
     return (
       // board-dock: the side panel and the phone hold the board in a fixed
       // window too, so its header and footer stay on screen (issue 87).
@@ -492,7 +540,7 @@ export function SidePanelRouter({
           // count is the main board's (SessionView.tsx): drawn from the
           // turn's start, before anything is spent, with a spent reaction
           // from reactionsUsed and an action Haste or Action Surge leave.
-          playing && !playing.isCompanion && encounter
+          playing && encounter
             ? turnHudBudget(turnFromEncounter(encounter, playing, { myTurn: encounter.turn?.ownerId === playing.id }))
             : null
         }
@@ -527,6 +575,9 @@ export function SidePanelRouter({
           genre={campaign?.gameSettings?.genre ?? "high_fantasy"}
           steersStory={steersStory}
           visible={visible}
+          placesKey={locations
+            .map((location) => `${location.id}:${location.name}:${location.parentName ?? "-"}:${Number(location.isCurrent)}${Number(location.visited)}:${location.connections.length}`)
+            .join("|")}
         />
         <MapPanel
           campaignId={campaignId}
@@ -537,6 +588,8 @@ export function SidePanelRouter({
           scene={scene ?? null}
           inserts={theatreInserts}
         />
+        {/* The Atlas maps the DM has shown to the party (WorldForge). */}
+        <PartyAtlasPanel campaignId={campaignId} refreshKey={worldVersion} />
       </div>
       </Suspense>
     );
@@ -556,7 +609,7 @@ export function SidePanelRouter({
                 steersStory={steersStory}
                 refreshFacts={refreshFacts}
               />
-              <LorePanel campaignId={campaignId} steersStory={steersStory} isDm={adjudicates} members={members} />
+              <LorePanel campaignId={campaignId} steersStory={steersStory} isDm={adjudicates} members={members} refreshKey={loreVersion} />
             </div>
           ) : storySection === "quests" ? (
             <QuestsPanel campaignId={campaignId} steersStory={steersStory} refreshKey={questsVersion} />
@@ -623,6 +676,17 @@ export function SidePanelRouter({
       </Suspense>
     );
   }
+  if (tab === "world" && steersStory) {
+    // The campaign's own copy of its world (the records the import copied
+    // from a workshop, or written here), through the routes that answer
+    // only story authority. A faction entry's change arrives as
+    // factions_updated, so that count refreshes it too.
+    return (
+      <Suspense fallback={<PanelLoading />}>
+        <WorldForgePanel campaignId={campaignId} at="table" canShowHandouts={adjudicates} refreshKey={worldVersion + factionsVersion} />
+      </Suspense>
+    );
+  }
   if (tab === "context" && steersStory) {
     return (
       <Suspense fallback={<PanelLoading />}>
@@ -639,6 +703,12 @@ export function SidePanelRouter({
           steersStory={steersStory}
           isDm={adjudicates}
           canEnd={canEndCampaign}
+          lastingCompanions={
+            campaign.gameSettings
+              ? resolveCompanionMode(campaign.gameSettings, partySize, humanDmTable) === "full" ||
+                sheets.some((sheet) => sheet.isCompanion && sheet.companionKind !== "guest" && !sheet.summon)
+              : false
+          }
         />
       </Suspense>
     );

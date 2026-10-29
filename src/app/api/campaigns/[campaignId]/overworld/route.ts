@@ -5,7 +5,18 @@ import {
   requireStoryAuthority,
   requireMember,
 } from "@/lib/campaign-api";
-import { insertKnownLocation, renameLocation } from "@/lib/db/locations";
+import { followAnchor, type PinMove } from "@/lib/db/atlas-region";
+import { partyAtlasChanged } from "@/lib/db/party-atlas";
+import { getWorldDoc } from "@/lib/db/world-forge";
+import { publishEphemeral, publishPersisted } from "@/lib/events";
+import {
+  getLocation,
+  insertKnownLocation,
+  listLocations,
+  renameLocation,
+  setLocationParent,
+} from "@/lib/db/locations";
+import { textKey } from "@/lib/language/text-logic";
 import {
   overworldView,
   regenerateOverworld,
@@ -26,6 +37,7 @@ import {
   MAX_STROKES,
   OVERWORLD_BRUSHES,
 } from "@/lib/overworld/paint";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,6 +90,9 @@ const patchSchema = z.object({
   partyXy: xySchema.nullable().optional(),
   anchor: z.object({ locationId: z.string().min(1) }).merge(xySchema).optional(),
   rename: z.object({ locationId: z.string().min(1), name: z.string().trim().min(1).max(80) }).optional(),
+  // Files a place under a bigger one, or ("") says it is a place of its own
+  // (issue 548). The bigger place is named, as move_party's partOf names it.
+  parent: z.object({ locationId: z.string().min(1), parentName: z.string().trim().max(80) }).optional(),
   notes: z.string().max(4_000).optional(),
   // Hand-painting the region. Applied before anything else in the handler,
   // because a stroke that widens a lake changes what an anchor drag in the
@@ -101,6 +116,31 @@ const patchSchema = z.object({
     .optional(),
 });
 
+// The places a change touched, sent to the table the way an arrival is, so
+// the area list and its "Routes" line (read from the stream, not from this
+// route) show the change without a reload.
+function announcePlaces(campaignId: string, ids: string[]) {
+  for (const id of new Set(ids)) {
+    const location = getLocation(id);
+    if (location) {
+      publishPersisted(campaignId, "location_updated", { location });
+    }
+  }
+}
+
+// The places whose routes or parent name a place, after a rename has
+// repointed them to its new name.
+function partsNaming(campaignId: string, name: string): string[] {
+  const key = textKey(name);
+  return listLocations(campaignId)
+    .filter(
+      (place) =>
+        (place.parentName && textKey(place.parentName) === key) ||
+        place.connections.some((connection) => textKey(connection) === key),
+    )
+    .map((place) => place.id);
+}
+
 // Authoring controls. Everything here belongs to whoever steers the story.
 export async function PATCH(
   request: Request,
@@ -116,6 +156,12 @@ export async function PATCH(
     return Response.json({ error: "Invalid overworld update." }, { status: 400 });
   }
   const patch = parsed.data;
+  // Where the party stands is play, and a workshop has no party (issue 553):
+  // an import would leave the marker behind without a word. Clearing an old
+  // one stays allowed.
+  if (patch.partyXy && context.campaign.kind === "workshop") {
+    return Response.json({ error: "A workshop has no party to place. The party is placed at the table, as it travels." }, { status: 400 });
+  }
   // Painting first: a refused paint is the DM's picture being rejected, and
   // they should hear about it instead of it being buried under whatever else
   // the same request happened to carry.
@@ -148,19 +194,27 @@ export async function PATCH(
     setOverworldLabels(campaignId, patch.labels);
   }
   if (patch.places) {
-    for (const place of patch.places) {
-      insertKnownLocation({
-        campaignId,
-        name: place.name,
-        layoutDescription: place.blurb,
-      });
-    }
+    const added = patch.places.flatMap((place) => {
+      const location = insertKnownLocation({ campaignId, name: place.name, layoutDescription: place.blurb });
+      return location ? [location.id] : [];
+    });
+    announcePlaces(campaignId, added);
   }
   if (patch.rename) {
     const renamed = renameLocation(campaignId, patch.rename.locationId, patch.rename.name);
     if (!renamed) {
       return Response.json({ error: "That name is already taken here." }, { status: 409 });
     }
+    // The area list reads places from the table's stream, which has to hear
+    // the new name and the parts that now name it.
+    announcePlaces(campaignId, [renamed.id, ...partsNaming(campaignId, renamed.name)]);
+  }
+  if (patch.parent) {
+    const filed = setLocationParent(campaignId, patch.parent.locationId, patch.parent.parentName);
+    if ("error" in filed) {
+      return Response.json({ error: filed.error }, { status: 400 });
+    }
+    announcePlaces(campaignId, [filed.id]);
   }
   if (patch.pins) {
     setOverworldPins(campaignId, patch.pins);
@@ -168,11 +222,21 @@ export async function PATCH(
   if (patch.partyXy !== undefined) {
     setOverworldParty(campaignId, patch.partyXy);
   }
+  // A place bound to an Atlas pin (src/lib/db/atlas-region.ts) takes the
+  // pin with it; `atlas` names each pin that moved and where it stood.
+  let atlas: PinMove[] = [];
   if (patch.anchor) {
     setOverworldAnchor(campaignId, patch.anchor.locationId, {
       x: patch.anchor.x,
       y: patch.anchor.y,
     });
+    const world = getWorldDoc(campaignId);
+    atlas = followAnchor(campaignId, patch.anchor.locationId);
+    if (atlas.length) {
+      partyAtlasChanged(campaignId, world);
+      publishEphemeral(campaignId, "world_updated", { at: Date.now() });
+      recordsChanged(campaignId, "world");
+    }
   }
   if (patch.notes !== undefined) {
     setOverworldNotes(campaignId, patch.notes);
@@ -180,5 +244,7 @@ export async function PATCH(
   // `stranded` names the places the paint left standing in sea or on a peak.
   // Reported, never moved: setOverworldAnchor accepts both on the grounds
   // that a DM who puts a lighthouse on a reef means it.
-  return Response.json({ ...overworldView(campaignId, true), stranded });
+  // Only places and their names are records; paint and pins are the map's.
+  if (patch.places || patch.rename || patch.parent) recordsChanged(campaignId, "location", "world");
+  return Response.json({ ...overworldView(campaignId, true), stranded, ...(atlas.length ? { atlas } : {}) });
 }

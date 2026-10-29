@@ -1,11 +1,12 @@
 // Run this on the player's computer, never on ODM's server account.
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { readFileSync, mkdirSync, existsSync, openSync, closeSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, unlinkSync, renameSync } from "node:fs";
 import { register } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { PlayerInbox, atomicJson, playerPrompt, receiverServer } from "./lib/player-webhook-receiver.mjs";
+import { LockRefused, PlayerInbox, atomicJson, playerPrompt, receiverServer, takeReceiverLock } from "./lib/player-webhook-receiver.mjs";
 import { promptSecret, saveToken, tokenStore } from "./lib/player-token-store.mjs";
 
 import { runCodexPlayerTurn, playerCodexEnvironment, playerMcpOverride } from "./lib/player-webhook-codex.mjs";
@@ -78,9 +79,19 @@ function checkMcpUrl() {
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Plain("Configure a plain HTTPS MCP URL (mcpUrl).");
 }
 
+// A bare name, like the receiver file's "codex", is looked up the way the
+// server finds its programs: on Windows npm installs codex.cmd, and spawn()
+// does not find that by its bare name.
+async function codexBinary() {
+  const name = config.codexBinary ?? "codex";
+  if (os.platform() !== "win32" || /[\\/]/.test(name) || path.extname(name)) return name;
+  const { findBinary } = await import("../src/lib/harness/discover.ts");
+  return (await findBinary([name])) ?? name;
+}
+
 async function codexShim() {
   const { resolveWindowsShim } = await import("../src/lib/harness/discover.ts");
-  return resolveWindowsShim(config.codexBinary ?? "codex");
+  return resolveWindowsShim(await codexBinary());
 }
 
 // Codex handles its own device sign-in in the player's terminal. No
@@ -207,11 +218,13 @@ try {
       console.log("Webhook removed. Stop the receiver with Ctrl+C.");
     } else {
       const subscription = savedSubscription();
-      const lockPath = path.join(directory, "receiver.lock");
-      const lock = openSync(lockPath, "wx", 0o600);
-      writeFileSync(lock, String(process.pid));
-      closeSync(lock);
-      process.once("exit", () => { try { unlinkSync(lockPath); } catch { /* Already removed. */ } });
+      let release;
+      try {
+        release = takeReceiverLock(path.join(directory, "receiver.lock"));
+      } catch (error) {
+        throw error instanceof LockRefused ? new Plain(error.message) : error;
+      }
+      process.once("exit", release);
       const inbox = new PlayerInbox(directory);
       const { startJsonRpc } = await import("../src/lib/harness/jsonrpc-stdio.ts");
       const { codexArgs } = await import("../src/lib/harness/adapters/codex.ts");
@@ -221,9 +234,10 @@ try {
         playerMcpOverride(config.mcpUrl, helper)];
       const scratch = path.join(directory, "scratch");
       mkdirSync(scratch, { recursive: true, mode: 0o700 });
+      const binary = await codexBinary();
       let activePeer;
       const wake = (event) => runCodexPlayerTurn(startJsonRpc, args, {
-        binary: config.codexBinary ?? "codex", cwd: scratch, env: playerCodexEnvironment(directory),
+        binary, cwd: scratch, env: playerCodexEnvironment(directory),
         threadId: inbox.state.threadId, model: config.model, effort: config.effort,
         prompt: playerPrompt(event, config.playerInstructions ?? "Play only your assigned character, helpfully and concisely."),
         onThreadId(threadId) { inbox.state.threadId = threadId; inbox.save(); },

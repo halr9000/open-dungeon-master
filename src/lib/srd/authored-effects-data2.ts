@@ -43,12 +43,13 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   },
   "monk::Intoxicated Frenzy": {
     subclass: "Way of the Drunken Master",
-    effects: [{ kind: "flurry", strikes: 5, note: "Each extra strike is meant for a different creature; the DM keeps to that." }],
+    effects: [{ kind: "flurry", strikes: 5, note: "Each extra strike is meant for a different creature; the GM keeps to that." }],
   },
+  // Agile Parry: after an unarmed strike in the Attack action while holding a
+  // kensei melee weapon, +2 AC until the monk's next turn, for no action.
   "monk::Path of the Kensei": {
     subclass: "Way of the Kensei",
-    spends: [{ name: "Path of the Kensei", aliases: ["Agile Parry"], action: "bonus", does: { kind: "buff", condition: "agile parry", rounds: 1 } }],
-    effects: [],
+    spends: [{ name: "Agile Parry", aliases: ["Path of the Kensei"], action: "none", fight: "in", does: { kind: "buff", condition: "agile parry", rounds: 1 } }],
   },
   "monk::Kensei's Shot": {
     subclass: "Way of the Kensei",
@@ -71,7 +72,7 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
       {
         kind: "natural_weapon",
         weapon: { name: "Radiant Sun Bolt", aliases: ["sun bolt"], dice: [[1, "1d4"], [5, "1d6"], [11, "1d8"], [17, "1d10"]], type: "radiant", ranged: true, rangeFt: 30 },
-        note: "Its bonus-action pair of bolts for 1 ki after the Attack action is Flurry of Blows' place; the DM allows it.",
+        note: "Its bonus-action pair of bolts for 1 ki after the Attack action is Flurry of Blows' place; the GM allows it.",
       },
     ],
   },
@@ -159,10 +160,11 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   },
   "monk::Body of the Astral Self": {
     subclass: "Way of the Astral Self",
+    // Empowered Arms: one more roll of the martial arts die, once a turn.
     effects: [
       {
         kind: "rider",
-        dice: "1d10",
+        dice: [[11, "1d8"], [17, "1d10"]],
         type: "",
         when: "weapon",
         oncePerTurn: true,
@@ -194,10 +196,20 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
       },
     ],
   },
+  // Explosive Fury: when Aspect of the Wyrm is activated, creatures of the
+  // monk's choice in its 10-foot aura save on Dexterity or take 3d10 of the
+  // Draconic Strike type. Augment Breath's bigger cone and Blindsight are the
+  // DM's to place.
   "monk::Ascendant Aspect": {
     subclass: "Way of the Ascendant Dragon",
-    reactions: [
-      { name: "Ascendant Aspect", does: { kind: "strike_back", amount: "3d10", type: "fire", rangeFt: 30 } },
+    spends: [
+      {
+        name: "Explosive Fury",
+        aliases: ["Ascendant Aspect"],
+        action: "none",
+        gate: { condition: "aspect of the wyrm" },
+        does: { kind: "aoe_report", dice: "3d10", save: "dex", dcAbility: "wis", type: "acid, cold, fire, lightning or poison (the Draconic Strike type)", area: "each creature of the monk's choice in the 10-foot aura" },
+      },
     ],
   },
 
@@ -237,14 +249,14 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
           kind: "buff",
           condition: "avenging angel",
           rounds: 600,
-          burst: { save: "wis", dcAbility: "spell", rangeFt: 30, condition: "frightened", rounds: 10 },
+          burst: { save: "wis", dcAbility: "spell", rangeFt: 30, condition: "frightened", mark: "menaced by an avenging angel", rounds: 10 },
         },
       },
     ],
-    effects: [
-      { kind: "move", fly: 60, gate: { condition: "avenging angel" } },
-      { kind: "attack_adv", vs: "frightened_by_self", gate: { condition: "avenging angel" } },
-    ],
+    // A creature the aura frightened also carries "menaced by an avenging
+    // angel": every attack roll against it has advantage, the paladin's or
+    // anyone's (src/lib/srd/authored-conditions.ts).
+    effects: [{ kind: "move", fly: 60, gate: { condition: "avenging angel" } }],
   },
   "paladin::Aura of Conquest": {
     subclass: "Oath of Conquest",
@@ -290,11 +302,15 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
     subclass: "Oath of Glory",
     effects: [{ kind: "speed", amount: 10, note: "The allies' 10 feet within 5 feet of the paladin are narrated." }],
   },
+  // Advantage on Charisma checks (the condition), once a turn a missed
+  // weapon attack hits instead (the DM rules the hit), and a reaction that
+  // rerolls a failed save.
   "paladin::Living Legend": {
     subclass: "Oath of Glory",
     counter: "sub_living_legend",
     spends: [
       { name: "Living Legend", pool: { id: "sub_living_legend" }, action: "bonus", does: { kind: "buff", condition: "living legend", rounds: 10 } },
+      { name: "Living Legend Reroll", aliases: ["Living Legend save"], action: "reaction", gate: { condition: "living legend" }, does: { kind: "reroll_save" } },
     ],
   },
   "paladin::Vigilant Rebuke": {
@@ -324,7 +340,7 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   },
   "paladin::Unyielding Spirit": {
     subclass: "Oath of the Crown",
-    effects: [{ kind: "save_adv", against: "paraly|stun" }],
+    effects: [{ kind: "save_adv", against: ["paralyzed", "stunned"] }],
   },
   "paladin::Exalted Champion": {
     subclass: "Oath of the Crown",
@@ -339,8 +355,9 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
     spends: [
       { name: "Dread Lord", pool: { id: "sub_dread_lord" }, action: "action", does: { kind: "buff", condition: "dread lord", rounds: 10 } },
     ],
+    // Only an enemy frightened of the oathbreaker takes the aura's 4d10.
     effects: [
-      { kind: "enemy_turn_damage", formula: "4d10", type: "psychic", rangeFt: 30, gate: { condition: "dread lord" } },
+      { kind: "enemy_turn_damage", formula: "4d10", type: "psychic", rangeFt: 30, frightenedOnly: true, gate: { condition: "dread lord" } },
     ],
   },
 
@@ -348,11 +365,11 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   "ranger::Ranger's Companion": {
     subclass: "Beast Master",
     narrated:
-      "The beast is a companion sheet the DM fields (pet-tools); its proficiency bonus and hit points are set when it is made.",
+      "The beast is a companion sheet the GM fields (pet-tools); its proficiency bonus and hit points are set when it is made.",
   },
   "ranger::Shadowy Dodge": {
     subclass: "Gloom Stalker",
-    reactions: [{ name: "Shadowy Dodge", does: { kind: "disadv_vs_hit" } }],
+    reactions: [{ name: "Shadowy Dodge", does: { kind: "disadv_vs_hit", notVsAdvantage: true } }],
   },
   "ranger::Planar Warrior": {
     subclass: "Horizon Walker",
@@ -377,7 +394,7 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   },
   "ranger::Supernatural Defense": {
     subclass: "Monster Slayer",
-    effects: [{ kind: "save_die_vs", die: "1d6", mark: "slayer's prey (marked)", note: "Its 1d6 on a check to escape the prey's grapple is the DM's to add." }],
+    effects: [{ kind: "save_die_vs", die: "1d6", mark: "slayer's prey (marked)", note: "Its 1d6 on a check to escape the prey's grapple is the GM's to add." }],
   },
   "ranger::Slayer's Counter": {
     subclass: "Monster Slayer",
@@ -385,7 +402,7 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   },
   "ranger::Beguiling Twist": {
     subclass: "Fey Wanderer",
-    effects: [{ kind: "save_adv", against: "charm|frighten|fear", note: "Redirecting the charm is narrated." }],
+    effects: [{ kind: "save_adv", against: ["charmed", "frightened"], note: "Redirecting the charm is narrated." }],
   },
   "ranger::Gathered Swarm": {
     subclass: "Swarmkeeper",
@@ -400,7 +417,24 @@ export const AUTHORED_DATA_B: Record<string, AuthoredEntry> = {
   },
   "ranger::Mighty Swarm": {
     subclass: "Swarmkeeper",
-    effects: [{ kind: "swarm_prone", note: "Its damage step is Gathered Swarm's 1d8 from 11th level; the half cover when the swarm moves the ranger is the DM's." }],
+    effects: [{ kind: "swarm_prone", note: "Its damage step is Gathered Swarm's 1d8 from 11th level; the half cover when the swarm moves the ranger is the GM's." }],
+  },
+  "ranger::Perfected Bond": {
+    subclass: "Drakewarden",
+    counter: "sub_reflexive_resistance",
+    reactions: [
+      {
+        name: "Reflexive Resistance",
+        aliases: ["Perfected Bond"],
+        pool: { id: "sub_reflexive_resistance" },
+        does: {
+          kind: "resist_instance",
+          types: ["acid", "bludgeoning", "cold", "fire", "force", "lightning", "necrotic", "piercing", "poison", "psychic", "radiant", "slashing", "thunder"],
+          who: "either",
+          rangeFt: 30,
+        },
+      },
+    ],
   },
 };
 

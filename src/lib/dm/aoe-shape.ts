@@ -16,6 +16,8 @@ import { authoredSpellRow } from "@/lib/srd/spell-mechanics";
 import { templateTiles, type TemplateShape } from "@/lib/battlemap/template";
 import { footprintForSize, footprintTiles } from "@/lib/battlemap/footprint";
 import { chebyshev, tileIndex, type XY } from "@/lib/battlemap/types";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type AreaShape = {
   shape: "sphere" | "cube" | "cone" | "line" | "cylinder";
@@ -80,7 +82,7 @@ export function spellAreaShape(spell: string, authors?: string | string[]): Area
     }
   }
   const authored = authoredSpellRow(spell);
-  return (authored ? areaShapeFromText(authored.desc) : null) ?? SRD_AREAS[spell.trim().toLowerCase()] ?? null;
+  return (authored ? areaShapeFromText(authored.desc) : null) ?? SRD_AREAS[textKey(spell)] ?? null;
 }
 
 // A monster's area ability, read from the line its block prints.
@@ -105,7 +107,7 @@ export function areaProblem(input: {
   creatures: Creature[];
   at?: XY;
   toward?: XY;
-}): string | null {
+}): ToolError | null {
   const map = getBattleMapForEncounter(input.encounterId);
   if (!map || !input.creatures.length) {
     return null;
@@ -146,7 +148,7 @@ export function areaProblem(input: {
     origins = [{ x: caster.x, y: caster.y }];
   } else if (input.at) {
     if (caster && input.rangeFeet !== null && chebyshev(caster.x, caster.y, input.at.x, input.at.y) * FEET_PER_TILE > input.rangeFeet) {
-      return `${input.label}'s point of origin (${input.at.x}, ${input.at.y}) is beyond its ${input.rangeFeet}-foot range from ${input.casterName}. Nothing was spent.`;
+      return { error: `${input.label}'s point of origin (${input.at.x}, ${input.at.y}) is beyond its ${input.rangeFeet}-foot range from ${input.casterName}. Nothing was spent.`, retry: true };
     }
     origins = [input.at];
   } else {
@@ -171,5 +173,5 @@ export function areaProblem(input: {
   }
   const names = placed.map((creature) => creature.name).join(", ");
   const where = input.area.self ? `from ${input.casterName}` : input.at ? `at (${input.at.x}, ${input.at.y})` : "anywhere in its range";
-  return `${input.label}'s ${input.area.feet}-foot ${input.area.shape} cannot hold ${names} in one placement ${where}: an area catches only the creatures inside it. Name the creatures one ${input.area.shape} reaches${input.area.self ? " (towardX/towardY aims it)" : " (atX/atY places it)"}. Nothing was spent.`;
+  return { error: `${input.label}'s ${input.area.feet}-foot ${input.area.shape} cannot hold ${names} in one placement ${where}: an area catches only the creatures inside it. Name the creatures one ${input.area.shape} reaches${input.area.self ? " (towardX/towardY aims it)" : " (atX/atY places it)"}. Nothing was spent.`, retry: true };
 }

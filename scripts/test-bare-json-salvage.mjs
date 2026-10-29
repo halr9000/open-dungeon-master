@@ -3,7 +3,8 @@
 // - a reply that is a call's arguments as bare JSON ('{"characterIds":[...],
 //   "prompt":"..."}'), alone or glued to the prose, runs as that call and
 //   never reaches the table;
-// - a reply with no text and no tool call is asked again once, outside the
+// - a reply with no text and no tool call (or only JSON no offered tool
+//   takes) is asked again once, outside the
 //   call budget, and a turn whose last reply stays empty gets the
 //   tools-closed narration call;
 // - a reply of calls that need no follow-up (a tool that does not exist,
@@ -32,7 +33,7 @@ register("./lib/register-alias.mjs", import.meta.url);
 
 const { findBareJsonObjects, stripToolText } = await import("../src/lib/dm/tool-text.ts");
 const { salvageJsonToolCalls } = await import("../src/lib/dm/json-salvage.ts");
-const { createStreamingArtifactFilter, extractStoryText } = await import("../src/lib/story-prompt.ts");
+const { createStreamingArtifactFilter, extractReplyText, extractStoryText } = await import("../src/lib/story-prompt.ts");
 const { createUser } = await import("../src/lib/db/users.ts");
 const { createCampaign, getCampaignById, getFloor, setCampaignStatus, updateStorySettings, allocateSeq } =
   await import("../src/lib/db/campaigns.ts");
@@ -45,6 +46,8 @@ const { startDmTurn, dmTurnToolCatalogue, MAX_MODEL_CALLS } = await import("../s
 const NARRATION = "Bram's shortsword is still too far away; the ragged bandit stands well beyond reach.";
 const PASSAGE = "The Archmage's eyes flare, a spark of humor dancing in the blue light. It is a place of many doors. Choose yours wisely, Master Flamefinger. Even a scholar must know when to put down the book and pick up a glass of wine.";
 const QUESTION = "What will Bram do? He is 80 ft from the bandit.";
+const LAST_TURN =
+  "The bandit sneers from the far bank, his blade catching the morning light. Bram's boots sink into the cold mud of the ford as the current tugs at his legs. What will you do?";
 
 // ---- the pure helpers --------------------------------------------------------
 {
@@ -85,11 +88,14 @@ const catalogue = dmTurnToolCatalogue(getCampaignById(probe.id), false, false);
   const either = salvageJsonToolCalls('The bandit circles. {"characterId":"c1","amount":5}', catalogue);
   assert.equal(either.text, "The bandit circles.");
   assert.equal(either.calls.length, 0);
-  const move = salvageJsonToolCalls('The bandit circles. {"tokenName":"Bandit 1","x":5,"y":8}', catalogue);
-  assert.equal(move.calls.length, 0, "move_token and teleport_token both take tokenName, x and y");
-  const named = salvageJsonToolCalls('{"name":"move_token","arguments":"{\\"tokenName\\":\\"Avery\\",\\"x\\":2,\\"y\\":3}"}', catalogue);
+  // A teleport is move_token's since teleport_token folded into it (issue
+  // #471), so a token and a square name one tool now.
+  const move = salvageJsonToolCalls('The bandit circles. {"token":"Bandit 1","x":5,"y":8}', catalogue);
+  assert.deepEqual(move.calls.map((call) => call.name), ["move_token"]);
+  assert.equal(move.text, "The bandit circles.");
+  const named = salvageJsonToolCalls('{"name":"move_token","arguments":"{\\"token\\":\\"Avery\\",\\"x\\":2,\\"y\\":3}"}', catalogue);
   assert.deepEqual(named.calls.map((call) => call.name), ["move_token"]);
-  assert.deepEqual(JSON.parse(named.calls[0].rawArguments), { tokenName: "Avery", x: 2, y: 3 });
+  assert.deepEqual(JSON.parse(named.calls[0].rawArguments), { token: "Avery", x: 2, y: 3 });
   // A key no tool takes: cut, never run.
   const stray = salvageJsonToolCalls('The fog rolls in. {"mood":"grim","weatherLevel":3}', catalogue);
   assert.equal(stray.text, "The fog rolls in.");
@@ -110,6 +116,28 @@ const catalogue = dmTurnToolCatalogue(getCampaignById(probe.id), false, false);
   const prose = ["A sign reads {closed}", " in chalk."].map((chunk) => plain.push(chunk)).join("") + plain.flush();
   assert.equal(prose, "A sign reads {closed} in chalk.");
   console.log("ok: the stream holds back bare JSON and nothing else");
+}
+
+// gpt-oss on llama-server ended a narration with the start of a Harmony tool
+// call, " to=functions.request_player_input", which reached the table.
+{
+  const leaked = `${QUESTION}\n\n to=functions.request_player_input`;
+  assert.equal(extractStoryText(leaked), QUESTION);
+  const withArgs = extractReplyText(
+    `${QUESTION} to=functions.request_player_input <|constrain|>json<|message|>{"characterIds":["c1"],"prompt":"Where?"}<|call|>`,
+  );
+  assert.ok(!/to=functions|<\|/.test(withArgs), withArgs);
+  const salvaged = salvageJsonToolCalls(withArgs, catalogue);
+  assert.deepEqual(salvaged.calls.map((call) => call.name), ["request_player_input"]);
+  assert.equal(salvaged.text, QUESTION);
+  assert.equal(extractStoryText("You walk to the door. It is locked."), "You walk to the door. It is locked.");
+  const filter = createStreamingArtifactFilter();
+  const streamed = [`${QUESTION} to`, "=functions.request", "_player_input"].map((chunk) => filter.push(chunk)).join("") + filter.flush();
+  assert.equal(streamed.trim(), QUESTION);
+  const plain = createStreamingArtifactFilter();
+  const prose = ["You want to", " go on?"].map((chunk) => plain.push(chunk)).join("") + plain.flush();
+  assert.equal(prose, "You want to go on?");
+  console.log("ok: a Harmony tool call begun in the prose never reaches the table, and its arguments are salvaged");
 }
 
 // ---- the turn machine ----------------------------------------------------------
@@ -150,10 +178,15 @@ const server = http.createServer((req, res) => {
       sse(res, []);
     } else if (reply === "json-ask") {
       sse(res, [{ content: askJson() }]);
+    } else if (reply === "stray-json") {
+      // Arguments with no name and a key no offered tool has (Gemma4 e4b).
+      sse(res, [{ content: '{\n"characterId": "Avery",\n"kind": "investigation",\n"summary": "Avery scans the ford.",\n"waypoint": 1\n}' }]);
     } else if (reply === "narrate-json-ask") {
       sse(res, [{ content: `${NARRATION} What will you do?` }, { content: askJson() }]);
     } else if (reply === "unknown-tool") {
       sse(res, [toolCall("dance_wildly", { style: "jig" })]);
+    } else if (reply === "last-turn") {
+      sse(res, [{ content: LAST_TURN }]);
     } else if (reply === "repeat") {
       sse(res, [{ content: (PASSAGE + "\n\n").repeat(4) }]);
     } else if (reply === "repeat-reasoning") {
@@ -167,7 +200,7 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
 
-function table(title) {
+function table(title, lastDm = "") {
   const campaign = createCampaign(lead.id, {
     title,
     description: "A test of the bare-JSON salvage and the empty-reply retry.",
@@ -201,6 +234,9 @@ function table(title) {
     }),
   );
   sheetId = sheet.id;
+  if (lastDm) {
+    insertCampaignMessage({ campaignId: campaign.id, seq: allocateSeq(campaign.id), authorType: "dm", content: lastDm, speech: [] });
+  }
   insertCampaignMessage({
     campaignId: campaign.id,
     seq: allocateSeq(campaign.id),
@@ -212,11 +248,11 @@ function table(title) {
   return campaign;
 }
 
-async function run(title, replies) {
+async function run(title, replies, lastDm = "") {
   script = replies;
   calls = 0;
   requests = [];
-  const campaign = table(title);
+  const campaign = table(title, lastDm);
   await startDmTurn(campaign.id);
   const messages = listRecentMessages(campaign.id, 20);
   const dm = messages.filter((m) => m.authorType === "dm");
@@ -225,6 +261,22 @@ async function run(title, replies) {
 
 const toolResults = (request) =>
   new Map(request.messages.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, JSON.parse(m.content)]));
+
+// The last turn's narration said again with no tool is sent back once, and
+// the table reads the new reply (gpt-oss-20b and Qwen3.6-35B, a fight of
+// identical lines).
+{
+  const repeated = await run("Last turn again", ["last-turn", "narrate"], LAST_TURN);
+  assert.equal(repeated.text, NARRATION, `expected the new narration, got: ${repeated.text}`);
+  assert.equal(repeated.calls, 2);
+  assert.ok(
+    repeated.requests[1].messages.some((m) => m.role === "user" && /repeats your previous narration/.test(String(m.content))),
+    "the second call says why",
+  );
+  const fresh = await run("A new turn", ["narrate"], LAST_TURN);
+  assert.equal(fresh.calls, 1, "a reply unlike the last turn is not sent back");
+  console.log("ok: the last turn's narration said again is sent back once");
+}
 
 // The bug: a reply that is only the JSON closed the turn on the empty-turn line.
 const whole = await run("JSON question only", ["json-ask", "narrate"]);
@@ -249,6 +301,13 @@ assert.equal(empty.calls, 2);
 assert.deepEqual(empty.requests[1].messages, empty.requests[0].messages, "the retry asks the same thing again");
 assert.notEqual(empty.requests[1].tool_choice, "none", "the retry did not spend the call budget");
 console.log("ok: an empty reply is asked again once");
+
+// A reply that is only JSON no offered tool takes is as empty as no reply.
+const stray = await run("Stray JSON only", ["stray-json", "narrate"]);
+assert.equal(stray.text, NARRATION, `expected narration after a retry, got: ${stray.text}`);
+assert.equal(stray.calls, 2);
+assert.deepEqual(stray.requests[1].messages, stray.requests[0].messages, "the retry asks the same thing again");
+console.log("ok: a reply of JSON no tool takes is asked again, like an empty one");
 
 // Empty twice: the tools-closed call narrates.
 const twice = await run("Empty twice", ["empty", "empty", "narrate"]);

@@ -8,14 +8,13 @@ import { Select } from "@/components/ui/Select";
 import { CONDITION_BLURBS, DAMAGE_TYPE_BLURBS, glossaryFor } from "@/lib/help/terms";
 import {
   MAX_ATTACKS,
-  MAX_TRAITS,
   SAVE_ABILITIES,
   SIZES,
   type MonsterDraft,
   type MonsterReadout,
 } from "@/lib/bestiary/monster-draft";
 import { CONDITIONS, DAMAGE_TYPES } from "@/lib/bestiary/kit";
-import { CREATURE_TYPES, creatureTypeOf } from "@/lib/bestiary/statblock";
+import { CREATURE_TYPES, creatureTypeOf } from "@/lib/bestiary/creature-type";
 import { SpeedPicker, TermPicker } from "@/app/campaigns/[campaignId]/MonsterKitFields";
 import { crLabel, type CrPart } from "@/lib/bestiary/derive-cr";
 import { Reveal } from "@/components/ui/Reveal";
@@ -196,9 +195,11 @@ export function AttackEditor({
 // or "Details" when it carries nothing yet.
 function attackExtras(attack: MonsterDraft["stats"]["attacks"][number]): string {
   const bits = [
-    attack.range ? `${attack.range.normal}/${attack.range.long} ft` : attack.reach && attack.reach > 5 ? `reach ${attack.reach}` : "",
+    attack.bonusAction ? "bonus action" : "",
+    attack.range ? `${attack.range.normal}/${attack.range.long} ft` : attack.reach === 0 || (attack.reach && attack.reach > 5) ? `reach ${attack.reach}` : "",
     attack.riders?.length ? `+${attack.riders.map((rider) => rider.type).join(", ")}` : "",
     attack.onHit?.condition ?? (attack.onHit?.damage ? "on hit" : ""),
+    attack.alternatives?.some((entry) => entry.when === "bloodied") ? "weaker when bloodied" : "",
   ].filter(Boolean);
   return bits.length ? bits.join(" · ") : "Details";
 }
@@ -238,55 +239,6 @@ export function SaveEditor({
           />
         </div>
       ))}
-    </div>
-  );
-}
-
-// Traits are one-line rules text, which is what the engine surfaces to
-// whoever is running the monster. Legendary and lair actions go here too:
-// the engine has no separate turn for them, so a line a DM will read at the
-// table is worth more than a field nothing acts on.
-export function TraitEditor({
-  draft,
-  onChange,
-}: {
-  draft: MonsterDraft;
-  onChange: (draft: MonsterDraft) => void;
-}) {
-  const traits = draft.stats.traits;
-  const setTraits = (next: string[]) =>
-    onChange({ ...draft, stats: { ...draft.stats, traits: next } });
-  return (
-    <div className="flex flex-col gap-1">
-      {traits.map((trait, index) => (
-        <div key={index} className="flex items-center gap-1.5">
-          <input
-            value={trait}
-            onChange={(event) =>
-              setTraits(traits.map((row, at) => (at === index ? event.target.value : row)))
-            }
-            placeholder="Fire Breath (Recharge 5-6): DC 15 Dex save, 6d6 fire, half on a success"
-            className={cn(input, "flex-1")}
-          />
-          <button
-            type="button"
-            onClick={() => setTraits(traits.filter((_, at) => at !== index))}
-            className="text-stone-600 hover:text-red-300"
-            aria-label="Remove trait"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        </div>
-      ))}
-      {traits.length < MAX_TRAITS ? (
-        <button
-          type="button"
-          onClick={() => setTraits([...traits, ""])}
-          className="inline-flex w-fit items-center gap-1 rounded-md border border-stone-700 px-2 py-0.5 text-[11px] text-stone-400 hover:text-amber-100"
-        >
-          <Plus className="size-3" /> Trait, legendary action or lair action
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -335,18 +287,23 @@ export function SizeAndDefences({
           enforces. Anything else still goes in by hand, because a monster
           immune to "being seen" is a fine monster and no chip list of ours
           will hold every answer. */}
+      {/* Black Flag's resistance and vulnerability to a condition (advantage
+          or disadvantage on the save) show only on a block that has them: a
+          copy keeps them editable, and no other book prints them. */}
       {(
         [
           ["resist", "Resistant to", DAMAGE_TYPES],
           ["immune", "Immune to", DAMAGE_TYPES],
           ["vulnerable", "Vulnerable to", DAMAGE_TYPES],
           ["conditionImmune", "Condition immunities", CONDITIONS],
+          ...(draft.stats.conditionResist ? [["conditionResist", "Resistant to conditions (advantage on the save)", CONDITIONS] as const] : []),
+          ...(draft.stats.conditionVulnerable ? [["conditionVulnerable", "Vulnerable to conditions (disadvantage on the save)", CONDITIONS] as const] : []),
         ] as const
       ).map(([field, label, known]) => (
         <TermPicker
           key={field}
           label={label}
-          value={draft.stats[field]}
+          value={draft.stats[field] ?? ""}
           known={known}
           onChange={(value) => set({ [field]: value })}
           glossary={glossaryFor(

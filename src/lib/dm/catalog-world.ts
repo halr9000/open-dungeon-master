@@ -1,6 +1,9 @@
 // The world, the people in it, and the story: what a DM does outside a
 // fight and outside the party's own sheets. Names match the tool names the
 // AI DM is offered exactly.
+import { CHECK_KEY_FORM } from "@/lib/dm/catalog-roll";
+import { DEED_SEVERITIES } from "@/lib/dm/companion-values-logic";
+
 import type { CatalogEntry } from "@/lib/dm/catalog-types";
 import { cueOptions, sceneOptions } from "@/lib/ambience/catalog";
 import { RELATIONSHIP_BEAT_NAMES } from "@/lib/dm/relationship-logic";
@@ -14,6 +17,9 @@ import {
   damageTypeField,
 } from "@/lib/dm/catalog-vocab";
 import { REQUEST_ROLL_ADJUDICATION } from "@/lib/dm/catalog-roll";
+
+// The console form's words for a deed's severity (issue 503).
+const SEVERITY_LABELS: Record<(typeof DEED_SEVERITIES)[number], string> = { minor: "Minor", serious: "Serious", atrocity: "Atrocity" };
 
 const REASON = {
   name: "reason",
@@ -47,6 +53,16 @@ export const GENDER_FIELD = {
   options: TOLD_GENDERS.map((gender) => ({ value: gender, label: gender })),
 } as const;
 
+// Who an NPC or companion could fall for (issue 501), the words the DM's
+// tools take; written once and kept.
+export const DRAWN_TO_FIELD = {
+  name: "drawnTo",
+  label: "Drawn to",
+  kind: "list",
+  placeholder: "women, men, nonbinary people",
+  help: "Who they could fall for, once the story shows it. Set once and kept.",
+} as const;
+
 export const WORLD_ADJUDICATIONS: CatalogEntry[] = [
   {
     name: "move_party",
@@ -59,6 +75,8 @@ export const WORLD_ADJUDICATIONS: CatalogEntry[] = [
       { name: "connections", label: "Leads to", kind: "text", help: "Other place names, comma separated." },
       { name: "visionClear", label: "They can see it", kind: "boolean", default: true, help: "Off in darkness or fog: no map is drawn." },
       SCENE_FIELD,
+      // Issue 563: the party splitting up, where a companion may slip away.
+      { name: "characterIds", label: "Who goes", kind: "characters", help: "Leave empty for the whole party. Naming some splits the party: the rest stay behind." },
     ],
   },
   {
@@ -283,11 +301,13 @@ export const WORLD_ADJUDICATIONS: CatalogEntry[] = [
     category: "world",
     summary: "Doors, chests and chains with real AC and hit points for their material.",
     fields: [
-      { name: "name", label: "The object", kind: "text", placeholder: "the oak door", help: "Named, it keeps its damage between blows. A Wall of Ice is struck a section at a time: \"Wall of Ice section 2\", the numbers on the board." },
+      { name: "name", label: "The object", kind: "text", placeholder: "the oak door", help: "Named, it keeps its damage between blows." },
+      { name: "section", label: "Section", kind: "number", min: 1, max: 99, help: "A Wall of Ice is struck a section at a time: the numbers on the board." },
       { name: "material", label: "Material", kind: "select", options: OBJECT_MATERIAL_OPTIONS },
       { name: "size", label: "Size", kind: "select", options: OBJECT_SIZE_OPTIONS },
       { name: "characterId", label: "Struck by", kind: "character", help: "The server rolls their weapon attack against its AC and their damage." },
       { name: "weapon", label: "With", kind: "text", placeholder: "warhammer", help: "From their equipment." },
+      { name: "improvised", label: "Improvised weapon", kind: "boolean", help: "An object they picked up that is no weapon on their sheet." },
       { name: "damage", label: "Or damage", kind: "dice", help: "Something other than a character's weapon." },
       damageTypeField("damageType", "Damage type", "Objects shrug off poison and psychic."),
       { name: "fragile", label: "Fragile", kind: "boolean" },
@@ -308,6 +328,7 @@ export const WORLD_ADJUDICATIONS: CatalogEntry[] = [
       { name: "difficulty", label: "Difficulty", kind: "select", options: DIFFICULTIES },
       { name: "dc", label: "Or an exact DC", kind: "number", min: 1, max: 30 },
       { name: "characterIds", label: "Who rolls", kind: "characters" },
+      ...CHECK_KEY_FORM,
       REASON,
     ],
   },
@@ -351,8 +372,14 @@ export const WORLD_ADJUDICATIONS: CatalogEntry[] = [
         help: "Off the board; left empty, the current location and the hour decide.",
       },
       { name: "againstEnemyId", label: "Hiding (enemy)", kind: "enemy", help: "The server rolls its Stealth (or Deception for Insight) as the DC." },
-      { name: "againstMonster", label: "Hiding (stat block)", kind: "text", placeholder: "goblin", help: "Out of a fight: the creature's stat block by name." },
+      { name: "againstMonster", label: "Hiding or lying (stat block or NPC)", kind: "text", placeholder: "goblin", help: "Out of a fight: the creature's stat block by name, or for Insight a tracked NPC's name. Whoever beats an NPC's act is told privately." },
       { name: "characterIds", label: "Who might notice", kind: "characters" },
+      {
+        name: "about",
+        label: "A trap or secret door",
+        kind: "select",
+        options: [{ value: "traps_and_secret_doors", label: "Yes (Dungeon Delver notices it more easily)" }],
+      },
       REASON,
     ],
   },
@@ -379,6 +406,7 @@ export const SOCIAL_ADJUDICATIONS: CatalogEntry[] = [
       { name: "trait", label: "Trait", kind: "text" },
       { name: "location", label: "Found at", kind: "text" },
       GENDER_FIELD,
+      DRAWN_TO_FIELD,
       { name: "goal", label: "Wants", kind: "text" },
       { name: "ambition", label: "Long game", kind: "text" },
     ],
@@ -434,6 +462,22 @@ export const SOCIAL_ADJUDICATIONS: CatalogEntry[] = [
         options: RELATIONSHIP_BEAT_NAMES.map((beat) => ({ value: beat, label: beat.replace(/_/g, " ") })),
       },
       NOTE,
+      // A deed's (issue 503): who else saw it and how grave it was, and what
+      // a companion it pushes to an ultimatum demands.
+      { name: "witnesses", label: "Others who saw it", kind: "list", placeholder: "Brother Aldo, Seren", help: "Deeds only: every other tracked NPC or companion who saw it, and other player characters who stood by, comma separated." },
+      // Issue 563: a player character there who stood by bears a share of
+      // the cost; one who objected bears none.
+      { name: "objected", label: "Spoke against it", kind: "characters", help: "Deeds only: player characters there who objected or tried to stop it. They bear none of it." },
+      {
+        name: "severity",
+        label: "How grave",
+        kind: "select",
+        help: "Deeds only. Serious when left unset.",
+        options: DEED_SEVERITIES.map((severity) => ({ value: severity, label: SEVERITY_LABELS[severity] })),
+      },
+      { name: "faction", label: "Done to a faction", kind: "text", help: "Deeds only: the faction whose people it was done to, if any." },
+      { name: "demand", label: "Ultimatum demand", kind: "text", help: "Deeds only: what a companion at a warning demands if this pushes them to an ultimatum." },
+      { name: "deadlineHours", label: "Ultimatum hours", kind: "number", min: 1, max: 168, help: "Deeds only: hours on the clock the demand gives. 24 when left empty." },
     ],
   },
   {
@@ -457,6 +501,16 @@ export const SOCIAL_ADJUDICATIONS: CatalogEntry[] = [
           { value: "married", label: "Married" },
         ],
         help: "The next step only; the server refuses a skipped one.",
+      },
+      {
+        name: "initiator",
+        label: "Who moves",
+        kind: "select",
+        options: [
+          { value: "player", label: "The player's character" },
+          { value: "npc", label: "The NPC (their first move)" },
+        ],
+        help: "An NPC's first move is an offer only that character's player answers, toward a character open to advances.",
       },
       NOTE,
     ],
@@ -483,6 +537,38 @@ export const SOCIAL_ADJUDICATIONS: CatalogEntry[] = [
           { value: "death", label: "Death" },
         ],
       },
+      {
+        name: "by",
+        label: "Who betrayed whom",
+        kind: "select",
+        options: [
+          { value: "character", label: "The character betrayed them" },
+          { value: "npc", label: "The NPC betrayed the character" },
+        ],
+        help: "Betrayal only. An NPC's betrayal costs nothing of their regard, and an act they kept up comes out.",
+      },
+      NOTE,
+    ],
+  },
+  {
+    name: "relationship_scheme",
+    label: "An NPC's act",
+    category: "social",
+    summary: "An NPC only pretends to care for a character open to advances, or the truth comes out.",
+    fields: [
+      {
+        name: "action",
+        label: "What happens",
+        kind: "select",
+        required: true,
+        options: [
+          { value: "start", label: "The act begins" },
+          { value: "reveal", label: "The truth comes out" },
+        ],
+      },
+      { name: "characterId", label: "Aimed at", kind: "character", required: true, help: "A character whose player opened them to advances from NPCs." },
+      { name: "subject", label: "NPC", kind: "text", required: true, help: "Their name as the table tracks it. They must be drawn to the character, and the character to them." },
+      { name: "motive", label: "What they really want", kind: "text", placeholder: "the vault key", help: "To start. Yours alone: no player sees it, the party lead included." },
       NOTE,
     ],
   },

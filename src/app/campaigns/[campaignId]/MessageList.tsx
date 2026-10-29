@@ -74,7 +74,7 @@ const DmDraftBubble = memo(function DmDraftBubble({
   if (dmDraft) {
     return (
       <div className="session-dm animate-fade-up">
-        <SectionHead title="Dungeon Master" glyph="tab-dm" level="h4" />
+        <SectionHead title="Game Master" glyph="tab-dm" level="h4" />
         <p className="session-dm-body whitespace-pre-wrap text-pretty font-serif text-base leading-relaxed text-stone-100">
           <Prose text={dmDraft} />
           <span className="stream-caret" aria-hidden="true" />
@@ -114,12 +114,15 @@ export function MessageList({
   onRenarrate,
   onContinueScene,
   onSelectVariant,
+  onBrowseShop,
   meUserId = "",
   blockedUserIds = [],
   onReport,
   onDispute,
+  hidden = false,
 }: {
   messages: CampaignMessage[];
+  hidden?: boolean;
   campaignId: string;
   meUserId?: string;
   // Players the viewer has blocked; their rows fold away.
@@ -153,6 +156,8 @@ export function MessageList({
   onRenarrate?: (message: CampaignMessage) => void;
   onContinueScene?: (message: CampaignMessage) => void;
   onSelectVariant?: (message: CampaignMessage, index: number) => void;
+  // A shop's "is open" line opens the Market on that shop.
+  onBrowseShop?: (shopId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -250,6 +255,15 @@ export function MessageList({
         : undefined,
     [hasSelectVariant],
   );
+  const browseShopRef = useRef(onBrowseShop);
+  useEffect(() => {
+    browseShopRef.current = onBrowseShop;
+  });
+  const hasBrowseShop = Boolean(onBrowseShop);
+  const stableBrowseShop = useMemo(
+    () => (hasBrowseShop ? (shopId: string) => browseShopRef.current?.(shopId) : undefined),
+    [hasBrowseShop],
+  );
   const reportRef = useRef(onReport);
   useEffect(() => {
     reportRef.current = onReport;
@@ -337,7 +351,7 @@ export function MessageList({
   }
 
   return (
-    <div ref={containerRef} onScroll={handleScroll} className="session-transcript flex-1 overflow-y-auto">
+    <div ref={containerRef} hidden={hidden} onScroll={handleScroll} className="session-transcript flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl space-y-8 px-4 py-6 sm:px-6">
       {messages.flatMap((message, index) => [
         ...(index === draftAt ? [draftBubble] : []),
@@ -383,6 +397,7 @@ export function MessageList({
               : undefined
           }
           onSelectVariant={stableSelectVariant}
+          onBrowseShop={stableBrowseShop}
         />
       ])}
       {draftAt === -1 ? draftBubble : null}

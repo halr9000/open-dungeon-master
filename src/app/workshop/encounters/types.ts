@@ -18,8 +18,16 @@ export type TemplateReadout = {
   // The ceiling start_encounter will refuse above, at this difficulty.
   ceiling: number;
   tooDeadly: boolean;
+  // What the storyteller runs instead when it is: the creatures it leaves
+  // out, or held when even the strongest alone is too much. Absent from an
+  // older host's answer.
+  scaledWithout?: string;
+  held?: boolean;
   unknownMonster: string | null;
   count: number;
+  // A hand-built monster's name by its "homebrew:<id>" ref. Absent from an
+  // older host's answer.
+  names?: Record<string, string>;
 };
 
 export type PreparedEncounter = {

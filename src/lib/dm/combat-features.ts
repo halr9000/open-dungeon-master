@@ -39,11 +39,13 @@ import { withOpportunityTurn } from "@/lib/dm/opportunity-strike";
 import { untilTurnEnd } from "@/lib/dm/turn-end";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
 import { computeSheetDerived } from "@/lib/srd";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-
-const lower = (value: string) => value.trim().toLowerCase();
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { subclassNamed } from "@/lib/srd/subclass-name";
+import { isNamed } from "@/lib/srd/feature-names";
 
 // Feet between two combatants on the live board, or null with no board.
 export function feetBetween(encounterId: string, a: string, b: string): number | null {
@@ -60,11 +62,11 @@ export function priceTheAction(
   sheet: CharacterSheet,
   encounter: Encounter | null,
   what: string,
-): { commit: () => void } | { error: string } {
+): { commit: () => void } | ToolError {
   // Off their turn, a feature they readied: their reaction (readied-release.ts).
   const readied = readiedReleaseFor(sheet, encounter, "feature");
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (readied) {
     return {
@@ -75,16 +77,16 @@ export function priceTheAction(
   }
   const able = canAct({ sheet, encounter, kind: "action" });
   if (!able.ok) {
-    return { error: able.error };
+    return toolError(able);
   }
   const fight = encounter && (encounter.kind ?? "fight") === "fight" ? encounter : null;
-  const budget = fight ? budgetFor(fight, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions)) : null;
+  const budget = fight ? budgetFor(fight, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions)) : null;
   if (!fight || !budget) {
     return { commit: () => {} };
   }
   const spent = spendAction(budget, "action", what, sheet.name);
   if (!spent.ok) {
-    return { error: spent.error };
+    return toolError(spent);
   }
   return { commit: () => storeBudget(fight, spent.budget) };
 }
@@ -131,14 +133,13 @@ export function combatFeatureSpend(
   resourceName: string,
   targetEnemyId: string | undefined,
 ): Record<string, unknown> | null {
-  const name = lower(resourceName);
-  if (/^intimidating presence\b/.test(name)) {
+  if (isNamed(resourceName, "intimidating presence")) {
     return intimidatingPresence(campaign, sheet, targetEnemyId);
   }
-  if (/^holy nimbus\b/.test(name)) {
+  if (isNamed(resourceName, "holy nimbus")) {
     return holyNimbus(campaign, turnId, sheet);
   }
-  if (/^divine intervention\b/.test(name)) {
+  if (isNamed(resourceName, "divine intervention")) {
     return divineIntervention(campaign, turnId, sheet);
   }
   return null;
@@ -149,27 +150,27 @@ export function combatFeatureSpend(
 export const UNMOVED = "unmoved by intimidating presence";
 const DAY_ROUNDS = 14400;
 
-function intimidatingPresence(campaign: Campaign, stale: CharacterSheet, targetEnemyId: string | undefined): Record<string, unknown> {
+function intimidatingPresence(campaign: Campaign, stale: CharacterSheet, targetEnemyId: string | undefined): ToolResult {
   const sheet = getSheetById(stale.id) ?? stale;
-  if (!holdsFeature(sheet, "intimidating presence") && !(classLevelOf(sheet, "barbarian") >= 10 && /berserker/i.test(sheet.subclass ?? ""))) {
-    return { error: `${sheet.name} does not have Intimidating Presence (a Berserker's 10th level feature).` };
+  if (!holdsFeature(sheet, "intimidating presence") && !(classLevelOf(sheet, "barbarian") >= 10 && subclassNamed(sheet.subclass ?? "", "Path of the Berserker"))) {
+    return { error: `${sheet.name} does not have Intimidating Presence (a Berserker's 10th level feature).`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
   const enemy = encounter && targetEnemyId ? resolveEnemyRef(encounter.id, targetEnemyId) : null;
   if (!encounter || !enemy || enemy.status !== "alive") {
-    return { error: "Intimidating Presence needs targetEnemyId: the living creature the barbarian menaces. Nothing was spent." };
+    return { error: "Intimidating Presence needs targetEnemyId: the living creature the barbarian menaces. Nothing was spent.", retry: true };
   }
   const meta = enemy.conditionMeta as ConditionMetaMap;
   if (enemy.conditions.includes(UNMOVED) && meta[UNMOVED]?.source === sheet.id) {
-    return { error: `${enemy.displayName} already saw through ${sheet.name}'s Intimidating Presence and cannot be frightened by it again for 24 hours. Nothing was spent.` };
+    return { error: `${enemy.displayName} already saw through ${sheet.name}'s Intimidating Presence and cannot be frightened by it again for 24 hours. Nothing was spent.`, refused: "rules" };
   }
   const apart = feetBetween(encounter.id, sheet.id, enemy.id);
   if (apart !== null && apart > 30) {
-    return { error: `${enemy.displayName} is ${apart} feet away; Intimidating Presence reaches a creature within 30 feet. Nothing was spent.` };
+    return { error: `${enemy.displayName} is ${apart} feet away; Intimidating Presence reaches a creature within 30 feet. Nothing was spent.`, refused: "rules" };
   }
   const price = priceTheAction(sheet, encounter, "Intimidating Presence");
   if ("error" in price) {
-    return { error: price.error };
+    return toolError(price);
   }
   // Already frightened by it: the action extends it to the end of the
   // barbarian's next turn, with no new save.
@@ -182,7 +183,7 @@ function intimidatingPresence(campaign: Campaign, stale: CharacterSheet, targetE
   }
   const derived = computeSheetDerived(sheet);
   const dc = 8 + derived.proficiencyBonus + derived.abilityMods.cha;
-  const save = rollEnemySave(campaign.id, enemy, "wis", dc, { resist: true });
+  const save = rollEnemySave(campaign.id, enemy, "wis", dc, { resist: true, against: "frightened" });
   price.commit();
   const rolled = save.autoFailed ? "automatic" : String(save.total);
   if (save.success) {
@@ -220,18 +221,18 @@ function intimidatingPresence(campaign: Campaign, stale: CharacterSheet, targetE
 export const HOLY_NIMBUS = "holy nimbus";
 const NIMBUS_FEET = 30;
 
-function holyNimbus(campaign: Campaign, turnId: string, stale: CharacterSheet): Record<string, unknown> {
+function holyNimbus(campaign: Campaign, turnId: string, stale: CharacterSheet): ToolResult {
   const sheet = getSheetById(stale.id) ?? stale;
   const uses = left(sheet, "holy_nimbus");
   if (uses === null) {
-    return { error: `${sheet.name} does not have Holy Nimbus (an Oath of Devotion paladin's 20th level feature).` };
+    return { error: `${sheet.name} does not have Holy Nimbus (an Oath of Devotion paladin's 20th level feature).`, refused: "rules" };
   }
   if (uses <= 0) {
-    return { error: `${sheet.name} has used Holy Nimbus; it comes back on a long rest.` };
+    return { error: `${sheet.name} has used Holy Nimbus; it comes back on a long rest.`, refused: "rules" };
   }
   const price = priceTheAction(sheet, getActiveEncounter(campaign.id), "Holy Nimbus");
   if ("error" in price) {
-    return { error: price.error };
+    return toolError(price);
   }
   spendUse(campaign, turnId, sheet, "holy_nimbus", "Holy Nimbus");
   const fresh = getSheetById(sheet.id) ?? sheet;
@@ -254,7 +255,7 @@ export function holyNimbusTurnStart(campaign: Campaign, encounter: Encounter, co
   const lines: string[] = [];
   const paladins = listSheets(campaign.id)
     .map((stale) => getSheetById(stale.id) ?? stale)
-    .filter((sheet) => sheet.conditions.some((entry) => lower(entry) === HOLY_NIMBUS) && sheet.currentHp > 0);
+    .filter((sheet) => sheet.conditions.some((entry) => textKey(entry) === HOLY_NIMBUS) && sheet.currentHp > 0);
   if (!paladins.length) {
     return lines;
   }
@@ -298,24 +299,24 @@ function lastAnswer(characterId: string): number | null {
   return typeof delta?.instant === "number" ? delta.instant : null;
 }
 
-function divineIntervention(campaign: Campaign, turnId: string, stale: CharacterSheet): Record<string, unknown> {
+function divineIntervention(campaign: Campaign, turnId: string, stale: CharacterSheet): ToolResult {
   const sheet = getSheetById(stale.id) ?? stale;
   const uses = left(sheet, "divine_intervention");
   if (uses === null) {
-    return { error: `${sheet.name} does not have Divine Intervention (a cleric's feature from 10th level).` };
+    return { error: `${sheet.name} does not have Divine Intervention (a cleric's feature from 10th level).`, refused: "rules" };
   }
   const now = getClock(campaign.id).instant;
   const answered = lastAnswer(sheet.id);
   if (answered !== null && now - answered < WEEK_MINUTES) {
     const days = Math.ceil((WEEK_MINUTES - (now - answered)) / (24 * 60));
-    return { error: `${sheet.name}'s deity answered within the last 7 days; Divine Intervention cannot be called for ${days} more day${days === 1 ? "" : "s"}. Nothing was spent.` };
+    return { error: `${sheet.name}'s deity answered within the last 7 days; Divine Intervention cannot be called for ${days} more day${days === 1 ? "" : "s"}. Nothing was spent.`, refused: "rules" };
   }
   if (uses <= 0) {
-    return { error: `${sheet.name} has called for Divine Intervention since their last long rest; it comes back on a long rest.` };
+    return { error: `${sheet.name} has called for Divine Intervention since their last long rest; it comes back on a long rest.`, refused: "rules" };
   }
   const price = priceTheAction(sheet, getActiveEncounter(campaign.id), "Divine Intervention");
   if ("error" in price) {
-    return { error: price.error };
+    return toolError(price);
   }
   const level = classLevelOf(sheet, "cleric");
   let rolled: number | null = null;
@@ -354,7 +355,7 @@ function divineIntervention(campaign: Campaign, turnId: string, stale: Character
     ...(rolled !== null ? { rolled } : {}),
     intervenes,
     note: intervenes
-      ? `The deity intervenes${rolled !== null ? ` (${rolled} at or under ${level})` : ""}. The DM chooses its nature (the effect of any cleric or domain spell fits it) and narrates it; healing it brings goes through heal, harm to enemies through damage_enemy with source environment. Divine Intervention cannot be called again for 7 days.`
+      ? `The deity intervenes${rolled !== null ? ` (${rolled} at or under ${level})` : ""}. The GM chooses its nature (the effect of any cleric or domain spell fits it) and narrates it; healing it brings goes through heal, harm to enemies through apply_damage with source environment. Divine Intervention cannot be called again for 7 days.`
       : `No answer (${rolled} is over ${level}). Narrate the silence; ${sheet.name} can call again after a long rest.`,
   };
 }

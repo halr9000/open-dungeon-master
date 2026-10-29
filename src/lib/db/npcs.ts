@@ -4,6 +4,7 @@ import { matchEntity, mergeAliases, normalizeName, type EntityMatch } from "@/li
 import { normalizeNpcVoice, type NpcDraft, type NpcVoice } from "@/lib/npcs/forge";
 import { isUploadedImagePath } from "@/lib/uploads";
 import { storedGender, type Gender } from "@/lib/gender";
+import { attractionBlank, attractionJson, normalizeAttraction, type Attraction } from "@/lib/attraction";
 import {
   parseBonds,
   parseGoals,
@@ -48,8 +49,20 @@ export type Npc = {
   statBlock: string;
   // src/lib/gender.ts; "" for unspecified.
   gender: Gender;
+  // Who they are drawn to (src/lib/attraction.ts); blank = undecided.
+  attraction: Attraction;
+  // The lasting AI companion this row stands behind (#503 Phase 0.1), by
+  // sheet id; "" for an ordinary NPC. Kept after a dismissal.
+  companionSheetId: string;
   // Kept out of the Active NPCs prompt block; restored on a name mention.
   archived: boolean;
+  // When the party first dealt with them through a rule: a reaction roll, a
+  // social check, a moment that moved their approval, an attitude the story
+  // shifted, or travelling with them as a companion. "" until then. A
+  // set_npc alone leaves it "", since the DM registers people the party has
+  // only heard of as well as people in the room. A reaction roll is for a
+  // stranger (src/lib/dm/social-tools.ts), so it reads this.
+  metAt: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -75,7 +88,10 @@ type NpcRow = {
   voice_json: string | null;
   faction_id: string | null;
   stat_block?: string | null;
+  attraction_json?: string | null;
+  companion_sheet_id?: string | null;
   archived: number;
+  met_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -90,6 +106,8 @@ function mapNpc(row: NpcRow): Npc {
     location: row.location,
     role: row.role ?? "",
     gender: storedGender(row.gender),
+    attraction: normalizeAttraction(row.attraction_json ?? ""),
+    companionSheetId: row.companion_sheet_id ?? "",
     lastShiftTurn: row.last_shift_turn,
     aliases: parseJson<string[]>(row.aliases_json, []),
     agency: {
@@ -107,6 +125,7 @@ function mapNpc(row: NpcRow): Npc {
     factionId: row.faction_id ?? "",
     statBlock: row.stat_block ?? "",
     archived: row.archived === 1,
+    metAt: row.met_at ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -120,6 +139,29 @@ export function listNpcs(campaignId: string): Npc[] {
   )
     .map(mapNpc)
     .sort(byName);
+}
+
+// The people of the world apart from the party: every NPC but a row that
+// stands behind a lasting companion still in the party
+// (src/lib/db/companion-npcs.ts). While the companion travels with them, the
+// sheet is who speaks, shows a face and has a voice; the row only holds who
+// they are inside (their personality axes, who they are drawn to). Once the
+// companion leaves, the row is an ordinary person of the world again.
+export function listCastNpcs(campaignId: string): Npc[] {
+  const live = liveSheetIds(campaignId);
+  return listNpcs(campaignId).filter((npc) => !npc.companionSheetId || !live.has(npc.companionSheetId));
+}
+
+export function standsBehindLiveCompanion(npc: Npc): boolean {
+  return Boolean(npc.companionSheetId) && liveSheetIds(npc.campaignId).has(npc.companionSheetId);
+}
+
+function liveSheetIds(campaignId: string): Set<string> {
+  return new Set(
+    (getDatabase().prepare(`SELECT id FROM character_sheets WHERE campaign_id = ?`).all(campaignId) as Array<{ id: string }>).map(
+      (row) => row.id,
+    ),
+  );
 }
 
 // Looks an NPC up by any name they have answered to, by entity resolution
@@ -185,7 +227,9 @@ export function suggestNpcMerges(
 
 // Registers an NPC or updates the mutable descriptive fields of an existing
 // one by name. Attitude is only overwritten when explicitly provided, so
-// re-registering a known NPC never silently resets a grudge.
+// re-registering a known NPC never silently resets a grudge. Who they are
+// drawn to is written once: the first answer the story gives is who they
+// are, so an NPC is never straight toward one character and not another.
 export function upsertNpc(input: {
   campaignId: string;
   name: string;
@@ -193,6 +237,7 @@ export function upsertNpc(input: {
   trait?: string;
   location?: string;
   gender?: Gender;
+  attraction?: Attraction | null;
 }): Npc {
   const db = getDatabase();
   const now = nowIso();
@@ -205,15 +250,17 @@ export function upsertNpc(input: {
       normalizeName(input.name) === normalizeName(existing.name)
         ? existing.aliases
         : mergeAliases(existing.aliases, input.name);
+    const attraction = attractionBlank(existing.attraction) && input.attraction ? input.attraction : existing.attraction;
     db.prepare(
       `UPDATE npcs
-       SET attitude = ?, trait = ?, location = ?, gender = ?, aliases_json = ?, updated_at = ?
+       SET attitude = ?, trait = ?, location = ?, gender = ?, attraction_json = ?, aliases_json = ?, updated_at = ?
        WHERE id = ?`,
     ).run(
       input.attitude ?? existing.attitude,
       input.trait ?? existing.trait,
       input.location ?? existing.location,
       input.gender ?? existing.gender,
+      attractionJson(attraction),
       JSON.stringify(aliases),
       now,
       existing.id,
@@ -222,8 +269,8 @@ export function upsertNpc(input: {
   }
   const id = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO npcs (id, campaign_id, name, attitude, trait, location, gender, last_shift_turn, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
+    `INSERT INTO npcs (id, campaign_id, name, attitude, trait, location, gender, attraction_json, last_shift_turn, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
   ).run(
     id,
     input.campaignId,
@@ -232,6 +279,7 @@ export function upsertNpc(input: {
     input.trait ?? "",
     input.location ?? "",
     input.gender ?? "",
+    attractionJson(input.attraction),
     now,
     now,
   );
@@ -254,10 +302,10 @@ export function createNpcFromDraft(campaignId: string, draft: NpcDraft): Npc {
   const id = crypto.randomUUID();
   db.prepare(
     `INSERT INTO npcs
-       (id, campaign_id, name, attitude, trait, location, role, gender, last_shift_turn,
+       (id, campaign_id, name, attitude, trait, location, role, gender, attraction_json, last_shift_turn,
         aliases_json, personality_json, goals_json, relations_json,
         bonds_json, pressure_json, arc_cast_id, portrait_url, voice_json, faction_id, stat_block, archived, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '[]', '', '', '', ?, ?, ?, 0, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '[]', '', '', '', ?, ?, ?, 0, ?, ?)`,
   ).run(
     id,
     campaignId,
@@ -267,6 +315,7 @@ export function createNpcFromDraft(campaignId: string, draft: NpcDraft): Npc {
     draft.location,
     draft.role,
     draft.gender,
+    attractionJson(draft.attraction),
     JSON.stringify(draft.aliases),
     draft.personality ? JSON.stringify(draft.personality) : "",
     JSON.stringify(draft.goals),
@@ -294,7 +343,7 @@ export function updateNpcFromDraft(campaignId: string, npcId: string, draft: Npc
   }
   db.prepare(
     `UPDATE npcs
-     SET name = ?, attitude = ?, trait = ?, location = ?, role = ?, gender = ?, aliases_json = ?,
+     SET name = ?, attitude = ?, trait = ?, location = ?, role = ?, gender = ?, attraction_json = ?, aliases_json = ?,
          personality_json = ?, goals_json = ?, relations_json = ?, voice_json = ?, faction_id = ?, stat_block = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -304,6 +353,7 @@ export function updateNpcFromDraft(campaignId: string, npcId: string, draft: Npc
     draft.location,
     draft.role,
     draft.gender,
+    attractionJson(draft.attraction),
     JSON.stringify(draft.aliases),
     draft.personality ? JSON.stringify(draft.personality) : "",
     JSON.stringify(draft.goals),
@@ -340,16 +390,37 @@ export function setNpcPortrait(npcId: string, url: string): Npc | null {
   return row ? mapNpc(row) : null;
 }
 
+// The faction they belong to, or where they live, as one World link says
+// (src/lib/db/world-forge.ts applyPlayLink): one column, nothing else.
+export function setNpcPlace(npcId: string, patch: { factionId: string } | { location: string }): Npc | null {
+  const db = getDatabase();
+  if ("factionId" in patch) {
+    db.prepare(`UPDATE npcs SET faction_id = ?, updated_at = ? WHERE id = ?`).run(patch.factionId, nowIso(), npcId);
+  } else {
+    db.prepare(`UPDATE npcs SET location = ?, updated_at = ? WHERE id = ?`).run(patch.location, nowIso(), npcId);
+  }
+  return getNpcById(npcId);
+}
+
 // Records an attitude change and the turn it happened on (the one-shift-per-
-// exchange guard reads last_shift_turn).
+// exchange guard reads last_shift_turn). Every caller moves an attitude the
+// party earned (a check, a moment, a companion turning or leaving), so it
+// also marks them met.
 export function setNpcAttitude(id: string, attitude: Attitude, turnId: string): Npc | null {
   const db = getDatabase();
-  db.prepare(`UPDATE npcs SET attitude = ?, last_shift_turn = ?, updated_at = ? WHERE id = ?`).run(
-    attitude,
-    turnId,
-    nowIso(),
-    id,
-  );
+  const now = nowIso();
+  db.prepare(
+    `UPDATE npcs SET attitude = ?, last_shift_turn = ?, met_at = CASE WHEN met_at = '' THEN ? ELSE met_at END, updated_at = ? WHERE id = ?`,
+  ).run(attitude, turnId, now, now, id);
+  const row = db.prepare(`SELECT * FROM npcs WHERE id = ?`).get(id) as NpcRow | undefined;
+  return row ? mapNpc(row) : null;
+}
+
+// The party has now dealt with them (see Npc.metAt). The first meeting is
+// kept: a later one does not move it.
+export function markNpcMet(id: string): Npc | null {
+  const db = getDatabase();
+  db.prepare(`UPDATE npcs SET met_at = ? WHERE id = ? AND met_at = ''`).run(nowIso(), id);
   const row = db.prepare(`SELECT * FROM npcs WHERE id = ?`).get(id) as NpcRow | undefined;
   return row ? mapNpc(row) : null;
 }
@@ -452,8 +523,12 @@ export function mergeNpcs(
   }
   const now = nowIso();
   const apply = db.transaction(() => {
-    db.prepare(`UPDATE npcs SET aliases_json = ?, updated_at = ? WHERE id = ?`).run(
+    // The two rows are one person, so the party met them when it met
+    // either: the earlier meeting is the one kept.
+    const metAt = [keep.metAt, merge.metAt].filter(Boolean).sort()[0] ?? "";
+    db.prepare(`UPDATE npcs SET aliases_json = ?, met_at = ?, updated_at = ? WHERE id = ?`).run(
       JSON.stringify(aliases),
+      metAt,
       now,
       keepId,
     );

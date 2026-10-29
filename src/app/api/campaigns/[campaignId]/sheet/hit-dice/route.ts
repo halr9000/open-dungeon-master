@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isErrorResponse, requireMember } from "@/lib/campaign-api";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
 import { getCampaignById } from "@/lib/db/campaigns";
 import { claimRestSong, inShortRestWindow } from "@/lib/db/clock";
 import { getActiveEncounter } from "@/lib/db/encounters";
@@ -52,6 +53,11 @@ export async function POST(
   if (!parsed.success) {
     return Response.json({ error: "Send the number of hit dice to spend, 1 or more." }, { status: 400 });
   }
+  // A short rest's hit dice roll and heal: play, which waits out a break.
+  const paused = refuseDuringBreak(campaignId);
+  if (paused) {
+    return paused;
+  }
   const sheet = ownSheetFor(campaignId, context.user.id, parsed.data.characterId);
   if (!sheet) {
     return Response.json(
@@ -64,7 +70,7 @@ export async function POST(
   }
   if (!inShortRestWindow(campaignId, sheet.id)) {
     return refuse(
-      `Hit dice are spent at the end of a short rest. ${sheet.name} is not resting now; ask the DM for a short rest and spend them when it ends.`,
+      `Hit dice are spent at the end of a short rest. ${sheet.name} is not resting now; ask the GM for a short rest and spend them when it ends.`,
     );
   }
   const campaign = getCampaignById(campaignId);

@@ -4,32 +4,33 @@
 // re-exports it; pure, so every cast tool may ask it.
 
 import type { ResolvedSpellMech } from "@/lib/content";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // The redirect a mis-aimed cast gets when the content pack knows how the
 // spell actually resolves. Null = this tool is the right one.
 export function castRedirect(
   resolved: ResolvedSpellMech | null,
   expected: "save" | "buff" | "attack",
-): string | null {
+): ToolError | null {
   if (!resolved || resolved.mech.resolution === expected) {
     return null;
   }
   const { name, mech } = resolved;
   switch (mech.resolution) {
     case "attack":
-      return `${name} is an attack-roll spell; resolve it with pc_attack (spell="${name}").`;
+      return { error: `${name} is an attack-roll spell; resolve it with pc_attack (spell="${name}").`, retry: true };
     case "save":
-      return `${name} forces a saving throw; resolve it with cast_at_enemy (or aoe_damage for several targets).`;
+      return { error: `${name} forces a saving throw; resolve it with cast_at_enemy (or aoe_damage for several targets).`, retry: true };
     case "buff":
-      return `${name} grants an effect, it forces no save; cast it with cast_buff.`;
+      return { error: `${name} grants an effect, it forces no save; cast it with cast_buff.`, retry: true };
     case "heal":
-      return `${name} heals; resolve it with heal (spell="${name}", casterId, and the slot level): the server spends the slot and rolls the dice.`;
+      return { error: `${name} heals; resolve it with heal (spell="${name}", casterId, and the slot level): the server spends the slot and rolls the dice.`, retry: true };
     case "summon":
-      return `${name} conjures creatures; cast it with cast_buff, the creature in variant: the server brings them in with their stat blocks.`;
+      return { error: `${name} conjures creatures; cast it with cast_buff, the creature in variant: the server brings them in with their stat blocks.`, retry: true };
     case "auto":
       // Magic Missile through cast_at_enemy is tolerated: no save rolls.
-      return expected === "save" ? null : `${name} hits automatically; resolve it with cast_at_enemy.`;
+      return expected === "save" ? null : { error: `${name} hits automatically; resolve it with cast_at_enemy.`, retry: true };
     case "utility":
-      return `${name} has no attack, save, damage, or buff to resolve; spend the slot with use_spell_slot and narrate its effect.`;
+      return { error: `${name} has no attack, save, damage, or buff to resolve; spend the slot with use_spell_slot and narrate its effect.`, retry: true };
   }
 }

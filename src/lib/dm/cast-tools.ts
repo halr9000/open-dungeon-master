@@ -17,7 +17,7 @@ export const castAtPlayerTool: ToolDef = {
   function: {
     name: "cast_at_player",
     description:
-      "Resolve an enemy or hazard forcing a saving throw on ONE character (a hag's Hold Person, a spider's web, a trap's poison needle, a curse). The server rolls that character's full save from their real sheet (Evasion, Brave and the like included), applies the damage and/or condition on a failure, and reports it. When an enemy does it (casterEnemyId, with ability or spell), that is the enemy's action for the round (refused if it already acted, cannot act, or is charmed by the target); the save, DC, dice and condition come from its block or the spell whatever you send, a Recharge ability must have recharged, and a spell spends the enemy's slot. Only a hazard with no creature behind it uses your own numbers. For several characters caught, use aoe_damage; never apply a condition to a character with set_condition when a save should have decided it.",
+      "Resolve an enemy or hazard forcing a saving throw on ONE character (a hag's Hold Person, a spider's web, a trap's poison needle, a curse). The server rolls that character's full save from their real sheet (Evasion, Brave and the like included), applies the damage and/or condition on a failure, and reports it. When an enemy does it (casterEnemyId, with enemyAbility or spell), that is the enemy's action for the round (refused if it already acted, cannot act, or is charmed by the target); the save, DC, dice and condition come from its block or the spell whatever you send, a Recharge ability must have recharged, and a spell spends the enemy's slot. Only a hazard with no creature behind it uses your own numbers. For several characters caught, use aoe_damage; never apply a condition to a character with set_condition when a save should have decided it.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -27,9 +27,9 @@ export const castAtPlayerTool: ToolDef = {
         saveAbility: {
           type: "string",
           enum: ["str", "dex", "con", "int", "wis", "cha"],
-          description: "The save the effect forces.",
+          description: "Required for a hazard with no creature behind it (a trap's needle). An enemy's ability or spell (casterEnemyId) brings its own; omit it then.",
         },
-        dc: { type: "integer", minimum: 1, maximum: 30, description: "The save DC." },
+        dc: { type: "integer", minimum: 1, maximum: 30, description: "Required with saveAbility for a hazard. An enemy's uses its block or the spell." },
         damage: {
           type: "string",
           description: "Damage dice on a failed save ('3d6'). Omit for pure-condition effects.",
@@ -37,7 +37,7 @@ export const castAtPlayerTool: ToolDef = {
         damageType: { type: "string", description: "Damage type (poison)." },
         halfOnSave: {
           type: "boolean",
-          description: "True for half damage on a successful save. Default false: no effect.",
+          description: "True for half damage on a successful save. Default: false (a successful save takes no damage).",
         },
         condition: { type: "string", description: "Condition applied on a failed save." },
         rounds: {
@@ -51,7 +51,7 @@ export const castAtPlayerTool: ToolDef = {
           description:
             "The enemy doing it, when a specific one does: exact enemyId from GAME STATE. With a concentration spell the server tracks the enemy's concentration and breaks it (ending the effect) when the enemy takes damage or dies.",
         },
-        ability: {
+        enemyAbility: {
           type: "string",
           description: "With casterEnemyId: the ability's name as its block lists it ('Poison Spit', 'Frightful Presence').",
         },
@@ -61,7 +61,7 @@ export const castAtPlayerTool: ToolDef = {
         },
         reason: { type: "string", description: "Short in-fiction cause." },
       },
-      required: ["characterId", "saveAbility", "dc"],
+      required: ["characterId"],
     },
   },
 };
@@ -97,7 +97,7 @@ export const castAtEnemyTool: ToolDef = {
         damageType: { type: "string", description: "Damage type (psychic)." },
         halfOnSave: {
           type: "boolean",
-          description: "True for half damage on a successful save. Default false: no effect.",
+          description: "True for half damage on a successful save. Default: false (a successful save takes no damage).",
         },
         condition: {
           type: "string",
@@ -116,7 +116,7 @@ export const castAtEnemyTool: ToolDef = {
           minimum: 1,
           maximum: 20,
           description:
-            "Magic Missile only: how many of the casting's darts strike this enemy. The rest can go to other enemies in more calls this turn, with no second slot.",
+            "Magic Missile only: how many of the casting's darts strike this enemy. Default: all of them. The rest can go to other enemies in more calls this turn, with no second slot.",
         },
         endSpell: {
           type: "string",
@@ -125,16 +125,16 @@ export const castAtEnemyTool: ToolDef = {
         overchannel: {
           type: "boolean",
           description:
-            "A School of Evocation wizard's Overchannel (14th level): a 1st to 5th level wizard spell deals its maximum damage. The first use each long rest is free; after that the server rolls the necrotic damage it costs the wizard.",
+            "Evoker's Overchannel (14th level): a 1st to 5th level wizard spell deals its maximum damage. School of Evocation wizards only. The first use each long rest is free; after that the server rolls the necrotic damage it costs the wizard.",
         },
         secondTargetEnemyId: {
           type: "string",
           description:
-            "A Death cleric's Improved Reaper (17th level) only: a second enemy within 5 feet of the first, exact enemyId from GAME STATE, struck by the same 1st to 5th level necromancy spell from the same slot. The server rolls both saves and takes 1d8 of the cleric's hit points per spell level.",
+            "Improved Reaper only: a second enemy within 5 feet of the first, exact enemyId from GAME STATE. It is a Death cleric's 17th-level feature: the same 1st to 5th level necromancy spell and slot strike this enemy too. The server rolls both saves and takes 1d8 of the cleric's HP per spell level.",
         },
         variant: {
           type: "string",
-          description: "Polymorph and True Polymorph only: the beast the enemy becomes ('brown bear', 'wolf', 'giant spider').",
+          description: "Polymorph and True Polymorph only: the form (a beast; any creature for True). E.g. 'brown bear', 'giant spider', 'ogre'.",
         },
         reason: { type: "string", description: "Short in-fiction cause." },
         ...ZONE_ARGS,
@@ -148,7 +148,6 @@ export const castAtEnemyTool: ToolDef = {
 // in src/lib/dm/cast-at-enemy.ts; re-exported for the callers that have
 // always found them here.
 export { castRedirect, handleCastAtEnemy } from "@/lib/dm/cast-at-enemy";
-export { sleepPool } from "@/lib/dm/spell-pool";
 
 // ---- cast_buff ----
 
@@ -157,7 +156,7 @@ export const castBuffTool: ToolDef = {
   function: {
     name: "cast_buff",
     description:
-      "Resolve a player casting a spell that grants an ongoing effect to themselves or allies, a summoning, Find Familiar, Animal Shapes, Shapechange, or Polymorph at an enemy. The server spends the slot (a warlock's pact slot when no level is named) and applies the effect's real mechanics (AC, attack and save dice, resistances, speed, hit points, Spirit Guardians' damage at each enemy's turn start) and its duration.",
+      "Resolve a player casting a spell that grants an ongoing effect to themselves or allies, a summoning, Find Familiar, Animal Shapes, Shapechange, or Polymorph at an enemy. The server spends the slot (a warlock's pact slot when no level is named) and applies the effect's real mechanics (AC, attack and save dice, resistances, speed, HP, Spirit Guardians' damage at each enemy's turn start) and its duration.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -173,17 +172,18 @@ export const castBuffTool: ToolDef = {
         targetCharacterIds: {
           type: "array",
           items: { type: "string" },
+          maxItems: 12,
           description: "Who receives the effect: exact characterIds from GAME STATE. Default: the caster.",
         },
         targetEnemyId: {
           type: "string",
           description:
-            "Hunter's Mark and Hex: the marked creature (the extra die rides only against it). Dispel Magic: the enemy whose spells end. Polymorph and True Polymorph: the enemy to turn into the beast in variant. Any other spell refuses it. Exact enemyId from GAME STATE.",
+            "The creature the spell marks, targets or buffs: exact enemyId from GAME STATE. Hunter's Mark or Hex mark it; Dispel Magic, Polymorph and True Polymorph target it (the form in variant). A buff may go to a creature on the caster's side that is no character.",
         },
         variant: {
           type: "string",
           description:
-            "For spells with a choice: Enlarge/Reduce, Protection from Energy's damage type, Enhance Ability's effect, Fire Shield's warm or chill, Polymorph's beast, a summoning spell's creature (Conjure Animals 'wolf', Animate Dead 'skeleton', Giant Insect 'spider', Find Steed 'warhorse', Animate Objects 'tiny').",
+            "For a spell with a choice: the chosen option, or the beast or creature made ('wolf', 'skeleton'). They are Enlarge/Reduce, Protection from Energy's damage type, Enhance Ability's effect, Fire Shield's warm or chill, Polymorph's or Animal Shapes' beast, True Polymorph's or Shapechange's creature, and a summoning spell's creature: Conjure Animals 'wolf', Animate Dead 'skeleton' or 'reassert control', Giant Insect 'spider', Find Steed 'warhorse' or 'fey warhorse', Animate Objects 'tiny'.",
         },
         count: {
           type: "integer",

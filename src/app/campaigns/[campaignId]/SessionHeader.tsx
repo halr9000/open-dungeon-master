@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ArrowLeft, Check } from "lucide-react";
-import { memo, useState, type ComponentProps, type ReactNode } from "react";
+import { ArrowLeft, Check, Coffee } from "lucide-react";
+import { memo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { HeaderGlyph } from "@/app/campaigns/[campaignId]/SessionGlyph";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { Slider } from "@/components/ui/Slider";
@@ -19,14 +19,13 @@ import type { NarrationAudio } from "@/app/campaigns/[campaignId]/useNarrationAu
 import type { AmbienceAudio } from "@/app/campaigns/[campaignId]/useAmbienceAudio";
 import { SoundControl, type SoundSteering } from "@/app/campaigns/[campaignId]/SoundPanel";
 import { LayoutMenu } from "@/app/campaigns/[campaignId]/TableLayoutParts";
+import { HeaderPhoneMenu } from "@/app/campaigns/[campaignId]/HeaderPhoneMenu";
 import type { LayoutSeat } from "@/app/campaigns/[campaignId]/table-layout-store";
+import type { TableBreakControl } from "@/app/campaigns/[campaignId]/TableBreakBanner";
 
-// One audio group in the header: narration or ambience. On sm+ it is the
-// familiar icon button with an inline slider. Below sm the header has no
-// spare width at all (the 320px budget in SessionTabs.tsx is already spent),
-// so the same icon becomes a menu holding the mute toggle and the slider:
-// the phone gets a reachable volume control without the header growing a
-// pixel, in the menu surface the rest of the app already uses.
+// The narration group in the header from sm up: the familiar icon button
+// with an inline slider. Below sm the header has no spare width, and the same
+// mute toggle and slider live in the phone's table menu (HeaderPhoneMenu.tsx).
 function HeaderAudioControl({
   onLabel,
   offLabel,
@@ -38,6 +37,7 @@ function HeaderAudioControl({
   onToggle,
   onVolume,
   glyph,
+  held = 0,
 }: {
   onLabel: string;
   offLabel: string;
@@ -46,73 +46,74 @@ function HeaderAudioControl({
   unlocked: boolean;
   muted: boolean;
   volume: number;
-  onToggle: () => void;
+  // `enabling` is true when the press began on the "enable" state: by the
+  // time the click lands, the page's pointerdown has already unlocked audio
+  // and re-rendered, so the state at the press is captured here.
+  onToggle: (enabling: boolean) => void;
   onVolume: (value: number) => void;
   // The painting for this audio group; muted strikes it through.
   glyph: string;
+  // Clips the browser is holding until a gesture on this page, counted on
+  // the icon as well as said above the composer (AudioWaitingBanner.tsx).
+  held?: number;
 }) {
   const quiet = muted || !unlocked;
-  const toggleLabel = !unlocked ? enableLabel : muted ? offLabel : onLabel;
+  const waiting = !muted && held > 0;
+  const toggleLabel = waiting ? `${enableLabel} (${held} waiting)` : !unlocked ? enableLabel : muted ? offLabel : onLabel;
   const buttonClass = headerButtonClass(!quiet);
+  const enablingRef = useRef(false);
+  const notePress = () => {
+    enablingRef.current = !unlocked && !muted;
+  };
   const icon = <HeaderGlyph glyph={glyph} off={quiet} />;
+  // Beside the button, not in it: the button's press effect clips what it
+  // holds (.motion-press is overflow: hidden), and the table's are round.
+  // Placed from the row's left edge, where the button starts, so the button
+  // and its volume slider stay siblings for the header's hover reveal
+  // (.session-hbtn ~ .session-volume in world.css).
+  const badge = waiting ? (
+    <span
+      key={held}
+      aria-hidden
+      className="count-pop pointer-events-none absolute -top-1 left-6 z-10 min-w-4 rounded-full bg-gradient-to-b from-amber-300 to-amber-500 px-1 text-center text-[10px] font-semibold leading-4 text-amber-950 shadow-glow-gold"
+    >
+      {held}
+    </span>
+  ) : null;
   const percent = (value: number) => `${Math.round(value * 100)}%`;
   return (
-    <>
-      <div className="hidden items-center sm:flex">
-        <Tooltip content={toggleLabel} side="bottom">
-          <button type="button" onClick={onToggle} aria-label={toggleLabel} className={buttonClass}>
-            {icon}
-          </button>
+    <div className="relative hidden items-center sm:flex">
+      <Tooltip content={toggleLabel} side="bottom">
+        <button
+          type="button"
+          onPointerDown={notePress}
+          onKeyDown={notePress}
+          onClick={() => {
+            onToggle(enablingRef.current);
+            enablingRef.current = false;
+          }}
+          aria-label={toggleLabel}
+          className={buttonClass}
+        >
+          {icon}
+        </button>
+      </Tooltip>
+      {badge}
+      {unlocked && !muted ? (
+        <Tooltip content={volumeLabel} side="bottom">
+          <Slider
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            onChange={onVolume}
+            label={volumeLabel}
+            bubble={percent}
+            className="session-volume"
+          />
         </Tooltip>
-        {unlocked && !muted ? (
-          <Tooltip content={volumeLabel} side="bottom">
-            <Slider
-              min={0}
-              max={1}
-              step={0.05}
-              value={volume}
-              onChange={onVolume}
-              label={volumeLabel}
-              bubble={percent}
-              className="session-volume"
-            />
-          </Tooltip>
-        ) : null}
-      </div>
-      <div className="sm:hidden">
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button type="button" aria-label={volumeLabel} className={buttonClass}>
-              {icon}
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content align="end" sideOffset={4} className="panel z-50 min-w-44 rounded-lg p-1">
-              <DropdownMenu.Item className="session-menu-row" onSelect={onToggle}>
-                {icon}
-                {toggleLabel}
-              </DropdownMenu.Item>
-              {unlocked && !muted ? (
-                // A plain row rather than an Item so dragging the slider does
-                // not close the menu.
-                <div className="px-2 pb-2 pt-3">
-                  <Slider
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={volume}
-                    onChange={onVolume}
-                    label={volumeLabel}
-                    bubble={percent}
-                    className="w-full"
-                  />
-                </div>
-              ) : null}
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      </div>
-    </>
+      ) : null}
+    </div>
   );
 }
 
@@ -145,6 +146,9 @@ export const SessionHeader = memo(function SessionHeader({
   ribbon,
   stage,
   layoutSeat,
+  tableBreak,
+  prep,
+  exit,
 }: {
   title: string;
   scene: string;
@@ -180,7 +184,17 @@ export const SessionHeader = memo(function SessionHeader({
   // Whose arrangement the layout menu edits (TableLayoutParts.tsx): the
   // DM seat keeps one, every player seat another.
   layoutSeat?: LayoutSeat;
+  // Pause the table for a break (TableBreakBanner.tsx): any person in a
+  // seat, from sm up here and in the phone's table menu below it.
+  tableBreak?: TableBreakControl;
+  // The campaign's prep while play runs (issue 530): whoever steers the
+  // story steps out to it and back. Absent for everyone else.
+  prep?: PrepControl;
+  // Where the way out leads. All campaigns, except at a test fight (issue
+  // 553), which no campaign list shows: its way out is its workshop.
+  exit?: HeaderExit;
 }) {
+  const out = exit ?? ALL_CAMPAIGNS;
   // Narration switched off server-wide: no passage is read aloud, so the
   // narration volume would steer nothing (issue 275; the lobby's own row
   // reads Off for the same reason).
@@ -194,8 +208,8 @@ export const SessionHeader = memo(function SessionHeader({
           avatar menu is not one a newcomer, or an installed app with no
           browser back button, finds. The title gives up the width. */}
       <Link
-        href="/"
-        aria-label="All campaigns"
+        href={out.href}
+        aria-label={out.label}
         className="-ml-1.5 flex size-10 shrink-0 items-center justify-center rounded-md text-stone-400 transition-colors hover:text-amber-200 sm:hidden"
       >
         <ArrowLeft className="size-5" />
@@ -281,15 +295,25 @@ export const SessionHeader = memo(function SessionHeader({
             unlocked={narration.unlocked}
             muted={narration.muted}
             volume={narration.volume}
-            onToggle={() => {
+            held={narration.held}
+            onToggle={(enabling) => {
+              // "Enable narration audio" must not also mute: toggling here
+              // used to switch narration off on that first press and drop
+              // every passage that had been waiting for it.
               narration.unlock();
-              narration.setMuted(!narration.muted);
+              if (!enabling) {
+                narration.setMuted(!narration.muted);
+              }
             }}
             onVolume={(value) => narration.setVolume(value)}
             glyph="ui-speech"
           />
         ) : null}
-        {ambienceEnabled ? <SoundControl ambience={ambience} steering={sound} /> : null}
+        {ambienceEnabled ? (
+          <div className="hidden sm:flex">
+            <SoundControl ambience={ambience} steering={sound} />
+          </div>
+        ) : null}
         {stage ? (
           <Tooltip content={stage.on ? "Show the story here, with the board in its tab" : "Show the board here, with the story beside it"} side="bottom">
             <button
@@ -305,27 +329,47 @@ export const SessionHeader = memo(function SessionHeader({
           </Tooltip>
         ) : null}
         {layoutSeat ? <LayoutMenu seat={layoutSeat} /> : null}
-        <RulebookButton />
-        <Tooltip content="How everything works, and the guided tours" side="bottom">
-          <button
-            type="button"
-            onClick={onHelp}
-            aria-label="Help"
-            data-tour="header-help"
-            className={headerButtonClass(false)}
-          >
-            <HeaderGlyph glyph="tab-reference" />
-          </button>
-        </Tooltip>
+        {tableBreak ? (
+          <div className="hidden sm:flex">
+            <TableBreakButton control={tableBreak} />
+          </div>
+        ) : null}
+        <div className="hidden sm:flex">
+          <RulebookButton />
         </div>
-        <Tooltip content="All campaigns" side="bottom">
+        <div className="hidden sm:flex">
+          <Tooltip content="How everything works, the guided tours and Report a problem" side="bottom">
+            <button
+              type="button"
+              onClick={onHelp}
+              aria-label="Help"
+              data-tour="header-help"
+              className={headerButtonClass(false)}
+            >
+              <HeaderGlyph glyph="tab-reference" />
+            </button>
+          </Tooltip>
+        </div>
+        <HeaderPhoneMenu
+          narrates={narrates}
+          narration={narration}
+          ambienceEnabled={ambienceEnabled}
+          ambience={ambience}
+          sound={sound}
+          onHelp={onHelp}
+          tableBreak={tableBreak}
+          prep={prep}
+        />
+        </div>
+        {prep ? <PrepButton control={prep} /> : null}
+        <Tooltip content={out.label} side="bottom">
           <Link
-            href="/"
-            aria-label="All campaigns"
+            href={out.href}
+            aria-label={out.label}
             className={cn(ui.btnSmall, "hidden h-9 gap-1.5 py-0 pl-1 sm:inline-flex")}
           >
-            <HeaderGlyph glyph="tab-campaigns" />
-            <span className="hidden md:inline">All campaigns</span>
+            <HeaderGlyph glyph={out.glyph} />
+            <span className="hidden md:inline">{out.label}</span>
           </Link>
         </Tooltip>
         <AppHomeButton className="hidden sm:block" />
@@ -334,6 +378,66 @@ export const SessionHeader = memo(function SessionHeader({
     </header>
   );
 });
+
+export type PrepControl = { open: boolean; onToggle: () => void };
+
+export type HeaderExit = { href: string; label: string; glyph: string };
+
+const ALL_CAMPAIGNS: HeaderExit = { href: "/", label: "All campaigns", glyph: "tab-campaigns" };
+
+// Campaign prep, or the way back from it. Beside All campaigns from sm up,
+// because both are places to go; a phone has it in its table menu.
+function PrepButton({ control }: { control: PrepControl }) {
+  const label = control.open ? "Back to the table" : "Campaign prep";
+  return (
+    <Tooltip
+      content={
+        control.open
+          ? "Back to the table, as you left it"
+          : "The party, rules, lore and Bring in prep, without ending play. The table waits as it is."
+      }
+      side="bottom"
+    >
+      <button
+        type="button"
+        onClick={control.onToggle}
+        aria-label={label}
+        aria-pressed={control.open}
+        data-campaign-prep=""
+        data-tour="header-prep"
+        className={cn(ui.btnSmall, "hidden h-9 gap-1.5 py-0 pl-1 sm:inline-flex", control.open && "border-amber-400/70 text-amber-100")}
+      >
+        <HeaderGlyph glyph={control.open ? "tab-session" : "tab-journal"} />
+        <span key={label} className="live-in hidden md:inline">{label}</span>
+      </button>
+    </Tooltip>
+  );
+}
+
+// Pause for a break, or, while one is on, Resume for those who may lift it.
+// Lit while the table is paused; for anyone else it only says so.
+function TableBreakButton({ control }: { control: TableBreakControl }) {
+  const label = !control.paused
+    ? "Pause the table for a break"
+    : control.mayResume
+      ? "Resume the table"
+      : "The table is paused";
+  return (
+    <Tooltip content={label} side="bottom">
+      <button
+        type="button"
+        onClick={control.paused ? control.onResume : control.onPause}
+        disabled={control.paused && !control.mayResume}
+        aria-label={label}
+        aria-pressed={control.paused}
+        data-tour="header-pause"
+        className={headerButtonClass(control.paused)}
+      >
+        <Coffee aria-hidden="true" className="size-5 text-amber-200" />
+      </button>
+    </Tooltip>
+  );
+}
 
 // The rulebook, laid open over the table so a rule can be checked without
 // leaving the session.

@@ -19,6 +19,7 @@ import {
 import {
   AimLayer,
   AimScrim,
+  DropLayer,
   MoteLayer,
   StageLayerDefs,
   tokenCentre,
@@ -35,6 +36,7 @@ import { backdropRect } from "@/lib/battlemap/backdrop";
 import type { FxEvent } from "@/lib/battlemap/fx-plan";
 import type { PlayerMapView } from "@/lib/battlemap/view";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
 
 const NO_FX: FxEvent[] = [];
 const NOOP = () => {};
@@ -81,6 +83,7 @@ export const BattleMapGrid = memo(
     onTileHover,
     onTokenClick,
     everyTileClickable = false,
+    tapPreview = true,
     overlay,
     fx = NO_FX,
     onFxPlayed = NOOP,
@@ -108,6 +111,9 @@ export const BattleMapGrid = memo(
     // is the whole clickable surface. A DM placing a token needs the rest of
     // the board too, which is what this turns on.
     everyTileClickable?: boolean;
+    // Off when the parent asks for its own second tap, as a player's walk
+    // does for every pointer, so a phone is not asked for two of them.
+    tapPreview?: boolean;
     overlay?: MapOverlay;
     // Effects the server planned and this board has yet to play; the grid
     // reports each one back once it has (src/lib/battlemap/fx-plan.ts).
@@ -169,7 +175,7 @@ export const BattleMapGrid = memo(
       }
       return byRef;
     }, [faces, sheets]);
-    const currentName = view.currentTurnName.toLowerCase();
+    const currentName = textKey(view.currentTurnName);
 
     // The particle canvas sits over the SVG in the same frame; effects are
     // planned in SVG units and converted at burst time from the frame's
@@ -251,7 +257,7 @@ export const BattleMapGrid = memo(
         view.tokens.find((token) =>
           view.turn
             ? view.turn.tokenId === token.id
-            : !token.down && currentName !== "" && token.name.toLowerCase() === currentName,
+            : !token.down && currentName !== "" && textKey(token.name) === currentName,
         ) ?? null
       );
     }, [view.board, view.tokens, view.turn, currentName]);
@@ -329,7 +335,7 @@ export const BattleMapGrid = memo(
       // First tap previews, second commits; see the refs above. Browsers
       // fire compatibility mouse events on a tap, but not reliably, so the
       // hover handler is called here rather than trusted to have run.
-      if (pointerTypeRef.current === "touch" && hoverRef.current) {
+      if (pointerTypeRef.current === "touch" && hoverRef.current && tapPreview) {
         const previewed = touchPreviewRef.current;
         if (!previewed || previewed.x !== x || previewed.y !== y) {
           touchPreviewRef.current = { x, y };
@@ -490,7 +496,7 @@ export const BattleMapGrid = memo(
         {view.tokens.map((token) => {
           const isCurrent = view.turn
             ? view.turn.tokenId === token.id
-            : !token.down && currentName !== "" && token.name.toLowerCase() === currentName;
+            : !token.down && currentName !== "" && textKey(token.name) === currentName;
           return (
             <TokenFigure
               key={token.id}
@@ -517,6 +523,8 @@ export const BattleMapGrid = memo(
             />
           );
         })}
+        {/* Things dropped on the board (issue #424), over the figures. */}
+        {view.drops?.length ? <DropLayer drops={view.drops} /> : null}
         <TargetLines tokens={view.tokens} targets={view.targets} footprints={view.tokenFootprint} />
         {overlay?.aim ? <AimLayer aim={overlay.aim} tokens={view.tokens} footprints={view.tokenFootprint} /> : null}
         <DrawingLayer drawings={view.drawings} sketch={overlay?.sketch} />
@@ -701,6 +709,7 @@ export const BattleMapGrid = memo(
     prev.overlay === next.overlay &&
     prev.fx === next.fx &&
     prev.everyTileClickable === next.everyTileClickable &&
+    prev.tapPreview === next.tapPreview &&
     (prev.onLabelClick === undefined) === (next.onLabelClick === undefined) &&
     // Only presence matters; the handlers themselves are read through refs.
     (prev.onTileClick === undefined) === (next.onTileClick === undefined) &&

@@ -6,7 +6,7 @@
 // is taken once. SRD 5.1 prints one feat, Grappler (Strength 13 or higher).
 //
 // ODM ships the feat rule switched on: the content pack carries Grappler and
-// the third-party feats, and src/lib/srd/authored-feats.json adds 54 in
+// the third-party feats, and src/lib/srd/authored-feats.json adds 55 in
 // ODM's own wording. A feat is a name in sheet.feats. Two have a mechanic
 // the server applies to derived numbers (Alert, Observant); Elven Accuracy
 // says it has one; the rest are guidance the model narrates
@@ -170,8 +170,8 @@ await test("Alert and Observant, taken as feats, reach the numbers they change",
   assert.equal(entry.initiative, 10 + abilityMod(SCORES.dex) + 5);
 });
 
-await test("ODM's own feats: 54 (the 2014 Alert, Magic Initiate and Skilled among them), each named once, each with rules text", () => {
-  assert.equal(authoredFeats.length, 54);
+await test("ODM's own feats: 55 (the 2014 Alert, Magic Initiate, Savage Attacker and Skilled among them), each named once, each with rules text", () => {
+  assert.equal(authoredFeats.length, 55);
   const names = authoredFeats.map((feat) => feat.name.toLowerCase());
   assert.equal(new Set(names).size, names.length);
   // SRD 5.1's one feat comes from the content pack, not from this list.
@@ -748,7 +748,7 @@ await test("ODM's 2014 Alert is written in ODM's own words, not the Player's Han
 
 // ---- the spells a feat teaches (issue #125, src/lib/srd/feat-spells.ts) ----
 
-const { fightDummies } = await import("./lib/enforce-spells.mjs");
+const { fightDummies, freshTurn } = await import("./lib/enforce-spells.mjs");
 
 await test("a Fey Touched fighter knows misty step and the spell picked, each cast once a day without a slot, with the score the feat raised (issue #125)", async () => {
   const fey = madeFighter({
@@ -820,10 +820,12 @@ await test("the free cast spends its counter instead of a slot, is refused once 
   assert.match(String(cast.result.slot ?? ""), /free cast/i);
   assert.deepEqual(world.sheet(hero.id).resources.free_cast_charm_person, { max: 1, used: 1 });
   assert.deepEqual(world.sheet(hero.id).spellcasting.slots, {}, "no slot appeared");
-  // The use spent and no slot to fall back on: the second cast is refused.
+  // The use spent and no slot to fall back on: the second cast, on a turn
+  // with its action, is refused.
+  await freshTurn(world);
   const again = await world.invoke("cast_at_enemy", { characterId: hero.id, targetEnemyId: goblin.id, spell: "Charm Person", saveAbility: "wis" });
   assert.equal(again.ok, false, `a second Charm Person with the free cast spent and no slots was allowed: ${JSON.stringify(again.result ?? {}).slice(0, 200)}`);
-  assert.match(String(again.error ?? again.result?.error ?? ""), /no free level 1 spell slot/);
+  assert.match(String(again.error ?? again.result?.error ?? ""), /no spell slot of level 1 or higher left/);
   const ended = await world.invoke("end_encounter", { outcome: "victory", summary: "the goblin flees" });
   assert.equal(ended.ok, true, JSON.stringify(ended).slice(0, 200));
   const rested = await world.invoke("take_rest", { kind: "long" });
@@ -852,8 +854,8 @@ await test("Ritual Caster's book: a fighter casts its two rituals as rituals and
   const facts = spellFactsFor("Detect Magic", []);
   assert.equal(canCastRituals(book), true, "Ritual Caster casts rituals");
   assert.equal(spellHeldProblem(book, "Detect Magic", facts, { ritual: true }), null, "a book ritual is held for a ritual cast");
-  assert.match(spellHeldProblem(book, "Detect Magic", facts) ?? "", /cannot be cast|cannot cast/, "a book ritual is not cast from a slot");
-  assert.match(spellHeldProblem(book, "Fireball", spellFactsFor("Fireball", []), { ritual: true }) ?? "", /cannot cast/);
+  assert.match(spellHeldProblem(book, "Detect Magic", facts)?.error ?? "", /cannot be cast|cannot cast/, "a book ritual is not cast from a slot");
+  assert.match(spellHeldProblem(book, "Fireball", spellFactsFor("Fireball", []), { ritual: true })?.error ?? "", /cannot cast/);
   world.close();
 
   const sniper = await table(

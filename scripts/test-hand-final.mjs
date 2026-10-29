@@ -126,7 +126,7 @@ test("Open Hand Technique is one pick of three, open only on a Flurry of Blows s
   const before = byId(deriveHand(monk, mine({ attacksMade: 1, actionUsed: true })), "attack:unarmed strike");
   const riders = before.options.filter((entry) => entry.group === "openHand");
   assert.deepEqual(riders.map((entry) => entry.id.split(":")[1]), [...OPEN_HAND_CHOICES]);
-  assert.ok(riders.every((entry) => entry.disabled === OPEN_HAND_NOT_FLURRY), "the engine's sentence off a flurry");
+  assert.ok(riders.every((entry) => entry.disabled === OPEN_HAND_NOT_FLURRY.error), "the engine's sentence off a flurry");
   const flurry = byId(
     deriveHand(monk, mine({ attacksMade: 1, actionUsed: true, bonusUsed: true, flurryStrikes: 2 })),
     "attack:unarmed strike",
@@ -258,7 +258,7 @@ test("Intimidating Presence is an action card aimed at an enemy with the barbari
 
 test("the sheet's feature choices come from the authored layer, and a renamed feature reads as chosen", () => {
   const open = featureChoices(sheet({ class: "barbarian", level: 3, features: [feature("Totem Spirit")] }));
-  assert.deepEqual(open, [{ feature: "Totem Spirit", spend: "Totem Spirit", options: ["Bear", "Eagle", "Wolf"], chosen: null }]);
+  assert.deepEqual(open, [{ feature: "Totem Spirit", spend: "Totem Spirit", options: ["Bear", "Eagle", "Elk", "Tiger", "Wolf"], chosen: null }]);
   const chosen = featureChoices(sheet({ class: "barbarian", level: 3, features: [feature("Totem Spirit (Bear)")] }));
   assert.equal(chosen[0].chosen, "bear");
 });

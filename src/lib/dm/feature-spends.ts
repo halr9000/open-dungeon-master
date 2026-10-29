@@ -25,10 +25,13 @@ import { computeSheetDerived } from "@/lib/srd";
 import { matchResource } from "@/lib/srd/class-resources";
 import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
 import { effectiveMaxHp, incapacitatedBy, removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { activeAuthored } from "@/lib/srd/authored-effects";
+import { withinFeet } from "@/lib/dm/authored-saves";
 import { rollFeatureSave } from "@/lib/dm/contest-roll";
 import { healDeathHook } from "@/lib/dm/death";
 import { applyEnemyDamage, publishEncounter } from "@/lib/dm/enemy-damage";
 import { rollEnemySave } from "@/lib/dm/forced-save";
+import { turnDefence } from "@/lib/dm/turn-defiance";
 import { prepareResourceCharge, type ResourceCharge } from "@/lib/dm/resource-turn";
 import { commandersStrike, commandersStrikeCharge, knowsManeuver, rally } from "@/lib/dm/maneuver-uses";
 import type { ResourceAction } from "@/lib/srd/class-resources";
@@ -36,8 +39,10 @@ import { fieldedSheets } from "@/lib/dm/roster";
 import { chooseFiendishResilience, stillnessOfMind } from "@/lib/dm/feature-hooks";
 
 // Re-exported for the callers that reached it here first.
-export { applyInitiativeRefills, darkOnesBlessing } from "@/lib/dm/feature-hooks";
+export { applyInitiativeRefills } from "@/lib/dm/feature-hooks";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { familyOf, isConditionNamed, isNamed } from "@/lib/srd/feature-names";
 
 type Ability = "str" | "dex" | "con" | "int" | "wis" | "cha";
 
@@ -114,28 +119,29 @@ export function featureVariantSpend(
   variant: string | undefined,
   targetId: string | undefined,
   reason: string,
-): Record<string, unknown> | null {
-  if (/^fiendish resilience\b/i.test(resourceName.trim())) {
+): ToolResult | null {
+  if (isNamed(familyOf(resourceName), "Fiendish Resilience")) {
     return chooseFiendishResilience(campaign, turnId, sheet, variant, reason);
   }
-  if (/^stillness of mind\b/i.test(resourceName.trim())) {
+  if (isNamed(resourceName, "Stillness of Mind")) {
     return stillnessOfMind(campaign, turnId, sheet, reason);
   }
   const def = matchResource(resourceName);
-  const wanted = (variant ?? "").trim().toLowerCase();
+  // The option the variant names whole (src/lib/srd/feature-names.ts).
+  const wanted = variant ?? "";
   if (def?.id === "channel_divinity") {
-    if (/turn the unholy/.test(wanted)) {
+    if (isNamed(wanted, "turn the unholy")) {
       return spend(campaign, turnId, sheet, def.id, "action", reason, () =>
         turnUndead(campaign, turnId, sheet, { types: /undead|fiend/i, destroy: false, name: "Turn the Unholy" }),
       );
     }
-    if (/turn|destroy undead/.test(wanted)) {
+    if (isNamed(wanted, "turn undead", "destroy undead")) {
       return spend(campaign, turnId, sheet, def.id, "action", reason, () => turnUndead(campaign, turnId, sheet));
     }
-    if (/sacred weapon/.test(wanted)) {
+    if (isNamed(wanted, "sacred weapon")) {
       return spend(campaign, turnId, sheet, def.id, "action", reason, () => sacredWeapon(sheet));
     }
-    if (/preserve life/.test(wanted)) {
+    if (isNamed(wanted, "preserve life")) {
       return spend(campaign, turnId, sheet, def.id, "action", reason, () =>
         preserveLife(campaign, turnId, sheet, targetId, reason),
       );
@@ -143,14 +149,14 @@ export function featureVariantSpend(
     return null;
   }
   // Rally and Commander's Strike (src/lib/dm/maneuver-uses.ts), known only.
-  const maneuver = def?.id === "sub_superiority_dice" ? (/\brally\b/.test(wanted) ? "rally" : /commander'?s strike/.test(wanted.replace(/[’`]/g, "'")) ? "commander's strike" : null) : null;
+  const maneuver = def?.id === "sub_superiority_dice" ? (isNamed(wanted, "rally") ? "rally" : isNamed(wanted, "commander's strike", "commanders strike") ? "commander's strike" : null) : null;
   if (maneuver && !knowsManeuver(sheet, maneuver)) {
-    return { error: `${sheet.name} does not know the ${maneuver === "rally" ? "Rally" : "Commander's Strike"} maneuver. Nothing was spent.` };
+    return { error: `${sheet.name} does not know the ${maneuver === "rally" ? "Rally" : "Commander's Strike"} maneuver. Nothing was spent.`, refused: "rules" };
   }
-  if (def?.id === "sub_superiority_dice" && /\brally\b/.test(wanted)) {
+  if (def?.id === "sub_superiority_dice" && maneuver === "rally") {
     return spend(campaign, turnId, sheet, def.id, "bonus", reason, () => rally(campaign, turnId, sheet, targetId));
   }
-  if (def?.id === "sub_superiority_dice" && /commander'?s strike/.test(wanted.replace(/[’`]/g, "'"))) {
+  if (def?.id === "sub_superiority_dice" && maneuver === "commander's strike") {
     return spend(campaign, turnId, sheet, def.id, (fresh) => commandersStrikeCharge(campaign, fresh, targetId), reason, () =>
       commandersStrike(campaign, sheet, targetId),
     );
@@ -161,25 +167,25 @@ export function featureVariantSpend(
   if (def?.id === "indomitable") {
     return spend(campaign, turnId, sheet, def.id, "none", reason, () => indomitable(campaign, sheet));
   }
-  if (def?.id === "ki" && /diamond soul/.test(wanted)) {
+  if (def?.id === "ki" && isNamed(wanted, "diamond soul")) {
     // Diamond Soul (monk 14): 1 ki rerolls a failed save, as Indomitable does.
     if (!holdsFeature(sheet, "diamond soul")) {
-      return { error: `${sheet.name} does not have Diamond Soul.` };
+      return { error: `${sheet.name} does not have Diamond Soul.`, refused: "rules" };
     }
     return spend(campaign, turnId, sheet, def.id, "none", reason, () => indomitable(campaign, sheet));
   }
-  if (def?.id === "ki" && /empty body/.test(wanted)) {
+  if (def?.id === "ki" && isNamed(wanted, "empty body")) {
     // Empty Body (monk 18): 4 ki, an action, invisible for a minute and
     // resistant to all damage but force.
     if (!holdsFeature(sheet, "empty body")) {
-      return { error: `${sheet.name} does not have Empty Body.` };
+      return { error: `${sheet.name} does not have Empty Body.`, refused: "rules" };
     }
     return spend(campaign, turnId, sheet, def.id, "action", reason, () => emptyBody(sheet), 4);
   }
   return null;
 }
 
-type Resolution = { error: string } | { result: Record<string, unknown>; patch?: FullPatchSheetInput };
+type Resolution = ToolError | { result: Record<string, unknown>; patch?: FullPatchSheetInput };
 
 // The shared order: the feature is held with a use left, the character can
 // act, the turn is charged, the effect resolves, and only then the use is
@@ -195,26 +201,27 @@ function spend(
   reason: string,
   resolve: () => Resolution,
   amount = 1,
-): Record<string, unknown> {
+): ToolResult {
   const sheet = getSheetById(stale.id) ?? stale;
   const def = matchResource(resourceId)!;
   const state = sheet.resources?.[resourceId];
   if (!state) {
-    return { error: `${sheet.name} has no ${def.displayName}.` };
+    return { error: `${sheet.name} has no ${def.displayName}.`, refused: "rules" };
   }
   if (state.max - state.used < amount) {
     return {
       error: `${sheet.name} has ${state.max - state.used}/${state.max} ${def.displayName} left and this takes ${amount}; it comes back on a ${def.recharge === "short" ? "short or long" : "long"} rest.`,
+      refused: "rules",
     };
   }
   if (sheet.deathSaves?.dead || sheet.currentHp <= 0) {
-    return { error: `${sheet.name} is down and cannot use ${def.displayName}.` };
+    return { error: `${sheet.name} is down and cannot use ${def.displayName}.`, refused: "rules" };
   }
   // An action or a bonus action needs someone able to take one; a reroll
   // (Indomitable) does not.
   const stoppedBy = cost !== "none" && cost !== "reaction" ? incapacitatedBy(sheet.conditions) : null;
   if (stoppedBy) {
-    return { error: `${sheet.name} is ${stoppedBy} and cannot use ${def.displayName} until the condition ends.` };
+    return { error: `${sheet.name} is ${stoppedBy} and cannot use ${def.displayName} until the condition ends.`, refused: "rules" };
   }
   const charge = typeof cost === "function" ? cost(sheet) : prepareResourceCharge(campaign, sheet, resourceId, cost);
   if ("error" in charge) {
@@ -256,7 +263,7 @@ function turnUndead(
 ): Resolution {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: `${kind.name} needs something to turn: start the encounter first.` };
+    return { error: `${kind.name} needs something to turn: start the encounter first.`, retry: true };
   }
   const derived = computeSheetDerived(sheet);
   const dc = derived.spellSaveDc ?? 8 + derived.proficiencyBonus + Math.max(derived.abilityMods.wis, derived.abilityMods.cha);
@@ -268,17 +275,25 @@ function turnUndead(
       within(campaign.id, sheet.id, enemy.id, TURN_RANGE_FEET),
   );
   if (!undead.length) {
-    return { error: `Nothing ${kind.name} affects is within ${TURN_RANGE_FEET} feet of ${sheet.name}; Channel Divinity was not spent.` };
+    return { error: `Nothing ${kind.name} affects is within ${TURN_RANGE_FEET} feet of ${sheet.name}; Channel Divinity was not spent.`, refused: "rules" };
   }
   const turn = getDmTurn(turnId);
   const sheets = listSheets(campaign.id);
   const byId = new Map(sheets.map((entry) => [entry.id, entry]));
   const outcomes: string[] = [];
+  const fielded = listEnemies(encounter.id);
   for (const enemy of undead) {
+    // Its block's own answer to turning, and an ally's Turn Defiance.
+    const defence = turnDefence(encounter.id, enemy, fielded);
+    if (defence.immune) {
+      outcomes.push(`${enemy.displayName} cannot be turned (${defence.immune}).`);
+      continue;
+    }
     // Turned: a legendary creature spends a resistance to stand its ground.
-    const save = rollEnemySave(campaign.id, enemy, "wis", dc, { resist: true });
+    const save = rollEnemySave(campaign.id, enemy, "wis", dc, { resist: true, advantage: Boolean(defence.advantage), disadvantage: Boolean(defence.disadvantage) });
+    const lean = [defence.advantage ? `advantage from ${defence.advantage}` : "", defence.disadvantage ? `disadvantage from ${defence.disadvantage}` : ""].filter(Boolean).join(", ");
     if (save.success) {
-      outcomes.push(`${enemy.displayName} resists (WIS ${save.total ?? "failed outright"} vs DC ${dc})${save.legendaryResistance ? " with Legendary Resistance" : ""}.`);
+      outcomes.push(`${enemy.displayName} resists (WIS ${save.total ?? "failed outright"} vs DC ${dc}${lean ? `, ${lean}` : ""})${save.legendaryResistance ? " with Legendary Resistance" : ""}.`);
       continue;
     }
     const cr = Number(enemy.stats.cr ?? enemy.cr ?? 99);
@@ -312,7 +327,7 @@ function turnUndead(
 function eldritchMaster(sheet: CharacterSheet): Resolution {
   const casting = sheet.spellcasting;
   if (!casting) {
-    return { error: `${sheet.name} has no Pact Magic slots to restore.` };
+    return { error: `${sheet.name} has no Pact Magic slots to restore.`, refused: "rules" };
   }
   if (casting.pact) {
     return {
@@ -345,7 +360,7 @@ function emptyBody(sheet: CharacterSheet): Resolution {
 function sacredWeapon(sheet: CharacterSheet): Resolution {
   const bonus = Math.max(1, computeSheetDerived(sheet).abilityMods.cha);
   const condition = `sacred weapon (+${bonus})`;
-  const held = sheet.conditions.filter((entry) => !/^sacred weapon/i.test(entry));
+  const held = sheet.conditions.filter((entry) => !isConditionNamed(entry, "sacred weapon"));
   return {
     patch: {
       conditions: [...held, condition],
@@ -376,7 +391,7 @@ function preserveLife(
     ...party.filter((entry) => entry.id !== targetId).sort((a, b) => a.currentHp - b.currentHp),
   ].filter((entry) => room(entry) > 0);
   if (!ordered.length) {
-    return { error: "Preserve Life heals only creatures below half their hit points, and nobody in reach is. Channel Divinity was not spent." };
+    return { error: "Preserve Life heals only creatures below half their hit points, and nobody in reach is. Channel Divinity was not spent.", refused: "rules" };
   }
   const healed: string[] = [];
   for (const target of ordered) {
@@ -410,13 +425,14 @@ function indomitable(campaign: Campaign, sheet: CharacterSheet): Resolution {
     ? ((/\b(str|dex|con|int|wis|cha)\b/i.exec(failed.detail)?.[1] ?? "").toLowerCase() as Ability | "")
     : "";
   if (!failed || !ability) {
-    return { error: `${sheet.name} has no failed saving throw to reroll; Indomitable was not spent.` };
+    return { error: `${sheet.name} has no failed saving throw to reroll; Indomitable was not spent.`, refused: "rules" };
   }
   const dc = failed.dc!;
   const against = /\bvs\.? (.+)$/i.exec(failed.detail)?.[1];
   const save = rollFeatureSave(campaign, sheet, ability, dc, "Indomitable reroll", against);
+  const bulwark = bulwarkReroll(campaign, sheet, ability, dc, against);
   if (!save.success) {
-    return { result: { indomitable: `The reroll fails too (${ability.toUpperCase()} ${save.total ?? "failed"} vs DC ${dc}); the failure stands.` } };
+    return { result: { indomitable: `The reroll fails too (${ability.toUpperCase()} ${save.total ?? "failed"} vs DC ${dc}); the failure stands.`, ...bulwark } };
   }
   const now = getSheetById(sheet.id) ?? sheet;
   const meta = now.conditionMeta as ConditionMetaMap;
@@ -431,6 +447,43 @@ function indomitable(campaign: Campaign, sheet: CharacterSheet): Resolution {
       indomitable: `The reroll succeeds (${ability.toUpperCase()} ${save.total} vs DC ${dc})${
         lifted.length ? `: ${lifted.join(", ")} no longer holds them` : ""
       }.`,
+      ...bulwark,
     },
   };
+}
+
+// Bulwark (Banneret 18): with an Intelligence, Wisdom or Charisma save
+// rerolled and the fighter not incapacitated, one ally in range that failed
+// the same save rerolls it too, and an effect that save ends lets go.
+function bulwarkReroll(campaign: Campaign, sheet: CharacterSheet, ability: Ability, dc: number, against: string | undefined): { bulwark?: string } {
+  const held = activeAuthored(sheet, "indomitable_ally")[0];
+  if (!held || !["int", "wis", "cha"].includes(ability) || incapacitatedBy(sheet.conditions)) {
+    return {};
+  }
+  const encounter = getActiveEncounter(campaign.id);
+  const failed = listRecentRolls(campaign.id, 60).find((roll) => {
+    if (roll.characterId === sheet.id || roll.kind !== "saving_throw" || roll.dc !== dc || roll.total >= dc) {
+      return false;
+    }
+    const rolledAbility = (/\b(str|dex|con|int|wis|cha)\b/i.exec(roll.detail)?.[1] ?? "").toLowerCase();
+    return rolledAbility === ability && (!encounter || withinFeet(encounter.id, sheet.id, roll.characterId ?? "", held.effect.rangeFt));
+  });
+  const ally = failed?.characterId ? getSheetById(failed.characterId) : null;
+  if (!ally || ally.campaignId !== campaign.id) {
+    return {};
+  }
+  const save = rollFeatureSave(campaign, ally, ability, dc, "Bulwark reroll", against);
+  if (!save.success) {
+    return { bulwark: `Bulwark: ${ally.name} rerolls too and fails again (${save.total ?? "failed"} vs DC ${dc}).` };
+  }
+  const meta = ally.conditionMeta as ConditionMetaMap;
+  const lifted = ally.conditions.filter((name) => meta[name]?.saveEnds?.ability === ability && meta[name]?.saveEnds?.dc === dc);
+  if (lifted.length) {
+    const cleared = removeConditions(ally.conditions, ally.conditionMeta, lifted);
+    const updated = patchSheet(ally.id, { conditions: cleared.conditions, conditionMeta: cleared.meta });
+    if (updated) {
+      publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
+    }
+  }
+  return { bulwark: `Bulwark: ${ally.name} rerolls and succeeds (${save.total} vs DC ${dc})${lifted.length ? `: ${lifted.join(", ")} no longer holds them` : ""}.` };
 }

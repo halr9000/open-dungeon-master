@@ -14,12 +14,16 @@ import {
   budgetApplies,
   freshBudget,
   grantAction,
+  type StruckSwing,
   type TurnBudget,
 } from "@/lib/dm/action-budget";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape, type TurnShape } from "@/lib/srd/condition-effects";
 import { combatRiders } from "@/lib/srd/feature-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { summonAttacksPerTurn } from "@/lib/dm/summon-rules";
+import { findBeastForm } from "@/lib/srd/beast-forms";
+import { formSees } from "@/lib/srd/form-sees";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
 
 // The combatant the initiative pointer is currently on, or null out of
 // combat and while initiative is still being rolled.
@@ -42,28 +46,60 @@ export function budgetFor(
   encounter: Encounter | null,
   ownerId: string,
   attacksAllowed: number,
-  // Extra actions per turn from effect conditions (Haste); only seeds a
-  // FRESH budget so spending one mid-turn sticks.
-  extraActions = 0,
+  // What the owner's conditions make of the turn (conditionTurnShape):
+  // Haste's extra action and Slow's limits, or a bare count of extra actions.
+  shape: number | TurnShape = 0,
 ): TurnBudget | null {
   if (!encounter || currentCombatantId(encounter) !== ownerId) {
     return null;
   }
+  const { extraActions, slowed } = typeof shape === "number" ? { extraActions: shape, slowed: false } : shape;
+  // Slow: one attack a turn, whatever Extra Attack would give.
+  const allowed = slowed ? 1 : attacksAllowed;
   if (budgetApplies(encounter.turnBudget, ownerId, encounter.round)) {
-    // attacksAllowed can change mid-turn (a level-up, a lead correction);
-    // the higher of the two is the fair reading.
+    const held = encounter.turnBudget;
+    // Haste landing mid-turn gives its action on this turn; one already
+    // given is not given again, and one spent stays spent. (A budget stored
+    // before the count was kept was seeded with it if it carries the field.)
+    const given = held.hasteGranted ?? (held.extraActions !== undefined ? extraActions : 0);
+    const gained = Math.max(0, extraActions - given);
     return {
-      ...encounter.turnBudget,
-      attacksAllowed: Math.max(encounter.turnBudget.attacksAllowed, attacksAllowed),
+      ...held,
+      // attacksAllowed can change mid-turn (a level-up, a lead correction);
+      // the higher of the two is the fair reading, unless Slow caps it.
+      attacksAllowed: slowed ? 1 : Math.max(held.attacksAllowed, allowed),
+      ...(gained ? { extraActions: (held.extraActions ?? 0) + gained, hasteGranted: extraActions } : {}),
+      ...(slowed ? { slowed: true } : {}),
     };
   }
-  return freshBudget({ ownerId, round: encounter.round, attacksAllowed, extraActions });
+  return freshBudget({ ownerId, round: encounter.round, attacksAllowed: allowed, extraActions, slowed });
 }
 
 export function storeBudget(encounter: Encounter, budget: TurnBudget) {
   encounter.turnBudget = budget;
   saveEncounter(encounter);
   publishTurnCount(encounter.campaignId);
+}
+
+// An attack this turn rolled, kept on the turn's budget beside what it spent
+// (action-budget.ts TurnBudget.struck). Nothing when the budget is not this
+// owner's turn: an attack off their turn spends no budget either.
+export function noteSwing(campaignId: string, ownerId: string, result: ToolResult) {
+  const encounter = getActiveEncounter(campaignId);
+  const budget = encounter?.turnBudget ?? null;
+  if (!encounter || !budgetApplies(budget, ownerId, encounter.round)) {
+    return;
+  }
+  if (typeof result.target !== "string" || typeof result.hit !== "boolean") {
+    return;
+  }
+  const swing: StruckSwing = {
+    target: result.target,
+    hit: result.hit,
+    ...(typeof result.damage === "number" ? { damage: result.damage } : {}),
+  };
+  encounter.turnBudget = { ...budget, struck: [...(budget.struck ?? []), swing] };
+  saveEncounter(encounter);
 }
 
 // The pips on the board and in the Hand read the count from the encounter
@@ -96,14 +132,14 @@ export function prepareReaction(
   sheet: CharacterSheet,
   label: string,
   timing: ReactionTiming = reactionTimingOf(label),
-): { error: string } | { commit: () => Record<string, unknown>; beforeDrop: boolean } {
+): ToolError | { commit: () => ToolResult; beforeDrop: boolean } {
   const refused = reactionRefusal(encounter.campaignId, sheet, encounter, label, timing);
   if (refused) {
-    return { error: refused };
+    return refused;
   }
   const { beforeDrop } = reactingSheet(encounter.campaignId, sheet, timing);
   if (encounter.reactionsUsed.includes(sheet.id)) {
-    return { error: `${sheet.name} has already used their reaction; it comes back at the start of their next turn. ${label} does not happen.` };
+    return { error: `${sheet.name} has already used their reaction; it comes back at the start of their next turn. ${label} does not happen.`, refused: "rules" };
   }
   return {
     beforeDrop,
@@ -120,7 +156,17 @@ export function prepareReaction(
 // Attacks the Attack action grants this character: 1 plus Extra Attack.
 export function attacksAllowedFor(sheet: CharacterSheet): number {
   // A summoned creature's Attack action is its Multiattack (summon-rules.ts).
-  return summonAttacksPerTurn(sheet) ?? 1 + combatRiders(sheet).extraAttacks;
+  const summoned = summonAttacksPerTurn(sheet);
+  if (summoned !== null) {
+    return summoned;
+  }
+  // A beast form attacks as its Multiattack lets it; a Polymorph's beast
+  // has no Extra Attack of the character's (form-sees.ts).
+  // The record carries the form's Multiattack; one written before it did
+  // reads the table's form of that name.
+  const shaped = sheet.wildShape ? (sheet.wildShape.attacksPerTurn ?? findBeastForm(sheet.wildShape.form)?.attacksPerTurn ?? 1) : null;
+  const own = 1 + combatRiders(formSees(sheet)).extraAttacks;
+  return shaped !== null ? Math.max(shaped, own) : own;
 }
 
 // Action Surge: one additional action on the turn it is used. Called by
@@ -133,7 +179,7 @@ export function grantActionSurge(campaignId: string, sheet: CharacterSheet): str
     encounter,
     sheet.id,
     attacksAllowedFor(sheet),
-    conditionExtraActions(sheet.conditions),
+    conditionTurnShape(sheet.conditions),
   );
   if (!encounter || !budget) {
     return null;

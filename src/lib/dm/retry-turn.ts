@@ -1,4 +1,6 @@
 import { getCampaignById } from "@/lib/db/campaigns";
+import { getDatabase } from "@/lib/db/core";
+import { recordTurnCorrection } from "@/lib/db/turn-ledger";
 import {
   claimFailedDmTurn,
   getAwaitingTurn,
@@ -14,8 +16,9 @@ import { getRoll } from "@/lib/db/rolls";
 import { publishPersisted } from "@/lib/events";
 import { enqueueDmJob } from "@/lib/dm/queue";
 import { setDmStatus } from "@/lib/dm/status";
-import { fakeRollMarkerRegex } from "@/lib/dm/tool-text";
-import { MAX_MODEL_CALLS, reenterDmTurn } from "@/lib/dm/turn";
+import { withoutRollMarkers } from "@/lib/dm/tool-text";
+import { MAX_MODEL_CALLS, ROLL_RESULT_NOTE, reenterDmTurn, startDmTurn } from "@/lib/dm/turn";
+import { isUnbuiltTurn } from "@/lib/dm/turn-halt";
 import {
   assistantTextOf,
   checkRetryEligible,
@@ -46,8 +49,10 @@ import {
 const RETRY_NOTE =
   "[System] Your last attempt at this turn was interrupted by an internal error and nothing you wrote then reached the table. Pick the scene back up and narrate it now. Some bookkeeping from that attempt may already have taken effect (a move, a recorded event, a closed beat): if a tool reports something is already done, accept it and keep going rather than repeating it.";
 
-export type RetryRequest = { campaignId: string; turnId: string };
-export type RetryResult = { ok: true; turnId: string } | { ok: false; status: number; error: string };
+// userId: who asked, for the correction ledger (issue #460); left out,
+// nothing is recorded.
+export type RetryRequest = { campaignId: string; turnId: string; userId?: string };
+export type RetryResult = { ok: true; turnId: string; correctionId?: string | null } | { ok: false; status: number; error: string };
 
 // A tool call the halted turn never answered, where the answer is a physical
 // roll the player already submitted (the crash landed between the roll
@@ -74,7 +79,7 @@ function resolvedRollResult(
     ...(pending.dc !== null ? { dc: pending.dc, success: roll.total >= pending.dc } : {}),
     ...(roll.breakdown.crit ? { crit: roll.breakdown.crit } : {}),
     rolledBy: pending.status === "submitted" ? "the player, with physical dice" : "the server",
-    note: "Narrate this real result. Do not roll again for the same action.",
+    note: ROLL_RESULT_NOTE,
     ...(pending.combatNote ? { combat: pending.combatNote } : {}),
   });
 }
@@ -102,7 +107,17 @@ export function requestTurnRetry(request: RetryRequest): RetryResult {
   // The claim, and the only race guard that matters: two players hitting
   // Retry at the same instant both pass the checks above, but this
   // conditional UPDATE only reports changes for one of them.
-  const claimed = claimFailedDmTurn(turnId);
+  // The claim and the correction ledger's row for the retry land together.
+  const { claimed, correctionId } = getDatabase().transaction(() => {
+    const taken = claimFailedDmTurn(turnId);
+    return {
+      claimed: taken,
+      correctionId:
+        taken && request.userId
+          ? recordTurnCorrection({ campaignId, turnId, attribution: "direct", kind: "retry", userId: request.userId })
+          : null,
+    };
+  })();
   if (!claimed) {
     return { ok: false, status: 409, error: "That turn is already being retried." };
   }
@@ -118,12 +133,23 @@ export function requestTurnRetry(request: RetryRequest): RetryResult {
     }
   }
 
+  // A turn that stopped before it had a prompt (src/lib/dm/turn-halt.ts) has
+  // nothing to replay: the retry is the turn started over, which reads the
+  // transcript afresh. Its row is closed; the new run makes its own.
+  if (isUnbuiltTurn(claimed)) {
+    claimed.status = "done";
+    saveDmTurn(claimed);
+    setDmStatus(campaignId, "thinking");
+    enqueueDmJob(campaignId, () => startDmTurn(campaignId), { kind: "turn" });
+    return { ok: true, turnId, correctionId };
+  }
+
   // Undo the model call the crash swallowed: its narration never reached the
   // conversation, so the retried model would otherwise write that beat twice.
   const rewind = rewindHaltedCall({
     narrationParts: claimed.narrationParts,
     callIndex: claimed.callIndex,
-    assistantText: assistantTextOf(claimed.conversation).replace(fakeRollMarkerRegex(), ""),
+    assistantText: withoutRollMarkers(assistantTextOf(claimed.conversation)),
   });
   claimed.narrationParts = rewind.narrationParts;
   // A turn that burned its whole call budget resumes at the forced-narration
@@ -141,7 +167,7 @@ export function requestTurnRetry(request: RetryRequest): RetryResult {
         resolvedRollResult(claimed, pendings, toolCallId) ??
         JSON.stringify({
           error:
-            "The DM hit an internal error before this call finished. Do not call it again; continue from what you already have.",
+            "The GM hit an internal error before this call finished. Do not call it again; continue from what you already have.",
         }),
     });
   }
@@ -187,9 +213,9 @@ export function requestTurnRetry(request: RetryRequest): RetryResult {
       console.error("[dm-retry] re-entry failed", error);
       abandonRetry(campaignId, turnId);
     }
-  });
+  }, { kind: "turn" });
 
-  return { ok: true, turnId };
+  return { ok: true, turnId, correctionId };
 }
 
 // Put an abandoned retry back where it found things: the turn failed (it never

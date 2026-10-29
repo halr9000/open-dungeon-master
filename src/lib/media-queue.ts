@@ -9,7 +9,8 @@ import { bindUsageScope } from "@/lib/usage/scope";
 // for the iGPU, so narration must not wait behind a 25-step render; keeping it
 // in its own lane is what lets audio start while the scene image is still
 // generating. Narration takes a lane per campaign ("tts:<campaign id>"): a
-// table's passages are read in the order they were written, and one table's
+// table's passages are read in the order they were written (unless narration
+// has fallen well behind, when src/lib/tts.ts skips to the newest), and one table's
 // long passage never holds up another table's (how many speech requests run
 // at once across all of them is src/lib/tts.ts's to cap). Lanes live on
 // globalThis so dev-mode HMR cannot fork them (same pattern as
@@ -26,7 +27,9 @@ export type MediaLane = "gpu" | "tts" | `tts:${string}`;
 
 type Waiting = { superseded: boolean; followers: Array<() => void> };
 
-export type LaneStats = { waiting: number; lastWaitMs: number; lastRunMs: number; superseded: number };
+// `running` is 1 while the lane has a job under way: with `waiting`, what a
+// picture still in the queue is behind (WorldForge's Paint says so).
+export type LaneStats = { waiting: number; running: number; lastWaitMs: number; lastRunMs: number; superseded: number };
 
 declare global {
   var __odmMediaQueues: Partial<Record<MediaLane, Promise<void>>> | undefined;
@@ -38,7 +41,7 @@ function laneStats(lane: string): LaneStats {
   const stats = (globalThis.__odmMediaStats ??= new Map());
   let entry = stats.get(lane);
   if (!entry) {
-    entry = { waiting: 0, lastWaitMs: 0, lastRunMs: 0, superseded: 0 };
+    entry = { waiting: 0, running: 0, lastWaitMs: 0, lastRunMs: 0, superseded: 0 };
     stats.set(lane, entry);
   }
   return entry;
@@ -95,9 +98,11 @@ export function enqueueMediaJob(
       }
       stats.lastWaitMs = Date.now() - queuedAt;
       const started = Date.now();
+      stats.running = 1;
       try {
         await scoped();
       } finally {
+        stats.running = 0;
         stats.lastRunMs = Date.now() - started;
       }
     })

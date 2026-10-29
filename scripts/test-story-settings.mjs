@@ -19,6 +19,7 @@ const { maskStorySettings, normalizeSettings, scrubStorySettings, withoutAdminOn
   "../src/lib/db/settings.ts"
 );
 const { saveGlobalConfig } = await import("../src/lib/db/app-settings.ts");
+const { closeDatabaseForRestore } = await import("../src/lib/db/core.ts");
 const { storyContextTokens, utilityContextTokens, localContextTokens } = await import("../src/lib/model-client.ts");
 const { DEFAULT_STORY_SETTINGS } = await import("../src/lib/defaults.ts");
 const { createUser } = await import("../src/lib/db/users.ts");
@@ -290,6 +291,25 @@ test("only an admin's campaign runs on its own backend address", () => {
   assert.equal(maskStorySettings(run, admin).serverManaged, false);
 });
 
+// Boot used to retarget any campaign on Ollama's OpenAI-compatible port
+// (:11434/v1) at llama-server on :8001, a move this development machine
+// made once; for everyone else it pointed a working campaign at a port
+// with nothing on it ("Could not reach the backend at
+// http://127.0.0.1:8001/v1/chat/completions"), and again after every
+// restore. A saved address is the admin's and is kept.
+test("a campaign on Ollama's compatible API keeps its address across a boot", () => {
+  const admin = createUser("ollama-admin", "x", { isAdmin: true });
+  const input = { title: "T", description: "", theme: "", maxPlayers: 4, startingLevel: 1, difficulty: "normal" };
+  const mine = createCampaign(admin.id, input);
+  updateStorySettings(mine.id, { textProvider: "custom", customBaseUrl: "http://127.0.0.1:11434/v1", customModel: "qwen3.6:35b" });
+  // The next getDatabase() opens the file again and runs the schema pass,
+  // as the next server start would.
+  closeDatabaseForRestore();
+  const after = getCampaignById(mine.id).settings;
+  assert.equal(after.customBaseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(after.customModel, "qwen3.6:35b");
+});
+
 test("a non-admin's patch loses its backend addresses and keys, nothing else", () => {
   const patch = withoutAdminOnlyFields({ ...{ customBaseUrl: "http://x", customApiKey: "k", utilityBaseUrl: "http://y", utilityApiKey: "k", comfyUrl: "http://z" }, customModel: "m", proseSize: "short" });
   assert.deepEqual(patch, { customModel: "m", proseSize: "short" });
@@ -394,6 +414,76 @@ test("a non-admin's patch loses its backend addresses and keys, nothing else", (
   } finally {
     globalThis.fetch = realFetch;
   }
+}
+
+// The one notice every failed connection used to produce now says why, and
+// carries the bare code for the server log (turn.ts prints `detail`).
+{
+  const { requestCustomMessage } = await import("../src/lib/model-client.ts");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8001"), { code: "ECONNREFUSED" }) });
+  };
+  try {
+    const result = await requestCustomMessage("http://127.0.0.1:8001/v1", "m", "", [{ role: "user", content: "hi" }]);
+    assert.equal(result.error?.status, 502);
+    const body = await result.error.json();
+    assert.equal(
+      body.error,
+      "Could not reach the backend at http://127.0.0.1:8001/v1/chat/completions. Nothing is listening at that address (connection refused). Check the URL and that your server is running.",
+    );
+    assert.equal(body.detail, "transport ECONNREFUSED");
+    passed += 1;
+    console.log("ok: a refused connection says so, with the code for the log");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// A helper model named alone runs on the storyteller's own server, and the
+// admin pages find a utility server's key where a turn finds it.
+{
+  const { backendKeyFor, utilityEndpoint } = await import("../src/lib/model-client.ts");
+  assert.equal(DEFAULT_STORY_SETTINGS.utilityProvider, "custom", "the helper's default is an OpenAI-compatible server, not Ollama");
+  const story = { customBaseUrl: "http://10.0.0.5:8091/v1", customApiKey: "story-key" };
+  assert.deepEqual(utilityEndpoint({ ...story, utilityBaseUrl: "", utilityApiKey: "" }), {
+    baseUrl: "http://10.0.0.5:8091/v1",
+    apiKey: "story-key",
+  });
+  assert.deepEqual(utilityEndpoint({ ...story, utilityBaseUrl: " http://127.0.0.1:8001/v1 ", utilityApiKey: "helper-key" }), {
+    baseUrl: "http://127.0.0.1:8001/v1",
+    apiKey: "helper-key",
+  });
+
+  // A blank helper provider follows the storyteller: Ollama's beside an
+  // Ollama storyteller, an OpenAI-compatible server otherwise.
+  const { configuredDefaultStorySettings } = await import("../src/lib/runtime-defaults.ts");
+  saveGlobalConfig({ text: { provider: "local", utilityProvider: "" } });
+  assert.equal(configuredDefaultStorySettings().utilityProvider, "local");
+  saveGlobalConfig({ text: { provider: "custom", utilityProvider: "" } });
+  assert.equal(configuredDefaultStorySettings().utilityProvider, "custom");
+  saveGlobalConfig({ text: { provider: "custom", utilityProvider: "local" } });
+  assert.equal(configuredDefaultStorySettings().utilityProvider, "local", "a picked provider was overridden");
+  saveGlobalConfig({ text: { provider: "", utilityProvider: "" } });
+
+  const before = { ...process.env };
+  try {
+    saveGlobalConfig({ text: { provider: "custom", customBaseUrl: "http://10.0.0.5:8091/v1", utilityBaseUrl: "http://127.0.0.1:8001/v1", customApiKey: "", utilityApiKey: "" } });
+    process.env.UTILITY_TEXT_API_KEY = "env-helper-key";
+    process.env.OPENAI_COMPAT_API_KEY = "env-story-key";
+    assert.equal(backendKeyFor("http://127.0.0.1:8001/v1"), "env-helper-key", "the utility server's key in the environment was missed");
+    assert.equal(backendKeyFor("http://10.0.0.5:8091/v1"), "env-story-key");
+    assert.equal(backendKeyFor("http://10.0.0.9:9000/v1"), "", "a key went to a host it was not saved for");
+    assert.equal(backendKeyFor("http://10.0.0.9:9000/v1", "typed"), "typed");
+  } finally {
+    for (const name of ["UTILITY_TEXT_API_KEY", "OPENAI_COMPAT_API_KEY"]) {
+      if (before[name] === undefined) delete process.env[name];
+      else process.env[name] = before[name];
+    }
+    saveGlobalConfig({ text: { provider: "", customBaseUrl: "", utilityBaseUrl: "" } });
+  }
+  passed += 1;
+  console.log("ok: a helper named alone runs on the storyteller's server, and its key is found where a turn finds it");
 }
 
 console.log(`story settings: ${passed} tests passed`);

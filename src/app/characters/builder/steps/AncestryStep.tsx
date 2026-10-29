@@ -1,14 +1,19 @@
 "use client";
 
 import { repeatedGrants } from "@/lib/srd/racial-grants";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { InfoButton } from "@/components/ui/InfoDialog";
 import { Select } from "@/components/ui/Select";
 import { STANDARD_LANGUAGES } from "@/lib/content/mechanics";
 import { describeRace } from "@/lib/help";
 import type { Reskinned } from "@/lib/worlds/reskin-logic";
 import { LineageCarousel, type LineageSlide } from "../LineageCarousel";
-import { asiChips, flattenGroups, lineageArt, lineageTagline } from "../lineage";
+import { lineageCard } from "../cardFaces";
+import { flattenGroups, lineageArt, srdRaceFor } from "../lineage";
+import { lineageFits } from "../lineageFits";
+import { SRD_CLASSES } from "@/lib/srd";
+import type { CardFacet } from "../OptionCardGrid";
+import type { Ability } from "@/lib/schemas/sheet";
 import { OptionCardGrid, type OptionCardGroup } from "../OptionCardGrid";
 import type { PickerGroup } from "../OptionPicker";
 import { knownTraining } from "../FeatChoicesFields";
@@ -44,7 +49,8 @@ function languageHelp(race: RaceOption, background: BackgroundOption | undefined
 // offered, in the picker's groups and order, the setting's peoples first and
 // badged), the detail carousel behind each card's "?", then every choice the
 // race leaves to the player: bonus languages, ability bumps, skills, tool,
-// cantrip.
+// cantrip. The background sits beside it (backlog F4), right after the
+// grid, so its languages join the list below.
 export function AncestryStep({
   state,
   derived,
@@ -52,6 +58,8 @@ export function AncestryStep({
   background,
   races,
   raceGroups,
+  listNote = null,
+  backgroundSection = null,
 }: {
   state: BuilderState;
   derived: BuilderDerived;
@@ -59,6 +67,10 @@ export function AncestryStep({
   background: BackgroundOption | undefined;
   races: Array<Reskinned<RaceOption>>;
   raceGroups: PickerGroup[];
+  // Why the list may be short (TableScopeNote).
+  listNote?: ReactNode;
+  // The background and its open picks (BackgroundPanel, ToolGrantPanels).
+  backgroundSection?: ReactNode;
 }) {
   // The race's bonus languages plus the background's (an acolyte or a sage
   // learns two more), which used to be loaded and never asked for.
@@ -68,28 +80,7 @@ export function AncestryStep({
 
   // One slide per picker row, in the picker's order, so the carousel walks
   // exactly what the grid shows.
-  const slides = useMemo<LineageSlide[]>(
-    () =>
-      flattenGroups(raceGroups).flatMap(({ option, group, recommended }) => {
-        const entry = races.find((candidate) => candidate.id === option.id);
-        if (!entry) {
-          return [];
-        }
-        return [
-          {
-            ...entry,
-            art: lineageArt(entry.id, `${option.meta ?? ""} ${entry.name}`, gender),
-            canonical: option.meta,
-            // Named on the card only where the group heading is not the book.
-            sourceOnCard: option.source,
-            group,
-            recommended,
-            info: { text: option.infoText, reference: option.reference },
-          },
-        ];
-      }),
-    [raceGroups, races, gender],
-  );
+  const slides = useMemo(() => lineageSlidesFor(raceGroups, races, gender), [raceGroups, races, gender]);
 
   const cardGroups = useMemo<OptionCardGroup[]>(
     () =>
@@ -101,25 +92,12 @@ export function AncestryStep({
           if (!slide) {
             return [];
           }
-          return [
-            {
-              id: slide.id,
-              name: slide.name,
-              meta: slide.canonical,
-              art: slide.art,
-              // Under a reskin the canonical name leads, so a player always
-              // knows which SRD race they are actually taking; then the
-              // book, where the heading does not say it (issue #116).
-              tagline: [slide.canonical, slide.sourceOnCard, lineageTagline(slide)].filter(Boolean).join(" · "),
-              chips: asiChips(slide.asi)
-                .slice(0, 2)
-                .map((chip) => chip.label),
-            },
-          ];
+          return [lineageCard({ slide })];
         }),
       })),
     [raceGroups, slides],
   );
+  const facets = useMemo(() => raceFacets(slides), [slides]);
 
   return (
     <div className="space-y-4">
@@ -133,11 +111,30 @@ export function AncestryStep({
             : "Tap a card to choose a lineage, or its ? to read what it hands you first."
         }
       >
+        {state.revisedSpecies ? (
+          <p role="note" className="mb-3 rounded border border-amber-700/40 bg-amber-950/30 p-2 text-xs text-amber-100">
+            {race ? (
+              <>
+                This character was made with the 2024 rules&rsquo; {race.name}. This server plays the 2014 rules, so they now
+                have the 2014 {race.name}&rsquo;s traits, and their ability scores stay as they were. Save to keep it, or
+                choose another lineage.
+              </>
+            ) : (
+              // A content pack that offers no such lineage: its id, written
+              // as a name, and the pick it now owes.
+              <>
+                This character was made with the 2024 rules&rsquo; {speciesWords(state.revisedSpecies)}. This server plays
+                the 2014 rules and offers no 2014 {speciesWords(state.revisedSpecies)} here, so choose a lineage below; their
+                ability scores stay as they were.
+              </>
+            )}
+          </p>
+        ) : null}
         {race?.note ? (
           <span className="mb-3 flex items-start gap-1 text-xs text-stone-500">
             <span className="line-clamp-2 grow">
               <span className="text-amber-200">{race.name}</span>
-              {race.source ? <span className="font-mono text-[10px] text-stone-500"> · {race.source}</span> : null}
+              {race.source ? <span className="font-mono text-[0.875rem] text-stone-500"> · {race.source}</span> : null}
               <span className="text-amber-200">: </span>
               {race.note}
             </span>
@@ -154,7 +151,9 @@ export function AncestryStep({
           onChoose={state.changeRace}
           onDetails={(id) => setDetailIndex(slides.findIndex((slide) => slide.id === id))}
           noun="lineage"
+          facets={facets}
         />
+        {listNote}
         <LineageCarousel
           slides={slides}
           index={detailIndex !== null && detailIndex >= 0 ? detailIndex : null}
@@ -163,6 +162,8 @@ export function AncestryStep({
           onChoose={state.changeRace}
         />
       </StepPanel>
+
+      {backgroundSection}
 
       {race && languageCount > 0 ? (
         <StepPanel
@@ -240,12 +241,14 @@ export function AncestryStep({
               return next;
             })
           }
-          cantrip={state.racialCantrip}
-          onCantripChange={state.setRacialCantrip}
+          cantrips={state.racialCantrips}
+          onCantripsChange={state.setRacialCantrips}
           tool={state.racialTool}
           onToolChange={state.setRacialTool}
           ancestry={state.racialAncestry}
           onAncestryChange={state.setRacialAncestry}
+          variant={state.racialVariant}
+          onVariantChange={state.chooseRacialVariant}
           repeated={repeatedGrants(background?.skills, race.skills)}
           repeatSkills={state.repeatSkills}
           onRepeatChange={(index, skill) =>
@@ -269,4 +272,85 @@ export function AncestryStep({
       ) : null}
     </div>
   );
+}
+
+const ABILITY_WORDS: Array<[Ability, string]> = [
+  ["str", "Strength"], ["dex", "Dexterity"], ["con", "Constitution"],
+  ["int", "Intelligence"], ["wis", "Wisdom"], ["cha", "Charisma"],
+];
+
+// The race grid's filters: what a lineage raises, which classes it suits,
+// its size and its book. Each offers only the values some lineage has. A
+// lineage whose bumps are the player's to place raises anything they like
+// and suits any class.
+function raceFacets(slides: LineageSlide[]): CardFacet[] {
+  const byId = new Map(slides.map((slide) => [slide.id, slide]));
+  const sizeOf = (id: string) => srdRaceFor(id)?.size ?? "";
+  const bookOf = (slide: LineageSlide) => slide.source || "Core rules";
+  const sizes = [...new Set(slides.map((slide) => sizeOf(slide.id)).filter(Boolean))].sort();
+  const books = [...new Set(slides.map(bookOf))].sort();
+  return [
+    {
+      key: "raises",
+      label: "Raises",
+      options: ABILITY_WORDS.map(([value, label]) => ({ value, label })),
+      test: (id, ability) => {
+        const slide = byId.get(id);
+        return Boolean(slide && ((slide.asi[ability as Ability] ?? 0) > 0 || slide.asiChoice));
+      },
+    },
+    {
+      key: "suits",
+      label: "Good for",
+      options: SRD_CLASSES.map((klass) => ({ value: klass.name, label: klass.name })),
+      test: (id, className) => {
+        const slide = byId.get(id);
+        const fits = slide ? lineageFits(slide, 13) : null;
+        return Boolean(fits && (fits.kind === "any" || fits.names.includes(className)));
+      },
+    },
+    ...(sizes.length > 1
+      ? [{ key: "size", label: "Size", options: sizes.map((size) => ({ value: size, label: size })), test: (id: string, size: string) => sizeOf(id) === size }]
+      : []),
+    ...(books.length > 1
+      ? [{ key: "book", label: "Book", options: books.map((book) => ({ value: book, label: book })), test: (id: string, book: string) => { const slide = byId.get(id); return Boolean(slide && bookOf(slide) === book); } }]
+      : []),
+  ];
+}
+
+// A lineage id as a name, for one the table does not offer ("half_orc" is
+// "Half Orc").
+function speciesWords(id: string): string {
+  return id
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+// One slide per picker row, in the picker's order: what the grid's cards,
+// the carousel and the build math panel's picks all show of a lineage.
+export function lineageSlidesFor(
+  raceGroups: PickerGroup[],
+  races: Array<Reskinned<RaceOption>>,
+  gender: BuilderState["gender"],
+): LineageSlide[] {
+  return flattenGroups(raceGroups).flatMap(({ option, group, recommended }) => {
+    const entry = races.find((candidate) => candidate.id === option.id);
+    if (!entry) {
+      return [];
+    }
+    return [
+      {
+        ...entry,
+        art: lineageArt(entry.id, `${option.meta ?? ""} ${entry.name}`, gender),
+        canonical: option.meta,
+        // Named on the card only where the group heading is not the book.
+        sourceOnCard: option.source,
+        group,
+        recommended,
+        info: { text: option.infoText, reference: option.reference },
+      },
+    ];
+  });
 }

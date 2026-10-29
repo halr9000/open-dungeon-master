@@ -11,15 +11,18 @@
 //     takes 10d10 psychic damage. Its return is a turn-end hook
 //     (src/lib/dm/turn-end.ts).
 
+import { getFoe } from "@/lib/dm/sheet-foe";
+import { catalogName } from "@/lib/srd/adventuring-gear";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
-import { getActiveEncounter, getEnemy, patchEnemyConditions, type EncounterEnemy } from "@/lib/db/encounters";
+import { settleEnemyIncapacitation } from "@/lib/dm/enemy-incapacitation";
+import { getActiveEncounter, patchEnemyConditions, type EncounterEnemy } from "@/lib/db/encounters";
 import { insertRoll } from "@/lib/db/rolls";
 import { rollAgainst } from "@/lib/roll-labels";
 import { insertSheetAudit } from "@/lib/db/sheet-audit";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
 import { rollExpression } from "@/lib/dice";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
-import { removeConditions, type ConditionMeta, type ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { isIncapacitated, removeConditions, type ConditionMeta, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { applyEnemyDamage, publishEncounter } from "@/lib/dm/enemy-damage";
 import { rollEnemySave } from "@/lib/dm/forced-save";
 import { pushTokenAway } from "@/lib/dm/map-tools";
@@ -28,7 +31,6 @@ import { untilTurnEnd } from "@/lib/dm/turn-end";
 import {
   HURLED,
   HURL_THROUGH_HELL,
-  OPEN_HAND_CHOICES,
   OPEN_HAND_REELING,
   hasOpenHandTechnique,
   hurlProblem,
@@ -37,8 +39,10 @@ import {
 import { matchWeapon } from "@/lib/srd/weapons";
 import { poisonAt } from "@/lib/srd/table-hazards";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-
-const lower = (value: string) => value.trim().toLowerCase();
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { hasItemTag } from "@/lib/srd/item-tags";
+import { rowName, type RowItem } from "@/lib/srd/item-row";
+import { textKey } from "@/lib/language/text-logic";
 
 function publishRoll(campaignId: string, roll: ReturnType<typeof insertRoll>) {
   publishWithSeq(campaignId, allocateSeq(campaignId), "roll_result", { roll, source: "digital" });
@@ -92,22 +96,24 @@ export function spendFeatureUse(campaign: Campaign, sheetId: string, resourceId:
 // ---- basic poison, and the SRD's injury poisons ----
 
 export const POISON_COAT = "poisoned weapon";
-const BASIC_POISON = /\bpoison\b.*\bbasic\b|\bbasic\b.*\bpoison\b/i;
 
 // What a vial coats a blade with: basic poison (DC 10, 1d4, no half), or an
 // injury poison from the SRD list (Drow Poison, Serpent Venom, Purple Worm
 // Poison, Wyvern Poison: src/lib/srd/afflictions.ts) or the table's workshop
-// (src/lib/srd/table-hazards.ts). Null for anything else.
-function coatOf(itemName: string, campaignId?: string): { name: string; dc: number; damage?: string; halfOnSave?: boolean; conditions?: string[]; minutes?: number; unconsciousIfFailBy?: number } | null {
-  if (BASIC_POISON.test(itemName)) {
+// (src/lib/srd/table-hazards.ts), by the row the vial is (src/lib/srd/
+// item-row.ts). Null for anything else.
+function coatOf(item: RowItem, campaignId?: string): { name: string; dc: number; damage?: string; halfOnSave?: boolean; conditions?: string[]; minutes?: number; unconsciousIfFailBy?: number } | null {
+  const row = rowName(item);
+  // The SRD's basic poison, by its row (src/lib/srd/adventuring-gear.ts).
+  if (catalogName(row) === "Poison, Basic (vial)") {
     return { name: "basic poison", dc: 10, damage: "1d4" };
   }
-  const poison = poisonAt(itemName, campaignId);
+  const poison = poisonAt(row, campaignId);
   return poison && poison.type === "injury" ? poison : null;
 }
 
-export function isBasicPoison(itemName: string, campaignId?: string): boolean {
-  return coatOf(itemName, campaignId) !== null;
+export function isBasicPoison(item: RowItem, campaignId?: string): boolean {
+  return coatOf(item, campaignId) !== null;
 }
 
 function slashesOrPierces(damage: string): boolean {
@@ -115,29 +121,29 @@ function slashesOrPierces(damage: string): boolean {
 }
 
 // Why the vial cannot be used, before it is spent: nothing to coat.
-export function poisonCoatRefusal(sheet: CharacterSheet, itemName: string): string | null {
-  if (!isBasicPoison(itemName, sheet.campaignId)) {
+export function poisonCoatRefusal(sheet: CharacterSheet, item: RowItem): ToolError | null {
+  if (!isBasicPoison(item, sheet.campaignId)) {
     return null;
   }
   const coatable = sheet.equipment.some((item) => {
-    const weapon = matchWeapon(item.name);
-    return Boolean(weapon && slashesOrPierces(weapon.damage)) || /\b(arrows?|bolts?|needles?)\b/i.test(item.name);
+    const weapon = matchWeapon(item);
+    return Boolean(weapon && slashesOrPierces(weapon.damage)) || (["arrows", "bolts", "needles"] as const).some((kind) => hasItemTag(item, kind));
   });
   return coatable
     ? null
-    : `${sheet.name} carries no slashing or piercing weapon or ammunition to coat with the poison; the vial stays in the pack.`;
+    : { error: `${sheet.name} carries no slashing or piercing weapon or ammunition to coat with the poison; the vial stays in the pack.`, refused: "rules" };
 }
 
 // The vial just used: the coat goes on, for a minute (ten rounds). Which
 // poison it is rides in the coat's source.
-export function coatWithPoison(campaign: Campaign, user: CharacterSheet, itemName: string): Record<string, unknown> | null {
-  const coat = coatOf(itemName, campaign.id);
+export function coatWithPoison(campaign: Campaign, user: CharacterSheet, item: RowItem): Record<string, unknown> | null {
+  const coat = coatOf(item, campaign.id);
   if (!coat) {
     return null;
   }
   const fresh = getSheetById(user.id) ?? user;
   const meta: ConditionMetaMap = { ...(fresh.conditionMeta as ConditionMetaMap), [POISON_COAT]: { rounds: 10, source: coat.name.toLowerCase() } };
-  const conditions = fresh.conditions.some((entry) => lower(entry) === POISON_COAT) ? fresh.conditions : [...fresh.conditions, POISON_COAT];
+  const conditions = fresh.conditions.some((entry) => textKey(entry) === POISON_COAT) ? fresh.conditions : [...fresh.conditions, POISON_COAT];
   const updated = patchSheet(fresh.id, { conditions, conditionMeta: meta });
   if (updated) {
     publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
@@ -155,7 +161,7 @@ export function carriesPoison(sheet: CharacterSheet, weaponAttack: boolean, dama
   return (
     weaponAttack &&
     slashesOrPierces(damageType) &&
-    sheet.conditions.some((entry) => lower(entry) === POISON_COAT)
+    sheet.conditions.some((entry) => textKey(entry) === POISON_COAT)
   );
 }
 
@@ -166,18 +172,18 @@ export function poisonOnHit(campaign: Campaign, sheetId: string, enemyId: string
   if (!sheet) {
     return null;
   }
-  const coat = coatOf(String((sheet.conditionMeta as ConditionMetaMap)[POISON_COAT]?.source ?? "basic poison"), campaign.id) ?? coatOf("basic poison");
+  const coat = coatOf({ name: String((sheet.conditionMeta as ConditionMetaMap)[POISON_COAT]?.source ?? "basic poison") }, campaign.id) ?? coatOf({ name: "basic poison" });
   const cleared = removeConditions(sheet.conditions, sheet.conditionMeta, [POISON_COAT]);
   const updated = patchSheet(sheet.id, { conditions: cleared.conditions, conditionMeta: cleared.meta });
   if (updated) {
     publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
   }
-  const enemy = getEnemy(enemyId);
+  const enemy = getFoe(enemyId);
   if (!coat || !enemy || enemy.status !== "alive") {
     return "The poison's coat is spent on the blow.";
   }
   const label = coat.name.charAt(0).toUpperCase() + coat.name.slice(1);
-  const save = rollEnemySave(campaign.id, enemy, "con", coat.dc);
+  const save = rollEnemySave(campaign.id, enemy, "con", coat.dc, { against: coat.conditions });
   if (save.success && !(coat.damage && coat.halfOnSave)) {
     return `${label}: ${enemy.displayName} holds (CON save ${save.total} vs DC ${coat.dc}); the coat is spent.`;
   }
@@ -199,7 +205,7 @@ export function poisonOnHit(campaign: Campaign, sheetId: string, enemyId: string
     lines.push(`${label}: ${enemy.displayName} ${save.success ? "saves" : "fails the CON save"} (${save.autoFailed ? "automatic" : save.total} vs DC ${coat.dc}) and takes ${dealt} poison damage.`);
   }
   if (!save.success && coat.conditions?.length) {
-    const fresh = getEnemy(enemyId);
+    const fresh = getFoe(enemyId);
     if (fresh && fresh.status === "alive") {
       const failBy = save.autoFailed ? 99 : coat.dc - (save.total ?? 0);
       const laid = [...coat.conditions, ...(coat.unconsciousIfFailBy && failBy >= coat.unconsciousIfFailBy ? ["unconscious"] : [])];
@@ -209,6 +215,7 @@ export function poisonOnHit(campaign: Campaign, sheetId: string, enemyId: string
         meta[name] = { rounds, source: coat.name, ...(name === "unconscious" ? { endsOnDamage: true } : {}) };
       }
       patchEnemyConditions(fresh.id, [...new Set([...fresh.conditions, ...laid])], meta);
+      settleEnemyIncapacitation(fresh.id, isIncapacitated(fresh.conditions));
       publishEncounter(campaign.id);
       lines.push(`${label}: ${enemy.displayName} fails the CON save (${save.autoFailed ? "automatic" : save.total} vs DC ${coat.dc}) and is ${laid.join(" and ")}.`);
     }
@@ -220,7 +227,7 @@ export function poisonOnHit(campaign: Campaign, sheetId: string, enemyId: string
 
 // Who may declare it, and the words it writes, are pure and shared with the
 // player's Hand (src/lib/dm/attack-choice-rules.ts).
-export { OPEN_HAND_CHOICES, OPEN_HAND_REELING, hasOpenHandTechnique, type OpenHandChoice };
+export { OPEN_HAND_REELING, hasOpenHandTechnique, type OpenHandChoice };
 
 export function openHandOnHit(
   campaign: Campaign,
@@ -229,7 +236,7 @@ export function openHandOnHit(
   choice: OpenHandChoice,
   dc: number,
 ): string {
-  const enemy = getEnemy(enemyId);
+  const enemy = getFoe(enemyId);
   if (!enemy || enemy.status !== "alive") {
     return "Open Hand Technique: the target is already down.";
   }
@@ -244,7 +251,7 @@ export function openHandOnHit(
     return `Open Hand Technique: ${enemy.displayName} cannot take reactions until the end of the monk's next turn.`;
   }
   const ability = choice === "prone" ? "dex" : "str";
-  const save = rollEnemySave(campaign.id, enemy, ability, dc);
+  const save = rollEnemySave(campaign.id, enemy, ability, dc, { against: choice === "prone" ? "prone" : [] });
   const rolled = save.autoFailed ? "automatic" : String(save.total);
   if (save.success) {
     return `Open Hand Technique: ${enemy.displayName} holds (${ability.toUpperCase()} save ${rolled} vs DC ${dc}).`;
@@ -278,7 +285,7 @@ export { HURLED, HURL_THROUGH_HELL, hurlProblem };
 // The hit creature is gone through the lower planes: out of reach and out of
 // the fight until the end of the warlock's next turn.
 export function hurlThroughHell(campaign: Campaign, warlockId: string, enemyId: string): string {
-  const enemy = getEnemy(enemyId);
+  const enemy = getFoe(enemyId);
   if (!enemy || enemy.status !== "alive") {
     return "Hurl Through Hell: the target is already down.";
   }
@@ -291,6 +298,7 @@ export function hurlThroughHell(campaign: Campaign, warlockId: string, enemyId: 
     meta[name] = untilTurnEnd(warlockId, { source: warlockId });
   }
   patchEnemyConditions(enemy.id, conditions, meta);
+  settleEnemyIncapacitation(enemy.id, isIncapacitated(enemy.conditions));
   publishEncounter(campaign.id);
   return `Hurl Through Hell: ${enemy.displayName} vanishes through the lower planes until the end of the warlock's next turn.`;
 }

@@ -3,7 +3,7 @@
 import { Plus, Swords } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
-import { formatRoster } from "@/lib/dm/encounter-template-logic";
+import { rosterSummary } from "@/lib/dm/encounter-template-logic";
 import { budgetBarGeometry, type Thresholds } from "@/app/workshop/encounters/budget-bar";
 import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { GameIcon } from "@/components/ui/GameIcon";
@@ -151,6 +151,7 @@ export function EncounterRows({
   busy,
   onOpen,
   onDeploy,
+  deployLabel = "Deploy",
   onDuplicate,
   onDelete,
 }: {
@@ -160,6 +161,9 @@ export function EncounterRows({
   busy: boolean;
   onOpen: (encounter: PreparedEncounter | null) => void;
   onDeploy: (encounter: PreparedEncounter) => void;
+  // The workshop has no table to deploy to, so there the button tests the
+  // fight instead (issue 553).
+  deployLabel?: string;
   onDuplicate: (encounter: PreparedEncounter) => void;
   onDelete: (encounter: PreparedEncounter) => void;
 }) {
@@ -182,7 +186,7 @@ export function EncounterRows({
           // doors; Deploy stays the row's one visible button.
           const items: ContextMenuItem[] = [
             { id: "open", label: "Open", glyph: "system-encounters", onSelect: () => onOpen(encounter) },
-            { id: "deploy", label: "Deploy", glyph: "tab-battle", disabled: busy, onSelect: () => onDeploy(encounter) },
+            { id: "deploy", label: deployLabel, glyph: "tab-battle", disabled: busy, onSelect: () => onDeploy(encounter) },
             { id: "duplicate", label: "Duplicate", glyph: "ui-duplicate", disabled: busy, onSelect: () => onDuplicate(encounter) },
             { id: "delete", label: "Delete", glyph: "ui-delete", tone: "danger", separated: true, onSelect: () => onDelete(encounter) },
           ];
@@ -200,7 +204,7 @@ export function EncounterRows({
                     <DifficultyPill readout={encounter.readout} />
                   </div>
                   <p className="mt-1 text-sm text-stone-300">
-                    {formatRoster(encounter.enemies).replace(/\n/g, ", ")}
+                    {rosterSummary(encounter.enemies, encounter.readout.names)}
                   </p>
                   {encounter.battlefield ? (
                     <p className="reveal truncate text-xs text-stone-500">On {encounter.battlefield}</p>
@@ -214,8 +218,8 @@ export function EncounterRows({
               </div>
               <BudgetBar readout={encounter.readout} thresholds={thresholds} />
               <div className="flex flex-wrap items-center gap-1.5">
-                <button type="button" disabled={busy} onClick={() => onDeploy(encounter)} className={cn(ui.btnSecondary, "h-9")}>
-                  <Swords className="size-3.5" /> Deploy
+                <button type="button" disabled={busy} onClick={() => onDeploy(encounter)} className={cn(ui.btnSecondary, "h-9")} data-encounter-deploy={encounter.id}>
+                  <Swords className="size-3.5" /> {deployLabel}
                 </button>
               </div>
             </ContextMenu>

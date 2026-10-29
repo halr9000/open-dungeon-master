@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getDatabase } from "@/lib/db/core";
 import { VARIANT_WIDTHS, variantFileName } from "@/lib/image-format";
-import { isGeneratedImagePath, isUploadedImagePath, isUploadedPdfPath } from "@/lib/uploads";
+import { isGeneratedImagePath, isUploadedImagePath, isUploadedModelPath, isUploadedPdfPath } from "@/lib/uploads";
 
 // The files on disk behind the rows: pictures in public/uploads and
 // public/generated, and the PDFs beside them. Deleting a row never deletes
@@ -28,7 +28,7 @@ export function filePathsIn(text: unknown): string[] {
   }
   const found = new Set<string>();
   for (const [candidate] of text.matchAll(PATH_CANDIDATE)) {
-    if (isUploadedImagePath(candidate) || isUploadedPdfPath(candidate) || isGeneratedImagePath(candidate)) {
+    if (isUploadedImagePath(candidate) || isUploadedPdfPath(candidate) || isUploadedModelPath(candidate) || isGeneratedImagePath(candidate)) {
       found.add(candidate);
     }
   }

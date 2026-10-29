@@ -1,8 +1,11 @@
 "use client";
 
+import { romanceCueAllowed } from "@/lib/dm/director-logic";
 import { initiativeCharacter, selectedCharacter } from "@/lib/player-characters";
+import { useThemePrefs } from "@/lib/theme-mode";
 import { LevelUpMoment, LootMoment, MomentVeil, RestMoment, TravelBanner } from "@/app/campaigns/[campaignId]/Moments";
 import { CoordinationPanel } from "@/app/campaigns/[campaignId]/CoordinationPanel";
+import { CorrectionReasonChips } from "@/components/CorrectionReasonChips";
 import { haptic, useEffectsRoot, useTurnChime } from "@/lib/effects-mode";
 import { levelForXp } from "@/lib/srd";
 import { transcribesVoice, useCapabilities } from "@/lib/use-capabilities";
@@ -10,6 +13,8 @@ import { SceneTitle } from "@/components/SceneTitle";
 import { askConcentrationSwap, isConcentrationQuestion } from "@/components/concentration-prompt";
 import { HandoutStage } from "@/components/HandoutStage";
 import { SafetyPause } from "@/app/campaigns/[campaignId]/SafetyPause";
+import { TableBreakBanner, type TableBreakControl } from "@/app/campaigns/[campaignId]/TableBreakBanner";
+import { mayResumeBreak } from "@/lib/dm/table-break-logic";
 import type { Speaker } from "@/lib/dm/speech";
 import type { MapLabel } from "@/lib/battlemap/scene";
 
@@ -20,9 +25,13 @@ const NOOP_CUE: (cue: string) => void = () => {};
 // One shared empty list: a fresh [] per render would defeat the memo on
 // every panel that takes it.
 const EMPTY_IDS: string[] = [];
+// The prep layer's fade out (src/app/styles/session-prep.css).
+const PREP_FADE_MS = 240;
 
 import {
   type FormEvent,
+  type CSSProperties,
+  type ReactNode,
   lazy,
   Suspense,
   useCallback,
@@ -35,7 +44,7 @@ import {
 import { JOIN_NOTE_PREFIX, latestUnintroducedJoin } from "@/lib/campaign-types";
 import { composerLimit, textLength } from "@/lib/text-limits";
 import type { TourEnd } from "@/lib/tours/account-logic";
-import { DM_TOUR, DM_TOUR_ID, PLAYER_TOUR, PLAYER_TOUR_ID } from "@/lib/tours/table";
+import { DM_TOUR, DM_TOUR_ID, FIRST_TURN_TOUR, PLAYER_TOUR, PLAYER_TOUR_ID } from "@/lib/tours/table";
 import { finishTour, useTourFinished } from "@/lib/tours/tour-store";
 import { Composer, type InputKind } from "@/app/campaigns/[campaignId]/Composer";
 import { composerGate } from "@/app/campaigns/[campaignId]/composerGate";
@@ -60,9 +69,15 @@ import {
   useSessionTabs,
   type PanelTab,
 } from "@/app/campaigns/[campaignId]/SessionTabs";
+import { browseWares, type MarketRequest } from "@/lib/dm/table-tabs";
 import { SessionChatColumn } from "@/app/campaigns/[campaignId]/SessionChatColumn";
+import { AddonViewSwitch, boardViewKey, useBoardView, useBoardViewOptions } from "@/app/campaigns/[campaignId]/AddonViewSwitch";
+import { AddonBoardView } from "@/app/campaigns/[campaignId]/AddonBoardView";
 import { SessionHeader } from "@/app/campaigns/[campaignId]/SessionHeader";
+import { PrepLayer } from "@/app/campaigns/[campaignId]/CampaignPrep";
 import { SessionBanner, bannerButtonClass } from "@/app/campaigns/[campaignId]/SessionBanner";
+import { TestFightBanner } from "@/app/campaigns/[campaignId]/TestFightBanner";
+import { workshopHref } from "@/lib/workshop/links";
 import { isPrimaryDm } from "@/lib/dm/viewer";
 import Link from "next/link";
 import { SidePanel } from "@/app/campaigns/[campaignId]/SidePanel";
@@ -76,7 +91,8 @@ import {
   useNarrationReplay,
   useNarrationStatus,
 } from "@/app/campaigns/[campaignId]/NarrationFailureBanner";
-import { turnFromEncounter, turnHudBudget } from "@/lib/battlemap/hand-table";
+import { AudioWaitingBanner } from "@/app/campaigns/[campaignId]/AudioWaitingBanner";
+import { turnCharacterId, turnFromEncounter, turnHudBudget } from "@/lib/battlemap/hand-table";
 
 import { TabPane, useDocked } from "@/app/campaigns/[campaignId]/SidePanel";
 import type { SidePanelRouterProps } from "@/app/campaigns/[campaignId]/SidePanelRouter";
@@ -112,8 +128,9 @@ const tablePieces = {
   LoreCheckDialog: preloadable(() => import("@/app/campaigns/[campaignId]/LoreCheckDialog").then((module) => module.LoreCheckDialog)),
   RenarrateDialog: preloadable(() => import("@/app/campaigns/[campaignId]/RenarrateDialog").then((module) => module.RenarrateDialog)),
   LabelSheet: preloadable(() => import("@/app/campaigns/[campaignId]/LabelSheet").then((module) => module.LabelSheet)),
+  ReportProblemDialog: preloadable(() => import("@/components/ReportProblemDialog").then((module) => module.ReportProblemDialog)),
 };
-const { HelpDialog, GuidedTour, CharacterGate, DiceLookDialog, DiceTrayDialog, LoreCheckDialog, RenarrateDialog, LabelSheet } = tablePieces;
+const { HelpDialog, GuidedTour, CharacterGate, DiceLookDialog, DiceTrayDialog, LoreCheckDialog, RenarrateDialog, LabelSheet, ReportProblemDialog } = tablePieces;
 const { BattleMapPanel } = panels;
 
 // True from the first time `open` is true: a dialog mounts then and stays.
@@ -184,6 +201,7 @@ export function SessionView({
   markCameraDone = NOOP,
   markTitleCardShown = NOOP_ID,
   playSting = NOOP_CUE,
+  prep,
 }: {
   state: CampaignState;
   refreshNotes: () => Promise<void>;
@@ -198,9 +216,45 @@ export function SessionView({
   markCameraDone?: () => void;
   markTitleCardShown?: (id: string) => void;
   playSting?: (cue: string) => void;
+  // The campaign's prep while the adventure runs (issue 530, page.tsx): for
+  // whoever steers the story, the header's way there and back, and the
+  // lobby's panels laid over this table while it is open.
+  prep?: { open: boolean; onToggle: () => void; screen: ReactNode };
 }) {
   // The effects mode rides on <html data-effects> for CSS-only consumers.
   useEffectsRoot();
+  const prepOpen = Boolean(prep?.open);
+  const prepToggle = prep?.onToggle;
+  // Stable for the memoized header.
+  const headerPrep = useMemo(
+    () => (prepToggle ? { open: prepOpen, onToggle: prepToggle } : undefined),
+    [prepOpen, prepToggle],
+  );
+  // Leaving prep fades it out over the table, already live beneath it:
+  // the layer stays for PREP_FADE_MS once closed (none under reduced motion).
+  const [prepLeaving, setPrepLeaving] = useState(false);
+  const [prepWasOpen, setPrepWasOpen] = useState(prepOpen);
+  if (prepWasOpen !== prepOpen) {
+    setPrepWasOpen(prepOpen);
+    setPrepLeaving(!prepOpen && !window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  useEffect(() => {
+    if (!prepLeaving) return;
+    const timer = window.setTimeout(() => setPrepLeaving(false), PREP_FADE_MS);
+    return () => window.clearTimeout(timer);
+  }, [prepLeaving]);
+  // Back from prep, the keyboard returns to the header's prep button.
+  const wasPrepOpen = useRef(prepOpen);
+  useEffect(() => {
+    if (wasPrepOpen.current && !prepOpen) {
+      // The header's button from sm up; on a phone, the table menu holding it.
+      const shown = [...document.querySelectorAll<HTMLElement>("[data-campaign-prep], [data-tour='header-menu']")].find(
+        (element) => element.offsetParent !== null,
+      );
+      shown?.focus({ preventScroll: true });
+    }
+    wasPrepOpen.current = prepOpen;
+  }, [prepOpen]);
   const turnChime = useTurnChime();
   const { campaign, me, sheets, messages, pendingRolls, auditLog, levelUps, locations, dmStatus, caps } =
     state;
@@ -240,7 +294,9 @@ export function SessionView({
   // Bumped on pin/unpin so the pins panel refetches without a stream event.
   const [pinsVersion, setPinsVersion] = useState(0);
   // The guided tour on screen, if any: the player's or the DM's.
-  const [tour, setTour] = useState<"player" | "dm" | null>(null);
+  // "first" is the short first-turn tour a player meets by itself; "player"
+  // and "dm" are the full tours Help plays.
+  const [tour, setTour] = useState<"first" | "player" | "dm" | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const dice3d = useSyncExternalStore(subscribeDicePref, readDice3d, () => true);
   const toggleDice3d = useCallback(() => {
@@ -253,8 +309,15 @@ export function SessionView({
   const openDiceTray = useCallback(() => setDiceTrayOpen(true), []);
   const [helpOpen, setHelpOpen] = useState(false);
   const openHelp = useCallback(() => setHelpOpen(true), []);
+  // "Report a problem" (issue #459) is opened from Help, by the server's
+  // admin only; everyone else is told there to ask whoever runs the server.
+  const [reportOpen, setReportOpen] = useState(false);
+  const openReport = useCallback(() => setReportOpen(true), []);
+  const isAdmin = Boolean(me?.isAdmin);
+  const helpReport = useMemo(() => ({ onSave: isAdmin ? openReport : undefined }), [isAdmin, openReport]);
   usePreloadTable();
   const helpMounted = useOpenedOnce(helpOpen);
+  const reportMounted = useOpenedOnce(reportOpen);
   const diceLookMounted = useOpenedOnce(diceLookOpen);
   const diceTrayMounted = useOpenedOnce(diceTrayOpen);
   const tourMounted = useOpenedOnce(tour !== null);
@@ -306,9 +369,45 @@ export function SessionView({
   const narrationStatus = useNarrationStatus(narration, state.narrationStatus);
   const replayNarration = useNarrationReplay(campaign?.id ?? "", narration, state.narrationAudio);
   const messageIds = useMemo(() => state.messages.map((message) => message.id), [state.messages]);
+  // Sound the browser is holding until this tab is clicked, named above the
+  // composer so a seat that only watches knows to click (AudioWaitingBanner).
+  // A phone on another view has no composer on screen; it gets the same
+  // banner over the bottom tabs.
+  const ttsOn = Boolean(campaign?.gameSettings?.ttsEnabled);
+  const narrationHeld = ttsOn && !narration.muted ? narration.held : 0;
+  const { unlock: unlockNarration } = narration;
+  const { unlock: unlockAmbience, waiting: ambienceWaiting } = ambience;
+  const audioWaiting = useMemo(
+    () => (
+      <AudioWaitingBanner
+        narrationHeld={narrationHeld}
+        ambienceWaiting={ambienceWaiting}
+        onListen={() => {
+          unlockNarration();
+          unlockAmbience();
+        }}
+      />
+    ),
+    [narrationHeld, ambienceWaiting, unlockNarration, unlockAmbience],
+  );
   const narrationNotice = useMemo(
-    () => <NarrationFailureBanner messageIds={messageIds} status={narrationStatus} onRetry={replayNarration} />,
-    [messageIds, narrationStatus, replayNarration],
+    () => (
+      <>
+        {audioWaiting}
+        <NarrationFailureBanner messageIds={messageIds} status={narrationStatus} onRetry={replayNarration} />
+      </>
+    ),
+    [audioWaiting, messageIds, narrationStatus, replayNarration],
+  );
+  // A test fight is in no campaign list (issue 553): the header's way out,
+  // the phone's back arrow included, leads to the workshop it tests.
+  const testWorkshopId = state.testFight?.workshopId ?? "";
+  const headerExit = useMemo(
+    () =>
+      testWorkshopId
+        ? { href: workshopHref(`/workshop/${testWorkshopId}`, { system: "encounters" }), label: "Back to the workshop", glyph: "system-encounters" }
+        : undefined,
+    [testWorkshopId],
   );
   // Chime on new private messages (side chats + DM whispers). The loaded
   // flags keep the page-load backlog silent.
@@ -332,16 +431,28 @@ export function SessionView({
   // than a map in the side panel. The header switch shows the story there
   // instead; the choice is the reader's, kept per browser.
   const docked = useDocked();
+  const { active: addonBoardView, views: addonViews, choose: chooseBoardView } = useBoardView(state.battleMap?.addonView?.addonId);
+  const [addonOptions, setAddonOption] = useBoardViewOptions();
+  const sessionLayout = docked && addonBoardView?.sessionLayout === "stage";
+  const { mode: themeMode } = useThemePrefs();
+  const sessionTheme = sessionLayout && themeMode === "dark" ? addonBoardView?.sessionTheme : undefined;
+  const [addonStageView, setAddonStageView] = useState<"board" | "story">("board");
+  const restoreNativeView = useCallback(() => chooseBoardView(""), [chooseBoardView]);
   const [stageView, setStageView] = useState<"board" | "story">(() =>
     typeof window !== "undefined" && window.localStorage.getItem("odm:stage-view") === "story" ? "story" : "board",
   );
   const toggleStage = useCallback(() => {
+    if (sessionLayout) {
+      setAddonStageView((current) => current === "board" ? "story" : "board");
+      return;
+    }
     setStageView((current) => {
       const next = current === "board" ? "story" : "board";
       window.localStorage.setItem("odm:stage-view", next);
       return next;
     });
-  }, []);
+  }, [sessionLayout]);
+  const shownStageView = sessionLayout ? addonStageView : stageView;
   const { panelTab, setPanelTab, mobileView, setMobileView } = useSessionTabs({
     chatTarget,
     battleMap: state.battleMap,
@@ -361,7 +472,7 @@ export function SessionView({
     () => selectedCharacter(sheets, me?.id ?? "", state.activeSheetId) ?? sheets.find((sheet) => sheet.userId === me?.id) ?? null,
     [sheets, me?.id, state.activeSheetId],
   );
-  const turnSheet = initiativeCharacter(sheets, me?.id ?? "", state.encounter?.acting?.id);
+  const turnSheet = initiativeCharacter(sheets, me?.id ?? "", turnCharacterId(state.encounter));
   const actingSheet = turnSheet ?? mySheet;
   // The server's notice opens the level-up dialog once, when the experience
   // lands. Closing it only puts it off: the sheet's experience still earns
@@ -391,9 +502,42 @@ export function SessionView({
       campaignId: campaign?.id ?? "",
       canSteer: steersStory,
       auto: Boolean(campaign?.gameSettings?.ambienceAuto),
-      isAdmin: Boolean((me as { isAdmin?: boolean } | null)?.isAdmin),
+      isAdmin,
     }),
-    [campaign?.id, campaign?.gameSettings?.ambienceAuto, steersStory, me],
+    [campaign?.id, campaign?.gameSettings?.ambienceAuto, steersStory, isAdmin],
+  );
+  // A table break (TableBreakBanner.tsx): any seat may call one on a table
+  // that is playing; the one who called it, the lead or the DM ends it.
+  const tableBreak = state.tableBreak;
+  const breakCampaignId = campaign?.id ?? "";
+  const mayResumeTable = Boolean(tableBreak && me && mayResumeBreak(tableBreak, { userId: me.id, isLead, isDm }));
+  const sendBreak = useCallback(
+    async (method: "POST" | "DELETE") => {
+      const response = await fetch(`/api/campaigns/${breakCampaignId}/table-break`, { method }).catch(() => null);
+      if (!response?.ok) {
+        const body = (await response?.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error || (method === "POST" ? "Could not pause the table." : "Could not resume the table."));
+      }
+    },
+    [breakCampaignId],
+  );
+  const resumeTable = useCallback(() => sendBreak("DELETE"), [sendBreak]);
+  // A break is for a table with someone else at it (another person or an
+  // agent playing a seat); alone, closing the app is the pause. A muted seat
+  // cannot call one (the route checks its voice), so it is not offered one.
+  const breakMembers = state.members;
+  const breakOffered = breakMembers.length > 1 && !breakMembers.some((member) => member.userId === me?.id && member.muted);
+  const breakControl = useMemo<TableBreakControl | undefined>(
+    () =>
+      campaign?.status === "active" && (tableBreak !== null || breakOffered)
+        ? {
+            paused: tableBreak !== null,
+            mayResume: mayResumeTable,
+            onPause: () => void sendBreak("POST"),
+            onResume: () => void sendBreak("DELETE"),
+          }
+        : undefined,
+    [campaign?.status, tableBreak, breakOffered, mayResumeTable, sendBreak],
   );
   if (isDm && !seenDmSeat) {
     setSeenDmSeat(true);
@@ -409,7 +553,7 @@ export function SessionView({
   // off the page before any step's prepare runs, and a fight with a map
   // opens the phone on the board, which would drop every composer step.
   const startTour = useCallback(
-    (which: "player" | "dm") => {
+    (which: "first" | "player" | "dm") => {
       setMobileView("chat");
       setTour(which);
     },
@@ -417,7 +561,7 @@ export function SessionView({
   );
   useEffect(() => {
     if (seatTourFinished !== false) return;
-    const timer = window.setTimeout(() => startTour(isDm ? "dm" : "player"), 1200);
+    const timer = window.setTimeout(() => startTour(isDm ? "dm" : "first"), 1200);
     return () => clearTimeout(timer);
   }, [seatTourFinished, isDm, startTour]);
   // The tour that was on screen is the one finished: Help can replay the
@@ -691,6 +835,18 @@ export function SessionView({
     },
     [openTab, setMobileView],
   );
+  // A shop's Browse wares in the chat: the Market on that shop, in the side
+  // panel at a desk and in place of the table on a phone.
+  const [marketRequest, setMarketRequest] = useState<MarketRequest | null>(null);
+  const browseShop = useCallback(
+    (shopId: string) => {
+      const target = browseWares(shopId, Date.now());
+      setMarketRequest(target.request);
+      openTab(target.tab);
+      setMobileView(target.mobileView);
+    },
+    [openTab, setMobileView],
+  );
   const bumpPins = useCallback(() => setPinsVersion((count) => count + 1), []);
   const openLoreCheck = useCallback(
     (message: CampaignMessage, selection: string) => setLoreCheck({ message, selection }),
@@ -722,7 +878,9 @@ export function SessionView({
   // stage holds the board, the Battle tab shows the party, so the maps
   // step opens the Map tab instead.
   const hasBattleMap = Boolean(state.battleMap);
-  const boardStaged = docked && stageView === "board" && hasBattleMap && !battlePane;
+  // Keep the native Story board under its existing side-panel owner.
+  const boardInPanel = sessionLayout && stageView === "story" && hasBattleMap && !battlePane;
+  const boardStaged = docked && (sessionLayout || stageView === "board") && hasBattleMap && !battlePane;
   const boardInTab = hasBattleMap && !boardStaged;
   const prepareTourStep = useCallback(
     (name: string) => {
@@ -784,7 +942,7 @@ export function SessionView({
   }
 
   const storyDue = storyCadence.level !== "quiet";
-  const fightStaged = boardStaged;
+  const fightStaged = boardStaged || sessionLayout;
   // Two copies of the scroll: the fight stage's has no composer (the desk
   // is right under the board); the enlarged board's keeps it (the dialog
   // covers the desk).
@@ -882,8 +1040,12 @@ export function SessionView({
     onOpenLabel: openLabel,
     refreshBattleMap,
     relationshipsVersion: state.relationshipsVersion,
+    departingSheets: state.departingSheets,
     factionsVersion: state.factionsVersion,
+    worldVersion: state.worldVersion,
+    loreVersion: state.loreVersion,
     shopsVersion: state.shopsVersion,
+    marketRequest,
     coins: state.coins,
     activeSheetId: state.activeSheetId,
     questsVersion: state.questsVersion,
@@ -891,11 +1053,14 @@ export function SessionView({
     relationshipsEnabled,
     beats: state.beats,
     tabletopChronicle: chronicleDesk ?? undefined,
-    stageBoard: fightStaged,
+    stageBoard: fightStaged && !battlePane && !boardInPanel,
   } satisfies Omit<SidePanelRouterProps, "tab" | "visible" | "onOpenTab">;
 
   return (
-    <main className="cine-stage flex h-dvh flex-col">
+    <main className="cine-stage flex h-dvh flex-col" data-session-view={sessionLayout ? shownStageView : undefined} data-side-board={boardInPanel ? "" : undefined}
+      data-prep={prepOpen ? "" : undefined}
+      data-addon-theme={sessionTheme ? "" : undefined}
+      style={sessionTheme ? { "--session-surface": sessionTheme.surface, "--session-accent": sessionTheme.accent } as CSSProperties : undefined}>
       {/* The cinematic frame ("ODM World Concepts" 3b): the scene's painting
           behind everything, the party down the left, the turn order along
           the top, the last roll as a pill. CinematicParts.tsx. */}
@@ -906,6 +1071,7 @@ export function SessionView({
         seed={campaign.id}
         dark={state.scene?.isDark}
       />
+      <CorrectionReasonChips campaignId={campaign.id} />
       <SessionHeader
         title={campaign.title}
         scene={campaign.scene}
@@ -922,8 +1088,11 @@ export function SessionView({
         ambience={ambience}
         sound={sound}
         onHelp={openHelp}
-        stage={state.battleMap && docked && !battlePane ? { on: stageView === "board", onToggle: toggleStage } : undefined}
-        layoutSeat={layoutSeat}
+        stage={sessionLayout || (state.battleMap && docked && !battlePane) ? { on: shownStageView === "board", onToggle: toggleStage } : undefined}
+        layoutSeat={sessionLayout ? undefined : layoutSeat}
+        tableBreak={breakControl}
+        prep={headerPrep}
+        exit={headerExit}
         ribbon={
           state.encounter?.status === "active" ? (
             <InitiativeRibbon
@@ -936,14 +1105,25 @@ export function SessionView({
         }
       />
 
+      {/* The table itself. While prep is open it stays laid out under it,
+          inert, so nothing in it is torn down or loses its place. */}
+      <div className="contents" inert={prepOpen}>
+      {docked && ((!state.battleMap && addonViews.some((view) => view.sessionLayout)) || (sessionLayout && shownStageView === "story")) ? (
+        <div className="relative px-3 py-1">
+          <AddonViewSwitch views={addonViews.filter((view) => state.battleMap || view.sessionLayout)} value={addonBoardView ? boardViewKey(addonBoardView) : ""} onChange={chooseBoardView} stored={addonOptions} onOption={setAddonOption} />
+        </div>
+      ) : null}
+
       <TableRow
         seat={layoutSeat}
-        active={arranged}
+        active={arranged && !sessionLayout}
+        presentation={sessionLayout ? "stage" : undefined}
         tabs={panelTabs}
         panes={[
           {
             id: "rail",
-            node: fightStaged ? null : (
+            available: !fightStaged || sessionLayout,
+            node: fightStaged && !sessionLayout ? null : (
               <PartyRail
                 sheets={sheets}
                 meUserId={me.id}
@@ -957,12 +1137,15 @@ export function SessionView({
             id: "table",
             node: (
               <SessionChatColumn
+                keepTranscript={sessionLayout}
+                showTranscript={sessionLayout && shownStageView === "story"}
                 stage={
-                  fightStaged && state.battleMap ? (
+                  fightStaged ? (
                     <div className="cine-fight">
                       {chronicle}
                       {chronicle ? <ChronicleSplitter /> : null}
-                      <div className="cine-fight-board cine-board-frame">
+                      <div className="cine-fight-board cine-board-frame" hidden={sessionLayout && (shownStageView === "story" || battlePane || boardInPanel)}>
+                        {state.battleMap && !battlePane && !boardInPanel ? (
                         <Suspense fallback={<PanelLoading />}>
                         <BattleMapPanel
                           campaignId={campaign.id}
@@ -977,7 +1160,9 @@ export function SessionView({
                             // The engine's count, the one the Hand reads
                             // (src/lib/battlemap/hand-table.ts): a spent reaction
                             // lives in reactionsUsed, not the turn budget.
-                            actingSheet && !actingSheet.isCompanion && state.encounter
+                            // A companion only on its own turn, when this
+                            // player commands it (player-characters.ts).
+                            actingSheet && (!actingSheet.isCompanion || actingSheet.id === turnSheet?.id) && state.encounter
                               ? turnHudBudget(
                                   turnFromEncounter(state.encounter, actingSheet, {
                                     myTurn: state.encounter.turn?.ownerId === actingSheet.id,
@@ -1003,6 +1188,17 @@ export function SessionView({
                           visible
                         />
                         </Suspense>
+                        ) : !state.battleMap && sessionLayout && addonBoardView ? (
+                          <AddonBoardView
+                            key={boardViewKey(addonBoardView)}
+                            view={null}
+                            boardView={addonBoardView}
+                            canDirect={caps.adjudicates}
+                            genre={campaign.gameSettings?.genre ?? null}
+                            viewOptions={addonOptions[boardViewKey(addonBoardView)]}
+                            onFailure={restoreNativeView}
+                          />
+                        ) : null}
                       </div>
                     </div>
                   ) : undefined
@@ -1021,6 +1217,7 @@ export function SessionView({
                 onError={setError}
                 onLoreCheck={openLoreCheck}
                 onRenarrate={setRenarrate}
+                onBrowseShop={browseShop}
                 onPinned={bumpPins}
               >
                 {needsCharacter ? (
@@ -1029,6 +1226,13 @@ export function SessionView({
                   </Suspense>
                 ) : (
                   <>
+                  {state.testFight ? (
+                    <TestFightBanner
+                      campaignId={campaign.id}
+                      source={state.testFight}
+                      runsIt={campaign.gameSettings?.dmMode === "ai" ? "ai" : "person"}
+                    />
+                  ) : null}
                   {ended ? (
                     <SessionBanner
                       glyph="tab-campaigns"
@@ -1053,7 +1257,10 @@ export function SessionView({
                   <Composer
                     campaignId={campaign.id}
                     trackAmmo={campaign.gameSettings?.variantRules?.ammunition ?? false}
+                    romanceCue={romanceCueAllowed(campaign.gameSettings)}
                     edges={state.battleMap?.edges}
+                    drops={state.battleMap?.drops}
+                    mounts={state.battleMap?.mounts}
                     sheets={sheets}
                     meUserId={me.id}
                     activeSheetId={state.activeSheetId}
@@ -1068,9 +1275,11 @@ export function SessionView({
                     inputBlocked={gate.inputBlocked || silenced}
                     placeholder={silenced ? silencedPlaceholder : gate.placeholder}
                     dmStatus={dmStatus}
+                    dmJob={state.dmJob}
                     pendingRolls={pendingRolls}
                     members={state.members}
                     floor={floor}
+                    tableWait={state.tableWait}
                     spotlighted={gate.spotlighted}
                     heldSpotlightNames={gate.heldSpotlightNames}
                     encounter={state.encounter}
@@ -1101,6 +1310,8 @@ export function SessionView({
             node: (
               <SidePanel
                 {...routerProps}
+                boardOnStage={boardInPanel}
+                preservePartyState={sessionLayout}
                 tabs={railTabs}
                 tab={railTab}
                 onTabChange={openTab}
@@ -1123,6 +1334,9 @@ export function SessionView({
 
       <RollToast latestRoll={state.latestRoll} sheets={sheets} />
 
+      {mobileView !== "chat" && (narrationHeld > 0 || ambienceWaiting) ? (
+        <div className="px-2 pb-1 lg:hidden">{audioWaiting}</div>
+      ) : null}
       <BottomTabBar
         tabs={panelTabs}
         mobileView={mobileView}
@@ -1134,9 +1348,13 @@ export function SessionView({
         storyDue={storyDue}
         steersStory={steersStory}
       />
+      </div>
+
+      {prep && (prepOpen || prepLeaving) ? <PrepLayer leaving={!prepOpen}>{prep.screen}</PrepLayer> : null}
 
       {dice3d ? <DiceOverlay latestRoll={state.latestRoll} enabled /> : null}
       <SceneTitle card={state.titleCard} onShown={markTitleCardShown} />
+      <TableBreakBanner tableBreak={tableBreak} meUserId={me.id} mayResume={mayResumeTable} onResume={resumeTable} />
       <SafetyPause campaignId={campaign.id} paused={state.safetyPause !== null} steersStory={steersStory} />
       <HandoutStage
         campaignId={campaign.id}
@@ -1174,16 +1392,17 @@ export function SessionView({
       <HelpDialog
         open={helpOpen}
         onOpenChange={setHelpOpen}
+        report={helpReport}
         tours={[
           {
             label: "Tour the table",
-            detail: "How a player takes a turn, asks the DM, and finds the party, the story and the maps.",
+            detail: "How a player takes a turn, asks the GM, and finds the party, the story and the maps.",
             onStart: () => startTour("player"),
           },
           ...(caps.adjudicates
             ? [
                 {
-                  label: "Tour the DM console",
+                  label: "Tour the GM console",
                   detail: "The floor, story beats, hand-over switches, the queue and the tools.",
                   onStart: () => startTour("dm"),
                 },
@@ -1193,10 +1412,14 @@ export function SessionView({
       />
       ) : null}
 
+      {reportMounted ? (
+      <ReportProblemDialog open={reportOpen} onOpenChange={setReportOpen} endpoint={`/api/campaigns/${campaign.id}/report-bundle`} />
+      ) : null}
+
       {tourMounted ? (
       <GuidedTour
         open={tour !== null}
-        steps={tour === "dm" ? DM_TOUR : PLAYER_TOUR}
+        steps={tour === "dm" ? DM_TOUR : tour === "first" ? FIRST_TURN_TOUR : PLAYER_TOUR}
         onPrepare={prepareTourStep}
         onClose={closeTour}
       />
@@ -1244,6 +1467,8 @@ export function SessionView({
             targetLevel={myLevelUp.level}
             multiclassAllowed={campaign.gameSettings?.multiclassingEnabled ?? true}
             hpMethod={campaign.gameSettings?.hpMethod ?? "average"}
+            genre={campaign.gameSettings?.genre}
+            worldPack={campaign.gameSettings?.worldPack}
             onDone={() => {
               setDismissedLevelUp(noticeKey);
               setLevelUpByHand(false);

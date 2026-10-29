@@ -28,8 +28,10 @@
 //   - The party falls once: all of it dead with nobody left to raise them
 //     ends the fight as lost; all down with somebody only stable is told
 //     once, and the rounds stop waking the DM.
-//   - Pointer, floor, the engine's turn gate, the Hand and the board always
-//     name the same combatant.
+//   - Pointer, floor and the engine's turn gate always name the same
+//     combatant, and the Hand and the board say whose turn it is: that
+//     combatant's, or, while the enemies the pointer walked past are still
+//     due, the enemy's (src/lib/dm/turn-owner.ts).
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -38,6 +40,7 @@ import { suite } from "./lib/enforce-harness.mjs";
 import { combatKit, DUMMY } from "./lib/enforce-combat.mjs";
 import { call, fakeModel, reply } from "./lib/enforce-narrator.mjs";
 
+const { sideOf } = await import("../src/lib/dm/combatant.ts");
 const { getDatabase } = await import("../src/lib/db/core.ts");
 const { allocateSeq, getFloor, setFloor, setDmMode } = await import("../src/lib/db/campaigns.ts");
 const { insertCampaignMessage, listRecentMessages } = await import("../src/lib/db/messages.ts");
@@ -58,6 +61,7 @@ const { freshLastHit } = await import("../src/lib/dm/last-hit.ts");
 const { registerDmWaker } = await import("../src/lib/dm/wake.ts");
 const { turnFromEncounter } = await import("../src/lib/battlemap/hand-table.ts");
 const { buildPlayerMapView } = await import("../src/lib/battlemap/view.ts");
+const { ENEMY_TURN_NAME } = await import("../src/lib/dm/turn-owner.ts");
 const { findSummonForm } = await import("../src/lib/srd/summon-forms.ts");
 const { summonSchema } = await import("../src/lib/schemas/summon.ts");
 const { composerGate } = await import("../src/app/campaigns/[campaignId]/composerGate.ts");
@@ -134,6 +138,11 @@ function killEnemy(enemyId) {
 
 // Pointer, floor, the engine's gate, the Hand and the board name the same
 // player character, and only that character's player may end the turn.
+// While the enemies the pointer walked past are still due, the pointer and
+// the floor already name the player up next, but the turn is the enemies':
+// the projection names the enemy side and that player as up next, no Hand
+// is on its turn, and the board names the enemy and lights no figure
+// (src/lib/dm/turn-owner.ts, table audit 2026-10-26 T11).
 function agree(world, kit, label) {
   const encounter = world.encounter();
   if (!encounter?.orderReady) {
@@ -146,15 +155,21 @@ function agree(world, kit, label) {
   assert.equal(fight.mode, "initiative", `${label}: the fight holds the floor`);
   assert.deepEqual(fight.userIds, [entry.userId], `${label}: the floor names ${entry.name}'s player`);
   assert.equal(actingCombatantId(encounter), entry.characterId, `${label}: the engine's turn gate`);
+  const enemiesFirst = (encounter.legendary.due ?? []).length > 0;
+  const named = { id: entry.characterId, name: entry.name };
   const shown = activePublicEncounter(world.campaignId);
+  assert.deepEqual(shown.acting, enemiesFirst ? { id: "", name: ENEMY_TURN_NAME } : named, `${label}: whose turn the table is told`);
+  assert.deepEqual(shown.upNext, enemiesFirst ? named : undefined, `${label}: who is up next`);
   for (const sheet of world.sheets()) {
     const hand = turnFromEncounter(shown, sheet, { myTurn: false, currentName: "" });
-    assert.equal(hand.myTurn, sheet.id === entry.characterId, `${label}: ${sheet.name}'s Hand`);
+    assert.equal(hand.myTurn, !enemiesFirst && sheet.id === entry.characterId, `${label}: ${sheet.name}'s Hand`);
   }
   if (kit.map()) {
     const board = buildPlayerMapView(world.campaignId, world.owner.id, { fullVision: true });
     // A hero who joined mid-fight has no token yet, and the board marks none.
-    assert.equal(board?.turn?.tokenId ?? null, kit.token(entry.characterId)?.id ?? null, `${label}: the board's turn token`);
+    const lit = enemiesFirst ? null : (kit.token(entry.characterId)?.id ?? null);
+    assert.equal(board?.turn?.tokenId ?? null, lit, `${label}: the board's turn token`);
+    assert.equal(board?.currentTurnName, enemiesFirst ? ENEMY_TURN_NAME : entry.name, `${label}: the board's turn name`);
   }
   for (const other of new Set(encounter.order.filter((one) => one.kind === "pc").map((one) => one.userId))) {
     if (other !== entry.userId) {
@@ -563,7 +578,7 @@ await test("A summon dropped to 0 hit points on its own turn hands it on", async
   agree(world, kit, "after the wolf");
 });
 
-await test("A summon turned hostile on its own turn hands it on, and its new self acts at its count next round", async () => {
+await test("A summon turned hostile on its own turn keeps its turn and its sheet, now fought on the foes' side (issue 503)", async () => {
   const { world, kit, heroes: [kara] } = await table(["Kara", "Brom"], { goblinFace: 12 });
   const [goblin] = world.enemies();
   const wolf = summonWolf(world, kara, { hostileOnBreak: true, spell: "Conjure Fey" });
@@ -572,11 +587,12 @@ await test("A summon turned hostile on its own turn hands it on, and its new sel
   const before = tools.turnHolder(world.campaignId);
   endSpellSummons(world.campaign(), "Conjure Fey", kara.id);
   tools.settleTurn(world.campaign(), before);
-  const hostile = world.enemies().find((enemy) => enemy.id !== goblin.id);
-  assert.ok(hostile, "the wolf is an enemy now");
-  assert.equal(orderNames(world)[1], hostile.displayName, "in the wolf's place");
-  assert.equal(currentName(world), "Brom");
-  assert.deepEqual(due(world), [goblin.id], "the goblin is due, the hostile wolf is not");
+  assert.ok(world.sheet(wolf.id), "the wolf keeps its sheet");
+  assert.equal(sideOf(world.encounter(), "sheet", wolf.id), "foe", "on the foes' side");
+  assert.equal(world.enemies().length, 1, "no enemy row stands in for it");
+  assert.equal(orderNames(world)[1], wolf.name, "in its own place");
+  assert.equal(currentName(world), wolf.name, "its turn goes on, the DM's to play");
+  assert.equal(world.enemies()[0].id, goblin.id);
   agree(world, kit, "after the wolf turned");
 });
 
@@ -776,7 +792,7 @@ for (const dmMode of ["ai", "human"]) {
     }
     const [goblin] = world.enemies();
     assert.equal(kit.endTurn(userOf(world, kara.id)), true);
-    assert.equal(current(world).characterId, brom.id, "the pointer is on Brom, the board offering him End Turn");
+    assert.equal(current(world).characterId, brom.id, "the pointer is on Brom, up next once the goblin has gone");
     assert.equal(tools.endOwnTurn(world.campaignId, userOf(world, brom.id)), false, "refused while the goblin is due");
     assert.deepEqual(due(world), [goblin.id], "the goblin is still due");
     agree(world, kit, "held");

@@ -1,6 +1,9 @@
 import { LINK_LABELS, typeFor, type Shelf, type WorldDoc, type WorldType } from "./model.ts";
-import { fieldLines, formatYear, sortEvents } from "./time.ts";
-import { mentionSegments, type Named } from "./text.ts";
+import { fieldLines, formatYear } from "./time.ts";
+import { canonAdmits, canonTag, eventLine, pickEvents } from "./canon.ts";
+import type { Named } from "./text.ts";
+import { accountOf } from "./account.ts";
+import { textKey } from "../language/text-logic.ts";
 
 // WorldForge's AI tools, the pure half (the model calls are in
 // src/lib/dm/world-ai.ts), after WorldForge's forge, ask and draft (by
@@ -80,30 +83,30 @@ export function forgeMessages(text: string, types: WorldType[], known: string[],
 
 export function readForgeReply(reply: Raw | null, doc: Pick<WorldDoc, "types">, named: Named[]): ForgePreview {
   const byHandle = new Map<string, string>();
-  for (const entry of named) for (const handle of [entry.name, ...entry.aliases]) byHandle.set(handle.trim().toLowerCase(), entry.ref);
-  const catchAll = doc.types.find((type) => type.name.toLowerCase() === "other") ?? doc.types.find((type) => type.shelf === "lore") ?? doc.types[0];
+  for (const entry of named) for (const handle of [entry.name, ...entry.aliases]) byHandle.set(textKey(handle), entry.ref);
+  const catchAll = doc.types.find((type) => textKey(type.name) === "other") ?? doc.types.find((type) => type.shelf === "lore") ?? doc.types[0];
   const entities: ForgeEntity[] = [];
   const seen = new Set<string>();
   for (const raw of (Array.isArray(reply?.entities) ? reply!.entities : []).slice(0, 60)) {
     const row = rec(raw);
     const name = str(row.name, 80);
-    const low = name.toLowerCase();
+    const low = textKey(name);
     if (!name || seen.has(low)) continue;
     seen.add(low);
-    const type = doc.types.find((entry) => entry.name.toLowerCase() === str(row.type, 40).toLowerCase()) ?? catchAll;
+    const type = doc.types.find((entry) => textKey(entry.name) === textKey(str(row.type, 40))) ?? catchAll;
     entities.push({
       key: `new:${entities.length}`,
       name,
       typeId: type.id,
       summary: str(row.summary, 2_000),
-      aliases: (Array.isArray(row.aliases) ? row.aliases : []).map((alias) => str(alias, 80)).filter((alias) => alias && alias.toLowerCase() !== low).slice(0, 6),
+      aliases: (Array.isArray(row.aliases) ? row.aliases : []).map((alias) => str(alias, 80)).filter((alias) => alias && textKey(alias) !== low).slice(0, 6),
       hiddenTruth: str(row.hiddenTruth, 1_000),
       existing: byHandle.get(low) ?? "",
     });
   }
   const endpoint = (value: unknown) => {
-    const low = str(value, 80).toLowerCase();
-    const fresh = entities.find((entity) => entity.name.toLowerCase() === low || entity.aliases.some((alias) => alias.toLowerCase() === low));
+    const low = textKey(str(value, 80));
+    const fresh = entities.find((entity) => textKey(entity.name) === low || entity.aliases.some((alias) => textKey(alias) === low));
     return fresh ? fresh.existing || fresh.key : byHandle.get(low) ?? "";
   };
   const labels = new Map((LINK_LABELS as readonly string[]).map((label) => [label, label]));
@@ -124,76 +127,53 @@ export function readForgeReply(reply: Raw | null, doc: Pick<WorldDoc, "types">, 
 
 // ---- the world, in words a model can read ----
 
-export type DigestEntity = { ref: string; shelf: Shelf; name: string; aliases: string[]; tagline: string; text: string; entry: WorldDoc["entries"][string] };
+// An entry as Ask (ask.ts) and Draft read it.
+export type DigestEntity = { ref: string; shelf: Shelf; name: string; aliases: string[]; tags: string[]; tagline: string; text: string; entry: WorldDoc["entries"][string] };
 
-// The world for a model to answer from, the entries the question names
-// first, then the rest, until the budget runs out. Hidden truths ride along
-// marked as the DM's: the answers go to the DM.
-export function worldDigest(doc: WorldDoc, entities: DigestEntity[], focus: string, budget: number): string {
-  const named = entities.map((entity) => ({ ref: entity.ref, name: entity.name, aliases: entity.aliases }));
-  const asked = new Set(mentionSegments(focus, named).filter((segment) => segment.ref).map((segment) => segment.ref!));
-  const order = [...entities].sort((a, b) => Number(asked.has(b.ref)) - Number(asked.has(a.ref)));
-  const nameOf = new Map(entities.map((entity) => [entity.ref, entity.name]));
-  const lines: string[] = [];
-  let used = 0;
-  const push = (line: string) => {
-    if (used + line.length > budget) return false;
-    lines.push(line);
-    used += line.length + 1;
-    return true;
-  };
-  for (const entity of order) {
-    const type = typeFor(doc, entity.shelf, entity.entry.typeId);
-    const about = (entity.entry.article || entity.text || entity.tagline).replace(/\s+/g, " ").slice(0, asked.has(entity.ref) ? 900 : 280);
-    const fields = fieldLines(type, entity.entry, doc.calendars, true).map(({ def, text }) => `${def.name}: ${text}`).join("; ");
-    const ties = doc.links
-      .filter((link) => link.from === entity.ref && nameOf.has(link.to))
-      .map((link) => `${link.label} ${nameOf.get(link.to)}${link.veracity === "hidden" ? " (hidden)" : link.veracity === "believed" ? " (believed, untrue)" : ""}`)
-      .slice(0, 8)
-      .join("; ");
-    const line = [
-      `## ${entity.name} (${type.name})${entity.aliases.length ? `, also ${entity.aliases.join(", ")}` : ""}`,
-      about,
-      fields ? `Facts: ${fields}` : "",
-      ties ? `Ties: ${ties}` : "",
-      entity.entry.hiddenTruth ? `DM only: ${entity.entry.hiddenTruth.slice(0, 400)}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    if (!push(line)) break;
-  }
-  const events = sortEvents(doc.events, doc.calendars).map((event) => `- ${formatYear(event.when, doc.calendars).primary || "undated"}: ${event.title}${event.body ? `, ${event.body.slice(0, 160)}` : ""}`);
-  if (events.length) push(`## Timeline\n${events.slice(0, 40).join("\n")}`);
-  const secrets = doc.secrets.map((secret) => `- ${secret.title}${secret.knownBy.length ? ` (kept by ${secret.knownBy.map((ref) => nameOf.get(ref)).filter(Boolean).join(", ")})` : ""}${secret.partyKnows ? ", the party knows" : ""}`);
-  if (secrets.length) push(`## Secrets (DM only)\n${secrets.slice(0, 30).join("\n")}`);
-  return lines.join("\n\n");
-}
-
-export function askMessages(digest: string, question: string, worldName: string) {
+// What Draft is told about an entry: its own texts and fields, its open
+// ties and its events. It follows the canon policy every model path shares
+// (canon.ts): a retired neighbour or event is left out, a draft or alternate
+// one is tagged so the draft never writes it as fact, and the events are the
+// settled and the latest, read forward in the world's own calendars.
+export function draftKnown(doc: WorldDoc, entities: DigestEntity[], entity: DigestEntity): string[] {
+  const type = typeFor(doc, entity.shelf, entity.entry.typeId);
+  const ref = entity.ref;
+  const nameOf = new Map(
+    entities.filter((entry) => canonAdmits(entry.entry.canon, "play")).map((entry) => [entry.ref, `${entry.name}${canonTag(entry.entry.canon)}`]),
+  );
+  const account = accountOf(entity);
   return [
-    {
-      role: "system" as const,
-      content: [
-        `You keep the lore of ${worldName}, a tabletop world, and answer its game master.`,
-        "Answer from the world below and nothing else. When it does not say, say so plainly and suggest what the game master could decide.",
-        "Name entries exactly as they are written, so the answer links to them. Lines marked DM only are the game master's own and may be used.",
-        "Be brief: a short paragraph or a few lines.",
-      ].join("\n"),
-    },
-    { role: "user" as const, content: `${digest}\n\n# The question\n${question}` },
-  ];
+    entity.tagline ? `In one line: ${entity.tagline}` : "",
+    account ? `What is written so far: ${account.slice(0, 1_500)}` : "",
+    entity.aliases.length ? `Also called: ${entity.aliases.join(", ")}` : "",
+    ...fieldLines(type, entity.entry, doc.calendars, false).map(({ def, text }) => `${def.name}: ${text}`),
+    ...doc.links
+      .filter((link) => link.veracity !== "hidden" && ((link.from === ref && nameOf.has(link.to)) || (link.to === ref && !link.oneway && nameOf.has(link.from))))
+      .slice(0, 12)
+      .map((link) => (link.from === ref ? `${entity.name} ${link.label} ${nameOf.get(link.to)}` : `${nameOf.get(link.from)} ${link.label} ${entity.name}`)),
+    ...pickEvents(doc.events.filter((event) => event.refs.includes(ref)), doc.calendars, "play", 8).map(
+      (event) => `Event, ${formatYear(event.when, doc.calendars).primary ? "" : "undated: "}${eventLine(event, doc.calendars, true)}`,
+    ),
+  ].filter(Boolean);
 }
 
-export function draftMessages(input: { worldName: string; name: string; typeName: string; known: string[]; hiddenTruth: string; hint: string }) {
+// `asks` is what the entry's kind needs covered (adapters.ts DRAFT_ASKS);
+// `rules` the playable record it links to, read back so the entry agrees
+// with what the table plays.
+export function draftMessages(input: { worldName: string; name: string; typeName: string; known: string[]; hiddenTruth: string; hint: string; asks?: string; rules?: string[] }) {
   return [
     {
       role: "system" as const,
       content: [
         `You write encyclopedia entries for ${input.worldName}, a tabletop world.`,
         "Write the entry asked for in two or three short paragraphs, in the world's own voice: no game statistics, no mention of players or of the game.",
+        input.asks ?? "",
         "Use only what you are told and what follows from it. A hidden truth may colour the entry with hints, but it must never be stated.",
+        "A fact tagged [draft] is not settled and one tagged [alternate] is another telling, not what happened: write neither as plain fact.",
         "Reply with the entry's text only.",
-      ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n"),
     },
     {
       role: "user" as const,
@@ -201,6 +181,7 @@ export function draftMessages(input: { worldName: string; name: string; typeName
         `The entry: ${input.name}, a ${input.typeName.toLowerCase()}.`,
         ...input.known,
         input.hiddenTruth ? `Hidden truth (never state it): ${input.hiddenTruth}` : "",
+        ...(input.rules ?? []).map((line) => `Its rules at the table, which the entry must agree with but never quote: ${line}`),
         input.hint ? `The game master asks: ${input.hint}` : "",
       ]
         .filter(Boolean)
@@ -224,4 +205,42 @@ export function paintPrompt(shelf: Shelf, typeName: string, about: string, style
             ? "A single legendary object on its own, museum-quality rendering on a dark background, no people, no figures"
             : "Detailed fantasy illustration of the subject described, evocative and painterly";
   return [what, style, about.replace(/\s+/g, " ").slice(0, 400), "No text, no letters"].filter(Boolean).join(". ");
+}
+
+// ---- what an apply did ----
+
+// The forge's apply, answered (src/lib/db/world-forge-io.ts applyForge):
+// what was made, and every entry, link and name that was not, with why.
+export type ForgeApplied = {
+  created: number;
+  links: number;
+  stubs: number;
+  skipped: string[];
+  made: Array<{ key: string; name: string; ref: string }>;
+  failed: Array<{ key: string; name: string; error: string }>;
+  linksLeft: Array<{ from: string; to: string; label: string; why: string }>;
+  stubsLeft: Array<{ name: string; why: string }>;
+};
+
+const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+const bare = (reason: string) => (reason.endsWith(".") ? reason.slice(0, -1) : reason);
+
+// The report, line by line: what was applied first, then each kind of thing
+// that was not, with why (`left`). `partial` is true when anything asked for
+// was left out, so a links-only or partial apply never reads as whole.
+export type ReportLine = { text: string; left: boolean };
+
+export function forgeReport(applied: ForgeApplied): { lines: ReportLine[]; partial: boolean } {
+  const added = [
+    applied.created ? counted(applied.created, "entry", "entries") : "",
+    applied.links ? counted(applied.links, "link", "links") : "",
+  ].filter(Boolean);
+  const kept = applied.stubs ? `kept ${counted(applied.stubs, "name", "names")} to write` : "";
+  const first = added.length ? `Added ${added.join(" and ")}${kept ? `, and ${kept}` : ""}.` : kept ? `Only ${kept}.` : "Nothing was added.";
+  const lines: ReportLine[] = [{ text: first, left: false }];
+  if (applied.made.length) lines.push({ text: `New: ${applied.made.map((row) => row.name).join(", ")}.`, left: false });
+  if (applied.failed.length) lines.push({ text: `Not added: ${applied.failed.map((row) => `${row.name} (${bare(row.error)})`).join("; ")}.`, left: true });
+  if (applied.linksLeft.length) lines.push({ text: `Links not added: ${applied.linksLeft.map((link) => `${link.from} ${link.label} ${link.to} (${link.why})`).join("; ")}.`, left: true });
+  if (applied.stubsLeft.length) lines.push({ text: `Names not kept to write: ${applied.stubsLeft.map((stub) => `${stub.name} (${stub.why})`).join("; ")}.`, left: true });
+  return { lines, partial: lines.some((line) => line.left) };
 }

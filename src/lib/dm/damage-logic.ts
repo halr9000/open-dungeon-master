@@ -5,7 +5,8 @@
 // re-exports everything here for the callers that have always found it
 // there.
 import { RAGING } from "@/lib/srd/class-resources";
-import { matchArmor, type SrdArmor } from "@/lib/srd/armor";
+import { isWorn, matchArmor, type SrdArmor } from "@/lib/srd/armor";
+import { hasItemTag, type TaggedItem } from "@/lib/srd/item-tags";
 
 function has(conditions: string[], names: string[]): string | null {
   const lowered = conditions.map((entry) => entry.toLowerCase());
@@ -34,39 +35,61 @@ function damageTypeOf(raw: string | undefined): string {
 
 // Whether a stat block line covers this type. Lines read "fire; cold" or
 // "bludgeoning, piercing, and slashing from nonmagical attacks": the type
-// has to appear as a whole word, and a clause about nonmagical attacks does
-// not cover a magical one. Only the three weapon types are ever conditional
-// on that, so "fire, slashing from nonmagical attacks" still covers fire.
+// has to appear as a whole word, and a clause about nonmagical (or Tome of
+// Beasts' "nonmagic") attacks does not cover a magical one. Only the three
+// weapon types are ever conditional on that, so "fire, slashing from
+// nonmagical attacks" still covers fire.
 // A clause "from nonmagical attacks that aren't silvered" (a werewolf) is
 // also passed by a silvered weapon, and "that aren't adamantine" (a golem)
 // by an adamantine one (SRD 5.1, Silvered Weapons).
-function lineCovers(line: string, type: string, magical: boolean, material: WeaponMaterial = {}): boolean {
+// The other way round, a clause can hold only for a blow that is magical,
+// silvered or from a spell: a rakshasa's "piercing from magic weapons wielded
+// by good creatures", "piercing damage from magical attacks", "radiant;
+// silvered weapons", an archmage's "damage from spells" (which covers every
+// type).
+function lineCovers(line: string, type: string, magical: boolean, material: WeaponMaterial = {}, blow: BlowSource = {}): boolean {
   return line
     .toLowerCase()
     .split(";")
     .some((clause) => {
-      if (!wholeWord(clause, type)) {
+      if (/\bdamage from spells\b/.test(clause)) {
+        return blow.spell === true;
+      }
+      if (!type || !wholeWord(clause, type)) {
         return false;
       }
-      const conditional = clause.includes("nonmagical") && PHYSICAL_TYPES.includes(type);
-      const passed =
-        magical ||
-        (material.silvered === true && clause.includes("silver")) ||
-        (material.adamantine === true && clause.includes("adamantine"));
-      return !(conditional && passed);
+      if (!PHYSICAL_TYPES.includes(type)) {
+        return true;
+      }
+      if (/\bnon-?magic(?:al)?\b/.test(clause)) {
+        const passed =
+          magical ||
+          (material.silvered === true && clause.includes("silver")) ||
+          (material.adamantine === true && clause.includes("adamantine"));
+        return !passed;
+      }
+      if (/\bmagic(?:al)? (?:weapons?|attacks?)\b/.test(clause)) {
+        return magical && (!/wielded by good\b/.test(clause) || blow.goodWielder === true);
+      }
+      if (/\bsilvered weapons?\b/.test(clause) && !/\b(?:not|aren't|non-?)\s*(?:made with\s+)?silver/.test(clause)) {
+        return material.silvered === true;
+      }
+      return true;
     });
 }
 
 // What a weapon is made of, for the resistances that name it.
 export type WeaponMaterial = { silvered?: boolean; adamantine?: boolean };
 
-// A weapon's material read from its name: "Silvered Longsword",
-// "Adamantine Greataxe".
-export function weaponMaterial(name: string | undefined): WeaponMaterial {
-  const text = (name ?? "").toLowerCase();
+// Where a blow comes from, for the clauses that name it: a spell, or a
+// weapon in the hands of a good creature.
+export type BlowSource = { spell?: boolean; goodWielder?: boolean };
+
+// A wielded item's material, by what it is (src/lib/srd/item-tags.ts).
+export function weaponMaterial(item: TaggedItem | undefined): WeaponMaterial {
   return {
-    ...(/\bsilver(ed)?\b/.test(text) ? { silvered: true } : {}),
-    ...(/\badamantine\b/.test(text) ? { adamantine: true } : {}),
+    ...(item && hasItemTag(item, "silvered") ? { silvered: true } : {}),
+    ...(item && hasItemTag(item, "adamantine") ? { adamantine: true } : {}),
   };
 }
 
@@ -86,21 +109,27 @@ export function damageAdjust(
     magical?: boolean;
     // Resistance to every type, whatever the lines say (petrified).
     resistAll?: boolean;
-  } & WeaponMaterial,
+  } & WeaponMaterial & BlowSource,
 ): { amount: number; note: string | null } {
   const wanted = damageTypeOf(type);
   const magical = options?.magical === true;
   const material: WeaponMaterial = { silvered: options?.silvered, adamantine: options?.adamantine };
+  const blow: BlowSource = { spell: options?.spell, goodWielder: options?.goodWielder };
+  // Untyped damage meets only what covers every type (petrified, a spell's).
   if (!wanted) {
-    return options?.resistAll
-      ? { amount: Math.floor(amount / 2), note: "resistant to all damage: halved" }
-      : { amount, note: null };
+    if (options?.resistAll) {
+      return { amount: Math.floor(amount / 2), note: "resistant to all damage: halved" };
+    }
+    if (lineCovers(resist, "", magical, material, blow)) {
+      return { amount: Math.floor(amount / 2), note: "resistant to damage from spells: halved" };
+    }
+    return { amount, note: null };
   }
-  if (lineCovers(immune, wanted, magical, material)) {
+  if (lineCovers(immune, wanted, magical, material, blow)) {
     return { amount: 0, note: `immune to ${wanted} damage: no damage` };
   }
-  const resisted = options?.resistAll === true || lineCovers(resist, wanted, magical, material);
-  const vulnerableTo = lineCovers(vulnerable, wanted, magical, material);
+  const resisted = options?.resistAll === true || lineCovers(resist, wanted, magical, material, blow);
+  const vulnerableTo = lineCovers(vulnerable, wanted, magical, material, blow);
   if (resisted && vulnerableTo) {
     return {
       amount: Math.floor(amount / 2) * 2,
@@ -121,20 +150,15 @@ export function resistsAllDamage(conditions: string[] | undefined): boolean {
   return has(conditions ?? [], ["petrified"]) !== null;
 }
 
-// Body armor of the heavy category, worn. The same reading of "worn" the
-// armor engine uses: until a sheet has its first explicit toggle, everything
-// carried counts.
+// Body armor of the heavy category, worn. The armor engine's own reading of
+// "worn" (src/lib/srd/armor.ts isWorn): until a sheet has its first explicit
+// toggle everything carried counts, and after it only the rows marked worn,
+// so a barbarian who took the plate off rages again.
 export function wearsHeavyArmor(
   equipment: Array<{ name: string; equipped?: boolean; gear?: { armor?: SrdArmor } }> | undefined,
 ): boolean {
   const items = equipment ?? [];
-  const anyExplicit = items.some((item) => item.equipped);
-  return items.some((item) => {
-    if (anyExplicit && !item.equipped) {
-      return false;
-    }
-    return (item.gear?.armor ?? matchArmor(item.name))?.category === "heavy";
-  });
+  return items.some((item) => isWorn(item, items) && (item.gear?.armor ?? matchArmor(item))?.category === "heavy");
 }
 
 // Rage gives its benefits only to a barbarian who is not wearing heavy armor.

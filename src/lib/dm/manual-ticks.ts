@@ -12,6 +12,7 @@
 // restart forgets them, which costs only the old behaviour (the cast spends).
 
 import type { SlotPlan } from "@/lib/dm/cast-rules";
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 const WINDOW_MS = 10 * 60 * 1000;
 
@@ -71,11 +72,11 @@ type Caster = { id: string; spellcasting: { slots: Record<string, { max: number;
 // is made at, `lowest` the spell's own level.
 export function paidByManualTick(
   sheet: Caster,
-  plan: SlotPlan | { error: string },
+  plan: SlotPlan | ToolError,
   wanted: number | undefined,
   lowest: number | undefined,
   dryRun: boolean,
-): SlotPlan | { error: string } {
+): SlotPlan | ToolError {
   const level = "error" in plan ? wanted : plan.kind === "slot" ? plan.level : undefined;
   const current = level ? sheet.spellcasting?.slots[String(level)] : undefined;
   if (!level || !current || level < (lowest ?? 1)) {

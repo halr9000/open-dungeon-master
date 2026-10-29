@@ -4,6 +4,9 @@
 // directly; the impure rim is src/lib/db/lore.ts.
 
 import { bestPassage } from "./passage.ts";
+import { canonMeaning } from "../worldforge/canon.ts";
+import type { Canon } from "../worldforge/model.ts";
+import { textKey } from "../language/text-logic.ts";
 
 export const WORLD_LORE_CATEGORIES = [
   "geography",
@@ -49,6 +52,14 @@ export type WorldLoreEntry = {
   audience: string[] | null;
   // A PDF that travels with the entry (section 5.3), as an /uploads/ path.
   attachmentPath: string;
+  // Held back from players because its WorldForge entry is not canon yet
+  // (draft, alternate, retired): src/lib/db/world-publication.ts. Absent for
+  // an entry with no world entry, or a canon one.
+  unpublished?: boolean;
+  // The canon state that holds it back, for the paths that hand lore to a
+  // model (src/lib/worldforge/canon.ts): a draft is marked, an alternate is
+  // marked as another telling, a retired one is left out. Absent when canon.
+  canon?: Exclude<Canon, "canon">;
   style: LoreStyle;
   createdAt: string;
   updatedAt: string;
@@ -132,7 +143,9 @@ export function loreReadableBy(entry: WorldLoreEntry, steersStory: boolean, user
   if (steersStory) {
     return true;
   }
-  if (entry.visibility === "dm") {
+  // The author's audience and the entry's canon both have to allow it: a
+  // draft is not the table's yet, whatever its audience will be.
+  if (entry.visibility === "dm" || entry.unpublished) {
     return false;
   }
   const audience = entry.audience ?? null;
@@ -196,13 +209,13 @@ export function loreBacklinks(
   title: string,
   sources: Array<{ kind: LoreMention["kind"]; id: string; name: string; text: string }>,
 ): LoreMention[] {
-  const wanted = title.trim().toLowerCase();
+  const wanted = textKey(title);
   if (!wanted) {
     return [];
   }
   const out: LoreMention[] = [];
   for (const source of sources) {
-    if (loreLinkNames(source.text).some((name) => name.toLowerCase() === wanted)) {
+    if (loreLinkNames(source.text).some((name) => textKey(name) === wanted)) {
       out.push({ kind: source.kind, id: source.id, name: source.name });
     }
   }
@@ -225,7 +238,7 @@ export type LoreSegment =
 const LINK = /\[\[([^\]\n]{1,80})\]\]/g;
 
 export function splitLoreLinks(text: string, targets: LoreLinkTarget[]): LoreSegment[] {
-  const byName = new Map(targets.map((target) => [target.name.trim().toLowerCase(), target]));
+  const byName = new Map(targets.map((target) => [textKey(target.name), target]));
   const segments: LoreSegment[] = [];
   let last = 0;
   for (const match of text.matchAll(LINK)) {
@@ -234,7 +247,7 @@ export function splitLoreLinks(text: string, targets: LoreLinkTarget[]): LoreSeg
       segments.push({ kind: "text", text: text.slice(last, at) });
     }
     const name = match[1].trim();
-    segments.push({ kind: "link", name, target: byName.get(name.toLowerCase()) ?? null });
+    segments.push({ kind: "link", name, target: byName.get(textKey(name)) ?? null });
     last = at + match[0].length;
   }
   if (last < text.length) {
@@ -312,7 +325,17 @@ export type LorePickInput = { entry: WorldLoreEntry; reason: string };
 export type LoreHeldInput = { entry: WorldLoreEntry; reason: string; close: boolean };
 
 function entryLine(entry: WorldLoreEntry, excerpt: string): string {
-  const secret = entry.visibility === "dm" ? " (SECRET: the party does not know this)" : "";
+  // A draft WorldForge holds back from players (src/lib/db/world-publication.ts)
+  // is no more theirs than a DM-only entry: the DM may use it, not state it.
+  // The words for its state are the canon policy's (src/lib/worldforge/canon.ts),
+  // so an alternate reads as another telling and not as a draft.
+  const secret = entry.canon
+    ? ` (${canonMeaning(entry.canon, true)}; the party does not know this)`
+    : entry.visibility === "dm"
+      ? " (SECRET: the party does not know this)"
+      : entry.unpublished
+        ? " (NOT CANON YET: the party does not know this; use it only if it fits)"
+        : "";
   return `- [${entry.category}] ${entry.title}${secret}: ${excerpt}`;
 }
 
@@ -368,7 +391,7 @@ export function renderLoreBlock(input: {
     included,
     reason,
     ...(flags.pinned ? { pinned: true as const } : {}),
-    ...(entry.visibility === "dm" ? { secret: true as const } : {}),
+    ...(entry.visibility === "dm" || entry.unpublished ? { secret: true as const } : {}),
     ...(flags.weak ? { weak: true as const } : {}),
   });
 

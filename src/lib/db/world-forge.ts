@@ -1,29 +1,41 @@
+import { keepPartyFields } from "@/lib/worldforge/party-atlas";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
-import { createNpcFromDraft, deleteNpc, getNpcById, listNpcs, renameNpc, setNpcPortrait, updateNpcFromDraft } from "@/lib/db/npcs";
+import { createNpcFromDraft, deleteNpc, getNpcById, listNpcs, renameNpc, setNpcPlace, setNpcPortrait, updateNpcFromDraft } from "@/lib/db/npcs";
 import { getLocation, getLocationByName, insertKnownLocation, listLocations, renameLocation, setLocationLayout } from "@/lib/db/locations";
 import { deleteFaction, getFaction, insertFaction, listFactions, updateFaction } from "@/lib/db/factions";
 import { deleteLoreEntry, getLoreEntry, insertLoreEntry, listLoreEntries, updateLoreEntry } from "@/lib/db/lore";
 import { draftFrom, normalizeNpcDraft } from "@/lib/npcs/forge";
 import { isUploadedImagePath } from "@/lib/uploads";
-import { LORE_BODY_MAX } from "@/lib/dm/world-lore-logic";
+import { LORE_BODY_MAX, type WorldLoreCategory, type WorldLoreEntry } from "@/lib/dm/world-lore-logic";
 import { applyRowOps, type DocOps } from "@/lib/worldforge/ops";
+import { keepRegionFields } from "@/lib/worldforge/atlas-frame";
 import {
   SLICES,
   emptyDoc,
   parseRef,
   pruneDoc,
   readDoc,
+  readBindings,
   readEntry,
   readSlice,
   refOf,
   typeFor,
+  isPlaceBinding,
+  BINDINGS_MAX,
+  type Binding,
   type Entry,
+  type Secret,
   type Shelf,
   type Slice,
   type WorldDoc,
   type WorldType,
 } from "@/lib/worldforge/model";
-import { byName } from "@/lib/language/text-logic";
+import { playAdapters, playLink, type PlayAdapter, type PlayField } from "@/lib/worldforge/play-fields";
+import { editableOf, mergeAgainst, type Editable, type EntryConflict } from "@/lib/worldforge/entry-merge";
+import { keptAfterWrite, keptList, patchFor, type KeptEntity, type KeptImport } from "@/lib/worldforge/import-kept";
+import { originKey } from "@/lib/worldforge/import-merge";
+import { entriesBoundTo, resolveBinding, type BoundRecord } from "@/lib/db/world-bindings";
+import { byName, textKey } from "@/lib/language/text-logic";
 
 // The workshop's WorldForge: one document beside the records it describes
 // (src/lib/worldforge/model.ts says why). Everything that writes a record
@@ -47,6 +59,18 @@ export type WorldEntity = {
   // What the table plays with, shown beside the article and edited in the
   // record's own tool.
   table: Record<string, string | number | boolean>;
+  // The playable records the entry links to, resolved for this table
+  // (src/lib/db/world-bindings.ts). Empty for an entry with no links.
+  bound: BoundRecord[];
+  // A Cast member's faction and home as play reads them, beside the World
+  // links that speak to them (src/lib/worldforge/play-fields.ts). Empty for
+  // every other shelf, and for a Cast member no such link starts at.
+  inPlay: PlayAdapter[];
+  // What a reimport kept as this campaign has it, with the import's version
+  // beside it (src/lib/worldforge/import-kept.ts). The DM's, like the hidden
+  // truth: only the world routes send an entity, and they answer story
+  // authority. Empty for an entry no reimport clashed on.
+  kept: KeptImport[];
 };
 
 // ---- the document ----
@@ -76,7 +100,8 @@ export function saveWorldDoc(campaignId: string, doc: WorldDoc) {
 // other's work and a row changed under them is named in `conflicts`. A
 // whole slice is still taken (an older client, a script), and replaces the
 // stored one. `moveFolder` re-homes the entries of a deleted folder.
-export function patchWorldDoc(campaignId: string, patch: Record<string, unknown>): { doc: WorldDoc; conflicts: string[] } {
+export function patchWorldDoc(campaignId: string, patch: Record<string, unknown>): { doc: WorldDoc; conflicts: string[]; before: WorldDoc } {
+  const before = getWorldDoc(campaignId);
   let doc = getWorldDoc(campaignId);
   let conflicts: string[] = [];
   if (patch.ops && typeof patch.ops === "object" && !Array.isArray(patch.ops)) {
@@ -94,8 +119,14 @@ export function patchWorldDoc(campaignId: string, patch: Record<string, unknown>
     const to = typeof move.to === "string" && doc.folders.some((folder) => folder.id === move.to) ? move.to : "";
     for (const entry of Object.values(doc.entries)) if (entry.folderId === move.from) entry.folderId = to;
   }
+  // A map's Region role and a pin's binding are set by the Region steps
+  // alone (src/lib/db/atlas-region.ts).
+  doc = keepRegionFields(before, doc);
+  // And whether a map is on the party's Atlas is shown only by its own
+  // reviewed step (src/lib/db/party-atlas.ts); a save may still hide one.
+  doc = keepPartyFields(before, doc);
   saveWorldDoc(campaignId, doc);
-  return { doc, conflicts };
+  return { doc, conflicts, before };
 }
 
 // ---- the records, as entries ----
@@ -103,7 +134,10 @@ export function patchWorldDoc(campaignId: string, patch: Record<string, unknown>
 export function worldEntities(campaignId: string, doc: WorldDoc = getWorldDoc(campaignId)): WorldEntity[] {
   const entry = (ref: string) => doc.entries[ref] ?? readEntry({});
   const factionNames = new Map(listFactions(campaignId).map((faction) => [faction.id, faction.name]));
-  const out: WorldEntity[] = [];
+  const places = listLocations(campaignId);
+  const out: Array<Omit<WorldEntity, "bound" | "inPlay" | "kept">> = [];
+  // What play holds for each Cast member, as records where it can.
+  const held = new Map<string, Record<PlayField, { ref: string; name: string } | null>>();
   for (const npc of listNpcs(campaignId)) {
     const ref = refOf("npc", npc.id);
     const own = entry(ref);
@@ -111,8 +145,13 @@ export function worldEntities(campaignId: string, doc: WorldDoc = getWorldDoc(ca
       ref, shelf: "npc", id: npc.id, name: npc.name, tagline: npc.trait, text: "", aliases: npc.aliases, tags: own.tags, portrait: npc.portraitUrl, entry: own, createdAt: npc.createdAt,
       table: { attitude: npc.attitude, statBlock: npc.statBlock, role: npc.role, home: npc.location, faction: factionNames.get(npc.factionId) ?? "", archived: npc.archived },
     });
+    const home = npc.location ? places.find((place) => textKey(place.name) === textKey(npc.location)) : undefined;
+    held.set(ref, {
+      faction: npc.factionId && factionNames.has(npc.factionId) ? { ref: refOf("faction", npc.factionId), name: factionNames.get(npc.factionId)! } : null,
+      home: npc.location ? { ref: home ? refOf("location", home.id) : "", name: npc.location } : null,
+    });
   }
-  for (const place of listLocations(campaignId)) {
+  for (const place of places) {
     const ref = refOf("location", place.id);
     const own = entry(ref);
     out.push({
@@ -136,7 +175,46 @@ export function worldEntities(campaignId: string, doc: WorldDoc = getWorldDoc(ca
       table: { category: lore.category, visibility: lore.visibility, pinned: lore.pinned },
     });
   }
-  return out.sort(byName);
+  const names = new Map(out.map((entity) => [entity.ref, entity.name]));
+  // Each Cast member's links, found once: reading the whole list for each
+  // of them took most of a 4,000-entry world's 0.5 s (audit WF-24).
+  const linksFrom = new Map<string, WorldDoc["links"]>();
+  for (const link of doc.links) {
+    const list = linksFrom.get(link.from);
+    if (list) list.push(link);
+    else linksFrom.set(link.from, [link]);
+  }
+  return out
+    .map((entity) => ({
+      ...entity,
+      bound: entity.entry.bindings.map((binding) => resolveBinding(campaignId, binding)),
+      inPlay: entity.shelf === "npc" ? playAdapters({ links: linksFrom.get(entity.ref) ?? [] }, entity.ref, held.get(entity.ref)!, names) : [],
+      kept: keptList(doc, entity, doc.origins?.[originKey("entries", entity.ref)], (binding) => resolveBinding(campaignId, binding).name || "a record no longer here"),
+    }))
+    .sort(byName);
+}
+
+// One entry's own values, read from its record alone the way worldEntities
+// gives them: what a value a reimport kept is compared with before and
+// after a write (src/lib/worldforge/import-kept.ts), without reading the
+// whole world for one entry.
+function keptEntity(campaignId: string, doc: WorldDoc, ref: string): KeptEntity | undefined {
+  const parsed = parseRef(ref);
+  const entry = doc.entries[ref] ?? readEntry({});
+  if (parsed?.shelf === "npc") {
+    const npc = getNpcById(parsed.id);
+    return npc?.campaignId === campaignId ? { shelf: "npc", name: npc.name, tagline: npc.trait, text: "", aliases: npc.aliases, tags: entry.tags, entry } : undefined;
+  }
+  if (parsed?.shelf === "location") {
+    const place = getLocation(parsed.id);
+    return place?.campaignId === campaignId ? { shelf: "location", name: place.name, tagline: "", text: place.layoutDescription, aliases: entry.aliases, tags: entry.tags, entry } : undefined;
+  }
+  if (parsed?.shelf === "faction") {
+    const faction = getFaction(parsed.id);
+    return faction?.campaignId === campaignId ? { shelf: "faction", name: faction.name, tagline: faction.blurb, text: "", aliases: entry.aliases, tags: faction.tags, entry } : undefined;
+  }
+  const lore = parsed ? getLoreEntry(parsed.id) : null;
+  return lore?.campaignId === campaignId ? { shelf: "lore", name: lore.title, tagline: "", text: lore.body, aliases: entry.aliases, tags: lore.tags, entry } : undefined;
 }
 
 // The document with whatever points at a deleted record dropped, and the
@@ -144,7 +222,30 @@ export function worldEntities(campaignId: string, doc: WorldDoc = getWorldDoc(ca
 export function worldView(campaignId: string): { doc: WorldDoc; entities: WorldEntity[] } {
   const doc = getWorldDoc(campaignId);
   const entities = worldEntities(campaignId, doc);
-  return { doc: pruneDoc(doc, new Set(entities.map((entity) => entity.ref))), entities };
+  // Where imported rows came from is the server's to merge with, not the
+  // editor's to carry.
+  const shown = pruneDoc(doc, new Set(entities.map((entity) => entity.ref)));
+  delete shown.origins;
+  return { doc: shown, entities };
+}
+
+// What the world routes send (audit WF-24): the view without the
+// document's entries, which every entity already carries as its `entry`.
+// They were a third of a big world's answer, sent twice. The client puts
+// them back (src/app/workshop/world/useWorld.ts fromAnswer).
+export function worldAnswer(campaignId: string): { doc: Omit<WorldDoc, "entries">; entities: WorldEntity[] } {
+  const { doc, entities } = worldView(campaignId);
+  const sent: Partial<WorldDoc> = { ...doc };
+  delete sent.entries;
+  return { doc: sent as Omit<WorldDoc, "entries">, entities };
+}
+
+// The answer a world route gives: the lean one (worldAnswer) to a caller
+// that puts the document's entries back itself and asks with ?lean=1
+// (src/app/workshop/world/useWorld.ts), else the whole view, which the
+// app's screens compiled before 0.29.0 read the entries from.
+export function worldAnswerFor(request: Request, campaignId: string): ReturnType<typeof worldAnswer> | ReturnType<typeof worldView> {
+  return new URL(request.url).searchParams.get("lean") === "1" ? worldAnswer(campaignId) : worldView(campaignId);
 }
 
 function ownedBy(campaignId: string, ref: string): boolean {
@@ -165,9 +266,9 @@ export type EntityPatch = {
   aliases?: string[];
   tags?: string[];
   portrait?: string;
-} & Partial<Pick<Entry, "typeId" | "folderId" | "canon" | "article" | "hiddenTruth" | "notes" | "fields">>;
+} & Partial<Pick<Entry, "typeId" | "folderId" | "canon" | "article" | "hiddenTruth" | "notes" | "fields" | "bindings">>;
 
-export type EntityResult = { entity: WorldEntity } | { error: string; status?: number };
+export type EntityResult = { entity: WorldEntity } | { error: string; status?: number; conflicts?: EntryConflict[]; entity?: WorldEntity };
 
 const clean = (value: unknown, max: number) => (typeof value === "string" ? value.trim().slice(0, max) : undefined);
 const cleanList = (value: unknown, max: number, each: number) =>
@@ -180,7 +281,7 @@ export function createRecord(campaignId: string, type: WorldType, input: { name?
   const name = clean(input.name, 80) ?? "";
   if (!name) return { error: "An entry needs a name." };
   if (type.shelf === "npc") {
-    if (listNpcs(campaignId).some((npc) => npc.name.toLowerCase() === name.toLowerCase())) return { error: `The Cast already has someone called ${name}.`, status: 409 };
+    if (listNpcs(campaignId).some((npc) => textKey(npc.name) === textKey(name))) return { error: `The Cast already has someone called ${name}.`, status: 409 };
     const outcome = normalizeNpcDraft({ name, trait: clean(input.tagline, 200) ?? "" });
     if ("error" in outcome) return { error: outcome.error };
     return { ref: refOf("npc", createNpcFromDraft(campaignId, outcome.draft).id) };
@@ -209,12 +310,12 @@ export function writeRecord(campaignId: string, ref: string, patch: EntityPatch,
   const portrait = patch.portrait === undefined ? undefined : isUploadedImagePath(patch.portrait) ? patch.portrait : "";
   if (shelf === "npc") {
     const npc = getNpcById(id)!;
-    if (name && name.toLowerCase() !== npc.name.toLowerCase() && listNpcs(campaignId).some((other) => other.name.toLowerCase() === name.toLowerCase())) {
+    if (name && textKey(name) !== textKey(npc.name) && listNpcs(campaignId).some((other) => textKey(other.name) === textKey(name))) {
       return { error: `The Cast already has someone called ${name}.`, status: 409 };
     }
     if (name || aliases) {
       const called = name || npc.name;
-      renameNpc(id, called, (aliases ?? npc.aliases).filter((alias) => alias.toLowerCase() !== called.toLowerCase()));
+      renameNpc(id, called, (aliases ?? npc.aliases).filter((alias) => textKey(alias) !== textKey(called)));
     }
     if (patch.tagline !== undefined) {
       const outcome = normalizeNpcDraft({ ...draftFrom(getNpcById(id)! as Parameters<typeof draftFrom>[0]), trait: clean(patch.tagline, 200) ?? "" });
@@ -274,7 +375,31 @@ export function nextEntry(doc: WorldDoc, ref: string, patch: EntityPatch): Entry
     aliases: shelf === "npc" ? [] : cleanList(patch.aliases, 8, 80) ?? before.aliases,
     tags: shelf === "npc" || shelf === "location" ? cleanList(patch.tags, 8, 40) ?? before.tags : [],
     image: shelf === "location" && portrait !== undefined ? portrait : before.image,
+    // A Cast member's stat block is its own row's (Npc.statBlock): it takes
+    // no links of its own. Battle maps and encounters are a place's alone.
+    bindings: shelf === "npc" ? [] : (patch.bindings === undefined ? before.bindings : readBindings(patch.bindings)).filter((binding) => shelf === "location" || !isPlaceBinding(binding.kind)),
   });
+}
+
+// A link added by this patch must name a record this table can use: the
+// author's own, or the rulebook's; for a place's battle map or encounter, a
+// row of this same campaign. Links the entry already had are kept as they
+// are, found or not, so a record removed later never blocks a save.
+const UNUSABLE: Record<Binding["kind"], string> = {
+  monster: "That stat block is not one this table can use.",
+  item: "That item is not one this table can use.",
+  map: "That battle map is not one of this table's prepared maps.",
+  encounter: "That encounter is not one of this table's prepared encounters.",
+};
+function unusableLink(campaignId: string, shelf: Shelf | undefined, before: Entry | undefined, patch: EntityPatch): Failure | null {
+  if (patch.bindings === undefined) return null;
+  const had = new Set((before?.bindings ?? []).map((binding) => `${binding.kind}|${binding.ref}`));
+  for (const binding of readBindings(patch.bindings)) {
+    if (had.has(`${binding.kind}|${binding.ref}`)) continue;
+    if (isPlaceBinding(binding.kind) && shelf !== "location") return { error: "Only a place has battle maps and encounters.", status: 400 };
+    if (!resolveBinding(campaignId, binding).found) return { error: UNUSABLE[binding.kind], status: 400 };
+  }
+  return null;
 }
 
 function entityOf(campaignId: string, doc: WorldDoc, ref: string): EntityResult {
@@ -283,9 +408,12 @@ function entityOf(campaignId: string, doc: WorldDoc, ref: string): EntityResult 
 }
 
 // A new entry of a type: the record on the type's shelf, and its overlay.
-export function createWorldEntity(campaignId: string, input: { typeId?: unknown; name?: unknown } & EntityPatch): EntityResult {
+export function createWorldEntity(campaignId: string, sent: { typeId?: unknown; name?: unknown } & EntityPatch): EntityResult {
   const doc = getWorldDoc(campaignId);
-  const type = doc.types.find((entry) => entry.id === input.typeId) ?? doc.types[0];
+  const type = doc.types.find((entry) => entry.id === sent.typeId) ?? doc.types[0];
+  const input = oneLoreText(type.shelf, sent);
+  const refused = unusableLink(campaignId, type.shelf, undefined, input);
+  if (refused) return refused;
   const made = createRecord(campaignId, type, input);
   if ("error" in made) return made;
   const failed = writeRecord(campaignId, made.ref, { aliases: input.aliases, tags: input.tags, portrait: input.portrait });
@@ -301,19 +429,156 @@ export function createWorldEntity(campaignId: string, input: { typeId?: unknown;
     aliases: input.aliases,
     tags: input.tags,
     portrait: input.portrait,
+    bindings: input.bindings,
   });
   saveWorldDoc(campaignId, doc);
   return entityOf(campaignId, doc, made.ref);
 }
 
-export function updateWorldEntity(campaignId: string, ref: string, patch: EntityPatch): EntityResult {
+// One World link set into play (audit finding WF-12): a Cast member's
+// "member of" link becomes their faction, a "lives in" or "located in"
+// link their home, by the place's name as the Cast keeps it. Only when the
+// author picks that link; a false belief never, a hidden truth only with
+// `truth`. The link and the rest of the record are left as they are.
+export function applyPlayLink(campaignId: string, ref: string, field: PlayField, linkId: string, truth: boolean): EntityResult {
+  const parsed = parseRef(ref);
+  const npc = parsed?.shelf === "npc" ? getNpcById(parsed.id) : null;
+  if (!npc || npc.campaignId !== campaignId) return { error: "Only a Cast member has a faction and a home in play.", status: 404 };
   const doc = getWorldDoc(campaignId);
+  const chosen = playLink(doc, ref, field, linkId, truth);
+  if ("error" in chosen) return { error: chosen.error, status: 400 };
+  const target = parseRef(chosen.link.to)!;
+  if (field === "faction") {
+    const faction = getFaction(target.id);
+    if (!faction || faction.campaignId !== campaignId) return { error: "That faction is not in this world any more.", status: 404 };
+    setNpcPlace(npc.id, { factionId: faction.id });
+  } else {
+    const place = getLocation(target.id);
+    if (!place || place.campaignId !== campaignId) return { error: "That place is not in this world any more.", status: 404 };
+    setNpcPlace(npc.id, { location: place.name });
+  }
+  return entityOf(campaignId, doc, ref);
+}
+
+// "Give it a World entry", from a stat block or an item in its own tool
+// (audit finding WF-08): a lore entry named for the record and already
+// linked to it, so a monster made in the Bestiary has an article to return
+// to and a way into a fight. A record some entry already links to gets that
+// entry back rather than a second one. A creature files under a lore type
+// the author named for creatures, an item under Artifact or one named for
+// items, and otherwise under the shelf's plainest type.
+export function createEntryForRecord(campaignId: string, binding: Binding): EntityResult {
+  const resolved = resolveBinding(campaignId, binding);
+  if (!resolved.found) return { error: binding.kind === "monster" ? "That stat block is not one this table can use." : "That item is not one this table can use.", status: 400 };
+  const doc = getWorldDoc(campaignId);
+  const already = entriesBoundTo(campaignId, doc, binding.kind, binding.ref)[0];
+  if (already) return entityOf(campaignId, doc, already.ref);
+  const lore = doc.types.filter((type) => type.shelf === "lore");
+  const named = binding.kind === "monster" ? /creature|monster|beast/i : /artifact|item|treasure/i;
+  const type = lore.find((entry) => named.test(entry.name)) ?? typeFor(doc, "lore", "");
+  if (!lore.some((entry) => entry.id === type.id)) return { error: "This world has no lore type to file it under. Add one in Types.", status: 400 };
+  return createWorldEntity(campaignId, { typeId: type.id, name: resolved.name, bindings: [{ kind: binding.kind, ref: binding.ref }] });
+}
+
+// One more battle map or encounter for a place (M4): the link added to what
+// the place has now, read from the stored document rather than from what a
+// page opened with, since the record was made a moment ago by the same
+// request (src/app/api/campaigns/[campaignId]/world/entities/[ref]/battle-maps).
+export function linkToPlace(campaignId: string, ref: string, binding: Binding): EntityResult {
+  if (parseRef(ref)?.shelf !== "location" || !isPlaceBinding(binding.kind)) return { error: "Only a place has battle maps and encounters.", status: 400 };
+  if (!ownedBy(campaignId, ref)) return { error: "No such place in this world.", status: 404 };
+  const had = getWorldDoc(campaignId).entries[ref]?.bindings ?? [];
+  if (had.some((entry) => entry.kind === binding.kind && entry.ref === binding.ref)) return entityOf(campaignId, getWorldDoc(campaignId), ref);
+  if (had.length >= BINDINGS_MAX) return { error: `A place links to ${BINDINGS_MAX} records at most. Unlink one first.`, status: 400 };
+  return updateWorldEntity(campaignId, ref, { bindings: [...had, binding] });
+}
+
+// A lore entry's account is its body (src/lib/worldforge/account.ts): an
+// article sent for one, with no body beside it, is written as the body. An
+// article sent with a body, or an empty one, is kept as sent, which is how
+// the editor keeps or clears an older article an import left.
+function oneLoreText<T extends EntityPatch>(shelf: Shelf | undefined, patch: T): T {
+  return shelf === "lore" && patch.article && patch.text === undefined ? { ...patch, text: patch.article, article: "" } : patch;
+}
+
+// With a base, the patch is checked against what the entry holds now (see
+// src/lib/worldforge/entry-merge.ts): another author's change to a field
+// this patch leaves alone survives, and a field both changed differently
+// is reported with nothing written. Without one it is written as sent.
+export function updateWorldEntity(campaignId: string, ref: string, input: EntityPatch & { base?: unknown }): EntityResult {
+  const { base, ...sent } = input;
+  const shelf = parseRef(ref)?.shelf;
+  let patch: EntityPatch = oneLoreText(shelf, sent);
+  const doc = getWorldDoc(campaignId);
+  if (base && typeof base === "object" && !Array.isArray(base)) {
+    const now = worldEntities(campaignId, doc).find((entry) => entry.ref === ref);
+    if (!now) return { error: "No such entry in this workshop.", status: 404 };
+    const merged = mergeAgainst(doc, editableOf(doc, now), sent as Partial<Editable>, base as Partial<Editable>);
+    if ("conflicts" in merged) {
+      const names = merged.conflicts.map((conflict) => conflict.label).join(", ");
+      return {
+        error: `Someone else changed ${names} while you were editing. Nothing was saved yet; your draft is kept.`,
+        status: 409,
+        conflicts: merged.conflicts,
+        entity: now,
+      };
+    }
+    // The form's own words: a lore entry's article sent alone is the older
+    // article it keeps beside the body (src/lib/worldforge/account.ts),
+    // not a new body.
+    patch = merged.patch as EntityPatch;
+  }
+  return writeEntity(campaignId, doc, ref, patch);
+}
+
+// Writes a patch to one entry. On an entry a reimport kept values on, what
+// it held before and after the write says whether the author took the
+// import's version or went back to their own (src/lib/worldforge/
+// import-kept.ts); `using` is the value "Use the import's version" wrote.
+function writeEntity(campaignId: string, doc: WorldDoc, ref: string, patch: EntityPatch, using?: string): EntityResult {
+  const refused = unusableLink(campaignId, parseRef(ref)?.shelf, doc.entries[ref], patch);
+  if (refused) return refused;
+  const origin = doc.origins?.[originKey("entries", ref)];
+  const before = origin?.kept ? keptEntity(campaignId, doc, ref) : undefined;
   const lore = patch.typeId ? doc.types.find((type) => type.id === patch.typeId && type.shelf === "lore") : undefined;
   const failed = writeRecord(campaignId, ref, patch, lore);
   if (failed) return failed;
   doc.entries[ref] = nextEntry(doc, ref, patch);
+  const after = before ? keptEntity(campaignId, doc, ref) : undefined;
+  if (origin && before && after) {
+    const next = keptAfterWrite(origin, before, after, using);
+    origin.at = next.at;
+    if (next.kept) origin.kept = next.kept;
+    else delete origin.kept;
+  }
   saveWorldDoc(campaignId, doc);
   return entityOf(campaignId, doc, ref);
+}
+
+// The author's choice on a value a reimport kept (import-kept.ts): "use"
+// writes the import's version, keeping the one it replaced; "restore"
+// writes that one back; "dismiss" ("Keep mine", or "Keep the import's"
+// once taken) clears the record and changes nothing else. Writes go
+// through writeEntity, so the record follows what the entry holds; a "use"
+// the entry could not take whole, or at all, is marked so (`landed`).
+export type KeptChoice = "use" | "restore" | "dismiss";
+
+export function settleKept(campaignId: string, ref: string, key: string, choice: KeptChoice): EntityResult {
+  const doc = getWorldDoc(campaignId);
+  const origin = doc.origins?.[originKey("entries", ref)];
+  const kept = origin?.kept?.[key];
+  const entity = kept ? keptEntity(campaignId, doc, ref) : undefined;
+  if (!origin?.kept || !kept || !entity) return { error: "Nothing from an import is kept beside that.", status: 404 };
+  if (choice === "dismiss") {
+    delete origin.kept[key];
+    if (!Object.keys(origin.kept).length) delete origin.kept;
+    saveWorldDoc(campaignId, doc);
+    return entityOf(campaignId, doc, ref);
+  }
+  if (choice === "use" ? kept.taken : !kept.taken) {
+    return { error: choice === "use" ? "The import's version is already in use." : "Your version is already in use.", status: 409 };
+  }
+  return writeEntity(campaignId, doc, ref, patchFor(entity, key, choice === "use" ? kept.theirs : kept.mine) as EntityPatch, choice === "use" ? key : undefined);
 }
 
 // Deletes the record itself (the Cast member, the place, the faction, the
@@ -337,4 +602,29 @@ export function deleteWorldEntity(campaignId: string, ref: string): boolean {
 export function worldCounts(campaignId: string): { entries: number; links: number; events: number; secrets: number; maps: number } {
   const { doc, entities } = worldView(campaignId);
   return { entries: entities.length, links: doc.links.length, events: doc.events.length, secrets: doc.secrets.length, maps: doc.maps.length };
+}
+
+// ---- a secret told to the party ----
+
+// "Reveal to the party" at a table (audit WF-10): the words the story
+// authority chose become a lore entry the whole table reads, and the secret
+// is marked learned with the record of when and where it was told. All of it
+// is this campaign's own copy: a world brought in from a workshop was copied
+// (src/lib/db/content-import.ts), so the workshop's secret is not touched.
+// One reveal per secret; a second is refused with the first entry named.
+export function revealSecret(
+  campaignId: string,
+  secretId: string,
+  told: { title: string; body: string; category?: WorldLoreCategory },
+): { secret: Secret; entry: WorldLoreEntry } | Failure {
+  const doc = getWorldDoc(campaignId);
+  const secret = doc.secrets.find((entry) => entry.id === secretId);
+  if (!secret) return { error: "No such secret in this world.", status: 404 };
+  if (secret.revealedAs && getLoreEntry(parseRef(secret.revealedAs)?.id ?? "")?.campaignId === campaignId) {
+    return { error: "The party has already been told this one.", status: 409 };
+  }
+  const entry = insertLoreEntry({ campaignId, category: told.category ?? "other", title: told.title, body: told.body, tags: [], visibility: "party" });
+  const revealed: Secret = { ...secret, partyKnows: true, revealedAt: new Date().toISOString(), revealedAs: refOf("lore", entry.id) };
+  saveWorldDoc(campaignId, { ...doc, secrets: doc.secrets.map((row) => (row.id === secretId ? revealed : row)) });
+  return { secret: revealed, entry };
 }

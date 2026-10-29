@@ -15,6 +15,7 @@ const {
   canRerollPool,
   hpBreakdown,
   placeFromPool,
+  poolHighlight,
   poolSum,
   rollPool,
   scoresFromSlots,
@@ -22,6 +23,7 @@ const {
   restOffsets,
   rollFourDice,
   rollTier,
+  rollWord,
   summaryLine,
   tossMs,
 } = await import("../src/app/characters/builder/abilityDice.ts");
@@ -95,6 +97,17 @@ test("pips: each face has its count, inside the die", () => {
 
 test("tiers", () => {
   assert.deepEqual([3, 5, 6, 8, 9, 12, 13, 16, 17, 18].map(rollTier), [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
+  // The same grade in words, for a reader who cannot tell the colours apart.
+  assert.deepEqual([3, 8, 12, 16, 18].map(rollWord), ["grim", "poor", "fair", "good", "heroic"]);
+});
+
+test("a remarkable pool earns its line; an ordinary one none", () => {
+  const entry = (total, dice = null) => ({ total, roll: dice ? { dice, dropIndex: 0, total, rest: [] } : null });
+  const ordinary = [entry(15), entry(14), entry(13), entry(12), entry(10), entry(8)];
+  assert.equal(poolHighlight(ordinary), null);
+  assert.match(poolHighlight([...ordinary.slice(1), entry(18, [6, 6, 6, 6])]), /Four sixes/);
+  assert.match(poolHighlight([...ordinary.slice(1), entry(18, [6, 6, 6, 2])]), /An 18/);
+  assert.match(poolHighlight([entry(16), entry(15), entry(14), entry(13), entry(12), entry(11)]), /heroic pool/);
 });
 
 test("standard array: taking a value clears its holder, taking your own hands it back", () => {

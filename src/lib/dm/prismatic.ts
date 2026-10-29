@@ -35,10 +35,7 @@ import { layOnEnemy, turnEndMark } from "@/lib/dm/spell-riders";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { VIOLET, VIOLET_MARK } from "@/lib/dm/prismatic-violet";
-
-// The turn-start save lives in its own module so condition-tick.ts can reach it
-// without loading the mutation dispatcher (an import cycle through the clock).
-export { VIOLET, violetRayTurnStart } from "@/lib/dm/prismatic-violet";
+import { textKey } from "@/lib/language/text-logic";
 
 export const PRISMATIC_SPRAY = "prismatic spray";
 export const INDIGO = "Indigo Ray";
@@ -53,7 +50,7 @@ const RAYS: Array<{ color: string; type?: string }> = [
   { color: "violet" },
 ];
 
-export const isPrismaticSpray = (spell: string | undefined) => (spell ?? "").trim().toLowerCase() === PRISMATIC_SPRAY;
+export const isPrismaticSpray = (spell: string | undefined) => textKey(spell ?? "") === PRISMATIC_SPRAY;
 
 // The rays one creature is struck by: one d8, or on an 8 two more, each 8
 // rolled again. `d8` rolls one die (a card, in a cast).
@@ -119,7 +116,7 @@ export function castPrismaticSpray(input: PrismaticCast): Array<Record<string, u
       if (type) {
         const rolled = rayDamage(input, caster.id, color, enemy.displayName);
         const amount = save.success ? Math.floor(rolled / 2) : rolled;
-        const applied = applyEnemyDamage(campaign, turn, encounter, now, amount, input.sheets, input.sheetsById, type, { magical: true });
+        const applied = applyEnemyDamage(campaign, turn, encounter, now, amount, input.sheets, input.sheetsById, type, { magical: true, spell: true });
         notes.push(`${color}: ${amount} ${type}`);
         row.health = applied.health;
         if (applied.dead) {
@@ -145,7 +142,7 @@ export function castPrismaticSpray(input: PrismaticCast): Array<Record<string, u
     if (sheet.deathSaves?.dead) {
       continue;
     }
-    const save = rollCharacterSave(campaign, turn, sheet, "dex", dc, "DEX save against Prismatic Spray", "spell");
+    const save = rollCharacterSave(campaign, turn, sheet, "dex", dc, "DEX save against Prismatic Spray", { magical: true });
     const rays = rollRays(rayDie(input, sheet.id, sheet.name));
     const notes: string[] = [];
     for (const ray of rays) {
@@ -163,7 +160,7 @@ export function castPrismaticSpray(input: PrismaticCast): Array<Record<string, u
         if (color === "violet") {
           markSheet(campaign, sheet.id, VIOLET_MARK, { spell, source: caster.id });
         }
-        notes.push(color === "indigo" ? "indigo: restrained (a character's CON saves at the end of each turn are the DM's to call)" : "violet: blinded (WIS save at the start of the caster's next turn)");
+        notes.push(color === "indigo" ? "indigo: restrained (a character's CON saves at the end of each turn are the GM's to call)" : "violet: blinded (WIS save at the start of the caster's next turn)");
       } else {
         notes.push(`${color}: resisted`);
       }

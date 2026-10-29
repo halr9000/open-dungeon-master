@@ -45,6 +45,8 @@ export type SwingRecord = {
   // swing was ranged. Absent type and ranged read the record's own.
   raw: number;
   type?: string;
+  // A blow of several types, part by part as sent (enemy-hit.ts blowByType).
+  parts?: Array<{ amount: number; type: string }>;
   ranged?: boolean;
 };
 
@@ -74,7 +76,9 @@ export type LastHit = {
   encounterId: string | null;
   // The turn it landed in (turnKey), "" out of a fight.
   turn: string;
-  attacker: { kind: "enemy" | "hazard"; id: string | null; name: string };
+  // Who made it: an enemy, a character fighting on the other side (a
+  // turncoat's pc_attack, issue 503), or a hazard, which is nobody.
+  attacker: { kind: "enemy" | "sheet" | "hazard"; id: string | null; name: string };
   attack: string;
   type: string;
   ranged: boolean;
@@ -93,9 +97,18 @@ export type LastHit = {
 // Who rolls the recorded attack again (Protection and its kin): the enemy
 // that made it; a hazard is nobody.
 export function rerollAttacker(record: LastHit): RollAttacker | null {
-  return record.attacker.kind === "enemy" && record.attacker.id
-    ? { kind: "enemy", id: record.attacker.id, name: record.attacker.name }
+  const id = attackerFoeId(record);
+  return id && (record.attacker.kind === "enemy" || record.attacker.kind === "sheet")
+    ? { kind: record.attacker.kind, id, name: record.attacker.name }
     : null;
+}
+
+// The creature that made the recorded attack, by combatant id (an enemy row
+// or a character's sheet), for the reactions that answer it; null for a
+// hazard. Read it through resolveTargetFoe (sheet-foe.ts).
+export function attackerFoeId(record: Pick<LastHit, "attacker"> | null | undefined): string | null {
+  const attacker = record?.attacker;
+  return attacker && (attacker.kind === "enemy" || attacker.kind === "sheet") && attacker.id ? attacker.id : null;
 }
 
 const db = getDatabase;
@@ -116,12 +129,6 @@ export function readLastHit(campaignId: string, characterId: string): LastHit | 
     .prepare(`SELECT payload_json FROM last_hits WHERE campaign_id = ? AND character_id = ?`)
     .get(campaignId, characterId) as { payload_json: string } | undefined;
   return row ? parseJson<LastHit | null>(row.payload_json, null) : null;
-}
-
-export function clearLastHit(campaignId: string, characterId: string) {
-  db()
-    .prepare(`DELETE FROM last_hits WHERE campaign_id = ? AND character_id = ?`)
-    .run(campaignId, characterId);
 }
 
 const FRESH_MS = 10 * 60 * 1000;
@@ -219,6 +226,7 @@ export function openLastHit(campaignId: string, characterId: string) {
         raw: number;
         advantage: Advantage;
         type?: string;
+        parts?: Array<{ amount: number; type: string }>;
         ranged?: boolean;
       },
     ) {
@@ -232,6 +240,7 @@ export function openLastHit(campaignId: string, characterId: string) {
         crit: result.crit,
         raw: result.hit ? Math.max(0, result.raw) : 0,
         ...(result.type !== undefined ? { type: result.type } : {}),
+        ...(result.hit && result.parts?.length ? { parts: result.parts } : {}),
         ...(result.ranged !== undefined ? { ranged: result.ranged } : {}),
       });
     },

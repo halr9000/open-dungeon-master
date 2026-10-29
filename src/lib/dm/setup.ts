@@ -11,6 +11,7 @@ import { nameRegisterHint } from "@/lib/genres";
 import { publishPersisted } from "@/lib/events";
 import { stripReasoningArtifacts } from "@/lib/story-prompt";
 import { requestDmMessage } from "@/lib/dm/model";
+import { partyStoryOf, partyStorySetupLines } from "@/lib/dm/party-story";
 
 // Pre-session story setup: one model call that invents a premise, opening
 // scene, and a SECRET outline the DM steers by. Runs on the campaign's DM
@@ -29,6 +30,9 @@ export async function runStorySetup(campaignId: string) {
   const worldHints = [
     campaign.theme ? `World/theme set by the table: ${campaign.theme}` : "",
     campaign.description ? `Table's own premise notes: ${campaign.description}` : "",
+    // Why the party is together, when the table said: the premise invented
+    // here should fit it. Read only; both stay the table's to write.
+    ...partyStorySetupLines(partyStoryOf(campaign)),
     campaign.gameSettings.genre === "custom"
       ? campaign.gameSettings.customGenreText
       : `Genre: ${preset.name}. ${preset.dmFlavor} ${nameRegisterHint(preset.nameHints)}`,
@@ -57,7 +61,7 @@ export async function runStorySetup(campaignId: string) {
       {
         role: "system",
         content: withLanguage(
-          `You design the seed of a D&D 5e campaign. Reply with ONLY a JSON object, no code fences, shaped exactly: {"premise": string, "openingScene": string, "secretOutline": string}. premise: 2-3 sentences the players will read. openingScene: one sentence naming where the story opens. secretOutline: 6-10 numbered beats for the DM only, with a central antagonist, two twists, and a finale; players never see this.${
+          `You design the seed of a D&D 5e campaign. Reply with ONLY a JSON object, no code fences, shaped exactly: {"premise": string, "openingScene": string, "secretOutline": string}. premise: 2-3 sentences the players will read. openingScene: one sentence naming where the story opens. secretOutline: 6-10 numbered beats for the GM only, with a central antagonist, two twists, and a finale; players never see this.${
             prepared
               ? " The table has prepared a story arc: the premise restates it, the opening scene is where its first beat begins, and the secret outline follows its beats in their order, adding detail rather than a different plot."
               : ""
@@ -70,7 +74,7 @@ export async function runStorySetup(campaignId: string) {
         content: `Difficulty: ${campaign.difficulty}. Party:\n${party}\n\n${worldHints}${prepared ? `\n\n${prepared}` : ""}`,
       },
     ],
-    {},
+    { meta: { task: "story_setup" } },
   );
 
   if (error) {

@@ -1,6 +1,8 @@
 "use client";
 
+import { attractionWords } from "@/lib/attraction";
 import { TravelFormation } from "@/app/campaigns/[campaignId]/TravelFormation";
+import { PartyStory } from "@/app/campaigns/[campaignId]/PartyStory";
 import type { PartyState } from "@/lib/dm/party-logic";
 import { fieldedOf } from "@/lib/player-characters";
 import { Bot, Check, Crown, Heart, ImagePlus, PawPrint, Save, Sparkles, UserPlus } from "lucide-react";
@@ -11,6 +13,8 @@ import { conditionDetail, maxHpView } from "@/components/sheet/sheet-state";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
+import { PartyGone } from "@/app/campaigns/[campaignId]/PartyGone";
+import type { DepartingSheet } from "@/app/campaigns/[campaignId]/departing";
 import { KitButton, SettingToggle } from "./PanelKit";
 import { PartyOrderBar, PartyOrderHandle, usePartyOrder } from "./PartyOrder";
 import { useEffect, useId, useState, Suspense, lazy } from "react";
@@ -22,6 +26,8 @@ import { CharacterNotesDialog } from "@/app/campaigns/[campaignId]/CharacterNote
 import { CharacterSheetDialog } from "@/app/campaigns/[campaignId]/CharacterSheetDialog";
 import { TradeDialog } from "@/app/campaigns/[campaignId]/TradeDialog";
 import { CompanionBuilderDialog } from "@/app/campaigns/[campaignId]/CompanionBuilderDialog";
+import { CompanionCommand } from "@/app/campaigns/[campaignId]/CompanionCommand";
+import { offSide, SideBadge } from "@/app/campaigns/[campaignId]/SideBadge";
 import { DiceSourcesButton } from "@/app/campaigns/[campaignId]/DiceSourcesDialog";
 import { DiceLookButton } from "@/components/DiceLookEditor";
 import { LeadEditDialog } from "@/app/campaigns/[campaignId]/LeadEditDialog";
@@ -31,6 +37,7 @@ import type { Genre, LastingCompanionBlock } from "@/lib/schemas/game-settings";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { computeSheetDerived, formatModifier } from "@/lib/srd";
 import { usePackArt } from "@/lib/worlds/use-pack-art";
+import { textKey } from "@/lib/language/text-logic";
 
 // The portrait cropper (and its cropping library) loads when a portrait is
 // being cropped, not with the table.
@@ -111,21 +118,28 @@ function RequestCompanionButton({ campaignId }: { campaignId: string }) {
       onClick={request}
       disabled={state !== "idle"}
       busy={state === "sending"}
-      title="Ask the DM to write an ally with a real character sheet into the story"
+      title="Ask the GM to write an ally with a real character sheet into the story"
       className="w-full disabled:opacity-60"
     >
       {state === "sending" ? null : <GameIcon icon={{ kind: "glyph", key: "system-party" }} size="size-5" />}
-      {state === "sent" ? "The DM has been asked" : "Request a companion"}
+      {state === "sent" ? "The GM has been asked" : "Request a companion"}
     </KitButton>
   );
 }
 
-// Brings a Game settings row into view once the Setup tab has mounted it
-// (a moment after the switch) and flashes it, so "change this" lands on
-// the one control meant rather than the top of a long panel.
+// Brings a table settings row into view once the Settings tab has mounted
+// it (a moment after the switch) and flashes it, so "change this" lands on
+// the one control meant rather than the top of a long panel. A row inside a
+// closed group is mounted but hidden, so its group is opened first.
 function revealSettingsRow(row: string, tries = 40) {
   const element = document.querySelector<HTMLElement>(`[data-settings-row="${row}"]`);
   if (!element) {
+    if (tries > 0) window.setTimeout(() => revealSettingsRow(row, tries - 1), 50);
+    return;
+  }
+  const closed = element.closest<HTMLElement>(".cc-group:not([data-open])");
+  if (closed) {
+    closed.querySelector<HTMLButtonElement>(".cc-group-toggle")?.click();
     if (tries > 0) window.setTimeout(() => revealSettingsRow(row, tries - 1), 50);
     return;
   }
@@ -168,7 +182,7 @@ function HandToDmButton({
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        setError(data.error || "Could not hand the character to the DM.");
+        setError(data.error || "Could not hand the character to the GM.");
       }
     } catch {
       setError("Could not reach the server.");
@@ -179,7 +193,7 @@ function HandToDmButton({
   return (
     <div className="reveal mt-2 space-y-1">
       <p className="text-[11px] leading-4 text-amber-200">
-        {sheet.name} is filed in the library as an ally the DM plays, but sits here as a player&apos;s character, so the DM takes no turns for them.
+        {sheet.name} is filed in the library as an ally the GM plays, but sits here as a player&apos;s character, so the GM takes no turns for them.
       </p>
       {blocked ? (
         <div
@@ -198,7 +212,7 @@ function HandToDmButton({
               }}
               className="font-medium text-amber-300 underline decoration-amber-500/40 underline-offset-2 transition-colors hover:text-amber-100"
             >
-              Open Game settings
+              Open Table settings
             </button>
           ) : null}
         </div>
@@ -212,11 +226,11 @@ function HandToDmButton({
         title={
           blocked
             ? blocked.reason
-            : "Make this character a party companion: the sheet and its progress stay, the DM plays it from here"
+            : "Make this character a party companion: the sheet and its progress stay, the GM plays it from here"
         }
         className="w-full justify-center"
       >
-        {state === "sending" ? null : <Bot className="size-3.5" />} Hand to the DM
+        {state === "sending" ? null : <Bot className="size-3.5" />} Hand to the GM
       </KitButton>
       {error ? (
         <p role="alert" className="motion-shake text-[11px] text-red-400">
@@ -283,6 +297,8 @@ function SaveToLibraryButton({ campaignId, sheetId }: { campaignId: string; shee
 export function PartyPanel({
   sheets,
   meUserId,
+  departing = [],
+  goneRefreshKey = 0,
   spotlightUserIds = [],
   onlineUserIds = [],
   embedded = false,
@@ -314,13 +330,27 @@ export function PartyPanel({
   onLevelUp,
   party,
   arrangesFormation = false,
+  partyStory,
+  romanceNotes = false,
 }: {
   sheets: CharacterSheet[];
   meUserId: string;
+  // Lasting companions whose sheet just went (issue 503), and the key the
+  // Gone list reads itself again on (PartyGone.tsx).
+  departing?: readonly DepartingSheet[];
+  goneRefreshKey?: number;
+  // A person runs this table and it plays romance (issue 501): the DM's
+  // cards say who each character is drawn to and who is open to advances
+  // from NPCs, since no AI turn rolls for one here and the console is
+  // where the DM makes the move.
+  romanceNotes?: boolean;
   // The party record, for the travel formation, and whether this seat
   // arranges it (the party lead, or the DM seat where a person runs it).
   party?: PartyState;
   arrangesFormation?: boolean;
+  // Why this party is together (PartyStory.tsx), at a table that plays: who
+  // may write it. Left out (a workshop), no card.
+  partyStory?: { canWrite: boolean };
   // A level-up the experience has earned and nobody has taken yet: the
   // owner's card offers it.
   levelUpLevel?: number | null;
@@ -355,7 +385,7 @@ export function PartyPanel({
   // Why a lasting party companion cannot join now, and how to allow one
   // (game-settings.ts lastingCompanionBlock): said beside Hand to the DM.
   companionBlock?: LastingCompanionBlock | null;
-  // Opens the Setup tab, where that setting lives.
+  // Opens the Settings tab, where that setting lives.
   onOpenSettings?: () => void;
   // A person runs this table. There is no AI to ask for an ally, so the
   // request button goes and the build button is the only door left; it is
@@ -486,16 +516,22 @@ export function PartyPanel({
         const publicNoteCount = notes.filter(
           (note) => note.characterId === sheet.id && note.visibility === "public",
         ).length;
+        // A companion that turned on the party, or came back against it,
+        // fights on the foes' side of this fight (issue 503): its card says
+        // so in the foes' colour, from the server's sides.
+        const against = encounter?.sides?.[sheet.id] === "foe";
         return (
           <div
             key={sheet.id}
             data-party-card={sheet.id}
+            data-against={against ? "" : undefined}
             data-dragging={order.drag?.id === sheet.id ? "" : undefined}
             data-drop={order.drag?.over?.id === sheet.id ? order.drag.over.side : undefined}
             data-moved={order.moved === sheet.id ? "" : undefined}
             className={cn(
-              "party-card panel rounded-xl p-3 transition-shadow duration-200",
+              "party-card panel rounded-xl p-3 transition-[box-shadow,border-color] duration-300",
               mine && "ornate border-amber-600/40",
+              against && "border-rose-500/60 ring-1 ring-rose-500/50",
               spotlightUserIds.includes(sheet.userId) &&
                 "border-amber-500/70 ring-1 ring-amber-500/60 shadow-glow-gold-strong",
             )}
@@ -517,7 +553,7 @@ export function PartyPanel({
                 type="button"
                 onClick={() => setViewingSheetId(sheet.id)}
                 title="View full character sheet"
-                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40 motion-press"
+                className="party-card-heading flex min-w-0 flex-1 items-center gap-2.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40 motion-press"
               >
               <CharacterPortrait
                 url={sheet.portrait?.url}
@@ -525,11 +561,12 @@ export function PartyPanel({
                 look={{ race: sheet.race, class: sheet.class, gender: sheet.gender }}
                 alt={sheet.name}
                 size="size-12"
-                className="border-amber-500/30 shadow-glow-gold"
+                className="party-card-portrait border-amber-500/30 shadow-glow-gold"
               />
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 font-medium">
                   <span className="truncate">{sheet.name}</span>
+                  <SideBadge side={offSide(encounter, sheet.id, "pc")} />
                   {lights[sheet.id] ? <LightBar light={lights[sheet.id]} /> : null}
                   {mine && multiCharacter !== "off" && myOwn.length > 1 ? (
                     mySheet?.id === sheet.id ? (
@@ -566,7 +603,7 @@ export function PartyPanel({
                   {sheet.userId === leadUserId ? (
                     <Crown className="size-3.5 shrink-0 text-amber-300" aria-label="Party lead" />
                   ) : null}
-                  {sheet.isCompanion ? (
+                  {sheet.isCompanion && !offSide(encounter, sheet.id, "pc") ? (
                     <Bot
                       className="size-3.5 shrink-0 text-sky-300"
                       aria-label="AI companion"
@@ -611,6 +648,8 @@ export function PartyPanel({
                 )}
               />
             </div>
+
+            {romanceNotes ? <RomanceNote sheet={sheet} /> : null}
 
             {shape ? (
               <div
@@ -680,7 +719,7 @@ export function PartyPanel({
                 <span className="flex min-w-0 items-center gap-1 truncate">
                   <PawPrint className="size-3 shrink-0 text-stone-500" />
                   {pet.name}
-                  {pet.name.toLowerCase() !== pet.form.toLowerCase() ? ` (${pet.form})` : ""}
+                  {textKey(pet.name) !== textKey(pet.form) ? ` (${pet.form})` : ""}
                 </span>
                 <span className={cn("font-mono", pet.hp <= 0 && "text-red-400")}>
                   {pet.hp}/{pet.maxHp}
@@ -745,7 +784,7 @@ export function PartyPanel({
               </div>
             ) : null}
 
-            <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">
+            <div className="party-card-stats mt-2 grid grid-cols-3 gap-1.5 text-center">
               {(
                 [
                   ["AC", String(shape ? shape.beastAc : sheet.ac)],
@@ -851,12 +890,23 @@ export function PartyPanel({
               </KitButton>
             ) : null}
 
+            {campaignId && sheet.isCompanion && !sheet.summon && !offSide(encounter, sheet.id, "pc") ? (
+              <CompanionCommand
+                campaignId={campaignId}
+                sheet={sheet}
+                sheets={sheets}
+                members={members}
+                meUserId={meUserId}
+                canChoose={steersStory}
+              />
+            ) : null}
+
             {campaignId && steersStory && !sheet.isCompanion && sheet.libraryRole === "companion" ? (
               <HandToDmButton campaignId={campaignId} sheet={sheet} blocked={companionBlock} onOpenSettings={onOpenSettings} />
             ) : null}
 
             {setsPortrait ? (
-              <div className="reveal mt-2 space-y-1.5">
+              <div className="party-card-actions reveal mt-2 space-y-1.5">
                 {/* Hit points are driven by the server rules engines now, so
                     there is no manual HP stepper here; the lead's Adjust
                     dialog remains for corrections. */}
@@ -881,6 +931,10 @@ export function PartyPanel({
         );
       })}
 
+      {/* Who left the party (issue 503): a departing card dims and files
+          under Gone. */}
+      {campaignId ? <PartyGone campaignId={campaignId} departing={departing} refreshKey={goneRefreshKey} worldPack={worldPack} /> : null}
+
       {campaignId && companionsAvailable && steersStory ? (
         <div className="reveal space-y-1.5">
           {humanDmTable ? null : <RequestCompanionButton campaignId={campaignId} />}
@@ -902,6 +956,19 @@ export function PartyPanel({
           meUserId={meUserId}
           arranges={arrangesFormation}
         />
+      ) : null}
+
+      {partyStory && campaignId && (party?.backstory || partyStory.canWrite) ? (
+        <section className="mt-4 space-y-2">
+          <SectionHead title="Party story" glyph="tab-party" level="h3" />
+          <PartyStory
+            campaignId={campaignId}
+            party={party}
+            canWrite={partyStory.canWrite}
+            hasCharacters={sheets.some((sheet) => !(sheet.isCompanion && sheet.companionKind === "guest"))}
+            inPlay
+          />
+        </section>
       ) : null}
 
       {buildingCompanion && campaignId ? (
@@ -979,6 +1046,25 @@ export function PartyPanel({
 
 // A torch burning down: a sliver of ember that shortens as the clock moves,
 // and reddens when the last quarter hour is on it.
+// The DM's line for one card: who they are drawn to, and whether their
+// player opened them to advances. The opt-in reaches only the owner and a
+// DM seat (src/lib/dm/sheet-view.ts), so nothing here shows it to anyone else.
+function RomanceNote({ sheet }: { sheet: CharacterSheet }) {
+  const drawn = attractionWords(sheet.attraction);
+  const open = !sheet.isCompanion && Boolean(sheet.openToAdvances);
+  if (!drawn && !open) {
+    return null;
+  }
+  return (
+    <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-stone-400" data-romance-note={sheet.id}>
+      {drawn ? <span>Drawn to {drawn}</span> : null}
+      {open ? (
+        <span className="rounded-full border border-rose-500/40 bg-rose-500/10 px-1.5 text-rose-200">Open to advances</span>
+      ) : null}
+    </p>
+  );
+}
+
 function LightBar({ light }: { light: { remaining: number; total: number } }) {
   const fraction = light.total > 0 ? Math.max(0, Math.min(1, light.remaining / light.total)) : 0;
   const low = light.remaining <= 15;

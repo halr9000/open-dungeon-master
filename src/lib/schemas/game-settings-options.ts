@@ -25,7 +25,7 @@ export const DM_MODES = ["ai", "steered", "human", "assisted"] as const;
 export type DmModeSetting = (typeof DM_MODES)[number];
 
 export const DM_MODE_LABELS: Record<DmModeSetting, string> = {
-  ai: "AI Dungeon Master",
+  ai: "AI Game Master",
   steered: "AI narrates, I steer",
   human: "I run the game",
   assisted: "I run the game, with AI help",
@@ -60,6 +60,26 @@ export const COMPANION_LABELS: Record<CompanionSetting, string> = {
   full: "Party members and guests",
   guests: "Temporary guests only",
   off: "Off",
+};
+
+// How far a lasting companion's conscience may go (issue 503): the most it
+// does when the party's deeds break what it holds to. One preset, Leave by
+// default; it lives in the campaign's Bonds settings, never the creator.
+export const CONSCIENCE_SETTINGS = ["off", "talk", "leave", "turn"] as const;
+export type ConscienceSetting = (typeof CONSCIENCE_SETTINGS)[number];
+
+export const CONSCIENCE_LABELS: Record<ConscienceSetting, string> = {
+  off: "Off",
+  talk: "Talk",
+  leave: "Leave",
+  turn: "Turn",
+};
+
+export const CONSCIENCE_HINTS: Record<ConscienceSetting, string> = {
+  off: "Companions judge by standing alone: no values, no warnings, nobody leaves over a deed.",
+  talk: "Companions object, warn and set ultimatums, and stay whatever happens.",
+  leave: "Pushed past their breaking point, a companion walks out, slips away or reports the party.",
+  turn: "As Leave, and a companion past their breaking point may turn on the party in a fight.",
 };
 
 // How hit points are counted after 1st level (1st is always the hit die's
@@ -137,4 +157,4 @@ export const TABLE_LANGUAGE_LABELS: Record<TableLanguage, string> = Object.fromE
 
 // Shared by the create dialog and the settings panel.
 export const TABLE_LANGUAGE_HELP =
-  "The Dungeon Master writes the story in this language, and the server reads the story and your messages in it. The app, the rules and the rulebook stay in English. Any language but English needs a multilingual embedding model on the server (EMBEDDING_MODEL in the README).";
+  "The Game Master writes the story in this language, and the server reads the story and your messages in it. The app, the rules and the rulebook stay in English. Any language but English needs a multilingual embedding model on the server (EMBEDDING_MODEL in the README).";

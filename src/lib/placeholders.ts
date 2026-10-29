@@ -12,7 +12,7 @@
 // artifact for tooling, and a render path that can 404 because a JSON fetch
 // lost a race is worse than a table of thirty constants.
 
-import { normalizeCreatureType } from "@/lib/bestiary/statblock";
+import { normalizeCreatureType } from "@/lib/bestiary/creature-type";
 
 const BASE = "/assets/placeholders";
 
@@ -41,25 +41,35 @@ export function normalizeGender(gender: string | null | undefined): PlaceholderG
 
 // ---- races ----
 
-// Subraces collapse to the family the silhouette can actually show: a hill
-// dwarf and a mountain dwarf are the same outline. Keys are the SRD ids from
-// src/lib/srd/races.json; values are plate ids.
+// Subraces map to their own painted plates when we have them: mountain and
+// hill dwarves, wood and high elves, rock and forest gnomes, and the ToH
+// castes and heritages each keep a distinct face. Keys are the SRD / pack ids;
+// values are plate ids under character-race/. Human and variant_human still
+// share on purpose.
 const RACE_FAMILY: Record<string, string> = {
   hill_dwarf: "dwarf",
-  mountain_dwarf: "dwarf",
+  mountain_dwarf: "mountain-dwarf",
   high_elf: "elf",
-  wood_elf: "elf",
+  wood_elf: "wood-elf",
   drow: "drow",
   lightfoot_halfling: "halfling",
-  stout_halfling: "halfling",
+  stout_halfling: "stout-halfling",
+  stoor: "stoor-halfling",
+  stoor_halfling: "stoor-halfling",
+  toh_stoor: "stoor-halfling",
+  toh_stoor_halfling: "stoor-halfling",
   human: "human",
   variant_human: "human",
   dragonborn: "dragonborn",
-  rock_gnome: "gnome",
-  forest_gnome: "gnome",
-  deep_gnome: "gnome",
+  gnome: "gnome",
+  rock_gnome: "rock-gnome",
+  forest_gnome: "forest-gnome",
+  deep_gnome: "deep-gnome",
+  gnome_deep: "deep-gnome",
+  svirfneblin: "deep-gnome",
   half_elf: "half-elf",
   half_orc: "half-orc",
+  orc: "orc",
   tiefling: "tiefling",
   aasimar: "aasimar",
   goliath: "goliath",
@@ -67,16 +77,106 @@ const RACE_FAMILY: Record<string, string> = {
   tabaxi: "tabaxi",
   kenku: "kenku",
   tortle: "tortle",
-  fire_genasi: "genasi",
-  water_genasi: "genasi",
-  air_genasi: "genasi",
-  earth_genasi: "genasi",
+  fire_genasi: "genasi-fire",
+  genasi_fire: "genasi-fire",
+  water_genasi: "genasi-water",
+  genasi_water: "genasi-water",
+  air_genasi: "genasi-air",
+  genasi_air: "genasi-air",
+  genasi: "genasi",
+  earth_genasi: "genasi-earth",
+  genasi_earth: "genasi-earth",
   changeling: "changeling",
   warforged: "warforged",
   goblin: "goblin",
   bugbear: "bugbear",
   lizardfolk: "lizardfolk",
+  // Tome of Heroes (Kobold Press) via Open5e: v1 slugs and v2 "toh_" keys.
+  alseid: "alseid",
+  toh_alseid: "alseid",
+  catfolk: "catfolk",
+  toh_catfolk: "catfolk",
+  malkin: "malkin",
+  toh_malkin: "malkin",
+  pantheran: "pantheran",
+  toh_pantheran: "pantheran",
+  derro: "derro",
+  toh_derro: "derro",
+  far_touched: "far-touched",
+  toh_far_touched: "far-touched",
+  mutated: "mutated",
+  toh_mutated: "mutated",
+  uncorrupted: "uncorrupted",
+  toh_uncorrupted: "uncorrupted",
+  erina: "erina",
+  toh_erina: "erina",
+  minotaur: "minotaur",
+  toh_minotaur: "minotaur",
+  bhain_kwai: "bhain-kwai",
+  toh_bhain_kwai: "bhain-kwai",
+  boghaid: "boghaid",
+  toh_boghaid: "boghaid",
+  mushroomfolk: "mushroomfolk",
+  toh_mushroomfolk: "mushroomfolk",
+  acid_cap: "acid-cap",
+  toh_acid_cap: "acid-cap",
+  favored: "favored",
+  toh_favored: "favored",
+  morel: "morel",
+  toh_morel: "morel",
+  satarre: "satarre",
+  toh_satarre: "satarre",
+  shade: "shade",
+  toh_shade: "shade",
+  darakhul: "darakhul-human",
+  toh_darakhul: "darakhul-human",
+  derro_heritage: "darakhul-derro",
+  toh_derro_heritage: "darakhul-derro",
+  dragonborn_heritage: "darakhul-dragonborn",
+  toh_dragonborn_heritage: "darakhul-dragonborn",
+  drow_heritage: "darakhul-drow",
+  toh_drow_heritage: "darakhul-drow",
+  dwarf_heritage: "darakhul-dwarf",
+  toh_dwarf_heritage: "darakhul-dwarf",
+  elfshadow_fey_heritage: "darakhul-elf",
+  toh_elfshadow_fey_heritage: "darakhul-elf",
+  gnome_heritage: "darakhul-gnome",
+  toh_gnome_heritage: "darakhul-gnome",
+  halfling_heritage: "darakhul-halfling",
+  toh_halfling_heritage: "darakhul-halfling",
+  humanhalf_elf_heritage: "darakhul-human",
+  toh_humanhalf_elf_heritage: "darakhul-human",
+  kobold_heritage: "darakhul-kobold",
+  toh_kobold_heritage: "darakhul-kobold",
+  tiefling_heritage: "darakhul-tiefling",
+  toh_tiefling_heritage: "darakhul-tiefling",
+  trollkin_heritage: "darakhul-trollkin",
+  toh_trollkin_heritage: "darakhul-trollkin",
+  ravenfolk: "darakhul-ravenfolk",
+  toh_ravenfolk: "darakhul-ravenfolk",
+  gearforged: "gearforged",
+  toh_gearforged: "gearforged",
+  dwarf_chassis: "gearforged-dwarf",
+  toh_dwarf_chassis: "gearforged-dwarf",
+  gnome_chassis: "gearforged-gnome",
+  toh_gnome_chassis: "gearforged-gnome",
+  kobold_chassis: "gearforged-kobold",
+  toh_kobold_chassis: "gearforged-kobold",
+  human_chassis: "warforged",
+  toh_human_chassis: "warforged",
+  toh_drow: "drow",
+  delver: "delver",
+  toh_delver: "delver",
+  fever_bit: "fever-bit",
+  toh_fever_bit: "fever-bit",
+  purified: "purified",
+  toh_purified: "purified",
 };
+
+// Every race id with a plate of its own, for the test that walks them.
+export function raceFamilyIds(): string[] {
+  return Object.keys(RACE_FAMILY);
+}
 
 export function raceFamily(raceId: string | null | undefined): string | null {
   const id = String(raceId ?? "").trim().toLowerCase().replace(/[\s-]/g, "_");
@@ -726,8 +826,12 @@ export const GENRE_ENEMY_TOKENS: Readonly<Record<string, GenreEnemyTable>> = {
   },
 };
 
-function genreNameKey(value: string | null | undefined): string {
-  return familyKey(value).replace(/^the-/, "");
+// A token's English names as a table may write them: with and without "The"
+// ("The Skittering", "Skittering", "the Burglar"), spelled on the table. The
+// name a monster has is looked up as written.
+function genreNameSpellings(name: string): string[] {
+  const bare = familyKey(name).replace(/^the-/, "");
+  return [familyKey(name), bare, `the-${bare}`];
 }
 
 const GENRE_ENEMY_LOOKUP: Record<string, { names: Map<string, string>; slugs: Record<string, string> }> =
@@ -736,7 +840,9 @@ const GENRE_ENEMY_LOOKUP: Record<string, { names: Map<string, string>; slugs: Re
       genre,
       {
         names: new Map(
-          Object.entries(table.names).flatMap(([plate, names]) => names.map((name) => [genreNameKey(name), plate] as const)),
+          Object.entries(table.names).flatMap(([plate, names]) =>
+            names.flatMap((name) => genreNameSpellings(name).map((spelling) => [spelling, plate] as const)),
+          ),
         ),
         slugs: table.slugs,
       },
@@ -750,7 +856,7 @@ function genreEnemyPlate(genre: string, slug: string | null | undefined, name: s
   if (!table) {
     return null;
   }
-  const byName = table.names.get(genreNameKey(name));
+  const byName = table.names.get(familyKey(name));
   if (byName) {
     return byName;
   }
@@ -786,24 +892,36 @@ export type MonsterLook = {
   name?: string | null;
 };
 
+// A stat block somebody wrote (a homebrew or Workshop monster, slug
+// "homebrew:<id>"). Its name is the author's to choose and says nothing
+// about what it looks like: a construct called "Bandit" is not the
+// rulebook bandit. The Bestiary tells its author the creature type is the
+// picture until it has a portrait, so its type decides.
+function ownStatBlock(slug: string | null | undefined): boolean {
+  return typeof slug === "string" && slug.startsWith("homebrew:");
+}
+
 // Order: the genre's own enemy token (in that genre only), then the
 // creature's own family plate, then the genre's boss plate at
 // CR 11 and up, then the genre's plate for the type, then the type. A
-// picture somebody supplied for this monster in particular (a world pack's
-// art) beats all of these, and is applied by the caller (MonsterTile's
-// `art`), since it is not a plate.
+// monster fighting with its own stat block skips the first two, which are
+// found by name (ownStatBlock). A picture somebody supplied for this
+// monster in particular (a world pack's art) beats all of these, and is
+// applied by the caller (MonsterTile's `art`), since it is not a plate.
 export function monsterPlaceholder(
   type: string | null | undefined,
   options: MonsterLook = {},
 ): string {
   const slug = genreSlug(options.genre);
-  const token = genreEnemyPlate(slug, options.slug, options.name);
-  if (token) {
-    return `${BASE}/monster/${token}.webp`;
-  }
-  const family = familyPlate(slug, options.slug, options.name);
-  if (family) {
-    return `${BASE}/monster/${family}.webp`;
+  if (!ownStatBlock(options.slug)) {
+    const token = genreEnemyPlate(slug, options.slug, options.name);
+    if (token) {
+      return `${BASE}/monster/${token}.webp`;
+    }
+    const family = familyPlate(slug, options.slug, options.name);
+    if (family) {
+      return `${BASE}/monster/${family}.webp`;
+    }
   }
   if (typeof options.cr === "number" && options.cr >= BOSS_CR_FLOOR && BOSS_GENRES.has(slug)) {
     return `${BASE}/monster/${slug}-boss.webp`;

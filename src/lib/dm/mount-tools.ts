@@ -3,7 +3,7 @@ import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { getMounts, setMount } from "@/lib/db/mounts";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
-import { resolveSheetRef } from "@/lib/dm/rolls";
+import { resolveSheetRef, unknownSheetRef } from "@/lib/dm/rolls";
 import {
   checkMount,
   describeMount,
@@ -21,6 +21,7 @@ import { speedToTiles } from "@/lib/battlemap/movement";
 import { publishEphemeral } from "@/lib/events";
 import { rollCharacterSave } from "@/lib/dm/forced-save";
 import { applyDmMutation } from "@/lib/dm/mutations";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
 
 // Getting on and off a horse, with the PHB's rules attached.
 //
@@ -42,14 +43,14 @@ export const mountTools: ToolDef[] = [
     type: "function",
     function: {
       name: "mount_up",
-      description: `Put a character on a mount. While mounted they move at the mount's speed rather than their own (the board lets them walk that far), and mounting costs half their movement, taken from their own turn's movement in a fight. A mount must be one size larger than its rider. Known mounts: ${MOUNTS.map((mount) => mount.name).join(", ")}. For anything else, send customName with a speed and a size.`,
+      description: `Put a character on a mount: a known one in mount by its listed name (${MOUNTS.map((mount) => mount.name).join(", ")}), or customName. While mounted they move at the mount's speed rather than their own (the board lets them walk that far), and mounting costs half their movement, taken from their own turn's movement in a fight. A mount must be one size larger than its rider.`,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          characterId: { type: "string" },
-          mount: { type: "string", description: "A known mount's name." },
-          customName: { type: "string", description: "Or a beast of your own." },
+          characterId: { type: "string", description: "Exact characterId from GAME STATE." },
+          mount: { type: "string", description: "A known mount by its listed name, whatever the table calls it ('cavallo' is 'Riding horse')." },
+          customName: { type: "string", description: "Only for an animal no list has, by its name, with a speed and a size." },
           speed: { type: "integer", minimum: 0, maximum: 200, description: "For a custom mount." },
           size: { type: "string", enum: [...MOUNT_SIZES], description: "For a custom mount." },
           controlled: { type: "boolean", description: "Trained to bear a rider: it shares the rider's initiative." },
@@ -62,16 +63,16 @@ export const mountTools: ToolDef[] = [
     type: "function",
     function: {
       name: "dismount",
-      description: `Take a character off their mount. A voluntary dismount costs half their movement (taken from their own turn's movement on the board) and needs no roll. When something threw them, send cause: the server rolls their DC ${DISMOUNT_SAVE_DC} Dexterity save and lays them prone on a failure; do not roll it or set the condition yourself.`,
+      description: `Take a character off their mount. A voluntary dismount costs half their movement (taken from their own turn's movement on the board) and needs no roll. When something threw them, send cause: the server rolls their DC ${DISMOUNT_SAVE_DC} DEX save and lays them prone on a failure; do not roll it or set the condition yourself.`,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          characterId: { type: "string" },
+          characterId: { type: "string", description: "Exact characterId from GAME STATE." },
           cause: {
             type: "string",
             enum: ["voluntary", "forced-move", "mount-prone", "rider-prone"],
-            description: "Why they came off. Default 'voluntary'.",
+            description: "Why they came off. Default: 'voluntary'.",
           },
         },
         required: ["characterId"],
@@ -122,16 +123,16 @@ export function handleMountUp(
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
   turn?: Pick<DmTurn, "actor">,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof mountSchema>;
   try {
     args = mountSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: mount_up needs a characterId and a mount." };
+    return { error: "Invalid arguments: mount_up needs a characterId and a mount.", retry: true };
   }
   const sheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
   const checked = args.customName
     ? checkMount({
@@ -174,7 +175,7 @@ function spendMountingMovement(
   campaign: Campaign,
   sheet: CharacterSheet,
   turn?: Pick<DmTurn, "actor">,
-): { charged: boolean } | { error: string } {
+): { charged: boolean } | ToolError {
   const encounter = getActiveEncounter(campaign.id);
   const map = encounter?.orderReady ? getBattleMapForEncounter(encounter.id) : null;
   const token = map ? getTokenByRef(map.id, sheet.id) : null;
@@ -183,7 +184,7 @@ function spendMountingMovement(
   }
   const current = encounter.order[encounter.turnIndex];
   if (turn?.actor !== "human_dm" && (current?.kind !== "pc" || current.characterId !== sheet.id)) {
-    return { error: `${sheet.name} mounts or dismounts during their own move only; it is ${current?.name ?? "another combatant"}'s turn.` };
+    return { error: `${sheet.name} mounts or dismounts during their own move only; it is ${current?.name ?? "another combatant"}'s turn. What they declared waits for their turn.`, refused: "rules" };
   }
   const half = Math.floor(speedToTiles(sheet.speed) / 2);
   const mounted = getMounts(campaign.id)[sheet.id];
@@ -191,6 +192,7 @@ function spendMountingMovement(
   if (full - token.movedThisRound < half) {
     return {
       error: `${sheet.name} has too little movement left this turn to ${mounted ? "dismount" : "mount"}: it costs half their speed (${half * 5} ft).`,
+      refused: "rules",
     };
   }
   moveToken(token.id, token.x, token.y, token.movedThisRound + half);
@@ -205,20 +207,20 @@ export function handleDismount(
   sheetsById: Map<string, CharacterSheet>,
   // The turn the thrown rider's save is rolled on.
   turn?: DmTurn,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof dismountSchema>;
   try {
     args = dismountSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: dismount needs a characterId." };
+    return { error: "Invalid arguments: dismount needs a characterId.", retry: true };
   }
   const sheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
   const current = getMounts(campaign.id)[sheet.id];
   if (!current) {
-    return { error: `${sheet.name} is not mounted.` };
+    return { error: `${sheet.name} is not mounted.`, refused: "rules" };
   }
   const cause = args.cause ?? "voluntary";
   if (cause === "voluntary") {

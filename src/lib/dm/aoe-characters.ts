@@ -17,6 +17,7 @@ import { handleSetCondition } from "@/lib/dm/set-condition";
 import type { spellConditionMeta } from "@/lib/dm/spell-effects";
 import { defenseRiders } from "@/lib/srd/feature-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { saveAgainst } from "@/lib/dm/roll-about";
 
 export function aoeOnCharacters(input: {
   campaign: Campaign;
@@ -57,11 +58,13 @@ export function aoeOnCharacters(input: {
       input.dc,
       `${ability.toUpperCase()} save vs area effect`,
       // What the save resists, so a trait keyed to it applies (a dwarf
-      // against poison, a gnome against a spell).
-      // An enemy's spell names its caster's type (Holy Nimbus).
-      [input.type, input.spell ? "spell" : "", input.spell && enemyUse ? `spell cast by ${enemyUse.enemy.stats.type ?? ""}` : ""]
-        .filter(Boolean)
-        .join(" ") || undefined,
+      // against poison, a gnome against a spell); an enemy's spell names its
+      // caster's type (Holy Nimbus).
+      saveAgainst({
+        damageType: input.type,
+        magical: Boolean(input.spell),
+        spellBy: input.spell && enemyUse ? enemyUse.enemy.stats.type : undefined,
+      }),
       enemyUse?.enemy ?? null,
     );
     // An automatic failure (a paralyzed creature's DEX save) is settled as
@@ -69,11 +72,20 @@ export function aoeOnCharacters(input: {
     const success = save.autoFailed ? false : save.success;
     // A player's spell that binds lays its conditions on a character who
     // fails, recorded with the spell (an ally caught in a Slow).
+    // What landed and what a trait refused are both reported, so the
+    // narration never binds an immune character.
+    const bound: string[] = [];
+    const refused: string[] = [];
     if (!success && plan?.conditions.length && conditionMeta) {
       for (const condition of plan.conditions) {
-        handleSetCondition(campaign, turn.id, getSheetById(sheet.id) ?? sheet, { condition }, `${plan.spell} cast by ${plan.caster.name}`, {
+        const applied = handleSetCondition(campaign, turn.id, getSheetById(sheet.id) ?? sheet, { condition }, `${plan.spell} cast by ${plan.caster.name}`, {
           spellEffect: conditionMeta,
         });
+        if ("error" in applied) {
+          refused.push(String(applied.error));
+        } else {
+          bound.push(condition);
+        }
       }
     }
     // Evasion: on a Dexterity save for half, a made save takes nothing and a
@@ -91,6 +103,8 @@ export function aoeOnCharacters(input: {
       success,
       damage: damageTaken,
       ...(evasion ? { evasion: success ? "no damage" : "half damage" } : {}),
+      ...(bound.length ? { conditionApplied: bound.join(", ") } : {}),
+      ...(refused.length ? { conditionRefused: refused.join(" ") } : {}),
     };
     for (const part of taken.filter((entry) => entry.amount > 0)) {
       const applied = applyDmMutation(
@@ -101,7 +115,9 @@ export function aoeOnCharacters(input: {
           characterId: sheet.id,
           amount: part.amount,
           type: part.type,
-          ...(input.spell ? { spell: input.spell } : {}),
+          // A spell's damage is magical: "from nonmagical attacks" on a
+          // beast form's block does not cover Ice Storm's hail.
+          ...(input.spell ? { spell: input.spell, magical: true } : {}),
           reason: (input.reason ?? "area effect").slice(0, 200),
         }),
         sheets,

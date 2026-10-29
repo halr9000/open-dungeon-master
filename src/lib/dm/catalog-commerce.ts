@@ -1,7 +1,9 @@
 import type { CatalogEntry } from "@/lib/dm/catalog-types";
 
 // The console's shop forms (docs/vtt-parity-implementation-plan.md 11.1),
-// one per tool the model has, so a person can keep a market too.
+// one per tool the model has, so a person can keep a market too. Buying and
+// selling is the party's Buy or sell form (purchase), which trades at a shop
+// standing here (issue #471).
 export const COMMERCE_ADJUDICATIONS: CatalogEntry[] = [
   {
     name: "generate_settlement",
@@ -54,38 +56,20 @@ export const COMMERCE_ADJUDICATIONS: CatalogEntry[] = [
     ],
   },
   {
-    name: "buy_item",
-    label: "Buy from a shop",
-    category: "party",
-    summary: "The shelf sets the price; the purse decides.",
-    fields: [
-      { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "shop", label: "Shop", kind: "text", required: true },
-      { name: "item", label: "Item", kind: "text", required: true },
-      { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
-    ],
-  },
-  {
-    name: "sell_item",
-    label: "Sell to a shop",
-    category: "party",
-    summary: "The keeper pays half list; name a price only for what the pack does not know.",
-    fields: [
-      { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "shop", label: "Shop", kind: "text", required: true },
-      { name: "item", label: "Item", kind: "text", required: true },
-      { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
-      { name: "priceCp", label: "Price each (copper)", kind: "number", min: 1, help: "Only for an item the content pack has no price for." },
-    ],
-  },
-  {
     name: "haggle",
     label: "Haggle",
     category: "social",
-    summary: "A Persuasion check: win and every price drops a step, lose and they rise one. Once per character per shop.",
+    summary: "A haggling check: win and prices drop a step, fail and they hold, fail by 5 or more and they rise a step (two for Intimidation). The result is for the haggler and those at the counter with them. Once per character per shop; Deception works once per shop.",
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
       { name: "shop", label: "Shop", kind: "text", required: true },
+      { name: "skill", label: "Skill", kind: "select", options: [
+          { value: "persuasion", label: "Persuasion" },
+          { value: "intimidation", label: "Intimidation" },
+          { value: "deception", label: "Deception" },
+        ],
+      },
+      { name: "presentCharacterIds", label: "Also at the counter", kind: "characters" },
     ],
   },
 ];

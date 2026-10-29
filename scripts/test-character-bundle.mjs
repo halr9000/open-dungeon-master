@@ -45,6 +45,7 @@ const sheet = createSheetSchema.parse({
   hitDice: { die: "d8", total: 1, spent: 0 },
   proficiencies: { saves: ["dex", "int"], skills: ["stealth"], languages: [], tools: [], armor: [], weapons: [] },
   backstory: "Grew up picking locks.",
+  attraction: { genders: ["Female", "Nonbinary"], note: "the clever ones" },
   portrait: { id: "abc", name: "Testa.webp", type: "image/webp", url: "/uploads/abc.webp" },
 });
 
@@ -95,6 +96,8 @@ await test("round trip: import writes a fresh file and rewires the sheet", async
   assert.equal(unpacked.sheet.portrait.id, "fresh");
   assert.equal(unpacked.sheet.backstory, "Grew up picking locks.");
   assert.equal(unpacked.sheet.abilities.dex, 17);
+  // Who they are drawn to is identity and travels with them (issue 501).
+  assert.deepEqual(unpacked.sheet.attraction, { genders: ["Female", "Nonbinary"], note: "the clever ones" });
 });
 
 await test("a bundle without a portrait imports with none and asks for a painting", async () => {
@@ -154,7 +157,7 @@ await test("wrong kind and version are refused by name", async () => {
   const bundle = await buildCharacterBundle(character(), fakeReader);
   const kind = parseCharacterBundle({ ...bundle, kind: "odm.workshop" });
   assert.equal(kind.ok, false);
-  assert.match(kind.error, /Not an Open Dungeon Master character file/);
+  assert.match(kind.error, /Not an Open Game Master character file/);
   const version = parseCharacterBundle({ ...bundle, version: 2 });
   assert.equal(version.ok, false);
   assert.match(version.error, /version \(2\)/);
@@ -202,7 +205,7 @@ await test("an invalid sheet is refused with its field named", async () => {
 });
 
 await test("export filename is a slug", () => {
-  assert.equal(characterBundleFilename("Testa Quill!"), "testa-quill.odm-character.json");
+  assert.equal(characterBundleFilename("Testa Quill!"), "testa_quill.odm-character.json");
   assert.equal(characterBundleFilename("   "), "character.odm-character.json");
 });
 

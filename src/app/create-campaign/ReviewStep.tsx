@@ -15,6 +15,7 @@ import type { GroupId, StepKey } from "@/app/create-campaign/groups";
 import { coverSheet } from "@/app/create-campaign/cover-sheet";
 import { customRules, narrationSummary, safetySummary } from "@/app/create-campaign/summaries";
 import { featuresOn } from "@/app/create-campaign/table-sheet";
+import { bringsSomething } from "@/app/workshop/ContentImportPicker";
 
 export type EditTarget = { step: Exclude<StepKey, "review">; group?: GroupId };
 
@@ -32,6 +33,7 @@ export function ReviewStep({
   selectedPack,
   prep,
   error,
+  followUp = null,
   onEdit,
   defaultsPanel,
 }: StepProps & {
@@ -40,6 +42,10 @@ export function ReviewStep({
   selectedPack: WorldPackSummary | null;
   prep: { title: string; arcComing: boolean } | null;
   error: string;
+  // The campaign is made and part of what was chosen did not land: what
+  // failed, and the way into the campaign as it stands. The wizard's own
+  // button says Try again meanwhile and sends only what failed.
+  followUp?: { problems: string[]; busy: boolean; onOpen: () => void } | null;
   onEdit: (target: EditTarget) => void;
   defaultsPanel: ReactNode;
 }) {
@@ -48,7 +54,7 @@ export function ReviewStep({
   const sheet = coverSheet(draft, gates, selectedPack?.name ?? null);
   const voices = useTtsVoices();
   const rules = customRules(draft);
-  const importing = Boolean(draft.contentImport.sourceId && draft.contentImport.select.length);
+  const importing = bringsSomething(draft.contentImport);
   const storyboardClash = Boolean(prep?.arcComing && importing && gates.aiNarrates && draft.aiStorySetup && !draft.storySetupKept);
   let index = 0;
   const row = (label: string, value: ReactNode, target: EditTarget, options: { gold?: boolean; wrap?: boolean } = {}) => (
@@ -131,6 +137,23 @@ export function ReviewStep({
         </p>
       ) : null}
       {error ? <p className="motion-shake text-red-400">{error}</p> : null}
+      {followUp ? (
+        <div role="alert" className="motion-shake space-y-2 rounded-lg border border-amber-900/50 bg-amber-950/30 p-3 text-amber-200">
+          <p>{solo ? "The adventure is made" : "The campaign is made"}, but part of what you chose for it did not come in:</p>
+          <ul className="list-disc space-y-1 pl-5 text-amber-100/90">
+            {followUp.problems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-amber-200/80">
+            Try again sends only what failed. Or open it now and bring the rest in from the lobby: Bring in prep for a
+            workshop, House rules and Lore for what you typed here.
+          </p>
+          <button type="button" className="cc-link inline-flex min-h-10 items-center" disabled={followUp.busy} onClick={followUp.onOpen}>
+            {solo ? "Open the adventure as it is" : "Open the campaign as it is"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

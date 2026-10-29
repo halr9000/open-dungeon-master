@@ -7,6 +7,7 @@ import { AddFromList, type AddOption } from "@/components/ui/AddFromList";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { input, removeAt, replaceAt } from "@/app/workshop/plugin/types";
+import { textKey } from "@/lib/language/text-logic";
 
 // The field primitives the Plugin sections are built from: a labelled text
 // field with its cap shown, a list of name-and-blurb pairs, a list of lines,
@@ -205,7 +206,7 @@ export function ChipList({
   const [typed, setTyped] = useState("");
   const add = (value: string) => {
     const trimmed = value.trim().slice(0, maxLength);
-    if (!trimmed || items.some((item) => item.toLowerCase() === trimmed.toLowerCase()) || items.length >= max) {
+    if (!trimmed || items.some((item) => textKey(item) === textKey(trimmed)) || items.length >= max) {
       return;
     }
     onChange([...items, trimmed]);
@@ -228,7 +229,7 @@ export function ChipList({
               type="button"
               onClick={() => onChange(items.filter((current) => current !== item))}
               aria-label={`Remove ${item}`}
-              className={cn(ui.iconAction, "rounded-full p-1 opacity-100 hover:text-red-300")}
+              className={cn(ui.iconAction, "tap-reach rounded-full p-1 opacity-100 hover:text-red-300")}
             >
               <X className="size-3" />
             </button>

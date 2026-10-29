@@ -1,11 +1,14 @@
 import { z } from "zod";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
-import { getLoreEntry } from "@/lib/db/lore";
+import { getLoreEntry, listLoreEntries } from "@/lib/db/lore";
 import { getQuest, insertQuest, listQuests, updateQuest } from "@/lib/db/quests";
-import { normalizeObjectives, tickObjective, type QuestStatus } from "@/lib/dm/quest-logic";
+import { DM_ONLY_MARK, normalizeObjectives, tickObjective, type Quest, type QuestObjective, type QuestStatus } from "@/lib/dm/quest-logic";
 import { dismissHandout, publishHandout } from "@/lib/dm/scene-state";
 import { isUploadedImagePath } from "@/lib/uploads";
+import type { WorldLoreEntry } from "@/lib/dm/world-lore-logic";
+import { noneNamed, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The binder's tools (docs/vtt-parity-implementation-plan.md sections 5.2
 // and 5.7): put a handout in front of the table and take it away again,
@@ -25,13 +28,12 @@ export const binderTools: ToolDef[] = [
     function: {
       name: "show_handout",
       description:
-        "Put a handout on every player's screen: a lore entry by id (only one the party may read), or an uploaded picture. Call it when the party finds a letter, a notice, a map, a page. It stays up until dismissed.",
+        "Put a lore entry on every player's screen as a handout, by its title (only one the party may read). Call it when the party finds a letter, a notice, a map, a page. It stays up until dismissed.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          loreId: { type: "string", description: "The lore entry to show." },
-          imagePath: { type: "string", description: "An uploaded picture (/uploads/...) instead of an entry." },
+          lore: { type: "string", description: "Its title, as search_lore gives it." },
           caption: { type: "string", description: "A line under it." },
         },
         required: [],
@@ -56,10 +58,14 @@ export const binderTools: ToolDef[] = [
         type: "object",
         additionalProperties: false,
         properties: {
-          questId: { type: "string", description: "The quest to change; omit to add one." },
-          title: { type: "string", description: "What the quest is called." },
-          objectives: { type: "array", items: { type: "string" }, description: "The steps, one line each. Replaces the list." },
-          status: { type: "string", enum: ["active", "done", "failed"], description: "Default 'active'." },
+          quest: { type: "string", description: "The quest to change, by its title in GAME STATE; omit to add one." },
+          title: { type: "string", description: "What the quest is called; a new quest needs it." },
+          objectives: {
+            type: "array",
+            items: { type: "string" },
+            description: "The steps, one line each. Replaces the list; a step restated word for word keeps its tick.",
+          },
+          status: { type: "string", enum: ["active", "done", "failed"], description: "Default: 'active'." },
         },
         required: [],
       },
@@ -74,39 +80,60 @@ export const binderTools: ToolDef[] = [
         type: "object",
         additionalProperties: false,
         properties: {
-          questId: { type: "string" },
-          objectiveId: { type: "string" },
-          done: { type: "boolean", description: "Default true." },
+          quest: { type: "string", description: "Its title in GAME STATE." },
+          objective: { type: "string", description: "Its text in GAME STATE." },
+          done: { type: "boolean", description: "Default: true." },
         },
-        required: ["questId", "objectiveId"],
+        required: ["quest", "objective"],
       },
     },
   },
 ];
 
+// The model names a lore entry by its title (search_lore gives it as
+// "category: title"); the binder's Show this now button sends its id.
 const handoutSchema = z.object({
-  loreId: z.string().trim().min(1).optional(),
+  lore: z.string().trim().min(1).optional(),
   imagePath: z.string().trim().optional(),
   caption: z.string().trim().max(200).optional(),
 });
 
+function loreEntryFor(campaignId: string, args: z.infer<typeof handoutSchema>): WorldLoreEntry | ToolError | null {
+  if (!args.lore) {
+    return null;
+  }
+  const byId = getLoreEntry(args.lore);
+  if (byId?.campaignId === campaignId) {
+    return byId;
+  }
+  const wanted = textKey(args.lore);
+  const entries = listLoreEntries(campaignId);
+  return (
+    entries.find((entry) => textKey(entry.title) === wanted || textKey(`${entry.category}: ${entry.title}`) === wanted) ??
+    noneNamed("No lore entry is titled", args.lore, entries.filter((entry) => entry.visibility !== "dm" && !entry.unpublished).map((entry) => entry.title))
+  );
+}
+
 // A person may show anything they can read; the model may show only what
 // the party may read, so a secret never lands on the table by mistake.
-export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawArguments: string): Record<string, unknown> {
+export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawArguments: string): ToolResult {
   let args: z.infer<typeof handoutSchema>;
   try {
     args = handoutSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: show_handout needs a loreId or an imagePath." };
+    return { error: "Invalid arguments: show_handout needs lore: the lore entry's title.", retry: true };
   }
   const human = turn?.actor === "human_dm";
-  if (args.loreId) {
-    const entry = getLoreEntry(args.loreId);
-    if (!entry || entry.campaignId !== campaign.id) {
-      return { error: "No lore entry by that id." };
+  const entry = loreEntryFor(campaign.id, args);
+  if (entry) {
+    if ("error" in entry) {
+      return entry;
     }
     if (entry.visibility === "dm" && !human) {
-      return { error: "That entry is the DM's secret; it cannot be shown to the table." };
+      return { error: "That entry is the GM's secret; it cannot be shown to the table.", retry: true };
+    }
+    if (entry.unpublished && !human) {
+      return { error: "That entry is not canon yet; it cannot be shown to the table.", retry: true };
     }
     const handout = publishHandout(campaign.id, {
       loreId: entry.id,
@@ -120,7 +147,7 @@ export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawAr
   }
   if (args.imagePath) {
     if (!isUploadedImagePath(args.imagePath)) {
-      return { error: "Not an uploaded picture." };
+      return { error: "Not an uploaded picture.", retry: true };
     }
     const handout = publishHandout(campaign.id, {
       imagePath: args.imagePath,
@@ -131,7 +158,7 @@ export function handleShowHandout(campaign: Campaign, turn: DmTurn | null, rawAr
     });
     return { ok: true, shown: handout.title, handoutId: handout.id };
   }
-  return { error: "show_handout needs a loreId or an imagePath." };
+  return { error: "show_handout needs lore: the lore entry's title.", retry: true };
 }
 
 export function handleDismissHandout(campaign: Campaign, rawArguments: string): Record<string, unknown> {
@@ -146,8 +173,26 @@ export function handleDismissHandout(campaign: Campaign, rawArguments: string): 
   return { ok: true };
 }
 
+// GAME STATE lists a quest by its title and an objective by its text, never
+// their ids, so the model names them that way; an older console sends ids.
+function questFor(campaignId: string, ref: { quest?: string }): Quest | ToolError | null {
+  if (!ref.quest) {
+    return null;
+  }
+  const byId = getQuest(ref.quest);
+  if (byId?.campaignId === campaignId) {
+    return byId;
+  }
+  const quests = listQuests(campaignId);
+  // GAME STATE marks the DM's own quests (renderQuestsForPrompt), and the
+  // model copies the line it reads.
+  const title = textKey(ref.quest.startsWith(DM_ONLY_MARK) ? ref.quest.slice(DM_ONLY_MARK.length) : ref.quest);
+  const named = quests.filter((quest) => textKey(quest.title) === title);
+  return named.find((quest) => quest.status === "active") ?? named[0] ?? noneNamed("No quest is titled", ref.quest, quests.map((quest) => quest.title));
+}
+
 const questSchema = z.object({
-  questId: z.string().trim().optional(),
+  quest: z.string().trim().optional(),
   title: z.string().trim().max(120).optional(),
   // The console sends the objectives as lines; the model sends a list.
   objectives: z
@@ -158,33 +203,49 @@ const questSchema = z.object({
   visibility: z.enum(["party", "dm"]).optional(),
 });
 
-export function handleSetQuest(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+export function handleSetQuest(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof questSchema>;
   try {
     args = questSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: set_quest takes a title, objectives and a status." };
+    return { error: "Invalid arguments: set_quest takes a title, objectives and a status.", retry: true };
   }
-  if (args.questId) {
-    const quest = getQuest(args.questId);
-    if (!quest || quest.campaignId !== campaign.id) {
-      return { error: "No quest by that id." };
-    }
-    const updated = updateQuest(quest.id, {
-      ...(args.title ? { title: args.title } : {}),
-      ...(args.objectives ? { objectives: normalizeObjectives(args.objectives) } : {}),
+  const update = (quest: Quest, retitle: boolean) =>
+    updateQuest(quest.id, {
+      ...(args.title && retitle ? { title: args.title } : {}),
+      // The steps already ticked stay ticked when the list is restated.
+      ...(args.objectives ? { objectives: normalizeObjectives(args.objectives, quest.objectives) } : {}),
       ...(args.status ? { status: args.status as QuestStatus } : {}),
       ...(args.visibility ? { visibility: args.visibility } : {}),
     });
-    return { ok: true, quest: updated };
+  const quest = questFor(campaign.id, args);
+  if (quest) {
+    if ("error" in quest) {
+      return quest;
+    }
+    return { ok: true, quest: update(quest, true) };
   }
   if (!args.title) {
-    return { error: "A new quest needs a title." };
+    return { error: "A new quest needs a title.", retry: true };
+  }
+  // A title the log already holds, on a quest still open, is that quest: the
+  // model restates a quest by its title in title as often as it names it in quest,
+  // and a second row of the same quest splits its ticks. A quest the party
+  // finished or failed can be taken up again as a new one.
+  const open = listQuests(campaign.id).find(
+    (quest) => (quest.status === "active" || quest.status === "hidden") && textKey(quest.title) === textKey(args.title ?? ""),
+  );
+  if (open) {
+    return {
+      ok: true,
+      quest: update(open, false),
+      note: `"${open.title}" was already in the log, so it was updated rather than added again.`,
+    };
   }
   if (listQuests(campaign.id).filter((quest) => quest.status === "active").length >= 40) {
-    return { error: "The quest log is full; finish or fail some first." };
+    return { error: "The quest log is full; finish or fail some first.", retry: true };
   }
-  const quest = insertQuest({
+  const added = insertQuest({
     campaignId: campaign.id,
     title: args.title,
     objectives: normalizeObjectives(args.objectives ?? []),
@@ -192,30 +253,53 @@ export function handleSetQuest(campaign: Campaign, rawArguments: string): Record
     visibility: args.visibility ?? "party",
     source: "dm",
   });
-  return { ok: true, quest };
+  return { ok: true, quest: added };
 }
 
 const tickSchema = z.object({
-  questId: z.string().trim().min(1),
-  objectiveId: z.string().trim().min(1),
+  quest: z.string().trim().min(1).optional(),
+  objective: z.string().trim().min(1).optional(),
   done: z.boolean().optional(),
 });
 
-export function handleTickObjective(campaign: Campaign, rawArguments: string): Record<string, unknown> {
+function objectiveFor(campaignId: string, args: z.infer<typeof tickSchema>): { quest: Quest; objective: QuestObjective } | ToolError {
+  const needs: ToolError = { error: "tick_objective needs a quest, by its title, and an objective, by its text.", retry: true };
+  const quest = questFor(campaignId, args);
+  if (!quest) {
+    return needs;
+  }
+  if ("error" in quest) {
+    return quest;
+  }
+  if (!args.objective) {
+    return needs;
+  }
+  const wanted = textKey(args.objective);
+  const objective = quest.objectives.find((entry) => entry.id === args.objective || textKey(entry.text) === wanted);
+  return objective ? { quest, objective } : noneNamed(`"${quest.title}" has no objective`, args.objective, quest.objectives.map((entry) => entry.text));
+}
+
+// The waypoint check reads a tick as the tool does, so a quest named by its
+// title ticks its waypoint too.
+export function tickedObjective(campaignId: string, rawArguments: string): { quest: Quest; objective: QuestObjective } | null {
+  const parsed = tickSchema.safeParse(JSON.parse(rawArguments || "{}"));
+  const found = parsed.success ? objectiveFor(campaignId, parsed.data) : null;
+  return found && !("error" in found) ? found : null;
+}
+
+export function handleTickObjective(campaign: Campaign, rawArguments: string): ToolResult {
   let args: z.infer<typeof tickSchema>;
   try {
     args = tickSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: tick_objective needs a questId and an objectiveId." };
+    return { error: "Invalid arguments: tick_objective needs a quest and an objective.", retry: true };
   }
-  const quest = getQuest(args.questId);
-  if (!quest || quest.campaignId !== campaign.id) {
-    return { error: "No quest by that id." };
+  const found = objectiveFor(campaign.id, args);
+  if ("error" in found) {
+    return found;
   }
-  if (!quest.objectives.some((objective) => objective.id === args.objectiveId)) {
-    return { error: "No objective by that id on that quest." };
-  }
-  const objectives = tickObjective(quest.objectives, args.objectiveId, args.done ?? true);
+  const { quest, objective } = found;
+  const objectives = tickObjective(quest.objectives, objective.id, args.done ?? true);
   const allDone = objectives.length > 0 && objectives.every((objective) => objective.done);
   const updated = updateQuest(quest.id, { objectives, ...(allDone ? { status: "done" as const } : {}) });
   return { ok: true, quest: updated, complete: allDone };

@@ -25,10 +25,12 @@ import {
   halfOnSaveFor,
   saveAbilityFor,
 } from "@/lib/srd/spell-scaling";
+import { spellNamesOf } from "@/lib/srd/spell-facts";
 import { MECH_OVERRIDES } from "@/lib/srd/spell-mech-overrides";
 import type { SpellMech } from "@/lib/srd/spell-mech-types";
+import { textKey } from "@/lib/language/text-logic";
 
-export type { SpellAura, SpellCondition, SpellMech } from "@/lib/srd/spell-mech-types";
+export type { SpellMech } from "@/lib/srd/spell-mech-types";
 export { MECH_OVERRIDES };
 
 type AuthoredSpellRow = {
@@ -43,37 +45,34 @@ type AuthoredSpellRow = {
 
 const AUTHORED_SPELLS = (authoredSpellsJson as unknown as { spells: AuthoredSpellRow[] }).spells;
 
-function normalize(name: string) {
-  return name.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
 const AUTHORED_MECH = new Map<string, { row: AuthoredSpellRow; mech: SpellMech }>();
 for (const row of AUTHORED_SPELLS) {
   if (row.mech) {
-    AUTHORED_MECH.set(normalize(row.name), { row, mech: row.mech });
+    AUTHORED_MECH.set(textKey(row.name), { row, mech: row.mech });
   }
 }
 
 // The authored row for a spell name, mech or not (for level/concentration
 // when the content database is absent).
 export function authoredSpellRow(name: string): AuthoredSpellRow | null {
-  const wanted = normalize(name);
-  return AUTHORED_SPELLS.find((row) => normalize(row.name) === wanted) ?? null;
+  const wanted = textKey(name);
+  return AUTHORED_SPELLS.find((row) => textKey(row.name) === wanted) ?? null;
 }
+
+const OVERRIDES_BY_KEY = new Map(Object.entries(MECH_OVERRIDES).map(([name, mech]) => [textKey(name), mech]));
 
 // Layer 1 + 2: an authored or overridden mechanics row for any of a spell's
 // names, or null. Callers pass the canonical name plus aliases.
 export function spellMechFor(names: string[]): SpellMech | null {
   // The SRD's names drop the wizard who wrote the spell ("Evard's Black
-  // Tentacles" is "Black Tentacles"); a name kept with it finds the same row.
-  const bare = names.map((name) => name.replace(/^\s*[a-z]+'s\s+/i, ""));
-  for (const name of [...names, ...bare]) {
-    const wanted = normalize(name);
+  // Tentacles" is "Black Tentacles"); the checklist's other names find the row.
+  for (const name of [...new Set(names.flatMap(spellNamesOf))]) {
+    const wanted = textKey(name);
     const authored = AUTHORED_MECH.get(wanted);
     if (authored) {
       return authored.mech;
     }
-    const override = MECH_OVERRIDES[wanted];
+    const override = OVERRIDES_BY_KEY.get(wanted);
     if (override) {
       return override;
     }

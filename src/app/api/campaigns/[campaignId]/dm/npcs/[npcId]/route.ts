@@ -12,6 +12,8 @@ import {
 import { describePersonality, normalizeNpcDraft } from "@/lib/npcs/forge";
 import { isUploadedImagePath } from "@/lib/uploads";
 import { queueNpcPortrait } from "@/lib/portrait";
+import { recordsChanged } from "@/lib/workshop/record-events";
+import { textKey } from "@/lib/language/text-logic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,7 +68,7 @@ export async function PATCH(
     // ambiguous, so it is refused; renaming to a different spelling of their
     // own name is fine and is what aliases are for.
     const clash = listNpcs(campaignId).some(
-      (npc) => npc.id !== npcId && npc.name.toLowerCase() === outcome.draft.name.toLowerCase(),
+      (npc) => npc.id !== npcId && textKey(npc.name) === textKey(outcome.draft.name),
     );
     if (clash) {
       return Response.json(
@@ -93,6 +95,7 @@ export async function PATCH(
     setNpcArchived(npcId, body.archived);
   }
 
+  recordsChanged(campaignId, "npc", "world");
   return Response.json({ ok: true, npc: getNpcById(npcId) });
 }
 
@@ -111,5 +114,6 @@ export async function DELETE(
   }
   deleteNpc(npcId);
   publishCast(campaignId);
+  recordsChanged(campaignId, "npc", "world");
   return Response.json({ ok: true });
 }

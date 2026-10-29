@@ -23,14 +23,14 @@ export const PLAYER_TOUR: TourStep[] = [
   {
     id: "modes",
     title: "How you speak",
-    body: "Do describes what your character does. Say speaks in character. OOC is table talk the Dungeon Master ignores. Pick one, then write in the box below.",
+    body: "Do describes what your character does. Say speaks in character. OOC is table talk the Game Master ignores. Pick one, then write in the box below.",
     anchors: ["composer-modes"],
     prepare: "show-chat",
   },
   {
     id: "compose",
     title: "Take your turn",
-    body: "Type your action here and press Enter. The Dungeon Master reads everything sent up to that moment and answers the whole table at once, whether that is the AI or a person in the DM seat, so agree on a plan before you send.",
+    body: "Type your action here and press Enter. The Game Master reads everything sent up to that moment and answers the whole table at once, whether that is the AI or a person in the GM seat, so agree on a plan before you send.",
     anchors: ["composer-input"],
     prepare: "show-chat",
   },
@@ -50,7 +50,7 @@ export const PLAYER_TOUR: TourStep[] = [
   },
   {
     id: "ask",
-    title: "Ask the DM",
+    title: "Ask the GM",
     body: "Questions about the story, the rules or your sheet go here, not in the message box. Asking never moves the story on, so it works even while the floor is locked.",
     anchors: ["ask-dm"],
     prepare: "show-chat",
@@ -84,7 +84,7 @@ export const PLAYER_TOUR: TourStep[] = [
   {
     id: "story",
     title: "The story so far",
-    body: "Chapters, the facts the table has pinned, and the log of every roll and stat change the Dungeon Master made. Once a chapter closes, Open the chronicle turns the closed chapters like the pages of a book.",
+    body: "Chapters, the facts the table has pinned, and the log of every roll and stat change the Game Master made. Once a chapter closes, Open the chronicle turns the closed chapters like the pages of a book.",
     anchors: ["tab-story"],
     prepare: "open-story",
   },
@@ -110,9 +110,21 @@ export const PLAYER_TOUR: TourStep[] = [
   {
     id: "chat",
     title: "Whispers and side chat",
-    body: "Private words with the Dungeon Master, and side chat between players that never reaches the transcript.",
+    body: "Private words with the Game Master, and side chat between players that never reaches the transcript.",
     anchors: ["tab-chat"],
     prepare: "open-chat",
+  },
+  {
+    id: "settings",
+    title: "How this table is set up",
+    body: "Settings holds the table's settings in the same named groups the campaign creator used, each saying what is set inside before you open it. Whoever steers the story changes them there and the change reaches everyone at once; everyone else can read them.",
+    anchors: ["tab-settings"],
+  },
+  {
+    id: "more",
+    title: "Every other tab",
+    body: "On a phone the bar keeps the table and the tabs you use most. More lists the rest, the map, notes and settings among them, and lights up when one of them is waiting on you.",
+    anchors: ["tab-more"],
   },
   {
     id: "dice",
@@ -129,8 +141,48 @@ export const PLAYER_TOUR: TourStep[] = [
   {
     id: "help",
     title: "Help, settings and the way home",
-    body: "Help explains every button. The account menu beside it holds your characters, settings, log out, and, inside the app, the way back to its home screen.",
-    anchors: ["header-help"],
+    body: "Help explains every button. On a phone it shares the table menu with narration, sound and the rulebook, each row saying what it does. The account menu beside it holds your characters, settings, log out, and, inside the app, the way back to its home screen.",
+    anchors: ["header-help", "header-menu"],
+  },
+];
+
+// What a player meets the first time they sit at a table: how to take a
+// turn, how to ask a question, where their character and Help are. It
+// replaces the full tour as the one that opens by itself (no more
+// interruptions than before, and fewer steps); finishing it counts as the
+// player tour seen, and Help's "Tour the table" plays every step.
+export const FIRST_TURN_TOUR: TourStep[] = [
+  {
+    id: "first-welcome",
+    title: "Your first turn",
+    body: "Three things are all a first turn needs: saying what you do, asking when you are unsure, and finding your character. Everything else waits until you want it.",
+    anchors: [],
+  },
+  {
+    id: "first-act",
+    title: "Say what you do",
+    body: "Pick Do for an action or Say to speak in character, write it here and press Enter. The Game Master answers the whole table at once, so agree on a plan before you send.",
+    anchors: ["composer-input", "composer-modes"],
+    prepare: "show-chat",
+  },
+  {
+    id: "first-ask",
+    title: "Ask when unsure",
+    body: "A question about the story, the rules or your sheet goes here. Asking never moves the story on.",
+    anchors: ["ask-dm"],
+    prepare: "show-chat",
+  },
+  {
+    id: "first-hero",
+    title: "Your character",
+    body: "Your hit points, spells and gear are in Party. Select your card to open the full sheet.",
+    anchors: ["party-rail", "tab-party"],
+  },
+  {
+    id: "first-help",
+    title: "Everything else",
+    body: "Help explains every button and holds the full tour of the table: maps, chat, settings, dice and voice.",
+    anchors: ["header-help", "header-menu"],
   },
 ];
 
@@ -144,14 +196,14 @@ export const DM_TOUR: TourStep[] = [
   {
     id: "modes",
     title: "Narrate and OOC",
-    body: "Narrate writes into the story as the Dungeon Master. OOC is table talk. Player actions arrive as intents for you to answer.",
+    body: "Narrate writes into the story as the Game Master. OOC is table talk. Player actions arrive as intents for you to answer.",
     anchors: ["composer-modes"],
     prepare: "show-chat",
   },
   {
     id: "console",
     title: "Your console",
-    body: "Only the DM seats have this tab. It holds the floor, the story beats, the hand-over switches when an assistant is on, the queue of intents waiting on you, and every tool underneath.",
+    body: "Only the GM seats have this tab. It holds the floor, the story beats, the hand-over switches when an assistant is on, the queue of intents waiting on you, and every tool underneath.",
     anchors: ["tab-dm"],
     prepare: "open-dm",
   },
@@ -189,6 +241,12 @@ export const DM_TOUR: TourStep[] = [
     body: "Assist for stat blocks, DCs and odds. Combat, Party, World, Social, Story and Table for every ruling the engine can apply. Maps, Cast, Bestiary, Storyboard and Tables for prep.",
     anchors: ["dm-console-tabs"],
     prepare: "open-dm",
+  },
+  {
+    id: "world",
+    title: "The world, at the table",
+    body: "Whoever runs the story has this tab: the campaign's own copy of its WorldForge world, so a change here stays at this table. Reveal to the party turns a secret into lore the players read, and the GM can put it on every screen as a handout. An Atlas map reaches the players' Map tab only once you show it to the party.",
+    anchors: ["tab-world", "tab-more"],
   },
   {
     id: "party-rail",
@@ -236,9 +294,21 @@ export const DM_TOUR: TourStep[] = [
     prepare: "open-chat",
   },
   {
+    id: "settings",
+    title: "The table's settings",
+    body: "Settings holds everything this table can switch, in the campaign creator's named groups, beside the campaign's details and the Story AI. A change applies to everyone the moment you make it; the search finds a setting by its name.",
+    anchors: ["tab-settings"],
+  },
+  {
+    id: "more",
+    title: "Every other tab",
+    body: "On a phone the bar keeps your console and the tabs you use most. More lists the rest, the map, notes and settings among them, and lights up when one of them is waiting on you.",
+    anchors: ["tab-more"],
+  },
+  {
     id: "help",
     title: "Help and the way home",
-    body: "Help explains every button and replays this tour. The account menu beside it holds settings, log out and, inside the app, the way back to its home screen.",
-    anchors: ["header-help"],
+    body: "Help explains every button and replays this tour. On a phone it shares the table menu with narration, sound and the rulebook. The account menu beside it holds settings, log out and, inside the app, the way back to its home screen.",
+    anchors: ["header-help", "header-menu"],
   },
 ];

@@ -333,7 +333,7 @@ await test("Silence: a creature entirely inside the sphere is immune to thunder 
   const cast = await world.invoke("use_spell_slot", { characterId: cleric.id, spell: "Silence", level: 2, atX: 12, atY: 4 });
   assert.equal(cast.ok, true, cast.error);
   world.dice(1, 8, 8, 8);
-  const out = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Shatter", enemyIds: [goblin.id], saveAbility: "con", dc: 15, level: 2 });
+  const out = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Shatter", enemyIds: [goblin.id], saveAbility: "con", dc: 15, level: 2 });
   world.clearDice();
   assert.equal(out.ok, true, out.error);
   assert.equal(enemyOf(world, goblin.id).currentHp, 90);
@@ -380,13 +380,25 @@ await test("Blade Barrier gives three-quarters cover (+5 AC) to a creature behin
   assert.equal(swing.damage, null, "an arrow at 16 hit AC 13 behind three-quarters cover");
 });
 
-await test("Wind Wall: arrows and bolts shot at a target behind the wall miss.", async () => {
+await test("Wind Wall: arrows and bolts shot at a target behind the wall are made and miss, a character's and an enemy's alike.", async () => {
   const { world, sheets: [druid, fighter], enemies: [goblin] } = await board([caster("druid", "wis", ["Wind Wall"]), BOW], { 0: { x: 2, y: 8 }, 1: { x: 8, y: 4 }, e0: { x: 16, y: 4 } });
   const kit = await combatKit(world);
   const cast = await world.invoke("use_spell_slot", { characterId: druid.id, spell: "Wind Wall", level: 3, atX: 12, atY: 0, towardX: 12, towardY: 8 });
   assert.equal(cast.ok, true, cast.error);
-  await kit.swing(fighter.id, goblin.id, [20, 8, 8]);
+  // SRD 5.1: "deflected upward and automatically miss": the shot is made,
+  // and spent, with no roll.
+  const shot = await kit.swing(fighter.id, goblin.id, [20, 8, 8]);
+  assert.equal(shot.ok, true, shot.error);
+  assert.equal(shot.result.hit, false);
+  assert.match(String(shot.result.note), /Wind Wall/);
+  assert.equal(shot.toHit, null, "the deflected shot was rolled");
   assert.equal(enemyOf(world, goblin.id).currentHp, 90);
+  kit.setEnemy(goblin.id, { stats: { attacks: [{ name: "Shortbow", toHit: 4, damage: "1d6+2", type: "piercing", range: "80/320" }] } });
+  const hp = world.sheet(fighter.id).currentHp;
+  const volley = await world.invoke("enemy_attack", { enemyId: goblin.id, targetCharacterId: fighter.id });
+  assert.equal(volley.ok, true, volley.error);
+  assert.ok(volley.result.swings.every((swing) => swing.hit === false && /Wind Wall/.test(String(swing.missed))), JSON.stringify(volley.result.swings));
+  assert.equal(world.sheet(fighter.id).currentHp, hp);
 });
 
 // ---- ending ----
@@ -498,13 +510,13 @@ await test("Sleet Storm: a creature concentrating in the storm when its turn sta
 await test("Moonbeam's beam moves when its caster moves it (the spell again on a later turn): the old square is no longer in it.", async () => {
   const { world, sheets: [druid], enemies: [first, second] } = await board([caster("druid", "wis", ["Moonbeam"])], { 0: { x: 2, y: 4 }, e0: { x: 10, y: 2 }, e1: { x: 16, y: 6 } }, { count: 2 });
   world.dice(20, 1, 1);
-  const cast = await world.invoke("aoe_damage", { casterId: druid.id, spell: "Moonbeam", enemyIds: [first.id], saveAbility: "con", dc: 15, level: 2 });
+  const cast = await world.invoke("aoe_damage", { casterCharacterId: druid.id, spell: "Moonbeam", enemyIds: [first.id], saveAbility: "con", dc: 15, level: 2 });
   world.clearDice();
   assert.equal(cast.ok, true, cast.error);
   const beam = () => zonesOf(world).find((zone) => zone.spell === "Moonbeam");
   assert.ok(beam().cells.includes(2 * 24 + 10));
   world.dice(20, 1, 1);
-  const again = await world.invoke("aoe_damage", { casterId: druid.id, spell: "Moonbeam", enemyIds: [second.id], saveAbility: "con", dc: 15, level: 2 });
+  const again = await world.invoke("aoe_damage", { casterCharacterId: druid.id, spell: "Moonbeam", enemyIds: [second.id], saveAbility: "con", dc: 15, level: 2 });
   world.clearDice();
   assert.equal(again.ok, true, again.error);
   assert.ok(beam().cells.includes(6 * 24 + 16) && !beam().cells.includes(2 * 24 + 10));
@@ -592,7 +604,7 @@ await test("The rules and tools the model reads say where a spell's area is laid
 await test("Web: fire burns away the web around a creature it strikes, freeing it, and the burning cube deals 2d4 fire to a creature starting its turn in it.", async () => {
   const { world, sheets: [wizard, fighter], enemies: [goblin] } = await board([caster("wizard", "int", ["Web"]), FIGHTER], { 0: { x: 2, y: 8 }, 1: { x: 4, y: 8 }, e0: { x: 12, y: 2 } });
   world.dice(1);
-  const cast = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Web", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 2, atX: 12, atY: 2 });
+  const cast = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Web", enemyIds: [goblin.id], saveAbility: "dex", dc: 15, level: 2, atX: 12, atY: 2 });
   world.clearDice();
   assert.equal(cast.ok, true, cast.error);
   assert.ok(enemyOf(world, goblin.id).conditions.includes("restrained"));
@@ -662,7 +674,7 @@ await test("Light makes the caster's held object shed bright light 20 feet: on a
   // Continual Flame is the same light, and it does not burn down.
   world.patch(wizard.id, {
     spellcasting: { ...world.sheet(wizard.id).spellcasting, prepared: ["Continual Flame"] },
-    equipment: [...world.sheet(wizard.id).equipment, { name: "Ruby dust worth 50 gp", qty: 1 }],
+    equipment: [...world.sheet(wizard.id).equipment, { name: "Ruby dust", qty: 1, worth: 50 }],
   });
   const flame = await world.invoke("use_spell_slot", { characterId: wizard.id, spell: "Continual Flame", level: 2 });
   assert.equal(flame.ok, true, flame.error);
@@ -670,7 +682,7 @@ await test("Light makes the caster's held object shed bright light 20 feet: on a
   assert.equal(tokenOf(world, wizard.id).burnsUntil, 0);
 });
 
-await test("Globe of Invulnerability: a spell of 5th level or lower cast from outside has no effect on a creature inside it; a character's is refused before anything is spent.", async () => {
+await test("Globe of Invulnerability: a spell of 5th level or lower cast from outside is cast and spent and has no effect on a creature inside it, even from a higher slot.", async () => {
   const { world, sheets: [wizard], enemies: [mage] } = await board(
     [caster("wizard", "int", ["Hold Person", "Fireball"], ["Fire Bolt"])],
     { 0: { x: 4, y: 4 }, e0: { x: 14, y: 4 } },
@@ -679,17 +691,53 @@ await test("Globe of Invulnerability: a spell of 5th level or lower cast from ou
   const globe = await world.invoke("aoe_damage", { casterEnemyId: mage.id, spell: "Globe of Invulnerability", saveAbility: "dex", dc: 10 });
   assert.equal(globe.ok, true, globe.error);
   assert.ok((zonesOf(world) ?? []).some((zone) => zone.spell === "Globe of Invulnerability"), "no globe on the board");
-  const slots = JSON.stringify(world.sheet(wizard.id).spellcasting.slots);
+  const used = (level) => world.sheet(wizard.id).spellcasting.slots[String(level)].used;
+  // SRD 5.1: such a spell "can target creatures and objects within the
+  // barrier, but the spell has no effect on them", "even if the spell is cast
+  // using a higher level spell slot".
   const hold = await world.invoke("cast_at_enemy", { characterId: wizard.id, targetEnemyId: mage.id, spell: "Hold Person", saveAbility: "wis", level: 2 });
-  assert.equal(hold.ok, false, "Hold Person reached through the globe");
+  assert.equal(hold.ok, true, hold.error);
+  assert.match(String(hold.result.noEffect), /Globe of Invulnerability/);
+  assert.equal(used(2), 1, "Hold Person was not spent");
+  assert.ok(!enemyOf(world, mage.id).conditions.includes("paralyzed"), "Hold Person reached through the globe");
+  const upcast = await world.invoke("cast_at_enemy", { characterId: wizard.id, targetEnemyId: mage.id, spell: "Hold Person", saveAbility: "wis", level: 5 });
+  assert.equal(upcast.ok, true, upcast.error);
+  assert.equal(used(5), 1, "the 5th-level Hold Person was not spent");
+  assert.ok(!enemyOf(world, mage.id).conditions.includes("paralyzed"), "a higher slot carried Hold Person through the globe");
   const bolt = await world.invoke("pc_attack", { characterId: wizard.id, targetEnemyId: mage.id, enemyId: mage.id, spell: "Fire Bolt" });
-  assert.equal(bolt.ok, false, "Fire Bolt reached through the globe");
+  assert.equal(bolt.ok, true, bolt.error);
+  assert.equal(bolt.result.hit, false, "Fire Bolt reached through the globe");
   world.dice(1, 6, 6, 6, 6, 6, 6, 6, 6);
-  const ball = await world.invoke("aoe_damage", { casterId: wizard.id, spell: "Fireball", enemyIds: [mage.id], saveAbility: "dex", dc: 15, level: 3 });
+  const ball = await world.invoke("aoe_damage", { casterCharacterId: wizard.id, spell: "Fireball", enemyIds: [mage.id], saveAbility: "dex", dc: 15, level: 3 });
   world.clearDice();
+  assert.equal(ball.ok, true, ball.error);
   assert.equal(enemyOf(world, mage.id).currentHp, 90, "Fireball burned a creature inside the globe");
-  assert.equal(ball.ok, false, "a Fireball that could catch only the shielded mage was cast");
-  assert.equal(JSON.stringify(world.sheet(wizard.id).spellcasting.slots), slots);
+  assert.equal(used(3), 1, "the Fireball was not spent");
+});
+
+await test("Globe of Invulnerability around a character: a heal, a buff and an enemy's spell from outside are cast and do nothing to them.", async () => {
+  const { world, sheets: [wizard, cleric], enemies: [mage] } = await board(
+    [caster("wizard", "int", ["Globe of Invulnerability"], [], 11), caster("cleric", "wis", ["Healing Word", "Bless"])],
+    { 0: { x: 4, y: 4 }, 1: { x: 8, y: 4 }, e0: { x: 14, y: 4 } },
+    { stats: { spells: ["Hold Person"] } },
+  );
+  const globe = await world.invoke("use_spell_slot", { characterId: wizard.id, spell: "Globe of Invulnerability", level: 6 });
+  assert.equal(globe.ok, true, globe.error);
+  world.patch(wizard.id, { currentHp: 10 });
+  const used = (level) => world.sheet(cleric.id).spellcasting.slots[String(level)].used;
+  const heal = await world.invoke("heal", { casterId: cleric.id, characterId: wizard.id, spell: "Healing Word", level: 1 });
+  assert.equal(heal.ok, true, heal.error);
+  assert.match(String(heal.result.noEffect), /Globe of Invulnerability/);
+  assert.equal(world.sheet(wizard.id).currentHp, 10, "Healing Word healed through the globe");
+  assert.equal(used(1), 1, "Healing Word was not spent");
+  const bless = await world.invoke("cast_buff", { characterId: cleric.id, spell: "Bless", targetCharacterIds: [wizard.id], level: 1 });
+  assert.equal(bless.ok, true, bless.error);
+  assert.match(String(bless.result.noEffect), /Globe of Invulnerability/);
+  assert.ok(!world.sheet(wizard.id).conditions.some((name) => /bless/i.test(name)), "Bless reached through the globe");
+  const hold = await world.invoke("cast_at_player", { casterEnemyId: mage.id, characterId: wizard.id, spell: "Hold Person", saveAbility: "wis", dc: 15 });
+  assert.equal(hold.ok, true, hold.error);
+  assert.match(String(hold.result.noEffect), /Globe of Invulnerability/);
+  assert.ok(!world.sheet(wizard.id).conditions.includes("paralyzed"), "the enemy's Hold Person reached through the globe");
 });
 
 // ---- guards ----

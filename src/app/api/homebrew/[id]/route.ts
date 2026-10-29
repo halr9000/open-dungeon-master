@@ -1,11 +1,14 @@
 import { currentUser, unauthorized } from "@/lib/auth";
-import { archiveHomebrew, deleteHomebrew, getHomebrew, restoreHomebrew, updateHomebrew } from "@/lib/db/homebrew";
+import { archiveHomebrew, deleteHomebrew, getHomebrew, restoreHomebrew } from "@/lib/db/homebrew";
+import { updateHomebrewCarried } from "@/lib/db/homebrew-rename";
 import { serverPublishedNameProblem } from "@/lib/homebrew/published-names-server";
-import { normalizeHomebrewData } from "@/lib/homebrew/gear";
+import { normalizeHomebrewForSave } from "@/lib/homebrew/species-choice-server";
+import { homebrewLimitProblems } from "@/lib/homebrew/limits";
 import { patchHomebrewSchema } from "@/lib/schemas/homebrew";
 import { forgetSpeciesRules } from "@/lib/characters/species-rules";
 import { forgetTableFeats } from "@/lib/db/table-feats";
 import { forgetTableHazards } from "@/lib/db/table-hazards";
+import { textKey } from "@/lib/language/text-logic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,31 +44,41 @@ export async function PATCH(
   const raw = await request.json().catch(() => ({}));
   const parsed = patchHomebrewSchema.safeParse(raw);
   if (!parsed.success) {
-    return Response.json({ error: "Invalid homebrew patch." }, { status: 400 });
+    // An over-long description fails the schema as well: it is named (WA-02).
+    const over = homebrewLimitProblems(existing.kind, (raw as { data?: unknown })?.data)[0];
+    return Response.json(over ? { error: over.text, field: over.field } : { error: "Invalid homebrew patch." }, { status: 400 });
   }
   // A rename to a published name is refused; an entry saved under one before
   // the rule keeps its name (and the editor says what that means).
-  const renamed = parsed.data.name !== undefined && parsed.data.name.trim().toLowerCase() !== existing.name.trim().toLowerCase();
+  const renamed = parsed.data.name !== undefined && textKey(parsed.data.name) !== textKey(existing.name);
   const published = renamed ? serverPublishedNameProblem(existing.kind, parsed.data.name ?? "") : null;
   if (published) {
     return Response.json({ error: published }, { status: 400 });
   }
   let data = parsed.data.data;
   if (data !== undefined) {
-    const normalized = normalizeHomebrewData(existing.kind, data, parsed.data.name ?? existing.name);
+    // A list longer than its kind keeps is refused by name, not cut short.
+    const over = homebrewLimitProblems(existing.kind, data)[0];
+    if (over) {
+      return Response.json({ error: over.text, field: over.field }, { status: 400 });
+    }
+    const normalized = normalizeHomebrewForSave(existing.kind, data, parsed.data.name ?? existing.name);
     if ("error" in normalized) {
       return Response.json({ error: normalized.error }, { status: 400 });
     }
     data = normalized.data;
   }
-  const entry = updateHomebrew(user.id, id, { name: parsed.data.name, data });
+  // A new name is carried to the sheets, entries and tables that held the
+  // old one (src/lib/db/homebrew-rename.ts), so a renamed subclass keeps its
+  // characters; `carried` says how many.
+  const updated = updateHomebrewCarried(user.id, id, { name: parsed.data.name, data });
   forgetSpeciesRules(`homebrew:${id}`);
   forgetTableFeats();
   forgetTableHazards();
-  if (!entry) {
+  if (!updated) {
     return Response.json({ error: "Not found." }, { status: 404 });
   }
-  return Response.json({ entry });
+  return Response.json({ entry: updated.entry, carried: updated.carried });
 }
 
 // Forgets an entry: it is archived (src/lib/db/homebrew.ts archiveHomebrew),

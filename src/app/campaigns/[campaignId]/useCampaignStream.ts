@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { CampaignMember, SessionUser } from "@/lib/campaign-types";
 import type { CoordinationPhase } from "@/lib/dm/coordination-logic";
+import type { TableWaitView } from "@/lib/dm/table-wait-logic";
 import { coalesceRefresh } from "@/app/campaigns/[campaignId]/coalesce";
 import { createStreamWatchdog } from "@/app/campaigns/[campaignId]/streamWatchdog";
 import {
@@ -37,10 +38,16 @@ import type { CameraEvent, HandoutShown, SceneState, TitleCard } from "@/lib/sce
 import type { MapPing } from "@/lib/dm/board-logic";
 import { capsForRole, type ViewerCaps } from "@/lib/dm/viewer";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { DEPARTING_KEPT_MS, type DepartingSheet } from "@/app/campaigns/[campaignId]/departing";
+import type { DmJobView } from "@/lib/dm/job-stage-logic";
 import type { VoiceRosterEntry } from "@/lib/voice/types";
 import { navigateTo } from "@/lib/navigation";
 import { registerBrowserSpecies } from "@/lib/srd/race-id";
+import { registerBrowserSubclassExtras, type SubclassExtras } from "@/lib/srd/subclass-tables";
 import { registerBrowserTableFeats } from "@/lib/srd/feat-effects";
+import type { TableBreak } from "@/lib/dm/table-break-logic";
+import { registerWorkshopClasses } from "@/lib/classes/workshop-registry";
+import type { WorkshopClass } from "@/lib/homebrew/class-data";
 
 export type DmStatus =
   | "idle"
@@ -63,7 +70,7 @@ export type MediaStatus = {
 // from mediaStatus: both are keyed by message id, and a passage can be
 // waiting on its picture and its voice at once (issue 88).
 export type NarrationStatus = {
-  state: "queued" | "generating" | "failed";
+  state: "queued" | "generating" | "failed" | "skipped";
   reason?: string;
 };
 
@@ -117,6 +124,14 @@ export type ItemProposal = {
   // A trade's other side and its offer (11.2).
   toCharacterId?: string;
   offer?: { toCharacterId: string; give: Array<{ name: string; qty: number }>; giveCp: number; want: Array<{ name: string; qty: number }>; wantCp: number } | null;
+  // An NPC's romantic advance (issue 501): who makes it, and their face.
+  advance?: { suitor: string; portraitUrl: string; look: { gender: string; race: string; class: string; role: string } };
+  // Only its own player is sent it and answers it (issue 503: a pact's
+  // approach); the apps notify on it.
+  ownerOnly?: boolean;
+  // A pact's approach: the answers it offers, and who makes it.
+  choices?: Array<{ id: string; label: string; hint: string }>;
+  from?: { name: string; portraitUrl: string; look: { gender: string; race: string; class: string } };
 };
 
 // A disputed ruling (src/lib/dm/dispute-logic.ts), open or under vote.
@@ -140,10 +155,15 @@ export type CampaignLocation = {
   visited: boolean;
   isCurrent: boolean;
   mapImage: { url: string } | null;
-  // Why its last map render failed, while it has none (src/lib/db/locations.ts).
+  // Why its last map render failed, while it has none, and whether one is
+  // on its way (src/lib/db/locations.ts).
   mapFailed?: string | null;
+  mapPending?: boolean;
   // The place's ambience bed and music, which name its kind of scene.
   ambience: { bed: string; music: string } | null;
+  // The bigger place it is part of (src/lib/db/locations.ts); absent from
+  // an older server.
+  parentName?: string | null;
   updatedAt: string;
 };
 
@@ -158,9 +178,15 @@ export type CampaignState = {
   campaign: Campaign | null;
   // The plan the party is coordinating, while it drafts (issue 254).
   coordination: CoordinationPhase | null;
+  // Who the DM is waiting on before its next turn, at a table that waits
+  // for everyone (src/lib/dm/table-wait.ts); null when it is not waiting.
+  tableWait: TableWaitView | null;
     // The table holds a story arc AI Story Setup has not built on yet (the
   // lobby's warning, issue 249); false for anyone who does not steer.
   prepArc: boolean;
+  // A test fight's workshop (issue 553, src/lib/workshop/test-fight.ts), for
+  // the table's way back; null at every other table.
+  testFight: { workshopId: string; title: string } | null;
   // What this seat may see and do, decided by the server
   // (src/lib/dm/viewer.ts). The client never re-derives it from ids, so a
   // control the server would refuse is never rendered in the first place.
@@ -200,10 +226,21 @@ export type CampaignState = {
   // Bumped by the contentless relationships_updated ephemeral; the Bonds
   // panel fetches its own tier-scoped view when this changes.
   relationshipsVersion: number;
+  // Lasting companions whose sheet just went with sheet_deleted's
+  // `departed` (issue 503): the Party panel dims each card and moves it to
+  // its Gone list (PartyGone.tsx). Kept briefly, never persisted.
+  departingSheets: DepartingSheet[];
   // Bumped on quests_updated so the quest log refetches.
   questsVersion: number;
   // Bumped on factions_updated so the Factions panel refetches.
   factionsVersion: number;
+  // Bumped when the campaign's world or a record it describes changed
+  // (world_updated, records_changed: both reach only the seats holding the
+  // story's secrets), so the World tab reads it again.
+  worldVersion: number;
+  // Bumped on lore_updated (a secret revealed to the party, WF-10), so the
+  // lore list reads itself again for this seat.
+  loreVersion: number;
   // Bumped on shops_updated so the market refetches (11.1).
   shopsVersion: number;
   // The last coin movement, for the purse FX.
@@ -252,6 +289,8 @@ export type CampaignState = {
   handout: HandoutShown | null;
   // Someone raised the X-card and the table is paused; nobody is named.
   safetyPause: { at: number; reason: "x_card" } | null;
+  // A table break: who paused and since when (src/lib/dm/table-break.ts).
+  tableBreak: TableBreak | null;
   narrationAudio: Record<string, string>;
   // `live` marks a passage offered while it is still being rendered
   // (tts_stream): heard now, by whoever is at the table now.
@@ -259,6 +298,9 @@ export type CampaignState = {
   latestRoll: { roll: StoredRoll; source: string; seq: number } | null;
   lastSeq: number;
   dmStatus: DmStatus;
+  // The DM's job in flight: the step it is on and since when, for the
+  // status line and the lead's Stop (issue #383).
+  dmJob: DmJobView | null;
   // Background utility work in flight (compaction, chapter seal, world tick,
   // lore check, Ask). Separate from dmStatus, which describes the TURN: these
   // run outside one, several can overlap, and each carries its own label.
@@ -313,7 +355,9 @@ const initialState: CampaignState = {
   answeredBy: "",
   campaign: null,
   prepArc: false,
+  testFight: null,
   coordination: null,
+  tableWait: null,
   // A plain player until the snapshot says otherwise: the safe default is
   // the one that shows the fewest controls and no secrets.
   caps: capsForRole("player", "ai"),
@@ -341,7 +385,10 @@ const initialState: CampaignState = {
   asksLoaded: false,
   facts: [],
   relationshipsVersion: 0,
+  departingSheets: [],
   factionsVersion: 0,
+  worldVersion: 0,
+  loreVersion: 0,
   shopsVersion: 0,
   coins: null,
   questsVersion: 0,
@@ -361,11 +408,13 @@ const initialState: CampaignState = {
   camera: null,
   handout: null,
   safetyPause: null,
+  tableBreak: null,
   narrationAudio: {},
   latestTts: null,
   latestRoll: null,
   lastSeq: 0,
   dmStatus: "idle",
+  dmJob: null,
   utilityCalls: [],
   directorArm: null,
   mediaStatus: {},
@@ -522,7 +571,9 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           return next;
         }
         case "roll_result":
-          next.rolls = [...state.rolls.slice(-30), payload.roll as StoredRoll];
+          // A hidden roll revealed (issue 503) arrives again under its own id:
+          // it replaces the copy its player had, rather than doubling it.
+          next.rolls = [...state.rolls.filter((entry) => entry.id !== (payload.roll as StoredRoll).id).slice(-30), payload.roll as StoredRoll];
           next.latestRoll = {
             roll: payload.roll as StoredRoll,
             source: String(payload.source ?? "digital"),
@@ -673,10 +724,20 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "safety_resumed":
           next.safetyPause = null;
           return next;
+        case "table_paused":
+          next.tableBreak = {
+            at: Number(payload.at ?? Date.now()),
+            userId: String(payload.userId ?? ""),
+            name: String(payload.name ?? "Someone"),
+          };
+          return next;
+        case "table_resumed":
+          next.tableBreak = null;
+          return next;
         case "location_map_ready":
           next.locations = state.locations.map((location) =>
             location.id === payload.locationId
-              ? { ...location, mapImage: payload.image as CampaignLocation["mapImage"], mapFailed: null }
+              ? { ...location, mapImage: payload.image as CampaignLocation["mapImage"], mapFailed: null, mapPending: false }
               : location,
           );
           next.mediaStatus = withoutKey(state.mediaStatus, String(payload.locationId ?? ""));
@@ -688,6 +749,14 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           return next;
         case "factions_updated":
           next.factionsVersion = state.factionsVersion + 1;
+          return next;
+        case "world_updated":
+        case "records_changed":
+        case "party_atlas_updated":
+          next.worldVersion = state.worldVersion + 1;
+          return next;
+        case "lore_updated":
+          next.loreVersion = state.loreVersion + 1;
           return next;
         case "calendar_updated":
           next.questsVersion = state.questsVersion + 1;
@@ -779,9 +848,21 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           );
           return next;
         }
-        case "sheet_deleted":
+        case "sheet_deleted": {
           next.sheets = state.sheets.filter((entry) => entry.id !== payload.sheetId);
+          // A lasting companion leaving (issue 503): the card it had is kept
+          // a moment for the Party panel to dim and file under Gone.
+          const departed = payload.departed as { how?: unknown } | undefined;
+          const leaving = departed ? state.sheets.find((entry) => entry.id === payload.sheetId) : undefined;
+          if (leaving) {
+            const now = Date.now();
+            next.departingSheets = [
+              ...state.departingSheets.filter((entry) => now - entry.at < DEPARTING_KEPT_MS && entry.sheet.id !== leaving.id),
+              { sheet: leaving, how: typeof departed?.how === "string" ? departed.how : "", at: now },
+            ];
+          }
           return next;
+        }
         case "chapter_closed": {
           const closed = payload.chapter as Chapter | undefined;
           const opened = payload.opened as Chapter | undefined;
@@ -894,6 +975,9 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "coordination_updated":
           next.coordination = (payload.phase as CoordinationPhase | null) ?? null;
           return next;
+        case "table_wait":
+          next.tableWait = (payload.wait as TableWaitView | null) ?? null;
+          return next;
         case "floor_changed":
           next.campaign = state.campaign
             ? { ...state.campaign, floor: payload.floor as Campaign["floor"] }
@@ -927,6 +1011,9 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           return next;
         case "dm_status":
           next.dmStatus = payload.state as DmStatus;
+          return next;
+        case "dm_job":
+          next.dmJob = (payload.job as DmJobView | null) ?? null;
           return next;
         case "utility_calls":
           // The server sends the whole in-flight set each time, so a dropped
@@ -1022,6 +1109,10 @@ const PERSISTED_EVENTS = [
   // player joining mid-stretch is told, rather than quietly talking to a
   // stand-in they cannot see.
   "dm_cover_changed",
+  // A DM or co-DM seat filled or emptied, or the game handed to or from the
+  // AI (the dm/seat and settings routes). What a seat may see and do follows
+  // the seats, so the stream reads the snapshot again (reloadsSnapshot).
+  "dm_seat_changed",
   // The sky over the table, a title card, a handout on the table, and the
   // X-card pause. Persisted so a late joiner lands in the same scene.
   "scene_state",
@@ -1031,6 +1122,8 @@ const PERSISTED_EVENTS = [
   "handout_dismissed",
   "x_card",
   "safety_resumed",
+  "table_paused",
+  "table_resumed",
   // Each of these has a case above and was published for the table, but was
   // never listened for, so it only showed after a reload: the party record
   // (purse, pack, travel formation), a painted NPC portrait, the Director's
@@ -1050,6 +1143,10 @@ const EPHEMERAL_EVENTS = [
   "cast_updated",
   "tts_stream",
   "dm_status",
+  // Who the DM waits on before its next turn (src/lib/dm/table-wait.ts).
+  // The whole view each time, and the snapshot carries it for a reload.
+  "table_wait",
+  "dm_job",
   "utility_calls",
   "dm_delta",
   // The turn withheld text it had streamed: the draft shows what it kept.
@@ -1088,6 +1185,17 @@ const EPHEMERAL_EVENTS = [
   // Prep came in from a workshop mid-campaign. Contentless: the handler
   // reloads the snapshot, and a reconnect resyncs anyway.
   "prep_imported",
+  // The campaign's world or a record it describes changed. Contentless, and
+  // sent only to the seats holding the story's secrets: the World tab reads
+  // the world again.
+  "world_updated",
+  "records_changed",
+  // The maps shown to the party changed. Contentless, to every seat: the
+  // party's Atlas in the Map tab asks for its own view.
+  "party_atlas_updated",
+  // Lore the table reads changed (a secret revealed to the party).
+  // Contentless, to every seat: each lore list asks for its own view.
+  "lore_updated",
 ];
 const EPHEMERAL_EVENT_SET = new Set(EPHEMERAL_EVENTS);
 // Every type the stream listens for; an event outside it never reaches the
@@ -1141,6 +1249,19 @@ export function refreshesBattleMap(eventType: string, boardUp: boolean): boolean
   );
 }
 
+// Events the stream cannot apply by itself, after which the snapshot is read
+// again. A rewind and imported prep change more rows than an event carries.
+// A seat change and a new party lead change what each seat may see and do:
+// the caps come from the seats (src/lib/dm/viewer.ts viewerCaps) and only
+// the snapshot route works them out per seat, so the seat that gains the
+// DM's tools and the seat that loses them both read it again (audit WA-11).
+export function reloadsSnapshot(eventType: string, payload: unknown): boolean {
+  if (eventType === "campaign_rewound" || eventType === "prep_imported" || eventType === "dm_seat_changed") {
+    return true;
+  }
+  return eventType === "campaign_updated" && typeof (payload as { leadUserId?: unknown } | null)?.leadUserId === "string";
+}
+
 export function useCampaignStream(campaignId: string) {
   const [state, dispatch] = useReducer(campaignReducer, initialState);
   // The SSE handlers are registered once, so they cannot close over `state`.
@@ -1186,6 +1307,13 @@ export function useCampaignStream(campaignId: string) {
       const data = await response.json();
       const lastSeq = data.latestSeq ?? 0;
       registerBrowserSpecies(data.species);
+      // The workshop and pack subclasses the table's sheets hold: their
+      // feature text and always-prepared spells (src/lib/srd/features.ts).
+      for (const [classId, tables] of Object.entries((data.subclasses ?? {}) as SubclassExtras)) {
+        registerBrowserSubclassExtras(classId, tables);
+      }
+      // The table's workshop classes (src/lib/classes/workshop-registry.ts).
+      registerWorkshopClasses((data.classes ?? []) as WorkshopClass[]);
       // The table's whole list: a feat its DM forgot leaves with it.
       registerBrowserTableFeats(data.feats ?? {}, campaignId, { replace: true });
       dispatch({
@@ -1194,7 +1322,9 @@ export function useCampaignStream(campaignId: string) {
           answeredBy,
           campaign: data.campaign,
           prepArc: Boolean(data.prepArc),
+          testFight: (data.testFight as CampaignState["testFight"]) ?? null,
           coordination: (data.coordination as CoordinationPhase | null) ?? null,
+          tableWait: (data.tableWait as TableWaitView | null) ?? null,
           caps: data.caps ?? capsForRole("player", "ai"),
           me: data.me,
           members: data.members,
@@ -1219,6 +1349,7 @@ export function useCampaignStream(campaignId: string) {
             ? queuedIntents(data.messages ?? [], (data.beats ?? []).map((beat: { messageId: string }) => beat.messageId))
             : [],
           dmStatus: data.dmStatus ?? "idle",
+          dmJob: data.dmJob ?? null,
           utilityCalls: sortCalls(data.utilityCalls ?? []),
           narrationAudio: data.narrationAudio ?? {},
           ambience: data.ambience ?? EMPTY_AMBIENCE,
@@ -1230,6 +1361,7 @@ export function useCampaignStream(campaignId: string) {
           activeSheetId: data.activeSheetId ?? "",
           handout: data.handout ?? null,
           safetyPause: data.safetyPause ?? null,
+          tableBreak: data.tableBreak ?? null,
           titleCard: data.titleCard ?? null,
           titleCardQueue: [],
           lastSeq,
@@ -1488,13 +1620,9 @@ export function useCampaignStream(campaignId: string) {
           if (eventType === "note_suggested") {
             void refreshNotes();
           }
-          // A rewind mass-deletes state that incremental events cannot
-          // express; reload everything from the snapshot endpoint.
-          if (eventType === "campaign_rewound") {
-            resync();
-          }
-          // Imported prep lands in a dozen tables at once; the same reload.
-          if (eventType === "prep_imported") {
+          // A rewind, imported prep (a dozen tables at once), or a change in
+          // who holds authority: everything again from the snapshot endpoint.
+          if (reloadsSnapshot(eventType, payload)) {
             resync();
           }
           if (eventType === "side_activity") {

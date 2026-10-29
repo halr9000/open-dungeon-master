@@ -11,12 +11,13 @@
 //
 // Three answers come back from a call, and only the third is a finding:
 //   ok                 the engine did it;
-//   a rules refusal    the engine said no in the fiction (not their turn,
-//                      out of reach, no slot left, nothing to buy): the
-//                      console reached the rules;
-//   an argument fault  the handler could not read what the form sent
-//                      (src/lib/dm/tool-errors.ts, the "retry" kind), or it
-//                      threw.
+//   a refusal          the engine said no (not their turn, out of reach, no
+//                      slot left, nothing to buy) or asked for another call
+//                      (a choice to make, nothing to act on): the console
+//                      reached the handler;
+//   an argument fault  the handler could not read what the form sent: a
+//                      "retry" (src/lib/dm/tool-errors.ts) in the words of
+//                      its own argument check, or it threw.
 //
 // Each entry is run twice: at a table with a fight on, the acting hero on
 // the board beside an enemy, and at a quiet table with no fight, which is
@@ -38,7 +39,6 @@ import { combatKit, TRAINED } from "./lib/enforce-combat.mjs";
 import { cleric } from "./lib/enforce-spells.mjs";
 
 const { ADJUDICATIONS, consoleAdjudications } = await import("../src/lib/dm/invoke-catalog.ts");
-const { classifyToolError } = await import("../src/lib/dm/tool-errors.ts");
 const { setDmMode } = await import("../src/lib/db/campaigns.ts");
 const { invokeEngine } = await import("../src/lib/dm/invoke.ts");
 
@@ -70,6 +70,7 @@ const TEXT = {
   objective: "Find the harbourmaster's key",
   condition: "poisoned",
   reason: "the test asks",
+  tags: "potion",
   summary: "A plain line for the table.",
   note: "A plain line for the table.",
   text: "A plain line for the table.",
@@ -310,6 +311,15 @@ const CATALOG = "src/lib/dm/invoke-catalog.ts (consoleAdjudications), the entry'
 // entry claims no fight is needed and the handler wants one (see below).
 const PRECONDITION = /^No current location\b|^No structured scene is running\b/;
 const NO_FIGHT = /no (active )?encounter|no fight|not in combat|fight is running|no battle|in a fight/i;
+// The words a handler's own argument check answers in: a retry is also a
+// choice to ask for or a call with nothing to act on, which the plainest
+// form may well meet, so the kind alone does not tell a form it cannot read.
+const ARGUMENT_CHECK = [
+  /^Invalid\b/i,
+  /\bfrom GAME STATE\b/,
+  /^[a-z]+(?:_[a-z]+)+ (?:needs|takes)\b/,
+  /\bneeds? (?:a|an) (?:valid|dice|ability|positive|nonzero|name|number)\b/,
+];
 
 const outcomes = [];
 
@@ -326,7 +336,6 @@ async function runEntry(entry, staged, label) {
   if (outcome.ok) {
     return "ok";
   }
-  const kind = classifyToolError(error);
   if (label === "quiet" && NO_FIGHT.test(error)) {
     assert.ok(entry.needsEncounter, `${entry.name} is offered with no fight running (needsEncounter unset) and refuses for want of one: "${error}"`);
     return "refused-no-fight";
@@ -334,7 +343,7 @@ async function runEntry(entry, staged, label) {
   if (PRECONDITION.test(error)) {
     return `refused: ${error}`;
   }
-  if (kind === "retry") {
+  if (outcome.retry && ARGUMENT_CHECK.some((pattern) => pattern.test(error))) {
     throw new Error(`${entry.name} could not read the console's form: "${error}" (args ${JSON.stringify(args).slice(0, 300)})`);
   }
   return `refused: ${error}`;

@@ -40,6 +40,10 @@ export const trapSpecSchema = z.object({
   damage: part.optional(),
   condition: word().optional(),
   conditionsAlways: z.array(word()).max(4).optional(),
+  // The check that breaks the hold those conditions lay (a falling net's DC
+  // 10 Strength): src/lib/dm/trap-escape.ts. Absent, Strength against the
+  // save DC.
+  escape: z.object({ ability: z.enum(["str", "dex"]), dc: int(1, 30) }).optional(),
   rounds: int(1, ROUND_CEILING).optional(),
   summary: text(600).default(""),
 });
@@ -83,7 +87,6 @@ export const diseaseSpecSchema = z.object({
 
 const SCHEMAS = { trap: trapSpecSchema, poison: poisonSpecSchema, disease: diseaseSpecSchema } as const;
 export type HazardKindName = keyof typeof SCHEMAS;
-export const HAZARD_KINDS = Object.keys(SCHEMAS) as HazardKindName[];
 
 function firstIssue(error: z.ZodError, kind: string): string {
   const issue = error.issues[0];

@@ -32,9 +32,13 @@ function kindOf(intent: MessageIntent): ActKind {
     case "feature":
       return "free";
     case "basic":
-      return intent.action === "end-turn" ? "free" : intent.action === "stand-up" ? "move" : intent.bonus ? "bonus" : "action";
+      return intent.action === "end-turn" ? "free" : intent.action === "stand-up" || intent.action === "dismount" ? "move" : intent.bonus ? "bonus" : "action";
     case "reaction":
       return "reaction";
+    // A shield's action, a draw's object interaction or a free drop: the
+    // tool charges the right one; here only whether they may act at all.
+    case "gear":
+      return intent.action === "use" ? "action" : "free";
   }
 }
 
@@ -48,8 +52,9 @@ export function intentRefusal(
   if (intent.card === "basic" && intent.action === "end-turn") {
     return null;
   }
-  // A reaction spell (Shield, Hellish Rebuke) is a cast like any other; the
-  // guard asks canAct for a reaction, so it is judged off turn too.
+  // A spell is judged by the cast guard. A reaction card's spell is cast by
+  // use_reaction (src/lib/dm/reaction-spells.ts), so it is asked as that
+  // cast, off turn too, and its spent reaction below as any reaction's.
   if ((intent.card === "spell" || intent.card === "reaction") && intent.spell) {
     const verdict = castSpell(
       campaign,
@@ -58,18 +63,24 @@ export function intentRefusal(
       {
         spell: intent.spell,
         ...(intent.slotLevel ? { level: intent.slotLevel } : {}),
+        ...(intent.card === "reaction" ? { via: "reaction" as const } : {}),
         dryRun: true,
       },
       NO_HOOKS,
     );
-    return typeof verdict.error === "string" ? verdict.error : null;
+    if (typeof verdict.error === "string") {
+      return verdict.error;
+    }
+    if (intent.card === "spell") {
+      return null;
+    }
   }
   const encounter = getActiveEncounter(campaign.id);
   const able = canAct({ sheet, encounter, kind: kindOf(intent) });
   if (!able.ok) {
     return able.error;
   }
-  // A reaction feature (Uncanny Dodge) needs the reaction the fight still
+  // A reaction (Uncanny Dodge, Shield) needs the reaction the fight still
   // holds for them; the spend function says so in the engine's words.
   if (intent.card === "reaction" && encounter?.reactionsUsed.includes(sheet.id)) {
     const spent = spendAction({ ...freshBudget({ ownerId: sheet.id, round: encounter.round }), reactionUsed: true }, "reaction", intent.feature ?? "The reaction", sheet.name);

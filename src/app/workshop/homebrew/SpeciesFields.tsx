@@ -13,14 +13,22 @@ import { LANGUAGES, TOOL_PROFICIENCIES, VISION_SUGGESTIONS } from "@/lib/worksho
 import { SKILL_IDS } from "@/lib/homebrew/item-magic-schema";
 import { SRD_WEAPONS } from "@/lib/srd/weapons";
 import { addChip, rowIcon } from "@/app/workshop/kit";
+import { SpeciesTraitPicker } from "@/app/workshop/homebrew/SpeciesTraitPicker";
+import { SpeciesChoiceFields } from "@/app/workshop/homebrew/SpeciesChoiceFields";
 import type { Data } from "@/app/workshop/homebrew/draft";
+import { speciesHoldsTrait } from "@/lib/srd/race-id";
+import { heldTraitNames, resistanceTrait, resistedByTraits, withTrait } from "@/lib/workshop/species-traits";
+import { DAMAGE_TYPES } from "@/lib/dm/damage-logic";
+import { AddFromList } from "@/components/ui/AddFromList";
+import { RACE_LIMITS } from "@/lib/homebrew/race-data";
 
 // A species: the numbers the builder reads (scores, speed, size, languages),
 // the structured grants the SRD's races carry (skills, tools, weapon and
 // armor training, a cantrip, the picks it leaves the player) and its traits.
 // Everything here is what the builder offers and the creation check holds a
-// character to (src/lib/homebrew/race-data.ts); the size and the dwarf's
-// heavy-armor clause are read at the table (src/lib/srd/race-id.ts).
+// character to (src/lib/homebrew/race-data.ts); the size, the dwarf's
+// heavy-armor clause and the traits named as published are read at the
+// table (src/lib/srd/race-id.ts).
 
 type Props = { data: Data; set: (patch: Data) => void };
 type AsiRow = { attributes: string[]; value: number };
@@ -137,6 +145,12 @@ function Training({ data, set }: Props) {
   const armor = list(data.armor);
   const weapons = list(data.weapons);
   const cantrip = sub(data.cantripChoice);
+  const skillChoice = sub(data.skillChoice);
+  const skillFrom = list(skillChoice.from);
+  const putSkillChoice = (patch: Data) => {
+    const next = { count: num(skillChoice.count), from: skillFrom, ...patch };
+    set({ skillChoice: next.count ? { count: next.count, ...(list(next.from).length ? { from: next.from } : {}) } : undefined });
+  };
   const summary = [
     skills.length ? skills.join(", ").replace(/_/g, " ") : "",
     num(sub(data.skillChoice).count) ? `${num(sub(data.skillChoice).count)} skills of choice` : "",
@@ -154,15 +168,21 @@ function Training({ data, set }: Props) {
     <MechGroup title="What it trains" summary={summary || "nothing"} open={open}>
       <div className="col-span-2 space-y-1 sm:col-span-4">
         <span className="text-[11px] text-stone-400">Skills it is proficient in</span>
-        <ToggleChips options={SKILL_IDS} labels={SKILL_LABELS} selected={skills} onChange={(next) => set({ skills: next.length ? next : undefined })} />
+        <ToggleChips options={SKILL_IDS} labels={SKILL_LABELS} selected={skills} max={RACE_LIMITS.skills} onChange={(next) => set({ skills: next.length ? next : undefined })} />
       </div>
       <NumberField
         label="Skills of the player's choice"
-        value={num(sub(data.skillChoice).count)}
+        value={num(skillChoice.count)}
         min={0}
         max={4}
-        onChange={(count) => set({ skillChoice: count ? { count } : undefined })}
+        onChange={(count) => putSkillChoice({ count })}
       />
+      {num(skillChoice.count) ? (
+        <div className="live-in col-span-2 space-y-1 sm:col-span-4">
+          <span className="text-[11px] text-stone-400">Picked from (none ticked: any skill)</span>
+          <ToggleChips options={SKILL_IDS} labels={SKILL_LABELS} selected={skillFrom} onChange={(from) => putSkillChoice({ from })} />
+        </div>
+      ) : null}
       <div className="col-span-2 space-y-1 sm:col-span-4">
         <span className="text-[11px] text-stone-400">Tools it is proficient with</span>
         <ChipList items={tools} onChange={(next) => set({ tools: next.length ? next : undefined })} options={TOOLS} prompt="Add a tool" max={6} />
@@ -213,7 +233,7 @@ export function SpeciesFields({ data, set }: Props) {
           maxLength={120}
           suggestions={VISION_SUGGESTIONS}
         />
-        <label className="flex items-center gap-2 self-end pb-2 text-xs text-stone-300">
+        <label className="flex items-center gap-2 self-end pb-2 text-xs text-stone-300 pointer-coarse:min-h-10">
           <input
             type="checkbox"
             checked={data.heavyArmorSpeed === true}
@@ -226,15 +246,71 @@ export function SpeciesFields({ data, set }: Props) {
       <AbilityIncreases data={data} set={set} />
       <Languages data={data} set={set} />
       <Training data={data} set={set} />
-      <TextArea
-        label="Traits"
-        value={String(data.traits ?? "")}
-        onChange={(traits) => set({ traits })}
-        placeholder={"**_Marsh Stride._** Difficult terrain in wetlands costs you no extra movement.\n\n**_Reed Sight._** You have advantage on Perception checks in tall grass."}
-        rows={6}
-        maxLength={6000}
-        hint="One trait per paragraph, its name in bold. A trait named like a published one (Dwarven Toughness, Lucky, Infernal Legacy) is run by the engine at the table."
+      <SpeciesChoiceFields data={data} set={set} />
+      <div className="space-y-1.5">
+        <SpeciesTraitPicker traits={String(data.traits ?? "")} onChange={(traits) => set({ traits })} />
+        <TextArea
+          label="Traits"
+          value={String(data.traits ?? "")}
+          onChange={(traits) => set({ traits })}
+          placeholder={"**_Marsh Stride._** Difficult terrain in wetlands costs you no extra movement.\n\n**_Reed Sight._** You have advantage on Perception checks in tall grass."}
+          rows={6}
+          maxLength={6000}
+          hint="One trait per paragraph, its name in bold with a full stop: **Marsh Stride.** or **_Marsh Stride._** The traits the table reads are listed below. A trait picked above, or named like a published one (Draconic Ancestry, Dwarven Toughness, Lucky, Infernal Legacy), is run by the engine at the table."
+        />
+        <TraitsRead traits={String(data.traits ?? "")} />
+        <Resistances traits={String(data.traits ?? "")} onChange={(traits) => set({ traits })} />
+        <DraconicNote traits={String(data.traits ?? "")} choice={Boolean(data.variants)} />
+      </div>
+    </div>
+  );
+}
+
+// The traits the table reads off the text, as the builder and the server
+// read them (src/lib/content/mechanics.ts traitHeading), so a paragraph
+// written another way is seen to be missing here as well as in the findings.
+function TraitsRead({ traits }: { traits: string }) {
+  const names = heldTraitNames(traits);
+  return (
+    <p data-species-traits className="text-[11px] text-stone-400">
+      {names.length ? `Traits the table reads: ${names.join(", ")}.` : "The table reads no traits yet."}
+    </p>
+  );
+}
+
+// The damage the species resists at the table, and a pick for another. The
+// damage engine reads a resistance from a trait's name ("Fire Resistance"),
+// so a pick writes the trait that way, where it stays editable.
+function Resistances({ traits, onChange }: { traits: string; onChange: (traits: string) => void }) {
+  const resisted = resistedByTraits(traits);
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11px] text-stone-400" data-species-resists>
+      <span>{resisted.length ? `Resists at the table: ${resisted.join(", ")}.` : "Resists no damage at the table."}</span>
+      <AddFromList
+        prompt="Add a resistance"
+        options={DAMAGE_TYPES.filter((type) => !resisted.includes(type))}
+        onPick={(type) => onChange(withTrait(traits, resistanceTrait(type)))}
       />
     </div>
+  );
+}
+
+// A species with the Dragonborn's ancestry (a Half-Dragon, say): what the
+// player will be asked, and the breath that goes with it. A breath with no
+// ancestry has no damage type of its own. A species with a player's choice
+// of its own says what its options breathe in the findings instead.
+function DraconicNote({ traits, choice }: { traits: string; choice: boolean }) {
+  const rules = { traitNames: heldTraitNames(traits) };
+  const ancestry = speciesHoldsTrait(rules, "draconic ancestry");
+  const breath = speciesHoldsTrait(rules, "breath weapon");
+  if (choice || (!ancestry && !breath)) return null;
+  return (
+    <p className="live-in text-[11px] text-stone-400" data-draconic-note>
+      {ancestry && breath
+        ? "A player building this species picks a dragon: it sets their breath weapon's damage and save, and the damage they resist."
+        : ancestry
+          ? "A player building this species picks a dragon: it sets the damage they resist. Add Breath Weapon above to give them the breath too."
+          : "Breath Weapon takes its damage and save from a dragon: add Draconic Ancestry above so the player picks one."}
+    </p>
   );
 }

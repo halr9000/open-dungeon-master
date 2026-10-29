@@ -6,23 +6,25 @@
 // pc-attack.ts, which decides and rolls the attack these dice belong to.
 // Nothing here refuses the attack.
 
+import { getFoe } from "@/lib/dm/sheet-foe";
 import { poisonerIgnoresResistance } from "@/lib/srd/feat-combat";
 import type { Advantage, RollResult } from "@/lib/dice";
 import { claimOncePerTurn, type TurnBudget } from "@/lib/dm/action-budget";
 import { ragingMeleeBonus, type AttackProfile } from "@/lib/dm/attack-logic";
 import { damageParts, type TypedRider } from "@/lib/dm/damage-parts";
-import { damageAdjust, resistsAllDamage, weaponMaterial } from "@/lib/dm/damage-logic";
-import { resistLineFor } from "@/lib/dm/underwater";
+import type { BlowSource } from "@/lib/dm/damage-logic";
 import { effectOutcome } from "@/lib/dm/effect-tools";
-import type { EncounterEnemy } from "@/lib/db/encounters";
+import type { Encounter, EncounterEnemy } from "@/lib/db/encounters";
 import { DAMAGE_TYPES } from "@/lib/dm/condition-logic";
 import { subclassFeatureDescription } from "@/lib/srd/features";
 import { authoredSneakEdge } from "@/lib/dm/authored-hooks";
 import { authoredSneakBonus } from "@/lib/srd/authored-effects-more";
-import { getEnemy } from "@/lib/db/encounters";
 import { getSheetById } from "@/lib/db/sheets";
-import { applyEnemyDamage } from "@/lib/dm/enemy-damage";
+import { applyEnemyDamage, applySheetFoeBlow } from "@/lib/dm/enemy-damage";
+import { landTypedParts } from "@/lib/dm/enemy-blow";
+import { isSheetFoe } from "@/lib/dm/combat-sides-logic";
 import { allyAdjacentToEnemy } from "@/lib/dm/map-tools";
+import { storeBudget } from "@/lib/dm/turn-budget";
 import type { AttackPlan } from "@/lib/dm/pc-attack-plan";
 import type { AttackKind } from "@/lib/dm/pc-attack-profile";
 import type { OnHitSpends } from "@/lib/dm/pc-attack-riders";
@@ -30,6 +32,10 @@ import { conditionOnHitDice } from "@/lib/srd/condition-effects";
 import { conditionStrikesMagical } from "@/lib/srd/condition-effect-queries";
 import { effectsFor, type CombatRiders } from "@/lib/srd/feature-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { holdsFeature, isNamed } from "@/lib/srd/feature-names";
+import { subclassNamed } from "@/lib/srd/subclass-name";
+import { authoredDamageAbility } from "@/lib/srd/authored-effects-more";
+import { alignmentIs } from "@/lib/srd/alignment";
 
 export type FeatureRider = CombatRiders["damageRiders"][number];
 
@@ -59,6 +65,16 @@ export function foldDamageRiders(input: {
       ...profile,
       damageExpression: `${profile.damageExpression}+${rageBonus}`,
     };
+  }
+
+  // An ability modifier a feature adds to weapon damage (Aura of Hate,
+  // Song of Victory: src/lib/srd/authored-effects-more.ts).
+  const abilityRiders =
+    kind === "weapon" || kind === "natural"
+      ? authoredDamageAbility(sheet, { melee: !profile.ranged }, Object.fromEntries(Object.entries(sheet.abilities).map(([key, score]) => [key, Math.floor((score - 10) / 2)])))
+      : [];
+  for (const rider of abilityRiders) {
+    profile = { ...profile, damageExpression: `${profile.damageExpression}+${rider.amount}`, riderNotes: [...profile.riderNotes, `${rider.feature}: +${rider.amount} damage`] };
   }
 
   // Effect conditions riding the attacker's hits (Divine Favor's +1d4
@@ -146,7 +162,7 @@ function hunterRiders(
   sheet: CharacterSheet,
   enemy: Pick<EncounterEnemy, "currentHp" | "maxHp"> | undefined,
 ): FeatureRider[] {
-  const slayer = sheet.features.some((feature) => /colossus slayer/i.test(feature.name));
+  const slayer = holdsFeature(sheet, "Colossus Slayer");
   if (!slayer || !enemy || enemy.currentHp >= enemy.maxHp) {
     return [];
   }
@@ -159,7 +175,7 @@ function hunterRiders(
 // is in its text, and "of the weapon's type" (War) or a choice of three
 // (Nature) rides as the weapon's own.
 function riderType(sheet: CharacterSheet, rider: FeatureRider): string {
-  if (rider.type || !/^divine strike/i.test(rider.feature.trim())) {
+  if (rider.type || !isNamed(rider.feature, "divine strike")) {
     return rider.type;
   }
   const domains = [
@@ -167,7 +183,7 @@ function riderType(sheet: CharacterSheet, rider: FeatureRider): string {
     ...(sheet.classes ?? []).map((entry) => ({ id: entry.id, subclass: entry.subclass })),
   ].filter((entry) => entry.id.toLowerCase() === "cleric" && entry.subclass);
   for (const { subclass } of domains) {
-    if (/^life\b|life domain/i.test(subclass.trim())) {
+    if (subclassNamed(subclass, "Life Domain")) {
       return "radiant";
     }
     const text = subclassFeatureDescription("cleric", subclass, "Divine Strike") ?? "";
@@ -219,7 +235,7 @@ export function withSneakAttack(input: {
 
 function sneakBonusAgainst(sheetId: string, enemyId: string): { dice: number; feature: string } | null {
   const sheet = getSheetById(sheetId);
-  const enemy = getEnemy(enemyId);
+  const enemy = getFoe(enemyId);
   if (!sheet || !enemy) {
     return null;
   }
@@ -227,9 +243,11 @@ function sneakBonusAgainst(sheetId: string, enemyId: string): { dice: number; fe
   return authoredSneakBonus(sheet, sheet.id, enemy.conditions.map((condition) => ({ condition, source: meta[condition]?.source })));
 }
 
-// The once-per-turn damage riders claim their turn slot as the attack is
-// charged. A rider already used this turn leaves the expression, its note
-// says so, and its dice are listed so the typed riders drop them too.
+// The once-per-turn damage riders: a rider already used this turn leaves the
+// expression, its note says so, and its dice are listed so the typed riders
+// drop them too. One still free rides this attack and is spent only by a
+// hit (`hitClaims`, claimed by claimHitRiders): a miss keeps Sneak Attack
+// for the next swing of the turn (SRD 5.1).
 export function claimOncePerTurnRiders(input: {
   budget: TurnBudget;
   profile: AttackProfile;
@@ -237,9 +255,11 @@ export function claimOncePerTurnRiders(input: {
   sneak: boolean;
   sneakAttackDice: number;
   featureRiders: FeatureRider[];
-}): { budget: TurnBudget; profile: AttackProfile; notes: string[]; droppedRiders: string[] } {
-  let { budget, profile, notes } = input;
+}): { profile: AttackProfile; notes: string[]; droppedRiders: string[]; hitClaims: string[] } {
+  const { budget } = input;
+  let { profile, notes } = input;
   const droppedRiders: string[] = [];
+  const hitClaims: string[] = [];
   if (input.sneak) {
     // Sneak Attack is once per turn however many swings land.
     const claimed = claimOncePerTurn(budget, "sneak_attack");
@@ -256,7 +276,7 @@ export function claimOncePerTurnRiders(input: {
       );
       notes.push("Sneak Attack already used this turn: no extra dice");
     } else {
-      budget = claimed;
+      hitClaims.push("sneak_attack");
     }
   }
   // Once-per-turn feature riders (Divine Strike) spend their turn slot the
@@ -265,7 +285,8 @@ export function claimOncePerTurnRiders(input: {
     if (!rider.oncePerTurn) {
       continue;
     }
-    const claimed = claimOncePerTurn(budget, `rider:${rider.feature.toLowerCase()}`);
+    const key = `rider:${rider.feature.toLowerCase()}`;
+    const claimed = claimOncePerTurn(budget, key);
     if (!claimed) {
       profile = {
         ...profile,
@@ -277,10 +298,23 @@ export function claimOncePerTurnRiders(input: {
       );
       notes.push(`${rider.feature} already used this turn: no extra dice`);
     } else {
-      budget = claimed;
+      hitClaims.push(key);
     }
   }
-  return { budget, profile, notes, droppedRiders };
+  return { profile, notes, droppedRiders, hitClaims };
+}
+
+// A hit spends the once-per-turn riders it carried, on the stored turn.
+export function claimHitRiders(encounter: Encounter, budget: TurnBudget | null, keys: string[] | undefined) {
+  if (!budget || !keys?.length) {
+    return;
+  }
+  for (const key of keys) {
+    if (!budget.oncePerTurn.includes(key)) {
+      budget.oncePerTurn.push(key);
+    }
+  }
+  storeBudget(encounter, budget);
 }
 
 // What the damage roll carries once the attack is paid for: the reroll and
@@ -342,11 +376,10 @@ function magicalStrikeApplies(plan: Pick<AttackPlan, "kind" | "profile" | "rider
   return effectsFor(plan.sheet)
     .filter(({ effect }) => effect.kind === "magical_attacks")
     .some(({ feature }) => {
-      const name = feature.toLowerCase();
-      if (name.startsWith("ki-empowered strikes")) {
+      if (isNamed(feature, "Ki-Empowered Strikes")) {
         return plan.profile.unarmed === true;
       }
-      if (name.startsWith("primal strike")) {
+      if (isNamed(feature, "Primal Strike")) {
         return plan.kind === "natural";
       }
       return true;
@@ -393,7 +426,18 @@ export function applyHitDamage(input: {
     ignoreResistance: plan.elementalAdept || poisonerIgnoresResistance(plan.sheet, plan.profile.damageType),
     ignoreResistanceBy: plan.elementalAdept ? "Elemental Adept" : "Poisoner",
     concentrationDisadvantage: plan.mageSlayer,
+    blow: blowSource(plan),
   });
+}
+
+// A spell attack is a spell's damage; a weapon in a good character's hands
+// meets the defences that name the wielder (a rakshasa's vulnerability).
+export function blowSource(plan: Pick<AttackPlan, "kind" | "sheet">): BlowSource {
+  if (plan.kind === "spell") {
+    return { spell: true };
+  }
+  // The builder stores the code (LG, NG, CG), a DM the words.
+  return alignmentIs(plan.sheet.alignment, "good") ? { goodWielder: true } : {};
 }
 
 // One blow landing on an enemy, per damage type: the shared end of
@@ -421,10 +465,12 @@ export function landBlow(input: {
   nonlethal?: boolean;
   // An opportunity attack leaves the fight open (enemy-damage.ts).
   holdVictory?: boolean;
+  // A spell's damage, or a good wielder's weapon (damage-logic.ts).
+  blow?: BlowSource;
 }): Record<string, unknown> {
   const { campaign, turn, encounter, enemy, sheets, sheetsById, profile, damageOutcome, dealt, crit, critExtraDice, magical } = input;
   // A silvered or adamantine weapon passes the resistances that name it.
-  const material = weaponMaterial(profile.weapon);
+  const material = profile.material ?? {};
   const nonlethal = input.nonlethal === true;
   const holdVictory = input.holdVictory === true;
   const unharmed = {
@@ -440,6 +486,23 @@ export function landBlow(input: {
   let applied: Record<string, unknown>;
   if (dealt <= 0) {
     applied = unharmed;
+  } else if (isSheetFoe(enemy)) {
+    // A character on the other side (sheet-foe.ts): the blow lands whole,
+    // each type meeting the character's own defenses (pc-damage.ts).
+    const typed = parts.length >= 2 ? parts.map((part) => ({ amount: part.amount, type: part.type || profile.damageType })) : undefined;
+    applied = applySheetFoeBlow(campaign, turn, encounter, enemy, {
+      amount: typed ? typed.reduce((sum, part) => sum + part.amount, 0) : dealt,
+      ...(typed ? { parts: typed } : { type: profile.damageType }),
+      ...(magical ? { magical: true } : {}),
+      // The weapon's material and the blow's source meet the character's
+      // form as they meet a block (a silvered sword and a lycanthrope).
+      ...material,
+      ...(input.blow?.spell ? { spell: true } : {}),
+      ...(input.blow?.goodWielder ? { goodWielder: true } : {}),
+      ...(input.ignoreResistance && profile.damageType ? { ignoreResistanceTo: profile.damageType } : {}),
+      ...(crit ? { crit: true } : {}),
+      ...(nonlethal ? { nonlethal: true } : {}),
+    }, sheets, sheetsById, holdVictory);
   } else if (parts.length < 2) {
     applied = applyEnemyDamage(
       campaign,
@@ -450,41 +513,25 @@ export function landBlow(input: {
       sheets,
       sheetsById,
       profile.damageType,
-      { magical, nonlethal, holdVictory, ...material, ...(input.ignoreResistance ? { ignoreResistance: true, ignoreResistanceBy: input.ignoreResistanceBy } : {}), ...(input.concentrationDisadvantage ? { concentrationDisadvantage: true } : {}) },
+      { magical, nonlethal, holdVictory, ...material, ...input.blow, ...(input.ignoreResistance ? { ignoreResistance: true, ignoreResistanceBy: input.ignoreResistanceBy } : {}), ...(input.concentrationDisadvantage ? { concentrationDisadvantage: true } : {}) },
     );
   } else {
     // Two damage types in one blow: each meets the creature's resistances
-    // on its own, and what is left lands as one wound. A creature that
-    // resists everything (petrified) is halved once, by applyEnemyDamage.
-    const resistAll = resistsAllDamage(enemy.conditions);
-    const byType = parts.map((part, index) => ({
-      ...part,
-      ...damageAdjust(
-        part.amount,
-        part.type,
-        resistAll ? "" : resistLineFor(campaign.id, enemy),
-        enemy.stats.immune,
-        enemy.stats.vulnerable,
-        { magical: index === 0 ? magical : true, ...(index === 0 ? material : {}) },
-      ),
-    }));
-    const landed = byType.reduce((sum, part) => sum + part.amount, 0);
-    applied =
-      landed > 0
-        ? applyEnemyDamage(campaign, turn, encounter, enemy, landed, sheets, sheetsById, undefined, {
-            magical: true,
-            nonlethal,
-            holdVictory,
-            ...(input.concentrationDisadvantage ? { concentrationDisadvantage: true } : {}),
-          })
-        : unharmed;
-    applied = {
-      ...applied,
-      damageApplied: resistAll ? Math.floor(landed / 2) : landed,
-      damageByType: byType.map(
-        (part) => `${part.amount} ${part.type || "untyped"}${part.note ? ` (${part.note})` : ""}`,
-      ),
-    };
+    // on its own, and what is left lands as one wound (enemy-blow.ts).
+    applied = landTypedParts({
+      campaign,
+      turn,
+      encounter,
+      enemy,
+      parts,
+      sheets,
+      sheetsById,
+      weapon: { magical, ...material, ...input.blow, ...(input.ignoreResistance ? { ignoreResistanceBy: input.ignoreResistanceBy ?? "Elemental Adept" } : {}) },
+      nonlethal,
+      holdVictory,
+      crit,
+      concentrationDisadvantage: input.concentrationDisadvantage === true,
+    });
   }
   return applied;
 }

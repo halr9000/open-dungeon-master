@@ -6,6 +6,8 @@
 
 import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { subclassNamed } from "@/lib/srd/subclass-name";
 
 // ---- Open Hand Technique ----
 
@@ -17,13 +19,16 @@ export const OPEN_HAND_REELING = "no reactions (open hand)";
 
 // The refusal for an Open Hand rider on an attack that is not one of Flurry
 // of Blows' strikes.
-export const OPEN_HAND_NOT_FLURRY =
-  'Open Hand Technique rides a hit of Flurry of Blows, and this attack is not one of its strikes. Spend the ki with use_resource Ki variant "flurry of blows" after the Attack action, then make the unarmed strikes with openHand.';
+export const OPEN_HAND_NOT_FLURRY: ToolError = {
+  error:
+    'Open Hand Technique rides a hit of Flurry of Blows, and this attack is not one of its strikes. Spend the ki with use_resource Ki variant "flurry of blows" after the Attack action, then make the unarmed strikes with openHand.',
+  retry: true,
+};
 
 export function hasOpenHandTechnique(sheet: CharacterSheet): boolean {
   return (
     holdsFeature(sheet, "open hand technique") ||
-    (classLevelOf(sheet, "monk") >= 3 && /open hand/i.test(sheet.subclass ?? ""))
+    (classLevelOf(sheet, "monk") >= 3 && subclassNamed(sheet.subclass ?? "", "Way of the Open Hand"))
   );
 }
 
@@ -32,16 +37,16 @@ export function hasOpenHandTechnique(sheet: CharacterSheet): boolean {
 export const HURLED = "hurled through hell";
 export const HURL_THROUGH_HELL = "hurl_through_hell";
 
-export function hurlProblem(sheet: CharacterSheet, asked: boolean | undefined): string | null {
+export function hurlProblem(sheet: CharacterSheet, asked: boolean | undefined): ToolError | null {
   if (!asked) {
     return null;
   }
-  if (!holdsFeature(sheet, "hurl through hell") && !(classLevelOf(sheet, "warlock") >= 14 && /fiend/i.test(sheet.subclass ?? ""))) {
-    return `${sheet.name} does not have Hurl Through Hell (The Fiend's 14th level feature); attack without hurlThroughHell.`;
+  if (!holdsFeature(sheet, "hurl through hell") && !(classLevelOf(sheet, "warlock") >= 14 && subclassNamed(sheet.subclass ?? "", "The Fiend"))) {
+    return { error: `${sheet.name} does not have Hurl Through Hell (The Fiend's 14th level feature); attack without hurlThroughHell.`, retry: true };
   }
   const state = sheet.resources?.[HURL_THROUGH_HELL];
   if (!state || state.max - state.used <= 0) {
-    return `${sheet.name} has used Hurl Through Hell; it comes back on a long rest. Attack without hurlThroughHell.`;
+    return { error: `${sheet.name} has used Hurl Through Hell; it comes back on a long rest. Attack without hurlThroughHell.`, retry: true };
   }
   return null;
 }

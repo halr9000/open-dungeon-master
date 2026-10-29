@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { isErrorResponse, requireStoryAuthority } from "@/lib/campaign-api";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
 import { getFloor, setFloor, type Floor } from "@/lib/db/campaigns";
 import { listSheets } from "@/lib/db/sheets";
 import { fightOwnsFloor, floorAfterRelease, skipCurrentTurn } from "@/lib/dm/encounter-tools";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import { handOnFromBanner } from "@/lib/dm/invoke";
 import { requestDmTurn } from "@/lib/dm/loop";
+import { settleTableWait, tableWaitHasAnswers } from "@/lib/dm/table-wait";
 import { publishPersisted } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -34,6 +36,12 @@ export async function POST(
   const context = await requireStoryAuthority(campaignId);
   if (isErrorResponse(context)) {
     return context;
+  }
+  // The floor is left as it was through a break, so Resume picks up there;
+  // a release here would also skip a turn or play the enemies.
+  const paused = refuseDuringBreak(campaignId);
+  if (paused) {
+    return paused;
   }
   const floor = getFloor(campaignId);
 
@@ -78,7 +86,16 @@ export async function POST(
     }
     setFloor(campaignId, next);
     publishPersisted(campaignId, "floor_changed", { floor: next });
+    // An open floor at a table that waits for everyone starts a beat.
+    settleTableWait(campaignId);
     return Response.json({ ok: true, floor: next });
+  }
+
+  // An open table waiting for everyone (src/lib/dm/table-wait.ts):
+  // releasing it is "go on now", and the held turn answers whoever has.
+  if (floor.mode === "open" && tableWaitHasAnswers(campaignId)) {
+    requestDmTurn(campaignId);
+    return Response.json({ ok: true });
   }
 
   // In combat, "release" means skip the absent player's turn: the pointer
@@ -104,6 +121,8 @@ export async function POST(
   publishPersisted(campaignId, "floor_changed", { floor: next });
   if (floor.mode === "spotlight" && floor.respondedUserIds.length) {
     requestDmTurn(campaignId);
+  } else {
+    settleTableWait(campaignId);
   }
   return Response.json({ ok: true });
 }

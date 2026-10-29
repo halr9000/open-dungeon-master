@@ -5,6 +5,7 @@ import { overworldView, replaceOverworldTerrain, setOverworldAnchor, setOverworl
 import { isWatabouCity, parseWatabouCity } from "@/lib/battlemap/watabou";
 import { AZGAAR_LIMITS, importAzgaar } from "@/lib/overworld/azgaar";
 import { getOverworld } from "@/lib/db/overworld";
+import { recordsChanged } from "@/lib/workshop/record-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,6 +63,7 @@ export async function POST(
         places = 1;
       }
     }
+    recordsChanged(campaignId, "location", "world");
     return Response.json({
       ...overworldView(campaignId, true),
       summary: { cells: 0, places, rivers: city.city.paths.filter((path) => path.kind === "river").length, routes: city.city.paths.filter((path) => path.kind === "road").length },
@@ -94,6 +96,7 @@ export async function POST(
       places += 1;
     }
   }
+  recordsChanged(campaignId, "location", "world");
   return Response.json({
     ...overworldView(campaignId, true),
     summary: { ...read.summary, places },

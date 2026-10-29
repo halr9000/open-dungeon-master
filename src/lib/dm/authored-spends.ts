@@ -18,11 +18,13 @@ import { computeSheetDerived } from "@/lib/srd";
 import { authoredSpendFor, gateHolds, type AuthoredSpend, type HeldAuthored } from "@/lib/srd/authored-effects";
 import type { SpendAction, SpendDoes } from "@/lib/srd/authored-effects-types";
 import { canAct } from "@/lib/dm/can-act";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { spendAction } from "@/lib/dm/action-budget";
 import { attacksAllowedFor, budgetFor, prepareReaction, storeBudget } from "@/lib/dm/turn-budget";
 import { resolveSpendEffect, type SpendContext } from "@/lib/dm/authored-spend-effects";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
+import { namedOption, toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type AuthoredSpendArgs = {
   amount?: number;
@@ -30,8 +32,6 @@ export type AuthoredSpendArgs = {
   targetCharacterId?: string;
   targetEnemyId?: string;
 };
-
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
 
 function audit(campaign: Campaign, turnId: string, sheet: CharacterSheet, delta: Record<string, unknown>, reason: string, patch: Record<string, unknown>) {
   const entry = insertSheetAudit({
@@ -48,13 +48,13 @@ function audit(campaign: Campaign, turnId: string, sheet: CharacterSheet, delta:
   publishPersisted(campaign.id, "sheet_audit", { entry, characterName: sheet.name });
 }
 
-function gateSentence(spend: AuthoredSpend): string {
+function gateSentence(spend: AuthoredSpend): ToolError {
   const gate = spend.gate ?? {};
-  if (gate.raging) return `${spend.name} works only while raging (and not in heavy armor).`;
-  if (gate.condition) return `${spend.name} works only while ${gate.condition} holds.`;
-  if (gate.choice) return `${spend.name} belongs to the ${gate.choice} option, which this character has not chosen.`;
-  if (gate.choiceOf) return `${spend.name} belongs to the ${gate.choiceOf.value} ${gate.choiceOf.feature}, which this character has not chosen.`;
-  return `${spend.name} cannot be used right now.`;
+  if (gate.raging) return { error: `${spend.name} works only while raging (and not in heavy armor).`, refused: "rules" };
+  if (gate.condition) return { error: `${spend.name} works only while ${gate.condition} holds.`, refused: "rules" };
+  if (gate.choice) return { error: `${spend.name} belongs to the ${gate.choice} option, which this character has not chosen.`, refused: "rules" };
+  if (gate.choiceOf) return { error: `${spend.name} belongs to the ${gate.choiceOf.value} ${gate.choiceOf.feature}, which this character has not chosen.`, refused: "rules" };
+  return { error: `${spend.name} cannot be used right now.`, refused: "rules" };
 }
 
 // The turn's cost, checked first and written last (the resource-turn.ts
@@ -65,15 +65,15 @@ function prepareCost(
   cost: SpendAction | undefined,
   label: string,
   onceKey: string | null,
-): { error: string } | { commit: () => Record<string, unknown> } {
+): ToolError | { commit: () => ToolResult } {
   const encounter = getActiveEncounter(campaign.id);
   const inFight = encounter !== null && (encounter.kind ?? "fight") === "fight";
   if (!inFight || !encounter) {
     return { commit: () => ({}) };
   }
-  const budget = budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions));
+  const budget = budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions));
   if (onceKey && budget?.oncePerTurn.includes(onceKey)) {
-    return { error: `${label} is used once a turn, and ${sheet.name} has used it this turn.` };
+    return { error: `${label} is used once a turn, and ${sheet.name} has used it this turn.`, refused: "rules" };
   }
   if (cost === "reaction") {
     return prepareReaction(encounter, sheet, label);
@@ -91,14 +91,14 @@ function prepareCost(
   }
   const able = canAct({ sheet, encounter, kind: cost });
   if (!able.ok) {
-    return { error: able.error };
+    return toolError(able);
   }
   if (!budget) {
     return { commit: () => ({}) };
   }
   const spent = spendAction(budget, cost, label, sheet.name);
   if (!spent.ok) {
-    return { error: spent.error };
+    return toolError(spent);
   }
   return {
     commit: () => {
@@ -111,16 +111,12 @@ function prepareCost(
   };
 }
 
-function pickVariant(does: SpendDoes, variant: string | undefined, spend: AuthoredSpend): { does: SpendDoes; action?: SpendAction } | { error: string } {
+function pickVariant(does: SpendDoes, variant: string | undefined, spend: AuthoredSpend): { does: SpendDoes; action?: SpendAction } | ToolError {
   if (does.kind !== "variants") {
     return { does, action: spend.action };
   }
-  const wanted = lower(variant);
-  const key = Object.keys(does.options).find((option) => wanted.includes(option));
-  if (!key) {
-    return { error: `${spend.name} needs a variant: ${Object.keys(does.options).join(" or ")}. Nothing was spent.` };
-  }
-  return does.options[key];
+  const key = namedOption(spend.name, variant, Object.keys(does.options));
+  return typeof key === "string" ? does.options[key] : key;
 }
 
 // A use_resource call this module resolves, or null for the other paths.
@@ -131,7 +127,7 @@ export function authoredFeatureSpend(
   resourceName: string,
   args: AuthoredSpendArgs,
   reason: string,
-): Record<string, unknown> | null {
+): ToolResult | null {
   const sheet = getSheetById(stale.id) ?? stale;
   const found = authoredSpendFor(sheet, resourceName);
   if (!found) {
@@ -139,18 +135,19 @@ export function authoredFeatureSpend(
   }
   const { spend, held } = found;
   if (sheet.deathSaves?.dead || sheet.currentHp <= 0) {
-    return { error: `${sheet.name} is down and cannot use ${spend.name}.` };
+    return { error: `${sheet.name} is down and cannot use ${spend.name}.`, refused: "rules" };
   }
   if (!gateHolds(spend.gate, sheet, held)) {
-    return { error: `${gateSentence(spend)} Nothing was spent.` };
+    const refusal = gateSentence(spend);
+    return { ...refusal, error: `${refusal.error} Nothing was spent.` };
   }
   const encounter = getActiveEncounter(campaign.id);
   const inFight = encounter !== null && (encounter.kind ?? "fight") === "fight";
   if (spend.fight === "out" && inFight) {
-    return { error: `${spend.name} is chosen outside a fight, when a rest ends, not in the middle of one.` };
+    return { error: `${spend.name} is chosen outside a fight, when a rest ends, not in the middle of one.`, refused: "rules" };
   }
-  if (spend.oncePer && sheet.conditions.some((entry) => lower(entry) === spend.oncePer!.marker)) {
-    return { error: `${spend.name} has been used already (${spend.oncePer.marker}). Nothing was spent.` };
+  if (spend.oncePer && sheet.conditions.some((entry) => textKey(entry) === textKey(spend.oncePer!.marker))) {
+    return { error: `${spend.name} has been used already (${spend.oncePer.marker}). Nothing was spent.`, refused: "rules" };
   }
   const picked = pickVariant(spend.does, args.variant, spend);
   if ("error" in picked) {
@@ -162,7 +159,7 @@ export function authoredFeatureSpend(
   if (spend.pool) {
     units = spend.pool.perUnit ? Math.floor(args.amount ?? (spend.pool.optional ? 0 : 1)) : (spend.pool.amount ?? 1);
     if (spend.pool.max && units > spend.pool.max) {
-      return { error: `${spend.name} takes at most ${spend.pool.max}; ${units} is more than it can hold. Nothing was spent.` };
+      return { error: `${spend.name} takes at most ${spend.pool.max}; ${units} is more than it can hold. Nothing was spent.`, retry: true };
     }
     const candidates = [spend.pool.id, ...(spend.pool.fallback ? [spend.pool.fallback] : [])];
     poolId = candidates.find((id) => {
@@ -175,10 +172,11 @@ export function authoredFeatureSpend(
         error: state
           ? `${sheet.name} has ${state.max - state.used}/${state.max} left of what ${spend.name} spends, and it takes ${units}. Nothing was spent.`
           : `${sheet.name} has no ${spend.pool.id.replace(/^sub_/, "").replace(/_/g, " ")} to spend on ${spend.name}.`,
+        refused: "rules",
       };
     }
   }
-  const onceKey = spend.oncePerTurn ? (spend.onceKey ?? `authored:${lower(spend.name)}`) : null;
+  const onceKey = spend.oncePerTurn ? (spend.onceKey ?? `authored:${textKey(spend.name)}`) : null;
   const charge = prepareCost(campaign, sheet, picked.action, spend.name, onceKey);
   if ("error" in charge) {
     return charge;

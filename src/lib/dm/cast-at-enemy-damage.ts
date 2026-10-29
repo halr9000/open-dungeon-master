@@ -20,7 +20,8 @@ import { spellDamageRiders } from "@/lib/srd/spell-damage-riders";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 
 // Rolls and lands the damage, writing what happened onto `base`; returns the
-// damage dealt.
+// damage dealt and the dice's total. A later creature of one area casting
+// takes the casting's one roll (`sharedRoll`) and rolls nothing.
 export function landSpellDamage(input: {
   campaign: Campaign;
   turn: DmTurn;
@@ -42,8 +43,9 @@ export function landSpellDamage(input: {
   base: Record<string, unknown>;
   sheets: CharacterSheet[];
   sheetsById: Map<string, CharacterSheet>;
-}): number {
-  const { campaign, turn, encounter, sheet, enemy, spell, spellName, authors, mech, facts, scaled, damageExpression, damageType, spellLevel, halfOnSave, saved, base, sheets, sheetsById } = input;
+  sharedRoll?: number;
+}): { dealt: number; rolled: number | null } {
+  const { campaign, turn, encounter, sheet, enemy, spell, spellName, authors, mech, facts, scaled, damageExpression, damageType, spellLevel, halfOnSave, saved, base, sheets, sheetsById, sharedRoll } = input;
   const riders = spellDamageRiders(sheet, {
     school: spellSchoolFor(spell, authors),
     damageType,
@@ -60,16 +62,18 @@ export function landSpellDamage(input: {
   // The card shows the dice as rolled; the save halves or stops what lands.
   // A maximized blow rolls no dice, so it has no card.
   const outcome =
-    maxed === null
-      ? rollCard(campaign, turn, sheet.id, "damage", rollAgainst(spellName, enemy.displayName), rolledExpression, { kind: "sheet", id: sheet.id, name: sheet.name })
-      : { total: maxed };
+    maxed !== null
+      ? { total: maxed }
+      : sharedRoll !== undefined
+        ? { total: sharedRoll }
+        : rollCard(campaign, turn, sheet.id, "damage", rollAgainst(spellName, enemy.displayName), rolledExpression, { kind: "sheet", id: sheet.id, name: sheet.name });
   const total = outcome.total + riders.flat;
   const halves = halfOnSave || riders.potentCantrip;
   // Feeblemind's damage lands whatever the save (spell-mech-types.ts).
   let damageDealt = saved && !mech?.riders?.damageIgnoresSave ? (halves ? Math.floor(total / 2) : 0) : total;
   // Harm: never below 1 hit point. The floor is on what gets through the
   // creature's resistances, so those are weighed here and not again.
-  const floored = flooredDamage(mech, enemy, damageDealt, damageType);
+  const floored = flooredDamage(campaign.id, mech, enemy, damageDealt, damageType, adept ? "Elemental Adept" : null);
   if (floored !== null) {
     damageDealt = floored;
   }
@@ -82,6 +86,7 @@ export function landSpellDamage(input: {
   if (damageDealt > 0) {
     const applied = applyEnemyDamage(campaign, turn, encounter, enemy, damageDealt, sheets, sheetsById, floored === null ? damageType : undefined, {
       magical: true,
+      spell: true,
       ...(adept ? { ignoreResistance: true } : {}),
     });
     if (adept) {
@@ -101,12 +106,12 @@ export function landSpellDamage(input: {
       base.darkOnesBlessing = blessing;
     }
     // Touch of Death, Keeper of Souls on the kill (authored-hooks.ts).
-    const onKill = applied.dead && encounter ? authoredOnKill(campaign, encounter, enemy, sheet.id) : [];
+    const onKill = applied.dead && encounter ? authoredOnKill(campaign, encounter, enemy, sheet.id, false, { level: spellLevel, school: spellSchoolFor(spell, authors) }) : [];
     if (onKill.length) {
       base.subclassFeatures = onKill;
     }
   } else {
     base.damage = 0;
   }
-  return damageDealt;
+  return { dealt: damageDealt, rolled: maxed === null ? outcome.total : null };
 }

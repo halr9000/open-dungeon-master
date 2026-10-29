@@ -24,8 +24,10 @@
 import type { TurnBudget } from "@/lib/dm/action-budget";
 import type { AttackProfile } from "@/lib/dm/attack-logic";
 import { classLevelFor } from "@/lib/srd/multiclass";
-import { matchWeapon } from "@/lib/srd/weapons";
+import { weaponNamed } from "@/lib/srd/weapons";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // The condition a marked creature's damage to someone else leaves on its
 // marker: the bonus attack is open against that creature on the marker's
@@ -54,10 +56,7 @@ export type FeatureBonusAttack = {
 };
 
 const holds = (sheet: CharacterSheet, name: string) =>
-  sheet.features.some((feature) => {
-    const lowered = feature.name.trim().toLowerCase();
-    return lowered === name || lowered.startsWith(`${name} (`);
-  });
+  sheet.features.some((feature) => [feature.name, feature.name.replace(/\s*\(.*$/, "")].some((held) => textKey(held) === name));
 
 const usesLeft = (sheet: CharacterSheet, id: string) => {
   const counter = sheet.resources?.[id];
@@ -73,14 +72,14 @@ export function featureBonusAttack(input: {
   melee: boolean;
   targetId?: string;
   mods: Record<string, number>;
-}): FeatureBonusAttack | { refused: string } | null {
+}): FeatureBonusAttack | { refused: ToolError } | null {
   const { sheet, budget, profile, melee } = input;
-  const refusals: string[] = [];
+  const refusals: ToolError[] = [];
   if (holds(sheet, "war priest")) {
     if (budget.attacksMade <= 0 || budget.castThisAction) {
-      refusals.push("War Priest's bonus attack follows the Attack action, and they have not taken it this turn.");
+      refusals.push({ error: "War Priest's bonus attack follows the Attack action, and they have not taken it this turn.", retry: true });
     } else if (usesLeft(sheet, "sub_war_priest") <= 0) {
-      refusals.push("War Priest has no use left until a long rest.");
+      refusals.push({ error: "War Priest has no use left until a long rest.", refused: "rules" });
     } else {
       return { feature: "War Priest", counter: "sub_war_priest" };
     }
@@ -89,13 +88,16 @@ export function featureBonusAttack(input: {
     const open = sheet.conditions.find((entry) => entry.trim().toLowerCase() === UNWAVERING_STRIKE);
     const against = open ? (sheet.conditionMeta as Record<string, { source?: string } | undefined>)[open]?.source : undefined;
     if (!open || !against) {
-      refusals.push("Unwavering Mark's bonus attack answers a creature they marked dealing damage to someone else since their last turn, and none has.");
+      refusals.push({
+        error: "Unwavering Mark's bonus attack answers a creature they marked dealing damage to someone else since their last turn, and none has.",
+        refused: "rules",
+      });
     } else if (input.targetId && against !== input.targetId) {
-      refusals.push("Unwavering Mark's bonus attack is made against the marked creature that dealt the damage.");
+      refusals.push({ error: "Unwavering Mark's bonus attack is made against the marked creature that dealt the damage.", retry: true });
     } else if (!melee) {
-      refusals.push("Unwavering Mark's bonus attack is a melee weapon attack.");
+      refusals.push({ error: "Unwavering Mark's bonus attack is a melee weapon attack.", refused: "rules" });
     } else if (usesLeft(sheet, "sub_unwavering_mark") <= 0) {
-      refusals.push("Unwavering Mark has no use left until a long rest.");
+      refusals.push({ error: "Unwavering Mark has no use left until a long rest.", refused: "rules" });
     } else {
       const half = Math.floor((classLevelFor(sheet, "fighter") || sheet.level) / 2);
       return { feature: "Unwavering Mark", counter: "sub_unwavering_mark", advantage: true, damage: half > 0 ? String(half) : undefined, consume: open };
@@ -103,19 +105,19 @@ export function featureBonusAttack(input: {
   }
   if (holds(sheet, "hungry jaws")) {
     if (!/\bbite\b/i.test(profile.weapon)) {
-      refusals.push("Hungry Jaws is a bite: send weapon \"bite\".");
+      refusals.push({ error: "Hungry Jaws is a bite: send weapon \"bite\".", retry: true });
     } else if (usesLeft(sheet, "race_hungry_jaws") <= 0) {
-      refusals.push("Hungry Jaws has no use left until a short or long rest.");
+      refusals.push({ error: "Hungry Jaws has no use left until a short or long rest.", refused: "rules" });
     } else {
       return { feature: "Hungry Jaws", counter: "race_hungry_jaws", tempHpOnHit: Math.max(1, input.mods.con ?? 0) };
     }
   }
   if (holds(sheet, "pistol and blade")) {
-    const firearm = matchWeapon(profile.weapon)?.category === "firearm";
+    const firearm = weaponNamed(profile.base ?? "")?.category === "firearm";
     if (!budget.oncePerTurn.includes(MELEE_ATTACKED)) {
-      refusals.push("Pistol and Blade's firearm shot follows a melee weapon attack this turn, and they have made none.");
+      refusals.push({ error: "Pistol and Blade's firearm shot follows a melee weapon attack this turn, and they have made none.", retry: true });
     } else if (!firearm) {
-      refusals.push("Pistol and Blade's bonus attack is made with a firearm.");
+      refusals.push({ error: "Pistol and Blade's bonus attack is made with a firearm.", retry: true });
     } else {
       return { feature: "Pistol and Blade" };
     }

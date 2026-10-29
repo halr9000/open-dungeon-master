@@ -1,7 +1,7 @@
 import { currentScene } from "@/lib/dm/sky";
 import { z } from "zod";
 import { capsFor, isErrorResponse, isLead, requireMember } from "@/lib/campaign-api";
-import { CAMPAIGN_DIFFICULTIES } from "@/lib/campaign-types";
+import { ADVENTURE_BEGINS_NOTE, CAMPAIGN_DIFFICULTIES } from "@/lib/campaign-types";
 import { deleteCampaignWithFiles } from "@/lib/campaign-deletion";
 import {
   allocateSeq,
@@ -15,6 +15,7 @@ import {
 import { ensureOpenChapter, listChaptersForSnapshot } from "@/lib/db/chapters";
 import { publicCast } from "@/lib/dm/cast";
 import { currentCoordination } from "@/lib/dm/coordination";
+import { currentTableWait } from "@/lib/dm/table-wait";
 import { getAmbience } from "@/lib/db/ambience";
 import { captureBoundarySnapshot } from "@/lib/db/snapshots";
 import { listRecentCampaignEvents } from "@/lib/db/character-events";
@@ -24,6 +25,7 @@ import { listNotesVisibleTo } from "@/lib/db/notes";
 import { listOpenPendingRolls, publicPendingRoll } from "@/lib/db/dm-turns";
 import { listDmBeats } from "@/lib/db/dm-beats";
 import { listOpenItemProposals } from "@/lib/db/item-proposals";
+import { offerVisibleTo } from "@/lib/dm/proposal-view";
 import { listOpenDisputes, publicDispute } from "@/lib/db/disputes";
 import { publicItemProposal } from "@/lib/dm/proposal-intercept";
 import { listLocations } from "@/lib/db/locations";
@@ -32,21 +34,26 @@ import { insertCampaignMessage, listRecentMessages } from "@/lib/db/messages";
 import { listRollsVisibleTo } from "@/lib/db/rolls";
 import { getSheetForUser, listSheets } from "@/lib/db/sheets";
 import { speciesAtTable } from "@/lib/characters/species-rules";
+import { subclassExtrasAtTable } from "@/lib/db/subclass-extras";
 import { tableFeatsFrom } from "@/lib/db/table-feats";
 import { getDatabase } from "@/lib/db/core";
 import { requestDmTurn } from "@/lib/dm/loop";
 import { hasHumanDm, isPrimaryDm, lobbyBlocker, narratorIsAi } from "@/lib/dm/viewer";
-import { sheetForViewer } from "@/lib/dm/sheet-view";
-import { enqueueDmJob } from "@/lib/dm/queue";
+import { auditEntryForViewer, sheetForViewer } from "@/lib/dm/sheet-view";
+import { enqueueDmJob, runningDmJob } from "@/lib/dm/queue";
 import { runStorySetup } from "@/lib/dm/setup";
 import { generateStoryArc } from "@/lib/dm/arc";
 import { getDmStatus } from "@/lib/dm/status";
 import { listUtilityCalls } from "@/lib/dm/call-tracker";
 import { listBlockedUserIds } from "@/lib/db/moderation";
 import { xCardRaised } from "@/lib/dm/safety";
+import { tableBreakOn } from "@/lib/dm/table-break";
 import { latestEventOfType, publishPersisted, publishWithSeq } from "@/lib/events";
 import type { HandoutShown, TitleCard } from "@/lib/scene/state";
 import { narrationAudioFor } from "@/lib/tts";
+import { tableAuthors, workshopClassesFor } from "@/lib/db/homebrew";
+import { testFightSource } from "@/lib/db/test-fights";
+import { isPlaytest } from "@/lib/workshop/kind";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -105,14 +112,22 @@ export async function GET(
   const messages = listRecentMessages(campaignId, 100);
   return Response.json({
     campaign: publicCampaign(campaign),
+    // A test fight's workshop (issue 553), for its way back there; null at
+    // every other table.
+    testFight: isPlaytest(campaign) ? testFightSource(campaign.id) : null,
     // Whether the table already holds a story arc that AI Story Setup has
     // not yet built on (a Workshop Storyboard brought in before the start,
     // issue 249). Told to whoever steers the story, who is warned by it;
     // the arc itself never leaves the server.
     prepArc: caps.steersStory && campaign.status === "lobby" && Boolean(campaign.storyArc) && !campaign.dmOutline,
-    me: { id: user.id, username: user.username, avatar: user.avatar },
+    // isAdmin: the server's admin is offered what only an admin can do at
+    // the table (Report a problem in Help, installing the sound library).
+    me: { id: user.id, username: user.username, avatar: user.avatar, isAdmin: Boolean(user.isAdmin) },
     // The plan the party is coordinating, when it is (issue 254).
     coordination: currentCoordination(campaignId),
+    // Who the DM is waiting on before its next turn, at a table that waits
+    // for everyone (src/lib/dm/table-wait.ts); null when it is not waiting.
+    tableWait: currentTableWait(campaignId),
     members: listMembers(campaignId),
     // Names and faces of the cast, for the transcript's speech lines.
     cast: publicCast(campaignId),
@@ -127,6 +142,12 @@ export async function GET(
     // The pack and workshop species at the table, read by id in the browser
     // as on the server (size, Dwarven Toughness; src/lib/srd/race-id.ts).
     species: speciesAtTable(sheets.map((sheet) => sheet.race)),
+    // The workshop and pack subclasses its sheets hold: their feature text
+    // and always-prepared spells, read in the browser as on the server.
+    subclasses: subclassExtrasAtTable(campaignId, sheets),
+    // The table's workshop classes, read in the browser as on the server: a
+    // sheet holding one, and the level-up dialog's multiclass list.
+    classes: workshopClassesFor(tableAuthors(campaignId)),
     // The table's workshop feats: what each runs as, and its text.
     feats: Object.fromEntries(tableFeatsFrom(getDatabase(), campaignId)),
     // The character this user is playing when they have several (11.3).
@@ -137,13 +158,21 @@ export async function GET(
     // have (src/lib/dm/viewer.ts).
     rolls: listRollsVisibleTo(campaignId, caps, ownedCharacterIds, 20),
     pendingRolls: listOpenPendingRolls(campaignId).map(publicPendingRoll),
-    auditLog: listRecentAudit(campaignId, 50),
+    // A correction of someone's notes is listed without them, as their sheet
+    // is (src/lib/dm/sheet-view.ts).
+    auditLog: listRecentAudit(campaignId, 50).map((entry) =>
+      auditEntryForViewer(entry, campaignSeats(campaign), user.id, ownedCharacterIds),
+    ),
     locations: listLocations(campaignId),
     chapters: listChaptersForSnapshot(campaignId),
     notes: listNotesVisibleTo(campaignId, user.id, caps.steersStory),
     characterEvents: listRecentCampaignEvents(campaignId, 30),
     encounter: activePublicEncounter(campaignId, { enemyNumbers: caps.enemyNumbers }),
-    itemProposals: listOpenItemProposals(campaignId).map(publicItemProposal),
+    // An owner-only offer (a pact's approach, issue 503) only to its player
+    // and the storyteller.
+    itemProposals: listOpenItemProposals(campaignId)
+      .filter((proposal) => offerVisibleTo(proposal, user.id, caps))
+      .map(publicItemProposal),
     disputes: listOpenDisputes(campaignId).map(publicDispute),
     // Story the DM has written down. A DM tool, so only the DM seat is
     // served the list; the text itself is public either way, because a beat
@@ -166,12 +195,16 @@ export async function GET(
     // carries its own stamp and the overlay skips one older than a minute.
     handout: handoutOnTable(campaignId),
     safetyPause: safetyPauseOnTable(campaignId),
+    // A table break: who paused and since when (src/lib/dm/table-break.ts).
+    tableBreak: tableBreakOn(campaignId),
     titleCard: (latestEventOfType(campaignId, ["title_card"])?.payload as TitleCard | null) ?? null,
     // What this seat may see and do, so the client never re-derives it from
     // ids and never shows a control the server would refuse.
     caps,
     // In-memory status so a reload mid-turn still shows the DM at work.
     dmStatus: getDmStatus(campaignId),
+    // And the step it is on, for the status line's stage and the lead's Stop.
+    dmJob: runningDmJob(campaignId),
     // Same reason, for background work: utility_calls is ephemeral, so a
     // client that reloads mid-compaction would otherwise see an empty strip.
     utilityCalls: listUtilityCalls(campaignId),
@@ -241,7 +274,7 @@ export async function PATCH(
   // the same two, LobbyActions.tsx).
   const seats = campaignSeats(campaign);
   if (campaign.ownerUserId !== user.id && !isPrimaryDm(seats, user.id)) {
-    return Response.json({ error: "Only the campaign owner or the DM can do that." }, { status: 403 });
+    return Response.json({ error: "Only the campaign owner or the GM can do that." }, { status: 403 });
   }
   if (nextStatus === "active") {
     if (campaign.status !== "lobby") {
@@ -295,9 +328,9 @@ export async function PATCH(
       seq,
       authorType: "system",
       glyph: "cue-bell",
-      content: humanDm
-        ? "The party is assembled and the adventure begins. The Dungeon Master opens the scene."
-        : "The party is assembled and the adventure begins. Introduce the opening scene, set the premise, and give the party their first decision.",
+      // The AI's instruction for the opening is the prompt's, not the
+      // table's (OPENING_SCENE_CUE in src/lib/dm/prompt.ts).
+      content: humanDm ? `${ADVENTURE_BEGINS_NOTE} The Game Master opens the scene.` : ADVENTURE_BEGINS_NOTE,
     });
     publishWithSeq(campaignId, seq, "message_added", { message });
     // An assisted table asked for this in the wizard ("the AI fills this in

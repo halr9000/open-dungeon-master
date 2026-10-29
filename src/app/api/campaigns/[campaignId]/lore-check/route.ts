@@ -1,9 +1,13 @@
 import { z } from "zod";
-import { isErrorResponse, steersStory, requireMember } from "@/lib/campaign-api";
-import { getCampaignMessage, updateMessageContent } from "@/lib/db/messages";
+import { isErrorResponse, seesStorytellerSecrets, steersStory, requireMember } from "@/lib/campaign-api";
+import { listSheets } from "@/lib/db/sheets";
+import { correctionsField } from "@/lib/correction-reasons";
+import { getCampaignMessage } from "@/lib/db/messages";
 import { publishPersisted } from "@/lib/events";
 import { runLoreCheck } from "@/lib/dm/lore-check";
 import { LORE_CHECK_CATEGORIES } from "@/lib/dm/lore-logic";
+import { saveNarrationEdit } from "@/lib/dm/narration-edit";
+import { refreshNarrationAudio } from "@/lib/dm/renarrate";
 import { mergeLines } from "@/lib/dm/speech";
 import { personLines } from "@/lib/dm/speech-lines";
 
@@ -11,7 +15,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Lore check: any member may run a consistency check on a passage; only the
-// party lead may accept a rewrite, and only on DM-authored messages.
+// party lead may accept a rewrite, and only on DM-authored messages. The
+// checker is handed only the evidence the asker's seat may read, since it
+// quotes it back (src/lib/dm/lore-check.ts LoreCheckRequest.viewer).
 
 const runSchema = z.object({
   action: z.literal("run").default("run"),
@@ -56,20 +62,26 @@ export async function POST(
     }
     if (message.authorType !== "dm") {
       return Response.json(
-        { error: "Only DM narration can be rewritten." },
+        { error: "Only GM narration can be rewritten." },
         { status: 400 },
       );
     }
-    const updated = updateMessageContent(
-      message.id,
-      parsed.data.content,
-      mergeLines(message.speech, personLines(context.campaign, parsed.data.content)),
-    );
+    // Like a hand edit (messages/[messageId]/edit): the narrator's wording
+    // stays as a take beside the rewrite, and fixing what the AI said is a
+    // correction in the ledger (issue #460).
+    const { updated, correctionId } = saveNarrationEdit({
+      campaignId,
+      message,
+      content: parsed.data.content,
+      speech: mergeLines(message.speech, personLines(context.campaign, parsed.data.content)),
+      userId: context.user.id,
+    });
     if (!updated) {
       return Response.json({ error: "Could not update the message." }, { status: 500 });
     }
     publishPersisted(campaignId, "message_updated", { message: updated });
-    return Response.json({ message: updated });
+    refreshNarrationAudio(context.campaign, updated);
+    return Response.json({ message: updated, ...correctionsField(correctionId ? [correctionId] : []) });
   }
 
   const parsed = runSchema.safeParse(raw);
@@ -82,6 +94,13 @@ export async function POST(
     selection: parsed.data.selection,
     category: parsed.data.category,
     npcName: parsed.data.npcName,
+    viewer: {
+      ownedCharacterIds: listSheets(campaignId)
+        .filter((sheet) => sheet.userId === context.user.id)
+        .map((sheet) => sheet.id),
+      dmSecrets: steersStory(context),
+      storytellerSecrets: seesStorytellerSecrets(context),
+    },
   });
   if ("error" in result) {
     return Response.json({ error: result.error }, { status: 502 });

@@ -1,5 +1,11 @@
 import { normalizeReputation } from "@/lib/dm/faction-logic";
 import { describeFormation, normalizeFormationChange, type FormationChange } from "@/lib/dm/formation-logic";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { lineNamed } from "@/lib/srd/item-row";
+import { listedItemTags } from "@/lib/schemas/item-tags";
+import type { ItemFacts } from "@/lib/dm/mutation-math";
+import { PARTY_BACKSTORY_MAX } from "@/lib/dm/party-story";
 
 // The party as a thing in its own right.
 //
@@ -25,7 +31,9 @@ export type PartyItem = {
   // False while nobody knows what it is, exactly as on a character sheet
   // (src/lib/dm/mutation-math.ts). Absent reads as true.
   identified?: boolean;
-};
+  // What it is, kept as the sheet keeps it, so a potion stowed and taken
+  // back still heals (src/lib/srd/item-tags.ts).
+} & ItemFacts;
 
 export type PartyState = {
   // Standing with each faction by id, minus five to five
@@ -54,6 +62,13 @@ export type PartyState = {
   // What the party is doing between scenes: "resting", "on the road to
   // Dunmar", "searching the archive". One line, shown to the table.
   activity: string;
+  // Optional: the table's shared account of who these characters are to
+  // each other, written in the lobby (src/lib/dm/party-story.ts). Any seated
+  // player, the lead or a DM may rewrite it and the latest save wins, so the
+  // record keeps who saved it last and when. "" is no backstory.
+  backstory: string;
+  backstoryBy: string;
+  backstoryAt: string;
 };
 
 export const PARTY_ITEM_NAME_MAX = 80;
@@ -71,6 +86,9 @@ export function emptyParty(): PartyState {
     marchingOrder: [],
     formationChange: null,
     activity: "",
+    backstory: "",
+    backstoryBy: "",
+    backstoryAt: "",
   };
 }
 
@@ -97,6 +115,9 @@ export function normalizeParty(raw: unknown): PartyState {
       : [],
     formationChange: normalizeFormationChange(record.formationChange),
     activity: String(record.activity ?? "").slice(0, PARTY_ACTIVITY_MAX),
+    backstory: String(record.backstory ?? "").slice(0, PARTY_BACKSTORY_MAX),
+    backstoryBy: String(record.backstoryBy ?? "").slice(0, 80),
+    backstoryAt: String(record.backstoryAt ?? "").slice(0, 40),
   };
 }
 
@@ -107,11 +128,17 @@ function normalizeItem(raw: Record<string, unknown>): PartyItem | null {
   }
   const qty = Math.min(9999, Math.max(1, Math.round(Number(raw?.qty) || 1)));
   const weight = Number(raw?.weight);
+  const worth = Number(raw?.worth);
+  const tags = Array.isArray(raw?.tags) ? listedItemTags(raw.tags) : [];
   return {
     name,
     qty,
     ...(Number.isFinite(weight) && weight > 0 ? { weight } : {}),
     ...(raw?.identified === false ? { identified: false } : {}),
+    ...(typeof raw?.srdName === "string" && raw.srdName.trim() ? { srdName: raw.srdName.trim() } : {}),
+    ...(tags.length ? { tags } : {}),
+    ...(Number.isFinite(worth) && worth > 0 ? { worth } : {}),
+    ...(typeof raw?.spell === "string" && raw.spell.trim() ? { spell: raw.spell.trim() } : {}),
   };
 }
 
@@ -119,24 +146,25 @@ function normalizeItem(raw: Record<string, unknown>): PartyItem | null {
 
 // Adding merges by name, the same rule a character sheet uses, and for the
 // same reason: two rows of "rope (50 ft.)" is a bookkeeping bug, not two
-// kinds of rope. An unidentified item never merges with a known one.
+// kinds of rope. An unidentified item never merges with a known one, nor two
+// scrolls of different spells or two potions of different rows.
 export function addPartyItem(
   inventory: PartyItem[],
-  item: { name: string; qty?: number; weight?: number; identified?: boolean },
-): { inventory: PartyItem[] } | { error: string } {
+  item: { name: string; qty?: number; weight?: number; identified?: boolean } & ItemFacts,
+): { inventory: PartyItem[] } | ToolError {
   const name = item.name.trim().slice(0, PARTY_ITEM_NAME_MAX);
   if (!name) {
-    return { error: "Name what goes in the pack." };
+    return { error: "Name what goes in the pack.", retry: true };
   }
   const qty = Math.max(1, Math.round(item.qty ?? 1));
   const known = item.identified !== false;
   const index = inventory.findIndex(
     (row) =>
-      row.name.toLowerCase() === name.toLowerCase() && (row.identified !== false) === known,
+      textKey(row.name) === textKey(name) && (row.identified !== false) === known && row.spell === item.spell && row.srdName === item.srdName,
   );
   if (index < 0) {
     if (inventory.length >= MAX_PARTY_ITEMS) {
-      return { error: `The pack holds ${MAX_PARTY_ITEMS} kinds of thing; hand something out first.` };
+      return { error: `The pack holds ${MAX_PARTY_ITEMS} kinds of thing; something is handed out first. Ask the party what.`, retry: true };
     }
     return {
       inventory: [
@@ -146,6 +174,10 @@ export function addPartyItem(
           qty,
           ...(item.weight && item.weight > 0 ? { weight: item.weight } : {}),
           ...(known ? {} : { identified: false as const }),
+          ...(item.srdName ? { srdName: item.srdName } : {}),
+          ...(item.tags?.length ? { tags: item.tags } : {}),
+          ...(item.worth ? { worth: item.worth } : {}),
+          ...(item.spell ? { spell: item.spell } : {}),
         },
       ],
     };
@@ -155,14 +187,24 @@ export function addPartyItem(
   return { inventory: next };
 }
 
+// `known`: the table's rules know an item by that name (isTableGearName), so
+// one the pack lacks is the game saying no rather than a name to fix.
 export function removePartyItem(
   inventory: PartyItem[],
   name: string,
+  known: boolean,
   qty = 1,
-): { inventory: PartyItem[]; removed: number; item: PartyItem } | { error: string } {
-  const index = inventory.findIndex((row) => row.name.toLowerCase() === name.trim().toLowerCase());
+): { inventory: PartyItem[]; removed: number; item: PartyItem } | ToolError {
+  const index = lineNamed(inventory, name);
   if (index < 0) {
-    return { error: `The pack does not hold "${name}".` };
+    return known
+      ? { error: `The pack does not hold "${name}".`, refused: "rules" }
+      : {
+          error: `The pack holds nothing called "${name}", and no item by that name is known. ${
+            inventory.length ? `It holds: ${inventory.map((row) => row.name).join(", ")}.` : "It is empty."
+          } Send the one meant, by the name in the pack.`,
+          retry: true,
+        };
   }
   const item = inventory[index];
   const removed = Math.min(item.qty, Math.max(1, Math.round(qty)));

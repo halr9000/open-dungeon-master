@@ -139,7 +139,7 @@ export function modelCatalog(): ModelCatalog {
 async function fetchLive(): Promise<ModelCatalog> {
   const response = await fetch(MODELS_DEV_URL, {
     cache: "no-store",
-    headers: { accept: "application/json", "user-agent": "open-dungeon-master" },
+    headers: { accept: "application/json", "user-agent": "open-game-master" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
@@ -285,7 +285,8 @@ export function enrichHarnessModels(id: HarnessId, models: HarnessModel[]): Harn
 }
 
 // A server's model list for the guided setup's picker: the models the
-// catalog says cannot narrate (no text, no tool calls) left out, the window
+// catalog says cannot narrate (no text, no tool calls, a window too small
+// for the DM's instructions) left out, the window
 // filled in where the server gave none, and a word on each deprecated row.
 // A model the catalog has not heard of stays: unknown is not unfit.
 export function fitListedModels(baseUrl: string, models: ListedModel[]): ListedModel[] {
@@ -298,7 +299,10 @@ export function fitListedModels(baseUrl: string, models: ListedModel[]): ListedM
       out.push(model);
       continue;
     }
-    if (assessModel({ role: "story", id: model.id, catalog: row, listed: true }).fit === "unfit") continue;
+    // The server's own word on the window (OpenRouter's context_length)
+    // outranks the catalog's, as its word on tool calls does.
+    const catalog = model.context ? { ...row, contextTokens: model.context } : row;
+    if (assessModel({ role: "story", id: model.id, catalog, listed: true }).fit === "unfit") continue;
     out.push({
       ...model,
       label: row.status === "deprecated" && !/deprecated/i.test(model.label) ? `${model.label} (deprecated)` : model.label,

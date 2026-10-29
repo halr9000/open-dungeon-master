@@ -140,19 +140,44 @@ export function handsToLower(
     .map((hand) => hand.userId);
 }
 
+// ---- this microphone ----
+
+// Whether this browser's own microphone track may carry sound. Every way a
+// track can be opened (a join, a microphone swap, unmute, a held talk key,
+// leaving push-to-talk) asks this one question, so a new track never comes
+// up open while the controls say it is closed.
+//
+// `floorClosed` is a strict floor that silences this seat. The SFU pauses the
+// producer server-side for that, so there it changes nothing here; mesh has
+// no server in the audio path, so the track itself is the only gate there is.
+export type MicGate = {
+  transport: "sfu" | "mesh";
+  mode: "open" | "ptt";
+  muted: boolean;
+  talking: boolean;
+  floorClosed: boolean;
+};
+
+export function micOpen(gate: MicGate): boolean {
+  if (gate.transport === "mesh" && gate.floorClosed) {
+    return false;
+  }
+  return gate.mode === "ptt" ? gate.talking : !gate.muted;
+}
+
 // ---- labels ----
 
 // What the table is told about the current floor. Kept here next to the rules
 // so the words and the behaviour cannot drift apart.
 export const FLOOR_VOICE_LABELS: Record<VoiceFloorMode, string> = {
   open: "Anyone can speak",
-  hold: "The DM has the floor",
+  hold: "The GM has the floor",
   spotlight: "The spotlight is on",
   initiative: "Speaking in initiative order",
 };
 
 export const TRANSMIT_BLOCK_LABELS: Record<Exclude<TransmitBlock, "">, string> = {
-  dm_holds_floor: "The DM has the floor",
+  dm_holds_floor: "The GM has the floor",
   not_your_turn: "Wait for your turn in initiative",
   spotlight_elsewhere: "The spotlight is on someone else",
 };

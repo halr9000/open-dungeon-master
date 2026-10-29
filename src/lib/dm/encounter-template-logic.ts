@@ -7,6 +7,8 @@
 // (src/lib/dm/invoke.ts), so what the DM saves and what they type into the
 // live form can never read differently.
 
+import { textKey } from "../language/text-logic.ts";
+
 export type TemplateEnemy = { monster: string; count: number };
 
 export const TEMPLATE_NAME_MAX = 80;
@@ -18,16 +20,26 @@ export const TEMPLATE_MAX_ENEMIES = 8;
 export const TEMPLATE_MAX_ROWS = 8;
 
 // "goblin x4" / "2x wolf" / "hobgoblin", one per line or separated by
-// semicolons. A line with no count is one of that thing.
+// semicolons. A line with no count is one of that thing. A list takes rows
+// as objects or as such lines ("goblin x4", or a bare name for one), which
+// is how a bundle written by hand gives them (workshop-bundle-shelf.ts
+// rosterMonsters reads them the same way); a stored roster is read through
+// here too (src/lib/db/encounter-templates.ts), so no reader meets a row
+// it cannot count.
 export function parseRoster(value: unknown): TemplateEnemy[] {
   if (Array.isArray(value)) {
     return value
-      .map((entry) => {
+      .flatMap((entry): TemplateEnemy[] => {
+        if (typeof entry === "string") {
+          return parseRoster(entry);
+        }
         const row = entry as Partial<TemplateEnemy>;
-        return {
-          monster: String(row?.monster ?? "").trim(),
-          count: Math.max(1, Math.round(Number(row?.count) || 1)),
-        };
+        return [
+          {
+            monster: String(row?.monster ?? "").trim(),
+            count: Math.min(99, Math.max(1, Math.round(Number(row?.count) || 1))),
+          },
+        ];
       })
       .filter((row) => row.monster);
   }
@@ -60,6 +72,12 @@ export function formatRoster(rows: TemplateEnemy[]): string {
     .join("\n");
 }
 
+// A roster on one line for a list row, a hand-built monster shown by its
+// name where the line carries its "homebrew:<id>" ref (the readout's names).
+export function rosterSummary(rows: TemplateEnemy[], names: Record<string, string> = {}): string {
+  return formatRoster(rows.map((row) => ({ ...row, monster: names[row.monster] ?? row.monster }))).replace(/\n/g, ", ");
+}
+
 export function rosterSize(rows: TemplateEnemy[]): number {
   return rows.reduce((total, row) => total + row.count, 0);
 }
@@ -74,8 +92,8 @@ export function addToRoster(rows: TemplateEnemy[], monster: string): TemplateEne
   if (!name) {
     return rows;
   }
-  const wanted = name.toLowerCase();
-  const at = rows.findIndex((row) => row.monster.trim().toLowerCase() === wanted);
+  const wanted = textKey(name);
+  const at = rows.findIndex((row) => textKey(row.monster) === wanted);
   if (at === -1) {
     return rows.length >= TEMPLATE_MAX_ROWS
       ? rows
@@ -109,6 +127,55 @@ export function checkRoster(rows: TemplateEnemy[]): { rows: TemplateEnemy[] } | 
     };
   }
   return { rows: cleaned };
+}
+
+// What scaling a roster needs to know of each row: its challenge rating,
+// and whether the row must stay whole (a character fighting as itself, the
+// companion a return fight is about).
+export type RowWeight = { cr: number; keep: boolean };
+
+// A prepared fight cut down to what the table's rails take, the way a DM
+// scales a published fight to the party in front of them: one creature at a
+// time from the largest group (the weakest on a tie), and once every group
+// is down to one, the weakest group, never the strongest creature nor a row
+// kept whole. `fits` is the engine's own judgement of a roster of at most
+// TEMPLATE_MAX_ENEMIES. Null when even the core of the fight does not fit;
+// otherwise the roster to run and what it leaves out.
+export function scaleRoster(
+  rows: TemplateEnemy[],
+  weights: RowWeight[],
+  fits: (rows: TemplateEnemy[]) => boolean,
+): { rows: TemplateEnemy[]; dropped: TemplateEnemy[] } | null {
+  const counts = rows.map((row) => Math.max(1, Math.round(row.count)));
+  const shaped = () => rows.map((row, index) => ({ ...row, count: counts[index] })).filter((row) => row.count > 0);
+  const total = () => counts.reduce((sum, count) => sum + count, 0);
+  while (total() > TEMPLATE_MAX_ENEMIES || !fits(shaped())) {
+    let pick = -1;
+    counts.forEach((count, index) => {
+      if (weights[index]?.keep || count <= 1) {
+        return;
+      }
+      if (pick < 0 || count > counts[pick] || (count === counts[pick] && (weights[index]?.cr ?? 0) < (weights[pick]?.cr ?? 0))) {
+        pick = index;
+      }
+    });
+    if (pick < 0) {
+      const standing = counts.map((count, index) => (count > 0 ? index : -1)).filter((index) => index >= 0);
+      const strongest = standing.reduce((best, index) => ((weights[index]?.cr ?? 0) > (weights[best]?.cr ?? 0) ? index : best), standing[0]);
+      const spare = standing
+        .filter((index) => index !== strongest && !weights[index]?.keep)
+        .sort((a, b) => (weights[a]?.cr ?? 0) - (weights[b]?.cr ?? 0));
+      if (!spare.length) {
+        return null;
+      }
+      pick = spare[0];
+    }
+    counts[pick] -= 1;
+  }
+  const dropped = rows
+    .map((row, index) => ({ monster: row.monster, count: Math.max(1, Math.round(row.count)) - counts[index] }))
+    .filter((row) => row.count > 0);
+  return { rows: shaped(), dropped };
 }
 
 // The map settings saved beside a roster. All optional: a template with no
@@ -311,36 +378,27 @@ export function normalizeTemplateExtras(
   };
 }
 
-// Which enemy the fight actually made is which slot. Matched by name in
-// roster order rather than by insertion order, because the enemies of one
-// start_encounter share a timestamp and a list ordered by it is a guess.
+// Which enemy the fight actually made is which slot. Matched in roster order
+// rather than by insertion order, because the enemies of one start_encounter
+// share a timestamp and a list ordered by it is a guess: by the slot's label,
+// which start_encounter numbers the same way ("Brigante 2"), else by the
+// whole slug or name.
 export function matchSlots<T extends { id: string; slug: string; displayName: string }>(
   slots: RosterSlot[],
   enemies: T[],
 ): Map<number, T> {
   const matched = new Map<number, T>();
   const used = new Set<string>();
-  // Exact names first across every slot, then the loose matches for what
-  // is left: otherwise "goblin" would take the hobgoblin before the goblin.
-  const passes: Array<(slug: string, name: string, wanted: string) => boolean> = [
-    (slug, name, wanted) => slug === wanted || name === wanted,
-    (slug, name, wanted) => slug.includes(wanted) || name.includes(wanted) || wanted.includes(name),
-  ];
-  for (const test of passes) {
-    for (const slot of slots) {
-      if (matched.has(slot.slot)) {
-        continue;
-      }
-      const wanted = slot.monster.trim().toLowerCase();
-      const enemy = enemies.find(
-        (candidate) =>
-          !used.has(candidate.id) &&
-          test(candidate.slug.toLowerCase(), candidate.displayName.toLowerCase(), wanted),
-      );
-      if (enemy) {
-        used.add(enemy.id);
-        matched.set(slot.slot, enemy);
-      }
+  for (const slot of slots) {
+    const label = textKey(slot.label);
+    const wanted = textKey(slot.monster);
+    const free = enemies.filter((candidate) => !used.has(candidate.id));
+    const enemy =
+      free.find((candidate) => textKey(candidate.displayName) === label) ??
+      free.find((candidate) => textKey(candidate.slug) === wanted || textKey(candidate.displayName) === wanted);
+    if (enemy) {
+      used.add(enemy.id);
+      matched.set(slot.slot, enemy);
     }
   }
   return matched;

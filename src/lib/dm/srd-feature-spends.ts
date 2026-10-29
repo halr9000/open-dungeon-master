@@ -21,6 +21,7 @@
 // generic path; must not import mutations.ts. The action-pricing helpers are
 // combat-features.ts's.
 
+import { resolveTargetFoe } from "@/lib/dm/sheet-foe";
 import type { Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter, listEnemies, patchEnemyConditions, type EncounterEnemy } from "@/lib/db/encounters";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
@@ -29,7 +30,7 @@ import { computeSheetDerived } from "@/lib/srd";
 import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { setConcentration } from "@/lib/dm/concentration";
-import { applyEnemyDamage, publishEncounter, resolveEnemyRef } from "@/lib/dm/enemy-damage";
+import { applyEnemyDamage, publishEncounter } from "@/lib/dm/enemy-damage";
 import { rollEnemySave } from "@/lib/dm/forced-save";
 import { hurtEnemy } from "@/lib/dm/spell-aura";
 import { getDmTurn } from "@/lib/db/dm-turns";
@@ -37,8 +38,9 @@ import { feetBetween, priceTheAction, publishSheet } from "@/lib/dm/combat-featu
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { rollCard, sheetAttacker } from "@/lib/dm/roll-card";
 import { rollAgainst } from "@/lib/roll-labels";
-
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { spentSlotRefusal } from "@/lib/dm/cast-rules";
+import { textKey } from "@/lib/language/text-logic";
 
 export type SrdSpendArgs = { variant?: string; targetEnemyId?: string; amount?: number };
 
@@ -49,7 +51,7 @@ export function srdFeatureSpend(
   resourceName: string,
   args: SrdSpendArgs,
 ): Record<string, unknown> | null {
-  const name = lower(resourceName);
+  const name = textKey(resourceName);
   const sheet = getSheetById(stale.id) ?? stale;
   if (name === "peerless skill") return peerlessSkill(campaign, sheet);
   if (name === "quivering palm") return quiveringPalm(campaign, turnId, sheet, args.targetEnemyId);
@@ -75,7 +77,7 @@ function poolLeft(sheet: CharacterSheet, id: string): number {
 
 function addCondition(campaign: Campaign, sheet: CharacterSheet, condition: string, meta: Record<string, unknown>) {
   const fresh = getSheetById(sheet.id) ?? sheet;
-  const kept = fresh.conditions.filter((entry) => lower(entry) !== lower(condition));
+  const kept = fresh.conditions.filter((entry) => textKey(entry) !== textKey(condition));
   patchSheet(fresh.id, {
     conditions: [...kept, condition],
     conditionMeta: { ...(fresh.conditionMeta as ConditionMetaMap), [condition]: meta },
@@ -85,12 +87,12 @@ function addCondition(campaign: Campaign, sheet: CharacterSheet, condition: stri
 
 // ---- Peerless Skill ----
 
-function peerlessSkill(campaign: Campaign, sheet: CharacterSheet): Record<string, unknown> {
+function peerlessSkill(campaign: Campaign, sheet: CharacterSheet): ToolResult {
   if (!holdsFeature(sheet, "peerless skill")) {
-    return { error: `${sheet.name} does not have Peerless Skill (a College of Lore bard's 14th level feature).` };
+    return { error: `${sheet.name} does not have Peerless Skill (a College of Lore bard's 14th level feature).`, refused: "rules" };
   }
   if (poolLeft(sheet, "bardic_inspiration") < 1) {
-    return { error: `${sheet.name} has no Bardic Inspiration left for Peerless Skill. Nothing was spent.` };
+    return { error: `${sheet.name} has no Bardic Inspiration left for Peerless Skill. Nothing was spent.`, refused: "rules" };
   }
   const level = classLevelOf(sheet, "bard") || sheet.level;
   const die = level >= 15 ? "d12" : level >= 10 ? "d10" : level >= 5 ? "d8" : "d6";
@@ -103,14 +105,14 @@ function peerlessSkill(campaign: Campaign, sheet: CharacterSheet): Record<string
 
 export const QUIVERING = "quivering palm";
 
-function quiveringPalm(campaign: Campaign, turnId: string, sheet: CharacterSheet, targetEnemyId: string | undefined): Record<string, unknown> {
+function quiveringPalm(campaign: Campaign, turnId: string, sheet: CharacterSheet, targetEnemyId: string | undefined): ToolResult {
   if (!holdsFeature(sheet, "quivering palm")) {
-    return { error: `${sheet.name} does not have Quivering Palm (a Way of the Open Hand monk's 17th level feature).` };
+    return { error: `${sheet.name} does not have Quivering Palm (a Way of the Open Hand monk's 17th level feature).`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
-  const enemy = encounter && targetEnemyId ? resolveEnemyRef(encounter.id, targetEnemyId) : null;
+  const enemy = encounter && targetEnemyId ? resolveTargetFoe(encounter.campaignId, encounter, targetEnemyId) : null;
   if (!encounter || !enemy || enemy.status !== "alive") {
-    return { error: "Quivering Palm needs targetEnemyId: the living creature the monk struck. Nothing was spent." };
+    return { error: "Quivering Palm needs targetEnemyId: the living creature the monk struck. Nothing was spent.", retry: true };
   }
   const meta = enemy.conditionMeta as ConditionMetaMap;
   const set = enemy.conditions.includes(QUIVERING) && meta[QUIVERING]?.source === sheet.id;
@@ -119,10 +121,10 @@ function quiveringPalm(campaign: Campaign, turnId: string, sheet: CharacterSheet
   if (!set) {
     const struck = encounter.targets?.round === encounter.round ? (encounter.targets.pairs[sheet.id] ?? []) : [];
     if (!struck.includes(enemy.id)) {
-      return { error: `Quivering Palm sets its vibrations with an unarmed strike that hits; ${sheet.name} has not struck ${enemy.displayName} this turn. Nothing was spent.` };
+      return { error: `Quivering Palm sets its vibrations with an unarmed strike that hits; ${sheet.name} has not struck ${enemy.displayName} this turn. Nothing was spent.`, refused: "rules" };
     }
     if (poolLeft(sheet, "ki") < 3) {
-      return { error: `${sheet.name} needs 3 ki for Quivering Palm. Nothing was spent.` };
+      return { error: `${sheet.name} needs 3 ki for Quivering Palm. Nothing was spent.`, refused: "rules" };
     }
     spendPool(campaign, sheet, "ki", 3);
     patchEnemyConditions(enemy.id, [...enemy.conditions, QUIVERING], {
@@ -134,7 +136,7 @@ function quiveringPalm(campaign: Campaign, turnId: string, sheet: CharacterSheet
   }
   const price = priceTheAction(sheet, encounter, "ending Quivering Palm");
   if ("error" in price) {
-    return { error: price.error };
+    return toolError(price);
   }
   const cleared = enemy.conditions.filter((entry) => entry !== QUIVERING);
   const rest = { ...meta };
@@ -164,31 +166,37 @@ function quiveringPalm(campaign: Campaign, turnId: string, sheet: CharacterSheet
 
 // ---- Draconic Presence ----
 
-function draconicPresence(campaign: Campaign, turnId: string, sheet: CharacterSheet, args: SrdSpendArgs): Record<string, unknown> {
+function draconicPresence(campaign: Campaign, turnId: string, sheet: CharacterSheet, args: SrdSpendArgs): ToolResult {
   if (!holdsFeature(sheet, "draconic presence")) {
-    return { error: `${sheet.name} does not have Draconic Presence (a Draconic Bloodline sorcerer's 18th level feature).` };
+    return { error: `${sheet.name} does not have Draconic Presence (a Draconic Bloodline sorcerer's 18th level feature).`, refused: "rules" };
   }
   if (poolLeft(sheet, "sorcery_points") < 5) {
-    return { error: `${sheet.name} needs 5 sorcery points for Draconic Presence. Nothing was spent.` };
+    return { error: `${sheet.name} needs 5 sorcery points for Draconic Presence. Nothing was spent.`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "Draconic Presence answers creatures in a fight; there is none. Nothing was spent." };
+    return { error: "Draconic Presence answers creatures in a fight; there is none. Nothing was spent.", refused: "rules" };
   }
-  const condition = /charm/.test(lower(args.variant)) ? "charmed" : "frightened";
+  // Charming or frightening, the sorcerer's choice: the variant names one
+  // whole, never a default.
+  const wanted = textKey(args.variant ?? "");
+  const condition = wanted === "charm" ? "charmed" : wanted === "fear" ? "frightened" : null;
+  if (!condition) {
+    return { error: `Draconic Presence takes variant 'fear' or 'charm'${wanted ? `; "${args.variant}" is neither` : ""}. Ask the player which, unless they named one. Nothing was spent.`, retry: true };
+  }
   const chosen: EncounterEnemy[] = args.targetEnemyId
-    ? [resolveEnemyRef(encounter.id, args.targetEnemyId)].filter((enemy): enemy is EncounterEnemy => Boolean(enemy))
+    ? [resolveTargetFoe(encounter.campaignId, encounter, args.targetEnemyId)].filter((enemy): enemy is EncounterEnemy => Boolean(enemy))
     : listEnemies(encounter.id).filter((enemy) => {
         const feet = feetBetween(encounter.id, sheet.id, enemy.id);
         return feet === null || feet <= 60;
       });
   const targets = chosen.filter((enemy) => enemy.status === "alive");
   if (!targets.length) {
-    return { error: "No living creature of the sorcerer's choice stands within 60 feet. Nothing was spent." };
+    return { error: "No living creature of the sorcerer's choice stands within 60 feet. Nothing was spent.", refused: "rules" };
   }
   const price = priceTheAction(sheet, encounter, "Draconic Presence");
   if ("error" in price) {
-    return { error: price.error };
+    return toolError(price);
   }
   spendPool(campaign, sheet, "sorcery_points", 5);
   price.commit();
@@ -196,7 +204,7 @@ function draconicPresence(campaign: Campaign, turnId: string, sheet: CharacterSh
   const dc = computeSheetDerived(sheet).spellSaveDc ?? 13;
   const lines: string[] = [];
   for (const enemy of targets) {
-    const save = rollEnemySave(campaign.id, enemy, "wis", dc, { magical: true, resist: true, record: { detail: `${enemy.displayName}: WIS save against Draconic Presence` } });
+    const save = rollEnemySave(campaign.id, enemy, "wis", dc, { magical: true, resist: true, against: condition, record: { detail: `${enemy.displayName}: WIS save against Draconic Presence` } });
     const immune = String(enemy.stats.conditionImmune ?? "").toLowerCase().includes(condition);
     if (save.success || immune) {
       lines.push(`${enemy.displayName} ${immune ? `cannot be ${condition}` : `resists (WIS ${save.total} vs DC ${dc})`}.`);
@@ -216,13 +224,13 @@ function draconicPresence(campaign: Campaign, turnId: string, sheet: CharacterSh
 
 export const CAMOUFLAGED = "camouflaged";
 
-function hideInPlainSight(campaign: Campaign, sheet: CharacterSheet): Record<string, unknown> {
+function hideInPlainSight(campaign: Campaign, sheet: CharacterSheet): ToolResult {
   if (!holdsFeature(sheet, "hide in plain sight")) {
-    return { error: `${sheet.name} does not have Hide in Plain Sight (a ranger's 10th level feature).` };
+    return { error: `${sheet.name} does not have Hide in Plain Sight (a ranger's 10th level feature).`, refused: "rules" };
   }
   const encounter = getActiveEncounter(campaign.id);
   if (encounter && (encounter.kind ?? "fight") === "fight") {
-    return { error: "Hide in Plain Sight takes a minute of preparation, not a moment in the middle of a fight." };
+    return { error: "Hide in Plain Sight takes a minute of preparation, not a moment in the middle of a fight.", refused: "rules" };
   }
   addCondition(campaign, sheet, CAMOUFLAGED, { rounds: 14400 });
   return { ok: true, resource: "Hide in Plain Sight", applied: `${sheet.name} is camouflaged against a solid surface: +10 to Stealth checks while they stay still. Moving, or taking an action or reaction, ends it (clear_condition camouflaged).` };
@@ -230,16 +238,18 @@ function hideInPlainSight(campaign: Campaign, sheet: CharacterSheet): Record<str
 
 // ---- Primeval Awareness ----
 
-function primevalAwareness(campaign: Campaign, sheet: CharacterSheet, amount: number | undefined): Record<string, unknown> {
+function primevalAwareness(campaign: Campaign, sheet: CharacterSheet, amount: number | undefined): ToolResult {
   if (!holdsFeature(sheet, "primeval awareness")) {
-    return { error: `${sheet.name} does not have Primeval Awareness (a ranger's 3rd level feature).` };
+    return { error: `${sheet.name} does not have Primeval Awareness (a ranger's 3rd level feature).`, refused: "rules" };
   }
   const slots = sheet.spellcasting?.slots ?? {};
   const wanted = amount && amount >= 1 ? Math.floor(amount) : null;
   const level = wanted ?? Object.keys(slots).map(Number).sort((a, b) => a - b).find((entry) => slots[String(entry)].used < slots[String(entry)].max);
   const slot = level ? slots[String(level)] : undefined;
   if (!level || !slot || slot.used >= slot.max || !sheet.spellcasting) {
-    return { error: `${sheet.name} has no free spell slot${wanted ? ` of level ${wanted}` : ""} to spend on Primeval Awareness. Nothing was spent.` };
+    return wanted
+      ? spentSlotRefusal(sheet.name, sheet.spellcasting, { level: wanted, lowest: 1, what: "Primeval Awareness", withPact: false })
+      : { error: `${sheet.name} has no free spell slot to spend on Primeval Awareness. Nothing was spent.`, refused: "rules" };
   }
   const updated = patchSheet(sheet.id, {
     spellcasting: { ...sheet.spellcasting, slots: { ...slots, [String(level)]: { max: slot.max, used: slot.used + 1 } } },

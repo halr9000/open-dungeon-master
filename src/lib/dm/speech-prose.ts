@@ -11,6 +11,7 @@
 
 import type { Speaker } from "@/lib/dm/speech";
 import type { GenderMark } from "@/lib/gender";
+import { namesPattern, splitWords, textKey, words } from "@/lib/language/text-logic";
 
 // A quoted line, in any pair prose uses: “…”, "…", «…», „…“, »…«. Only a
 // matched pair is a line, so an apostrophe or a lone guillemet opens
@@ -25,19 +26,8 @@ export function quotedText(match: RegExpMatchArray): string {
   return (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim();
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function wordCount(text: string): number {
   return text.trim() ? text.trim().split(/\s+/).length : 0;
-}
-
-function nameWords(name: string): string[] {
-  return name
-    .split(/[\s,]+/)
-    .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter(Boolean);
 }
 
 // `short` holds the single words of a longer name, lower-cased: they only
@@ -54,9 +44,9 @@ export function speakerMatchers(speakers: Speaker[]): Matcher[] {
   const full = new Set<string>();
   for (const speaker of speakers) {
     for (const name of [speaker.name, ...(speaker.aliases ?? [])]) {
-      full.add(name.trim().toLowerCase());
+      full.add(textKey(name));
     }
-    for (const word of new Set(nameWords(speaker.name).map((entry) => entry.toLowerCase()))) {
+    for (const word of new Set(words(speaker.name).map(textKey))) {
       claimed.set(word, (claimed.get(word) ?? 0) + 1);
     }
   }
@@ -69,10 +59,10 @@ export function speakerMatchers(speakers: Speaker[]): Matcher[] {
       }
     }
     const short = new Set<string>();
-    const words = nameWords(speaker.name);
-    if (words.length > 1) {
-      for (const word of words) {
-        const key = word.toLowerCase();
+    const parts = words(speaker.name);
+    if (parts.length > 1) {
+      for (const word of parts) {
+        const key = textKey(word);
         if (word.length >= 3 && /^\p{Lu}/u.test(word) && claimed.get(key) === 1 && !full.has(key)) {
           names.add(word);
           short.add(key);
@@ -82,10 +72,9 @@ export function speakerMatchers(speakers: Speaker[]): Matcher[] {
     if (!names.size) {
       continue;
     }
-    const spellings = [...names].sort((a, b) => b.length - a.length).map(escapeRegExp);
     // Letter-aware edges, not \b, which takes "É" or "ø" for a gap and
     // so never found "Élodie" at all.
-    matchers.push({ speaker, pattern: new RegExp(`(?<![\\p{L}\\p{N}_])(?:${spellings.join("|")})(?![\\p{L}\\p{N}_])`, "giu"), short });
+    matchers.push({ speaker, pattern: namesPattern(names, "giu"), short });
   }
   return matchers;
 }
@@ -94,8 +83,9 @@ export type Reading = {
   matchers: Matcher[];
   // commonWords over the recent story and this passage.
   common: ReadonlySet<string>;
-  // English only: follow "she" and "he" back to the person they mean.
-  pronouns: boolean;
+  // At an English table only: follow "she" and "he" back to the person
+  // they mean.
+  englishPronouns: boolean;
 };
 
 // Whether nothing but punctuation stands before a word in its sentence.
@@ -108,7 +98,7 @@ export function opensSentence(before: string): boolean {
 // writes it in lower case: "Marla frowns." is Marla, "Old habits die hard"
 // is not Old Pike.
 export function written(found: RegExpExecArray, short: Set<string>, reading: Reading, atStart: boolean): boolean {
-  const key = found[0].toLowerCase();
+  const key = textKey(found[0]);
   if (!short.has(key)) {
     return true;
   }
@@ -134,35 +124,36 @@ export function nameAt(text: string, reading: Reading, atStart: boolean): Found 
     if (best) {
       return best;
     }
-    const word = /^([\p{L}'’-]+)\s+/u.exec(rest);
-    if (!word || !reading.common.has(word[1].toLowerCase())) {
+    const [gap, word = "", after = ""] = splitWords(rest);
+    const space = /^\s+/.exec(after)?.[0];
+    if (gap || !space || !reading.common.has(textKey(word))) {
       return null;
     }
-    offset += word[0].length;
+    offset += word.length + space.length;
   }
   return null;
 }
 
-// Words that carry on about someone already named: "She smiles", "His
-// voice drops". "It" is left out: "It is cold" is about nobody.
-const PRONOUN = /^(she|he|they|her|his|their|hers|him|them)\b/i;
+// English words that carry on about someone already named: "She smiles",
+// "His voice drops". "It" is left out: "It is cold" is about nobody.
+const ENGLISH_PRONOUN = /^(she|he|they|her|his|their|hers|him|them)\b/i;
 // What a stretch about one person calls them: "she" or "he" where a
 // clause opens ("She sighs, and he shrugs" is two people), and the "her"
 // and "his" that are theirs. "Him" after a verb is somebody else.
-const OWN = /(?:^|[,;:]\s+|\b(?:and|but|then|while)\s+)(she|he)\b|\b(her|hers|herself|his|himself)\b/gi;
+const ENGLISH_OWN = /(?:^|[,;:]\s+|\b(?:and|but|then|while)\s+)(she|he)\b|\b(her|hers|herself|his|himself)\b/gi;
 
-// The pronoun a stretch of prose opens with, when the table reads pronouns.
-export function pronounAt(text: string, reading: Reading): RegExpExecArray | null {
-  return reading.pronouns ? PRONOUN.exec(text) : null;
+// The English pronoun a stretch of prose opens with, at an English table.
+export function englishPronounAt(text: string, reading: Reading): RegExpExecArray | null {
+  return reading.englishPronouns ? ENGLISH_PRONOUN.exec(text) : null;
 }
 
-function pronounCounts(text: string, reading: Reading): { f: number; m: number } {
+function englishPronounCounts(text: string, reading: Reading): { f: number; m: number } {
   let f = 0;
   let m = 0;
-  if (!reading.pronouns) {
+  if (!reading.englishPronouns) {
     return { f, m };
   }
-  for (const match of text.matchAll(OWN)) {
+  for (const match of text.matchAll(ENGLISH_OWN)) {
     if (/^(?:she|her|hers|herself)$/i.test(match[1] ?? match[2])) {
       f += 1;
     } else {
@@ -174,13 +165,13 @@ function pronounCounts(text: string, reading: Reading): { f: number; m: number }
 
 // What a stretch of prose about one person calls them, when it is clear.
 export function genderOf(text: string, reading: Reading): GenderMark {
-  const { f, m } = pronounCounts(text, reading);
+  const { f, m } = englishPronounCounts(text, reading);
   return f > 0 && f >= 2 * m ? "f" : m > 0 && m >= 2 * f ? "m" : "";
 }
 
 // Every way a stretch calls the people it is about.
 export function gendersIn(text: string, reading: Reading): GenderMark[] {
-  const { f, m } = pronounCounts(text, reading);
+  const { f, m } = englishPronounCounts(text, reading);
   return [...(f ? ["f" as const] : []), ...(m ? ["m" as const] : [])];
 }
 
@@ -234,7 +225,7 @@ export function subjectOf(sentence: string, reading: Reading, atStart = true): S
     if (found) {
       return { kind: "name", speaker: found.speaker, text: body, end: found.end };
     }
-    const pronoun = pronounAt(body, reading);
+    const pronoun = englishPronounAt(body, reading);
     return pronoun ? { kind: "pronoun", text: body, end: pronoun[0].length } : null;
   };
   const direct = at(text, atStart);
@@ -261,5 +252,5 @@ export function aboutSubject(subject: Pointer): { text: string; whole: boolean; 
 }
 
 export function keyOf(speaker: Speaker): string {
-  return speaker.id || speaker.name.toLowerCase();
+  return speaker.id || textKey(speaker.name);
 }

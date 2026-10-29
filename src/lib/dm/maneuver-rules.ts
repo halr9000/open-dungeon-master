@@ -33,6 +33,8 @@
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { holdsFeat } from "@/lib/srd/feat-effects";
 import { classLevelFor } from "@/lib/srd/multiclass";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { isNamed } from "@/lib/srd/feature-names";
 
 export type ManeuverUse =
   | "swing"
@@ -62,34 +64,26 @@ const USES: Array<[string, ManeuverUse]> = [
   ["tactical assessment", "check"],
 ];
 
-const plain = (name: string) =>
-  name
-    .trim()
-    .toLowerCase()
-    .replace(/[’`]/g, "'")
-    .replace(/^maneuver:\s*/, "")
-    .replace(/commanders strike/, "commander's strike");
-
-// The maneuver a name refers to, and how it is taken. Unknown names are
-// swings, as every maneuver that rides an attack is.
+// How the maneuver a whole name ("Parry", "Maneuver: Parry") refers to is
+// taken. The rest are swings, as every maneuver that rides an attack is:
+// whether the sheet knows the one named is pickManeuver's to check.
 export function maneuverUse(name: string): ManeuverUse {
-  const key = plain(name);
-  return USES.find(([entry]) => key === entry || key.includes(entry))?.[1] ?? "swing";
+  return USES.find(([entry]) => isNamed(name, entry))?.[1] ?? "swing";
 }
 
 // The words a pc_attack call gets for a maneuver that is not part of a
 // swing, or null when it is.
-export function offSwingRefusal(name: string): string | null {
+export function offSwingRefusal(name: string): ToolError | null {
   const shown = name.trim();
   switch (maneuverUse(name)) {
     case "reaction":
-      return `${shown} is a reaction, not part of a swing: use_reaction with feature "${shown}" when its trigger comes (Parry: a melee hit on them; Riposte: a melee miss on them; Brace: a creature moving into their reach). Nothing was spent.`;
+      return { error: `${shown} is a reaction, not part of a swing: use_reaction with feature "${shown}" when its trigger comes (Parry: a melee hit on them; Riposte: a melee miss on them; Brace: a creature moving into their reach). Nothing was spent.`, retry: true };
     case "command":
-      return `Commander's Strike forgoes one of the fighter's attacks and uses their bonus action: use_resource "Superiority Dice" with variant "commander's strike" and the ally's targetCharacterId; the ally then attacks with use_reaction. Nothing was spent.`;
+      return { error: `Commander's Strike forgoes one of the fighter's attacks and uses their bonus action: use_resource "Superiority Dice" with variant "commander's strike" and the ally's targetCharacterId; the ally then attacks with use_reaction. Nothing was spent.`, retry: true };
     case "rally":
-      return `Rally is a bonus action, not part of a swing: use_resource "Superiority Dice" with variant "rally" and the ally's targetCharacterId. Nothing was spent.`;
+      return { error: `Rally is a bonus action, not part of a swing: use_resource "Superiority Dice" with variant "rally" and the ally's targetCharacterId. Nothing was spent.`, retry: true };
     case "check":
-      return `${shown} rides a check, initiative or a move, not an attack roll: use_resource "Superiority Dice" with variant "${shown}" and add the die where its text says. Nothing was spent.`;
+      return { error: `${shown} rides a check, initiative or a move, not an attack roll: use_resource "Superiority Dice" with variant "${shown}" and add the die where its text says. Nothing was spent.`, retry: true };
     default:
       return null;
   }

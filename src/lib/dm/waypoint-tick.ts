@@ -1,5 +1,5 @@
 import { getCampaignById, setStoryArc } from "@/lib/db/campaigns";
-import { getQuest } from "@/lib/db/quests";
+import { tickedObjective } from "@/lib/dm/binder-tools";
 import { listMessagesInSeqRange } from "@/lib/db/messages";
 import { latestSeq } from "@/lib/db/campaigns";
 import { publishEphemeral } from "@/lib/events";
@@ -10,7 +10,6 @@ import { stripReasoningArtifacts } from "@/lib/story-prompt";
 import type { StoryArc } from "@/lib/dm/arc-logic";
 import {
   activeBeat,
-  lexicalMatch,
   matchSignal,
   openWaypoints,
   parseWaypointJudge,
@@ -18,6 +17,7 @@ import {
   taggedWaypoint,
   tickWaypoints,
 } from "@/lib/dm/waypoint-logic";
+import { mergedCallText } from "@/lib/dm/tool-merge-logic";
 
 // Ticking the [NOW] beat's waypoints (issue #31). Two sources, in order of
 // trust: the DM's own tool calls, which name the place, person, item,
@@ -53,13 +53,15 @@ export async function tickWaypointsFromCalls(
   }
   const matched = new Set<number>();
   for (const call of calls) {
-    const tagged = extra.accepted?.has(call) ? taggedWaypoint(active.beat, call.name, call.rawArguments) : null;
+    // Read under the names it ran by: a retired tool, an older argument name.
+    const ran = mergedCallText(call.name, call.rawArguments);
+    const tagged = extra.accepted?.has(call) ? taggedWaypoint(active.beat, ran.name, ran.rawArguments) : null;
     if (tagged !== null) {
       matched.add(tagged);
     }
-    const signal = signalFromToolCall(call.name, call.rawArguments, {
+    const signal = signalFromToolCall(ran.name, ran.rawArguments, {
       enemyNames: extra.enemyNames,
-      objectiveText: call.name === "tick_objective" ? objectiveText(campaignId, call.rawArguments) : undefined,
+      objectiveText: ran.name === "tick_objective" ? objectiveText(campaignId, ran.rawArguments) : undefined,
     });
     if (signal) {
       for (const index of matchSignal(active.beat, signal, campaign.gameSettings.tableLanguage)) {
@@ -75,13 +77,8 @@ export async function tickWaypointsFromCalls(
 
 function objectiveText(campaignId: string, rawArguments: string): string | undefined {
   try {
-    const args = JSON.parse(rawArguments || "{}") as { questId?: unknown; objectiveId?: unknown };
-    const quest = typeof args.questId === "string" ? getQuest(args.questId) : null;
-    if (!quest || quest.campaignId !== campaignId) {
-      return undefined;
-    }
-    const objective = quest.objectives.find((entry) => entry.id === args.objectiveId);
-    return objective ? `${quest.title} ${objective.text}` : undefined;
+    const found = tickedObjective(campaignId, rawArguments);
+    return found ? `${found.quest.title} ${found.objective.text}` : undefined;
   } catch {
     return undefined;
   }
@@ -126,7 +123,7 @@ export async function judgeWaypoints(campaignId: string, sinceSeq: number): Prom
     const recent = listMessagesInSeqRange(campaignId, sinceSeq, latestSeq(campaignId))
       .filter((message) => message.authorType !== "system")
       .slice(-8)
-      .map((message) => `${message.authorType === "dm" ? "DM" : "Player"}: ${message.content}`)
+      .map((message) => `${message.authorType === "dm" ? "GM" : "Player"}: ${message.content}`)
       .join("\n\n")
       .slice(-6_000);
     if (!recent) {
@@ -143,7 +140,7 @@ export async function judgeWaypoints(campaignId: string, sinceSeq: number): Prom
             .join("\n")}\n\nRecent play:\n${recent}`,
         },
       ],
-      { timeoutMs: arcTextTimeoutMs() },
+      { meta: { task: "waypoint_judge" }, timeoutMs: arcTextTimeoutMs() },
     );
     if (error) {
       return [];
@@ -161,7 +158,3 @@ export async function judgeWaypoints(campaignId: string, sinceSeq: number): Prom
     return [];
   }
 }
-
-// Exported for the lead's own naming of a place or person in a note, and
-// for tests: whether a name reads as a waypoint by words alone.
-export { lexicalMatch };

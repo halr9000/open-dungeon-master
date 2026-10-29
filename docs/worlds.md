@@ -1,7 +1,7 @@
 # Campaign plugins (world packs)
 
 A world pack is a pre-configured universe a table can pick at campaign creation
-instead of a bare genre. Picking one renames what everybody sees, steers the DM,
+instead of a bare genre. Picking one renames what everybody sees, steers the GM,
 and nudges the character builder. It does not change a single rule.
 
 A pack is one JSON file. That is the whole plugin format.
@@ -50,7 +50,7 @@ sheet would quietly break. Keeping the canonical value on the sheet also means a
 character built in a pack campaign can be pulled into a plain campaign and simply
 renders under its ordinary names.
 
-The DM is told about the mapping through the world primer
+The GM is told about the mapping through the world primer
 (`src/lib/worlds/primer-logic.ts`), which prints an alias table and instructs it
 to narrate the world's word but call every tool with the canonical one.
 
@@ -180,8 +180,8 @@ every phone; the test enforces an empty `art` map there.
 | `rightsHolder` | who owns the referenced setting, or empty for an original world. See above |
 | `franchise` / `edition` / `editionOrder` | grouping, see above |
 | `baseGenre` | one of the eight genres, never `custom`. Selecting the pack also sets the campaign's genre to this, so every existing genre consumer keeps working |
-| `dmFlavor` | appended to the genre's own flavor in the DM system prompt. The highest-leverage field: tone, what magic feels like, what the stakes are, what the DM should never do. At least 200 chars |
-| `mapStyle` / `portraitStyle` | art-style fragments for map and portrait generation |
+| `dmFlavor` | appended to the genre's own flavor in the GM system prompt. The highest-leverage field: tone, what magic feels like, what the stakes are, what the GM should never do. At least 200 chars |
+| `mapStyle` / `portraitStyle` / `sceneStyle` | art-style fragments for maps, portraits and scene illustrations. `sceneStyle` leads every scene picture the GM asks for, so keep it to the look (medium, palette, light) and leave subjects out. A campaign can pick another look for its maps and scenes in Story AI, which then wins |
 | `nameHints` / `raceHint` | one line each, steering the story-setup pass and the companion tools |
 | `companionRaces` | SRD race ids AI companions may use; empty means no restriction |
 | `theme` | seeds `campaigns.theme`, max 120 chars |
@@ -191,11 +191,12 @@ every phone; the test enforces an empty `art` map there.
 | `monsters` | `{ slug, name, cr, type, blurb }`, the same shape as a bestiary entry. `slug` must be a real Open5e slug and `cr` must match it. `type` is the SRD creature type in lowercase (`undead`) and picks the thumbnail; it may be left out for a slug the base genre's roster already lists, which supplies it |
 | `alignments` | codes this world leans on, from LG NG CG LN N CN LE NE CE. The other nine stay pickable |
 | `nameSeeds` | `people` and `places`, offered as clickable suggestions in the builder |
-| `factions` / `locations` / `hooks` / `glossary` | story elements, rendered into the DM's game-state block |
+| `factions` / `locations` / `hooks` / `glossary` | story elements, rendered into the GM's game-state block |
 | `art` | thumbnails as image data URLs, keyed as described under Art. Optional |
 
 Empty string or empty array on `dmFlavor`, `mapStyle`, `portraitStyle`,
-`nameHints`, `raceHint` and `companionRaces` means "inherit the base genre".
+`sceneStyle`, `nameHints`, `raceHint` and `companionRaces` means "inherit the
+base genre".
 
 ## Valid ids
 
@@ -240,7 +241,8 @@ A registry is a single JSON file anywhere reachable over https:
       "edition": "",
       "editionOrder": 0,
       "baseGenre": "high_fantasy",
-      "downloadUrl": "https://example.org/packs/your_world.json"
+      "downloadUrl": "https://example.org/packs/your_world.json",
+      "thumbnail": "https://example.org/packs/thumbnails/your_world.webp"
     }
   ]
 }
@@ -249,18 +251,36 @@ A registry is a single JSON file anywhere reachable over https:
 An operator points their server at it with the **World registry URL** setting in
 Admin, or the `WORLD_REGISTRY_URL` environment variable.
 
-### The default registry
+`thumbnail` is optional: a small 16:9 picture (PNG, JPEG or WebP, at most
+512 KB, https only) for the pack's tile in the plugin browser. The server
+fetches it, checks the bytes are an image, and serves it from
+`/api/worlds/registry/thumbnail/pack/<id>` (`src/lib/worlds/registry-thumbnails.ts`),
+so a browser never contacts the registry's host. An entry without one, or
+whose picture fails to load, is shown with its genre's cover plate. Prepared
+worlds under `bundles` take a `thumbnail` the same way.
 
-The app ships pointing at a registry of community packs, so a fresh install has
-something to browse. Precedence is the Admin setting, then the environment
-variable, then that built-in default (`DEFAULT_WORLD_REGISTRY_URL` in
-`src/lib/worlds/install.ts`).
+The browser filters both its lists, what can be downloaded and what is
+installed, by a search over the name, blurb, franchise, edition, author and
+`inspiredBy`, by base genre, and by original world against fan work (whether
+`rightsHolder` is set) (`src/lib/worlds/plugin-filter.ts`).
 
-Listing is not endorsing. Those packs are built on other people's settings: they
-are not distributed with this app, are not covered by its MIT license, and none
-of them installs on its own. Browsing shows the listing; an admin still has to
-press Install, and every pack with a `rightsHolder` carries the unofficial notice
-wherever it appears.
+### No registry is built in
+
+A fresh install browses nothing. Packs built on other people's settings are
+community works this project does not distribute, so a server lists a
+registry only when its operator names one: the Admin setting first, then the
+environment variable (`pickRegistryUrl` in `src/lib/worlds/install.ts`).
+Setting the Admin field to `off` browses nothing even when the environment
+names a registry. Without one, packs arrive from a file.
+
+Listing is not endorsing. Browsing shows the listing; an admin still has to
+press Install, and every pack with a `rightsHolder` carries the unofficial
+notice wherever it appears.
+
+The plugin browser links to the player-facing guide,
+[How to make a campaign plugin](https://opengamemaster.com/guide/dm/make-a-campaign-plugin/),
+which walks through the workshop's Plugin tool, building from WorldForge, and
+this format by hand.
 
 To run your own instead, set the Admin field or the environment variable to your
 index. To browse nothing at all, set either to `off`, which leaves installing
@@ -285,12 +305,17 @@ Admin, Campaign plugins, Install from a file.
 
 ```bash
 node scripts/validate-world-packs.mjs /path/to/packs
+node scripts/world-pack-art.mjs thumbnails /path/to/packs
 node scripts/build-world-registry.mjs /path/to/packs https://your-host/worlds
 ```
 
-The second command writes `index.json` beside the manifests, with a
-`downloadUrl` of `<base-url>/<id>.json` for each. Upload the whole folder to any
-static https host and point the registry setting at `<base-url>/index.json`.
+The second command writes a 352x200 WebP tile for every pack with a `cover`,
+as `thumbnails/<id>.webp` beside the manifests; it leaves an existing tile
+alone unless given `--force`. The third writes `index.json` beside the
+manifests, with a `downloadUrl` of `<base-url>/<id>.json` for each and a
+`thumbnail` of `<base-url>/thumbnails/<id>.webp` for each pack that has a
+tile. Upload the whole folder to any static https host and point the registry
+setting at `<base-url>/index.json`.
 Re-run it whenever you add a pack or bump a `version`, since the browser offers
 an Update when the registry's version differs from the installed one.
 
@@ -304,8 +329,10 @@ pass an explicit mapping instead:
 node scripts/build-world-registry.mjs /path/to/packs --urls urls.json
 ```
 
-where `urls.json` is `{ "<pack id>": "<https download url>" }`. The builder
-fails loudly if a pack has no URL in the mapping.
+where `urls.json` is `{ "<pack id>": "<https download url>" }`. A value may
+instead be `{ "downloadUrl": "<https url>", "thumbnail": "<https url>" }` to
+list a tile as well. The builder fails loudly if a pack has no URL in the
+mapping.
 
 For Google Drive specifically, a file's direct URL is
 `https://drive.google.com/uc?export=download&id=<file id>`, which returns the
@@ -346,11 +373,33 @@ challenge rating and the creature type. A feature is picked from every feature
 the SRD tables grant. What a person types is the world's word for the thing and
 a line about it, which is all a reskin is.
 
-**Pull from this workshop** reads the lore filed under "factions", the places,
-the storyboard's hook cards and the cast's names into the setting lists, through
-the same compile the Share tool's "Compile a world pack" uses
-(`src/lib/workshop/to-pack.ts`). It adds and never overwrites, so an entry
-written by hand survives a second pull.
+**Pull from this workshop** reads the workshop's factions (the ones its
+Factions tool and WorldForge write, and any older lore filed under
+"factions"), its lore, places, the storyboard's hook cards and the cast's names
+into the setting lists, through the same compile the Share tool's "Compile a
+world pack" uses (`src/lib/workshop/to-pack.ts`). It adds and never
+overwrites, so an entry written by hand survives a second pull.
+
+- A faction's line is its own one-line summary, then where it is based and who
+  belongs to it ("Based in Saltmarch Harbour. Members: Mira Fenn and Old
+  Tobb."), as far as the 200 characters go; a long member list ends "and 4
+  more". The pack format is unchanged, so an older install reads the line as
+  it reads any other.
+- A place's line and a glossary meaning are the entry's account (a place's
+  article, a lore entry's body), cut where a sentence ends.
+- A lore entry kept for the GM and an entry that is not canon stay out: a pack
+  has no private part and no way to mark a line as unsettled.
+
+**What the pack leaves out.** The Publish tab lists, before anything is
+published, everything in the workshop the pack does not carry, kind by kind,
+each with the entries it names (`src/lib/workshop/to-pack-omissions.ts`):
+what the workshop has and the draft does not; world detail (Atlas maps, the
+timeline, secrets and hidden truths, storyboard cards, custom fields,
+relationships, the Cast's details, notes, pictures, accounts cut short, and
+what was kept back); and the scenario and its mechanics (encounters, battle
+maps, links to playable records, hand-built monsters, homebrew, roll tables,
+shops, pregens, the region map, house rules). The workshop bundle carries all
+of it. The Share tool shows the same list after compiling a pack draft.
 
 **Pictures** are uploaded through a plain file input, one slot per thing the
 pack names, and resized in the browser to the slot's shape (256 px squares,

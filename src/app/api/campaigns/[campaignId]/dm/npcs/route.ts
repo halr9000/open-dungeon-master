@@ -4,6 +4,8 @@ import { createNpcFromDraft, listNpcs } from "@/lib/db/npcs";
 import { publishCast } from "@/lib/dm/cast";
 import { describePersonality, normalizeNpcDraft, relationGraph } from "@/lib/npcs/forge";
 import { queueNpcPortrait } from "@/lib/portrait";
+import { recordsChanged } from "@/lib/workshop/record-events";
+import { textKey } from "@/lib/language/text-logic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -72,7 +74,7 @@ export async function POST(
   // Names are how this table is looked up in narration, so two NPCs sharing
   // one would make every social check ambiguous. Refused rather than
   // numbered, unlike prep that is only ever read by a person.
-  if (listNpcs(campaignId).some((npc) => npc.name.toLowerCase() === outcome.draft.name.toLowerCase())) {
+  if (listNpcs(campaignId).some((npc) => textKey(npc.name) === textKey(outcome.draft.name))) {
     return Response.json(
       { error: `${outcome.draft.name} is already someone at this table.` },
       { status: 409 },
@@ -90,5 +92,6 @@ export async function POST(
       personality: describePersonality(outcome.draft.personality),
     });
   }
+  recordsChanged(campaignId, "npc", "world");
   return Response.json({ ok: true, npc }, { status: 201 });
 }

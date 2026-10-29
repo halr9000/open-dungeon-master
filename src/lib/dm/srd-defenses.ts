@@ -19,12 +19,12 @@ import { holdsFeature } from "@/lib/srd/trait-rules";
 import type { ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { rollEnemySave } from "@/lib/dm/forced-save";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
-
-export function naturesSanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targetId: string): string | null {
+export function naturesSanctuaryRefusal(campaignId: string, enemy: EncounterEnemy, targetId: string): ToolError | null {
   const target = getSheetById(targetId);
-  if (!target || !holdsFeature(target, "nature's sanctuary") || !/\b(beast|plant)\b/.test(lower(String(enemy.stats.type ?? "")))) {
+  if (!target || !holdsFeature(target, "nature's sanctuary") || !/\b(beast|plant)\b/.test(textKey(String(enemy.stats.type ?? "")))) {
     return null;
   }
   const dc = computeSheetDerived(target).spellSaveDc ?? 13;
@@ -34,7 +34,7 @@ export function naturesSanctuaryRefusal(campaignId: string, enemy: EncounterEnem
   });
   return save.success
     ? null
-    : `${enemy.displayName} fails its WIS save (DC ${dc}) against ${target.name}'s Nature's Sanctuary and cannot attack them: it must choose another target or lose the attack.`;
+    : { error: `${enemy.displayName} fails its WIS save (DC ${dc}) against ${target.name}'s Nature's Sanctuary and cannot attack them: it must choose another target or lose the attack.`, retry: true };
 }
 
 // The DC of the Sanctuary Tranquility gives, or null for a caster whose own
@@ -57,7 +57,7 @@ export function tranquilityAfterLongRest(campaign: Campaign, restingIds: string[
     if (!sheet || sheet.deathSaves?.dead || !holdsFeature(sheet, "tranquility")) {
       continue;
     }
-    const kept = sheet.conditions.filter((entry) => lower(entry) !== "sanctuary");
+    const kept = sheet.conditions.filter((entry) => textKey(entry) !== "sanctuary");
     const updated = patchSheet(sheet.id, {
       conditions: [...kept, "sanctuary"],
       conditionMeta: { ...(sheet.conditionMeta as ConditionMetaMap), sanctuary: { source: sheet.id, rounds: 14400 } },

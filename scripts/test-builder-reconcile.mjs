@@ -3,7 +3,7 @@
 // The rule this file guards: a pick is only kept while the choice it hangs
 // off still offers it. Changing the background, race, class, subclass or
 // level re-checks every dependent pick (reconcile.ts), and the server drops
-// "choice" features no class on the sheet has slots for. Before this a sheet
+// "choice" features no class or feat on the sheet has slots for. Before this a sheet
 // could carry Battle Master maneuvers under a Champion, an acolyte's two
 // languages under a criminal, and four expertise skills at level 1 (issue #37).
 import assert from "node:assert/strict";
@@ -22,6 +22,7 @@ const { srdRaceOptions, srdClassOptions, srdBackgroundOptions } = await import(
   "../src/app/characters/builder/useBuilderOptions.ts"
 );
 const { populateFeaturesForClasses } = await import("../src/lib/srd/features.ts");
+const { settleLevelChange } = await import("../src/lib/srd/level-change.ts");
 const { backgroundMechanics } = await import("../src/lib/content/mechanics.ts");
 const { packRaceOptions } = await import("../src/lib/content/race-options.ts");
 
@@ -40,7 +41,7 @@ const klass = (id) => classes.find((entry) => entry.id === id);
 const background = (id) => backgrounds.find((entry) => entry.id === id);
 
 const empty = {
-  chosenSkills: [], racialSkills: [], racialAsi: [], racialCantrip: "", racialTool: "",
+  chosenSkills: [], racialSkills: [], racialAsi: [], racialCantrips: [], racialTool: "",
   bonusLanguages: [], subclass: "", expertisePicks: [], stylePicks: [], optionPicks: [],
   spells: [], bookPrepared: [], cantrips: [],
 };
@@ -53,6 +54,15 @@ test("a class skill the new background grants outright is dropped, and named", (
   });
   assert.deepEqual(picks.chosenSkills, ["insight", "perception", "acrobatics"]);
   assert.deepEqual(dropped, ["class skill: stealth"]);
+});
+
+test("an Orc keeps only the racial skills Primal Intuition names, and the other is asked for again", () => {
+  const before = { ...empty, chosenSkills: ["athletics", "perception"], racialSkills: ["arcana", "medicine"] };
+  const { picks, dropped } = reconcilePicks(before, {
+    race: race("orc"), klass: klass("fighter"), background: background("acolyte"), level: 1,
+  });
+  assert.deepEqual(picks.racialSkills.filter(Boolean), ["medicine"]);
+  assert.deepEqual(dropped, ["racial skill: arcana"]);
 });
 
 test("every dropped pick names the block it is made on again, so a notice can go there (issue #124)", () => {
@@ -71,7 +81,7 @@ test("every dropped pick names the block it is made on again, so a notice can go
   // Every kind of pick has a target: a sheet with one of each, under a
   // class and race that offer none of them, drops them all.
   const everything = {
-    chosenSkills: ["stealth"], racialSkills: ["arcana"], racialAsi: ["str"], racialCantrip: "Light", racialTool: "smith's tools",
+    chosenSkills: ["stealth"], racialSkills: ["arcana"], racialAsi: ["str"], racialCantrips: ["Light"], racialTool: "smith's tools",
     backgroundSkills: ["insight"], bonusLanguages: ["Elvish"], subclass: "Champion", expertisePicks: ["stealth"],
     stylePicks: ["defense"], optionPicks: ["Maneuver: Riposte"], spells: ["Fireball"], bookPrepared: ["Fireball"], cantrips: ["Fire Bolt"],
   };
@@ -158,16 +168,16 @@ test("a non-caster keeps no spells, and a level 1 paladin no cantrips", () => {
 });
 
 test("racial choices belong to the race that offers them", () => {
-  const before = { ...empty, racialSkills: ["perception", "stealth"], racialAsi: ["str", "dex"], racialTool: "smith's tools", racialCantrip: "Fire Bolt" };
+  const before = { ...empty, racialSkills: ["perception", "stealth"], racialAsi: ["str", "dex"], racialTool: "smith's tools", racialCantrips: ["Fire Bolt"] };
   const halfElf = reconcilePicks(before, { race: race("half_elf"), klass: klass("fighter"), background: background("soldier"), level: 1 });
   assert.deepEqual(halfElf.picks.racialSkills, ["perception", "stealth"]);
   assert.deepEqual(halfElf.picks.racialAsi, ["str", "dex"]);
   assert.equal(halfElf.picks.racialTool, "");
-  assert.equal(halfElf.picks.racialCantrip, "");
+  assert.deepEqual(halfElf.picks.racialCantrips, []);
   const highElf = reconcilePicks(before, { race: race("high_elf"), klass: klass("fighter"), background: background("soldier"), level: 1 });
   assert.deepEqual(highElf.picks.racialSkills, []);
   assert.deepEqual(highElf.picks.racialAsi, []);
-  assert.equal(highElf.picks.racialCantrip, "Fire Bolt");
+  assert.deepEqual(highElf.picks.racialCantrips, ["Fire Bolt"]);
   const hillDwarf = reconcilePicks(before, { race: race("hill_dwarf"), klass: klass("fighter"), background: background("soldier"), level: 1 });
   assert.equal(hillDwarf.picks.racialTool, "smith's tools");
 });
@@ -200,6 +210,34 @@ test("the server's regrant drops choice features no class on the sheet has slots
   assert.ok(names.includes("Boon of the Mountain"));
   const battle = populateFeaturesForClasses(stored, [{ id: "fighter", subclass: "Battle Master", level: 3 }], "human");
   assert.ok(battle.map((feature) => feature.name).includes("Maneuver: Riposte"));
+});
+
+test("the regrant keeps the choices a feat opens slots for, where no class opens them", () => {
+  const stored = [
+    { name: "Maneuver: Riposte", source: "choice" },
+    { name: "Maneuver: Trip Attack", source: "choice" },
+    { name: "Maneuver: Parry", source: "choice" },
+  ];
+  const champion = [{ id: "fighter", subclass: "Champion", level: 3 }];
+  const adept = populateFeaturesForClasses(stored, champion, "human", ["Martial Adept"]);
+  assert.equal(adept.filter((feature) => feature.name.startsWith("Maneuver:")).length, 2);
+  const invocation = [{ name: "Invocation: Devil's Sight", source: "choice" }];
+  const wizard = populateFeaturesForClasses(invocation, [{ id: "wizard", subclass: "", level: 4 }], "human", ["Eldritch Adept"]);
+  assert.ok(wizard.some((feature) => feature.name === "Invocation: Devil's Sight"));
+  const settled = settleLevelChange({
+    class: "fighter",
+    subclass: "Champion",
+    race: "human",
+    level: 4,
+    xp: 0,
+    classes: [],
+    features: stored,
+    feats: ["Martial Adept"],
+    hitDice: { die: "d10", total: 3, spent: 0 },
+    hitDicePools: null,
+    spellcasting: { ability: "int", slots: {}, known: [], prepared: [] },
+  });
+  assert.equal(settled.features.filter((feature) => feature.name.startsWith("Maneuver:")).length, 2);
 });
 
 test("a warlock adapted down to level 1 keeps no invocations, and at 2 keeps two", () => {

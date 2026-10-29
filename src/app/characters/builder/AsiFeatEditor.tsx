@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { featAbilityIncrease } from "@/lib/srd/feat-effects";
 import type { FeatChoices, FeatGrantSpec, FeatPicks } from "@/lib/srd/feat-grants";
 import FeatChoicesFields, { type KnownTraining } from "./FeatChoicesFields";
@@ -13,9 +14,12 @@ import { abilityMod, formatModifier } from "@/lib/srd";
 import { ABILITY_SCORE_CAP, applyAsiChoices } from "@/lib/srd/asi";
 import { halfFeatPicks, scoresWithHalfFeats } from "@/lib/srd/legality/half-feats";
 import type { Ability, AbilityScores, AsiChoice } from "@/lib/schemas/sheet";
+import type { PrerequisiteCheck } from "@/lib/srd/legality/features";
 import { ABILITY_LABELS } from "./AbilityEditor";
 import CatalogBrowser from "./CatalogBrowser";
 import ContentPicker from "./ContentPicker";
+import { judgeEntry, prerequisiteNote, useFeatJudge } from "./featPrereqs";
+import { featChoice as featPicksOf } from "@/lib/schemas/sheet";
 
 const ABILITY_KEYS = Object.keys(ABILITY_LABELS) as Ability[];
 
@@ -66,6 +70,11 @@ export default function AsiFeatEditor({
     onChange(next);
   }
 
+  // The builder's prerequisite check (featPrereqs.ts); absent in the
+  // level-up dialog, whose server answer names an unmet requirement.
+  const judge = useFeatJudge();
+  const noteId = useId();
+
   const unresolved = slotLevels.filter((_, index) => !choices[index] && !takenInPlay[index]).length;
 
   return (
@@ -79,11 +88,11 @@ export default function AsiFeatEditor({
             : "Ability score improvements"}
         </h2>
         {unresolved > 0 ? (
-          <span className="rounded-full border border-amber-700 bg-amber-950/50 px-2 py-0.5 text-[11px] text-amber-200">
+          <span className="rounded-full border border-amber-700 bg-amber-950/50 px-2 py-0.5 text-[0.875rem] text-amber-200">
             {unresolved} to pick
           </span>
         ) : (
-          <span className="rounded-full border border-stone-700 bg-stone-900 px-2 py-0.5 text-[11px] text-stone-400">
+          <span className="rounded-full border border-stone-700 bg-stone-900 px-2 py-0.5 text-[0.875rem] text-stone-400">
             All picked
           </span>
         )}
@@ -112,7 +121,7 @@ export default function AsiFeatEditor({
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-stone-300">Level {slotLevel} improvement</span>
-                    <span className="rounded-full border border-stone-700 bg-stone-900 px-2 py-0.5 text-[11px] text-stone-400">
+                    <span className="rounded-full border border-stone-700 bg-stone-900 px-2 py-0.5 text-[0.875rem] text-stone-400">
                       Taken in play
                     </span>
                   </div>
@@ -211,7 +220,13 @@ export default function AsiFeatEditor({
                 {choice === null || choice.mode === "feat" ? (
                   <div>
                     {choice?.mode === "feat" ? (
-                      <span className="mb-2 inline-flex items-center gap-1 rounded-full border border-amber-800 bg-amber-950/40 px-2.5 py-1 text-xs text-amber-200">
+                      <>
+                      <span
+                        className={cn(
+                          "mb-2 inline-flex items-center gap-1 rounded-full border bg-amber-950/40 px-2.5 py-1 text-xs text-amber-200",
+                          judge?.checkFeat(choice.feat)?.state === "unmet" ? "border-red-500/70" : "border-amber-800",
+                        )}
+                      >
                         {choice.feat}
                         <InfoButton
                           label={choice.feat}
@@ -225,16 +240,20 @@ export default function AsiFeatEditor({
                           type="button"
                           onClick={() => setChoice(index, null)}
                           aria-label={`Remove ${choice.feat}`}
+                          aria-describedby={(judge?.checkFeat(choice.feat)?.state ?? "none") !== "none" ? `${noteId}-${index}` : undefined}
                           className="text-stone-500 hover:text-red-400"
                         >
                           <X className="size-3" />
                         </button>
                       </span>
+                      <SelectedPrerequisite id={`${noteId}-${index}`} check={judge?.checkFeat(choice.feat) ?? null} />
+                      </>
                     ) : (
                       <>
                         <ContentPicker
                           kind="feats"
                           placeholder="Search feats (e.g. alert, tough)"
+                          judge={judge ? (entry) => judgeEntry(judge, entry, true) : undefined}
                           onPick={(entry) => setChoice(index, featChoice(entry.name, featDescOf?.(entry.name)))}
                         />
                         {/* Nobody picks a feat they cannot name; the list is
@@ -243,6 +262,7 @@ export default function AsiFeatEditor({
                           kind="feats"
                           buttonLabel="Browse every feat"
                           selectedNames={[]}
+                          judge={judge ? (entry) => judgeEntry(judge, entry, true) : undefined}
                           onPick={(entry) => setChoice(index, featChoice(entry.name))}
                           sections={[{ key: "feats:all", label: "All feats" }]}
                         />
@@ -275,7 +295,7 @@ export default function AsiFeatEditor({
                     feat={choice.feat}
                     desc={featDescOf?.(choice.feat)}
                     spec={featSpecOf(choice.feat)}
-                    picks={featChoices?.[choice.feat.trim().toLowerCase()]}
+                    picks={featPicksOf(featChoices, choice.feat)}
                     known={known}
                     onChange={(picks) => onFeatPicks(choice.feat, picks)}
                   />
@@ -298,6 +318,28 @@ export default function AsiFeatEditor({
         </div>
       )}
     </section>
+  );
+}
+
+// A picked feat's prerequisite, rechecked as the choices it depends on
+// change. One a later choice broke is flagged here and at Continue, and
+// left on the sheet: the player decides what to change.
+export function SelectedPrerequisite({ id, check }: { id: string; check: PrerequisiteCheck | null }) {
+  if (!check || check.state === "none") {
+    return null;
+  }
+  return (
+    <p
+      id={id}
+      className={cn(
+        "mb-2 text-xs",
+        check.state === "unmet" ? "text-red-300" : check.state === "waiting" ? "text-amber-200/80" : "text-stone-500",
+      )}
+    >
+      {check.state === "unmet" ? "Requirement not met: " : "Requires: "}
+      {prerequisiteNote(check)}
+      {check.state === "unmet" ? ". Pick another feat, or change what it depends on." : ""}
+    </p>
   );
 }
 

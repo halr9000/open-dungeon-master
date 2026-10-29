@@ -3,8 +3,10 @@
 // ODM's shop rules (docs/rules-coverage.md, "Commerce"): the shelf sets the
 // price (list price times the settlement's markup), the purse and the shelf
 // refuse what they cannot cover, the keeper buys at half list, and a haggle
-// is one Persuasion check per character per shop that moves every price a
-// step. The SRD's own rule is the half-price sale ("Selling Treasure"); the
+// is one check per character per shop (Persuasion, Intimidation or
+// Deception): a win lowers the price a step, a failure holds it, a failure
+// by 5 or more raises it, and the price is for the characters at the
+// counter, not the whole party. The SRD's own rule is the half-price sale ("Selling Treasure"); the
 // rest is ODM's and is pinned as ODM states it.
 //
 // A trade between players is checked against both sheets when offered and
@@ -12,13 +14,19 @@
 // invariant under all of it: no sequence of offers, purchases and sales
 // leaves the table holding more coin or more items than it started with.
 import assert from "node:assert/strict";
+// No model or painter behind the companion a haggle test adds.
+import "./lib/enforce-campaign.mjs";
 import { openWorld } from "./lib/enforce-world.mjs";
 import { suite } from "./lib/enforce-harness.mjs";
 
 const { test, finish } = suite("test-enforce-commerce");
 const shops = await import("../src/lib/db/shops.ts");
+const npcs = await import("../src/lib/db/npcs.ts");
+const departures = await import("../src/lib/db/companion-departures.ts");
 const proposals = await import("../src/lib/db/item-proposals.ts");
 const { searchItems } = await import("../src/lib/content/index.ts");
+const locations = await import("../src/lib/db/locations.ts");
+const { setDmMode } = await import("../src/lib/db/campaigns.ts");
 
 const world = await openWorld();
 // The owner runs the story; the three at the counter are ordinary players.
@@ -188,45 +196,169 @@ await test("buying an item back costs more than its sale paid, at every markup",
 
 // A town's haggle is DC 13 (shop-logic.ts haggleDc); CHA 10 and no
 // Persuasion means the d20 is the total.
-async function haggle(shop, who, face) {
+async function haggle(shop, who, face, skill) {
   world.clearDice();
   world.dice(face);
-  const reply = await at(shop, who, { action: "haggle" });
+  const reply = await at(shop, who, { action: "haggle", ...(skill ? { skill } : {}) });
   world.clearDice();
   return reply;
 }
 
-await test("a won haggle drops every price a step, a lost one raises them a step", async () => {
-  let shop = openShop(1);
-  assert.equal((await haggle(shop, ann, 13)).body.result.success, true);
-  assert.equal(shops.getShop(shop.id).markup, 0.9);
-  shop = openShop(1);
-  assert.equal((await haggle(shop, ann, 12)).body.result.success, false);
-  assert.equal(shops.getShop(shop.id).markup, 1.1);
+// What one character is asked for the Rope (list 1 gp) at a shop, as the
+// shops route shows it to that character's player in the Market.
+const listing = await world.route("campaigns/[campaignId]/shops");
+async function ropeAsks(shop, who) {
+  return listing.shopView(shops.getShop(shop.id), false, who.hero.id).stock.find((line) => line.itemName === "Rope").askingCp;
+}
+
+await test("a won haggle drops the haggler's prices a step; the shop's own price and everyone else's stay", async () => {
+  const shop = openShop(1);
+  const won = await haggle(shop, ann, 13);
+  assert.equal(won.body.result.success, true);
+  assert.equal(won.body.result.prices, "a step lower");
+  assert.equal(shops.getShop(shop.id).markup, 1, "the shop-wide markup did not move");
+  assert.equal(await ropeAsks(shop, ann), 90);
+  assert.equal(await ropeAsks(shop, bo), 100, "someone who was not there pays the shop's price");
+  give(ann, { gold: 1 });
+  give(bo, { gold: 1 });
+  assert.equal((await at(shop, ann, { action: "buy", item: "Rope" })).status, 200);
+  assert.equal(copperOf(ann), 10, "Ann paid her haggled 90 cp");
+  assert.equal((await at(shop, bo, { action: "buy", item: "Rope" })).status, 200);
+  assert.equal(copperOf(bo), 0, "Bo paid the shop's 1 gp");
 });
 
-await test("a character haggles once in a shop: a second try is refused and rolls nothing", async () => {
+await test("a failed haggle holds firm; only a failure by 5 or more raises the price, a step", async () => {
+  let shop = openShop(1);
+  const held = await haggle(shop, ann, 9);
+  assert.equal(held.body.result.success, false);
+  assert.equal(held.body.result.prices, "unchanged", "13 - 9 = 4: a failure, not a bad one");
+  assert.equal(await ropeAsks(shop, ann), 100);
+  shop = openShop(1);
+  const bad = await haggle(shop, ann, 8);
+  assert.equal(bad.body.result.prices, "a step higher", "13 - 8 = 5: a bad failure");
+  assert.match(bad.body.result.outcome, /missed the DC by 5 or more/);
+  assert.equal(await ropeAsks(shop, ann), 110);
+  assert.equal(await ropeAsks(shop, bo), 100);
+  assert.equal(shops.getShop(shop.id).markup, 1);
+});
+
+await test("a character haggles once in a shop: a second try is refused and rolls nothing; others still have theirs", async () => {
   const shop = openShop(1);
   await haggle(shop, ann, 20);
   world.diceLog();
   const again = await haggle(shop, ann, 20);
   assert.equal(again.status, 409);
   assert.equal(world.diceLog().length, 0);
-  assert.equal(shops.getShop(shop.id).markup, 0.9);
   assert.deepEqual(shops.getShop(shop.id).haggledBy, [ann.hero.id]);
+  assert.equal((await haggle(shop, bo, 20)).status, 200, "Bo came later and gets a try of his own");
+  assert.deepEqual(shops.getShop(shop.id).haggledBy, [ann.hero.id, bo.hero.id]);
 });
 
-await test("the markup never leaves its ladder, however many characters haggle", async () => {
-  const shop = openShop(0.9);
-  for (const who of [ann, bo, cy]) {
-    await haggle(shop, who, 20);
-  }
-  assert.equal(shops.getShop(shop.id).markup, 0.8);
-  const dear = openShop(1.5);
-  for (const who of [ann, bo, cy]) {
-    await haggle(dear, who, 2);
-  }
-  assert.equal(shops.getShop(dear.id).markup, 2);
+await test("the characters at the counter share the result and the used try; a later arrival does not", async () => {
+  const shop = openShop(1);
+  world.clearDice();
+  world.dice(20);
+  const out = await world.invoke("haggle", { characterId: ann.hero.id, shop: shop.id, presentCharacterIds: [bo.hero.id] });
+  world.clearDice();
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(await ropeAsks(shop, ann), 90);
+  assert.equal(await ropeAsks(shop, bo), 90, "Bo was there and shares the price");
+  assert.equal(await ropeAsks(shop, cy), 100, "Cy was not, and pays the shop's price");
+  assert.equal((await haggle(shop, bo, 20)).status, 409, "Bo's try was used at the counter");
+  assert.equal((await haggle(shop, cy, 8)).body.result.prices, "a step higher");
+  assert.equal(await ropeAsks(shop, cy), 110);
+  assert.equal(await ropeAsks(shop, ann), 90, "Cy's bad haggle is Cy's alone");
+});
+
+await test("Intimidation's bad failure raises the price two steps; Deception works once per shop", async () => {
+  const shop = openShop(1);
+  assert.equal((await haggle(shop, ann, 8, "intimidation")).body.result.prices, "two steps higher");
+  assert.equal(await ropeAsks(shop, ann), 125);
+  assert.equal((await haggle(shop, bo, 20, "deception")).body.result.success, true);
+  world.diceLog();
+  const lie = await haggle(shop, cy, 20, "deception");
+  assert.equal(lie.status, 409);
+  assert.match(lie.body.error, /lied to once already/);
+  assert.equal(world.diceLog().length, 0);
+  assert.equal((await haggle(shop, cy, 20)).status, 200, "Persuasion is still open to Cy");
+});
+
+await test("a haggled price never leaves the ladder", async () => {
+  const cheap = openShop(0.8);
+  await haggle(cheap, ann, 20);
+  assert.equal(await ropeAsks(cheap, ann), 80);
+  const dear = openShop(2);
+  await haggle(dear, ann, 2);
+  assert.equal(await ropeAsks(dear, ann), 200);
+});
+
+await test("at an end of the ladder a haggle says the price is already there, never a step it did not take", async () => {
+  const cheap = openShop(0.8);
+  const won = await haggle(cheap, ann, 20);
+  assert.equal(won.body.result.success, true);
+  assert.equal(won.body.result.prices, "already at their lowest");
+  assert.match(won.body.result.outcome, /talked the keeper down, but their prices here are already at their lowest: they stay where they were/);
+  assert.doesNotMatch(won.body.result.outcome, /a step lower/);
+  assert.equal(listing.shopView(shops.getShop(cheap.id), false, ann.hero.id).yourPrices, "already at their lowest", "the Market's line says the same");
+  const dear = openShop(2);
+  const bad = await haggle(dear, ann, 2);
+  assert.equal(bad.body.result.prices, "already at their highest");
+  assert.match(bad.body.result.outcome, /already at their highest: they stay where they were/);
+  // Two steps up from one below the top go one, and say so.
+  const near = openShop(1.5);
+  const leaned = await haggle(near, ann, 2, "intimidation");
+  assert.equal(leaned.body.result.prices, "a step higher, as high as they go");
+  assert.equal(await ropeAsks(near, ann), 200);
+  // Off the ends a step is still a step.
+  const plain = openShop(1);
+  assert.equal((await haggle(plain, ann, 20)).body.result.prices, "a step lower");
+});
+
+await test("only who can stand at the counter shares a haggle: the dead and a companion turned on the party are refused, and nothing is rolled", async () => {
+  const camp = await openWorld({ gameSettings: { companions: "full" } });
+  const kael = camp.addHero({ name: "Kael", class: "rogue", level: 3, abilities: { cha: 10 } });
+  const brin = camp.addHero({ name: "Brin", class: "fighter", level: 3 });
+  const added = await camp.invoke("add_companion", { name: "Seren", class: "paladin", gender: "Female", alignment: "LG", personality: "Stern and devout.", kind: "party" });
+  assert.equal(added.ok, true, added.error);
+  const seren = camp.sheets().find((entry) => entry.name === "Seren");
+  const stall = shops.insertShop(camp.campaignId, { name: "Crossroads Stall", kind: "general", size: "town", markup: 1, stock: [{ itemName: "Rope", qty: 5, priceCp: LIST.Rope, note: "" }] });
+  const haggleAt = async (args) => {
+    camp.clearDice();
+    camp.diceLog();
+    const out = await camp.invoke("haggle", { shop: stall.id, ...args });
+    return { out, rolled: camp.diceLog().length };
+  };
+
+  // Brin lies dead: named at the counter, the call is sent back to leave
+  // him out; as the haggler, the game says no.
+  camp.patch(brin.id, { deathSaves: { successes: 0, failures: 3, stable: false, dead: true } });
+  const withDead = await haggleAt({ characterId: kael.id, presentCharacterIds: [brin.id] });
+  assert.equal(withDead.out.retry, true, JSON.stringify(withDead.out));
+  assert.match(withDead.out.error, /Brin is dead, so not at the counter: send presentCharacterIds without them/);
+  assert.equal(withDead.rolled, 0);
+  const byDead = await haggleAt({ characterId: brin.id });
+  assert.equal(byDead.out.refused, "rules", JSON.stringify(byDead.out));
+  assert.match(byDead.out.error, /Brin is dead and cannot haggle/);
+
+  // Seren turned on the party and lies at its mercy: her sheet is kept at
+  // the table (src/lib/dm/turncoat.ts), but she is no one's company at a
+  // counter.
+  const row = npcs.listNpcs(camp.campaignId).find((npc) => npc.name === "Seren");
+  departures.saveDeparture(row.id, { intent: null, gone: null, turned: { response: "confront", at: 0 } });
+  camp.patch(seren.id, { currentHp: 0 });
+  const withTurncoat = await haggleAt({ characterId: kael.id, presentCharacterIds: ["Seren"] });
+  assert.equal(withTurncoat.out.retry, true, JSON.stringify(withTurncoat.out));
+  assert.match(withTurncoat.out.error, /Seren has turned against the party, so not at the counter/);
+  assert.equal(withTurncoat.rolled, 0);
+  assert.equal((await haggleAt({ characterId: seren.id })).out.refused, "rules");
+  assert.deepEqual(shops.getShop(stall.id).haggledBy, [], "no try was used by a refused haggle");
+
+  // Left out, Kael haggles alone.
+  camp.dice(20);
+  const alone = await camp.invoke("haggle", { characterId: kael.id, shop: stall.id });
+  camp.clearDice();
+  assert.equal(alone.ok, true, alone.error);
+  assert.deepEqual(shops.getShop(stall.id).haggledBy, [kael.id]);
 });
 
 // ---- trades ----
@@ -330,11 +462,11 @@ await test("an offer is checked again on acceptance: gold spent in between stops
 await test("an item given away in between stops the trade, from either side", async () => {
   const start = deal();
   let made = await offer(ann, { toCharacterId: bo.hero.id, give: [{ name: "Ruby", qty: 3 }], wantCp: 100 });
-  await world.invoke("remove_item", { characterId: ann.hero.id, name: "Ruby", qty: 1, reason: "lost" });
+  await world.invoke("remove_item", { characterId: ann.hero.id, item: "Ruby", qty: 1, reason: "lost" });
   assert.equal((await answer(bo, made.body.proposal.id, "approve")).status, 409);
   assert.deepEqual([held(ann, "Ruby"), held(bo, "Ruby"), copperOf(bo)], [2, 0, 2000]);
   made = await offer(ann, { toCharacterId: bo.hero.id, giveCp: 100, want: [{ name: "Map", qty: 1 }] });
-  await world.invoke("remove_item", { characterId: bo.hero.id, name: "Map", reason: "burned" });
+  await world.invoke("remove_item", { characterId: bo.hero.id, item: "Map", reason: "burned" });
   assert.equal((await answer(bo, made.body.proposal.id, "approve")).status, 409);
   assert.equal(copperOf(ann), start.copper - 2500);
   assert.equal(held(ann, "Map"), 0);
@@ -415,6 +547,86 @@ await test("a mystery item does not merge into a known one of the same name", as
   await answer(bo, made.body.proposal.id, "approve");
   const rings = sheet(bo).equipment.filter((item) => item.name === "Plain Ring");
   assert.deepEqual(rings.map((item) => [item.qty, item.identified !== false]).sort(), [[1, false], [1, true]]);
+});
+
+// The counter is where the shop stands (PR #549, with the table audit's
+// rule of 2026-10-26, T07). The lead of an AI table sees every shop in the
+// world and trades only where the party is; the DM's own tools settle a sale
+// anywhere. Last in the file: these give the table a place, and the shops
+// above stand nowhere, which trade only while the party is nowhere too.
+const lead = { user: world.owner, hero: world.sheets().find((entry) => entry.userId === world.owner.id) };
+const shopList = await world.route("campaigns/[campaignId]/shops");
+async function listFor(user) {
+  world.signIn(user);
+  const response = await shopList.GET(new Request("http://test/"), { params: Promise.resolve({ campaignId: world.campaignId }) });
+  return (await response.json()).shops;
+}
+
+await test("a shop at another place refuses the lead and a player alike, for buy, sell and haggle, and nothing moves", async () => {
+  const village = locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Thornhollow" });
+  locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Hollowroot Vault" });
+  const smith = shops.updateShop(openShop().id, { locationId: village.id, locationName: village.name });
+  give(ann, { gold: 10, equipment: [{ name: "Rope", qty: 1 }] });
+  give(lead, { gold: 10 });
+  for (const who of [ann, lead]) {
+    for (const body of [{ action: "buy", item: "Rope" }, { action: "sell", item: "Rope" }, { action: "haggle" }]) {
+      const reply = await at(smith, who, body);
+      assert.equal(reply.status, 409, `${body.action} by ${who.user.id}`);
+      assert.equal(reply.body.away, true);
+      assert.match(reply.body.error, /not at Hollowroot Vault, where the party is now.*It stands at Thornhollow/);
+    }
+  }
+  assert.equal(copperOf(ann), 1000);
+  assert.equal(copperOf(lead), 1000);
+  assert.equal(held(ann, "Rope"), 1);
+  assert.equal(shelf(smith, "Rope"), 5);
+  assert.deepEqual(shops.getShop(smith.id).haggledBy, []);
+});
+
+await test("the party arriving opens the counter, and leaving closes it again", async () => {
+  const village = locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Thornhollow" });
+  const smith = shops.updateShop(openShop().id, { locationId: village.id, locationName: village.name });
+  give(ann, { gold: 10 });
+  assert.equal((await at(smith, ann, { action: "buy", item: "Rope" })).status, 200);
+  locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Hollowroot Vault" });
+  const away = await at(smith, ann, { action: "buy", item: "Rope" });
+  assert.equal(away.status, 409);
+  assert.equal(away.body.away, true);
+  assert.equal(held(ann, "Rope"), 1);
+});
+
+await test("the lead's list puts the counters the party can reach first, and marks the rest out of reach", async () => {
+  const village = locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Thornhollow" });
+  const vault = locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Hollowroot Vault" });
+  const far = shops.updateShop(openShop().id, { locationId: village.id, locationName: village.name });
+  const near = shops.updateShop(openShop().id, { locationId: vault.id, locationName: vault.name });
+  const listed = await listFor(lead.user);
+  const reach = new Map(listed.map((entry) => [entry.id, entry.standsHere]));
+  assert.equal(reach.get(far.id), false);
+  assert.equal(reach.get(near.id), true);
+  const firstAway = listed.findIndex((entry) => !entry.standsHere);
+  assert.ok(listed.slice(firstAway).every((entry) => !entry.standsHere), "every reachable counter comes before the first one out of reach");
+  // A player sees only the shops where the party is, all of them in reach.
+  const theirs = await listFor(ann.user);
+  assert.ok(theirs.some((entry) => entry.id === near.id) && !theirs.some((entry) => entry.id === far.id));
+  assert.ok(theirs.every((entry) => entry.standsHere));
+});
+
+await test("a person in the DM seat settles a far sale with the DM's own tools; the Market's counter keeps to the place", async () => {
+  const village = locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Thornhollow" });
+  locations.upsertCurrentLocation({ campaignId: world.campaignId, name: "Hollowroot Vault" });
+  const smith = shops.updateShop(openShop().id, { locationId: village.id, locationName: village.name });
+  give(ann, { gold: 10 });
+  assert.ok(setDmMode(world.campaignId, "human", world.owner.id)?.dmUserId, "the owner takes the DM seat");
+  try {
+    assert.equal((await at(smith, lead, { action: "buy", item: "Rope", characterId: ann.hero.id })).status, 409);
+    assert.equal(held(ann, "Rope"), 0);
+    assert.equal((await listFor(world.owner)).find((entry) => entry.id === smith.id)?.standsHere, false);
+    assert.equal((await world.invoke("buy_item", { characterId: ann.hero.id, shop: smith.id, item: "Rope" })).ok, true);
+    assert.equal(held(ann, "Rope"), 1);
+  } finally {
+    setDmMode(world.campaignId, "ai", world.owner.id);
+  }
 });
 
 world.close();

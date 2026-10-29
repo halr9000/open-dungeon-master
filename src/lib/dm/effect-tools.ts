@@ -2,10 +2,13 @@ import { z } from "zod";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import {
   deleteEffectsByName,
-  insertEffect,
+  effectsUpdate,
   listEffects,
+  replaceEffectsByName,
 } from "@/lib/db/active-effects";
-import { getActiveEncounter, listEnemies } from "@/lib/db/encounters";
+import { getActiveEncounter, getEnemy, listEnemies } from "@/lib/db/encounters";
+import { activePublicEncounter } from "@/lib/db/encounter-view";
+import { getSheetById } from "@/lib/db/sheets";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
 import {
@@ -16,12 +19,13 @@ import {
   EFFECT_MODES,
   normalizeAura,
   resolveField,
-  type ActiveEffect,
   type EffectField,
   type EffectTargetKind,
   type FieldOutcome,
 } from "@/lib/dm/effects-logic";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 // Applying and lifting active effects, and the one helper every engine that
 // wants a modified number calls.
@@ -61,22 +65,26 @@ export const effectTools: ToolDef[] = [
               properties: {
                 field: { type: "string", enum: [...EFFECT_FIELDS] },
                 mode: { type: "string", enum: [...EFFECT_MODES] },
-                value: { type: "integer", description: "For add and override." },
+                value: { type: "integer", description: "For add and override. Override (a set-to value) is for ac and speed only; advantage and disadvantage for attack, save, check and initiative." },
               },
               required: ["field"],
             },
           },
-          duration: { type: "string", enum: [...EFFECT_DURATIONS] },
+          duration: {
+            type: "string",
+            enum: [...EFFECT_DURATIONS],
+            description: "How it ends; manual (the default) lasts until clear_effect. rounds and minutes count down remaining; encounter ends with the fight.",
+          },
           remaining: { type: "integer", minimum: 1, description: "Rounds or minutes it lasts." },
-          saveAbility: { type: "string", enum: ["str", "dex", "con", "int", "wis", "cha"] },
-          saveDc: { type: "integer", minimum: 1, maximum: 30 },
+          saveAbility: { type: "string", enum: ["str", "dex", "con", "int", "wis", "cha"], description: "A save to shake it off, with saveDc: the target rolls it at the end of each of its turns. Outside a fight it rolls once per stretch of time, and a success ends the effect." },
+          saveDc: { type: "integer", minimum: 1, maximum: 30, description: "With saveAbility: the save's DC." },
           visible: { type: "boolean", description: "True when the party can tell it is there." },
           auraFeet: {
             type: "integer",
             minimum: 5,
             maximum: 120,
             description:
-              "Radius in feet when the effect reaches around its target (a haunted shrine's chill 15); the board draws the ring. Spell and class auras are the server's own, never an effect.",
+              "Radius in feet when the effect reaches around its target (a haunted shrine's chill 15). The board draws the ring. Spell and class auras are the server's own, never an effect.",
           },
           auraTone: {
             type: "string",
@@ -98,8 +106,8 @@ export const effectTools: ToolDef[] = [
         type: "object",
         additionalProperties: false,
         properties: {
-          characterId: { type: "string" },
-          enemyId: { type: "string" },
+          characterId: { type: "string", description: "Exact characterId from GAME STATE." },
+          enemyId: { type: "string", description: "Or an enemy: exact enemyId from GAME STATE." },
           name: { type: "string", description: "The effect's name." },
         },
         required: ["name"],
@@ -152,9 +160,10 @@ function resolveTarget(
   sheetsById: Map<string, CharacterSheet>,
 ): { kind: EffectTargetKind; id: string; name: string } | null {
   if (args.characterId) {
+    const wanted = textKey(args.characterId);
     const sheet =
       sheetsById.get(args.characterId) ??
-      sheets.find((entry) => entry.name.toLowerCase() === args.characterId?.toLowerCase());
+      sheets.find((entry) => textKey(entry.name) === wanted);
     if (sheet) {
       return { kind: "character", id: sheet.id, name: sheet.name };
     }
@@ -163,10 +172,11 @@ function resolveTarget(
     const encounter = getActiveEncounter(campaign.id);
     if (encounter) {
       const enemies = listEnemies(encounter.id);
+      const wanted = textKey(args.enemyId);
       const enemy =
         enemies.find((entry) => entry.id === args.enemyId) ??
         enemies.find(
-          (entry) => entry.displayName.toLowerCase() === args.enemyId?.toLowerCase(),
+          (entry) => textKey(entry.displayName) === wanted,
         );
       if (enemy) {
         return { kind: "enemy", id: enemy.id, name: enemy.displayName };
@@ -176,10 +186,27 @@ function resolveTarget(
   return null;
 }
 
-function publishEffects(campaignId: string) {
-  publishPersisted(campaignId, "effects_updated", {
-    effects: listEffects(campaignId),
-  });
+// The target as a line the whole table reads may name it: an enemy the DM
+// keeps off the board is "someone unseen" there, as on the tracker
+// (src/lib/db/encounter-view.ts).
+function tableName(campaignId: string, target: { kind: EffectTargetKind; id: string; name: string }): string {
+  return target.kind === "enemy" && effectsUpdate(campaignId).hiddenTargets.includes(target.id) ? "someone unseen" : target.name;
+}
+
+// What an effect's "add" modifiers do to a maximum.
+function maxHpShift(modifiers: Array<{ field: string; mode: string; value: number }>): number {
+  return modifiers.filter((modifier) => modifier.field === "maxHp" && modifier.mode === "add").reduce((sum, modifier) => sum + modifier.value, 0);
+}
+
+// The list for each seat (src/lib/table-delivery.ts), and the tracker when
+// the change moved an enemy's maximum: a sheet's move is published with the
+// sheet (active-effects.ts followingMaxHp), an enemy's had no event at all,
+// so its bar kept the old maximum until something else moved the fight.
+export function publishEffects(campaignId: string, movedEnemyMax = false) {
+  publishPersisted(campaignId, "effects_updated", effectsUpdate(campaignId));
+  if (movedEnemyMax) {
+    publishPersisted(campaignId, "encounter_updated", { encounter: activePublicEncounter(campaignId) });
+  }
 }
 
 export function handleSetEffect(
@@ -187,16 +214,16 @@ export function handleSetEffect(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof setSchema>;
   try {
     args = setSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: set_effect needs a name and at least one modifier." };
+    return { error: "Invalid arguments: set_effect needs a name and at least one modifier.", retry: true };
   }
   const target = resolveTarget(campaign, args, sheets, sheetsById);
   if (!target) {
-    return { error: "set_effect needs a characterId or an enemyId from GAME STATE." };
+    return { error: "set_effect needs a characterId or an enemyId from GAME STATE.", retry: true };
   }
   const checked = checkEffect({
     name: args.name,
@@ -207,25 +234,47 @@ export function handleSetEffect(
     saveAbility: args.saveAbility,
     saveDc: args.saveDc,
     visible: args.visible,
+    targetKind: target.kind,
   });
   if ("error" in checked) {
     return checked;
   }
+  // A maximum taken below 1 cannot be given back exactly when the effect
+  // lifts (an enemy's stops at 1, encounters.ts shiftEnemyMaxHp, and a sheet
+  // would hold a maximum of 0 or less), so the call is refused with the room
+  // there is. A drain that kills is a death, ruled as one.
+  const wanted = textKey(checked.effect.name);
+  const shift =
+    maxHpShift(checked.effect.modifiers) -
+    listEffects(campaign.id, target)
+      .filter((effect) => textKey(effect.name) === wanted)
+      .reduce((sum, effect) => sum + maxHpShift(effect.modifiers), 0);
+  if (shift < 0) {
+    const maximum = target.kind === "enemy" ? getEnemy(target.id)?.maxHp : getSheetById(target.id)?.maxHp;
+    if (typeof maximum === "number" && maximum + shift < 1) {
+      return {
+        error: `${target.name}'s hit point maximum is ${maximum}, so it can be lowered by at most ${Math.max(0, maximum - 1)}; ${-shift} would leave none. If the drain kills them, rule the death itself.`,
+        retry: true,
+      };
+    }
+  }
   // Reapplying by the same name replaces rather than stacks: casting Bless
   // twice on the same target does not double it, and two rows would leave the
-  // second one impossible to lift.
-  deleteEffectsByName(campaign.id, target, checked.effect.name);
+  // second one impossible to lift. The old rows and the new one change in one
+  // step (active-effects.ts replaceEffectsByName), so the maximum moves once,
+  // from what the old modifiers gave to what the new ones give, and a refresh
+  // heals nobody.
   const aura = normalizeAura({ radiusFeet: args.auraFeet, tone: args.auraTone });
-  const effect = insertEffect({
+  const effect = replaceEffectsByName({
     campaignId: campaign.id,
     targetKind: target.kind,
     targetId: target.id,
     ...checked.effect,
     ...(aura ? { aura } : {}),
   });
-  publishEffects(campaign.id);
+  publishEffects(campaign.id, target.kind === "enemy" && shift !== 0);
   if (effect.visible) {
-    tableNote(campaign, `${target.name}: ${describeEffect(effect)}`);
+    tableNote(campaign, `${tableName(campaign.id, target)}: ${describeEffect(effect)}`);
   }
   return { ok: true, effect: describeEffect(effect), on: target.name };
 }
@@ -235,23 +284,33 @@ export function handleClearEffect(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof clearSchema>;
   try {
     args = clearSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: clear_effect needs a name." };
+    return { error: "Invalid arguments: clear_effect needs a name.", retry: true };
   }
   const target = resolveTarget(campaign, args, sheets, sheetsById);
   if (!target) {
-    return { error: "clear_effect needs a characterId or an enemyId from GAME STATE." };
+    return { error: "clear_effect needs a characterId or an enemyId from GAME STATE.", retry: true };
   }
+  // Read before they go: lifting an effect the party never knew about is
+  // not news to them, and the line naming it used to tell them anyway.
+  const wanted = textKey(args.name);
+  const lifting = listEffects(campaign.id, target).filter((effect) => textKey(effect.name) === wanted);
+  const known = lifting.some((effect) => effect.visible);
   const removed = deleteEffectsByName(campaign.id, target, args.name);
   if (!removed) {
-    return { error: `${target.name} is not under "${args.name}".` };
+    // The effects they are under, so the call is fixed from them.
+    const held = [...new Set(listEffects(campaign.id, target).map((effect) => effect.name))];
+    const asked = args.name.trim() ? `"${args.name.trim()}"` : "an effect without a name";
+    return { error: `${target.name} is not under ${asked}; ${held.length ? `they are under ${held.join(", ")}` : "they are under no effect"}.`, retry: true };
   }
-  publishEffects(campaign.id);
-  tableNote(campaign, `${args.name} lifts from ${target.name}.`);
+  publishEffects(campaign.id, target.kind === "enemy" && lifting.some((effect) => maxHpShift(effect.modifiers) !== 0));
+  if (known) {
+    tableNote(campaign, `${args.name} lifts from ${tableName(campaign.id, target)}.`);
+  }
   return { ok: true, cleared: args.name, from: target.name };
 }
 
@@ -304,11 +363,4 @@ export function rollEffectExtras(
     ...(outcome.advantage ? { effectAdvantage: true } : {}),
     ...(outcome.disadvantage ? { effectDisadvantage: true } : {}),
   };
-}
-
-export function effectsOn(
-  campaignId: string,
-  target: { kind: EffectTargetKind; id: string },
-): ActiveEffect[] {
-  return listEffects(campaignId, target);
 }

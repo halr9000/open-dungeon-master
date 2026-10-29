@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { capsFor, isErrorResponse, isLead, requireMember } from "@/lib/campaign-api";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
 import { allocateSeq } from "@/lib/db/campaigns";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import { getSheetById, getSheetForUser, patchSheet } from "@/lib/db/sheets";
@@ -10,8 +11,12 @@ import { spendAction } from "@/lib/dm/action-budget";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
 import { canAct } from "@/lib/dm/can-act";
 import { recordManualTicks } from "@/lib/dm/manual-ticks";
-import { attunementRefusal, gearChanges, usageLowers, usageSpendsHitDice } from "@/lib/dm/usage-rules";
+import { attunementRefusal, gearChanges, gearPatch, usageLowers, usageSpendsHitDice } from "@/lib/dm/usage-rules";
+import { acBreakdownFor } from "@/lib/srd";
 import { armorChangeMinutes } from "@/lib/dm/don-doff";
+import { gearKindOf, handsFor, handsFullError, handsFullFor, spendInteraction } from "@/lib/dm/gear-hands";
+import { dualWields } from "@/lib/dm/attack-rules";
+import { hasFastHands } from "@/lib/dm/bonus-routes";
 import { advanceClock } from "@/lib/db/clock";
 
 export const runtime = "nodejs";
@@ -46,7 +51,10 @@ const usageSchema = z
     gear: z
       .record(
         z.string().max(80),
-        z.object({ equipped: z.boolean().optional(), attuned: z.boolean().optional() }),
+        // layered: worn beside another of its kind, the DM's exception to
+        // the one-per-place rule (src/lib/srd/wear-slots.ts); the DM and
+        // the party lead only.
+        z.object({ equipped: z.boolean().optional(), attuned: z.boolean().optional(), layered: z.boolean().optional() }),
       )
       .optional(),
   })
@@ -97,9 +105,18 @@ export async function POST(
       { status: 400 },
     );
   }
+  // Gear changes spend the turn's action or interaction in a fight and pass
+  // minutes out of one: play, which waits out a break. Marking a counter
+  // spent, or a correction, is record keeping and goes on.
+  if (parsed.data.gear) {
+    const paused = refuseDuringBreak(campaignId);
+    if (paused) {
+      return paused;
+    }
+  }
 
   const encounter = getActiveEncounter(campaignId);
-  const lead = "Ask the DM or the party lead if the count needs correcting.";
+  const lead = "Ask the GM or the party lead if the count needs correcting.";
 
   if (!corrects) {
     if (sheet.deathSaves?.dead) {
@@ -117,7 +134,7 @@ export async function POST(
     // or a rest that never happened.
     if (usageSpendsHitDice(sheet, parsed.data)) {
       return refuse(
-        `Hit dice are spent at the end of a short rest, which the DM runs; ask the DM for a short rest and ${sheet.name} spends them there.`,
+        `Hit dice are spent at the end of a short rest, which the GM runs; ask the GM for a short rest and ${sheet.name} spends them there.`,
       );
     }
   }
@@ -127,7 +144,8 @@ export async function POST(
   // edit or the DM's update_sheet.
   const changes = parsed.data.gear
     ? gearChanges(sheet, parsed.data.gear)
-    : { armor: [], shields: [], attunement: [] };
+    : { armor: [], shields: [], attunement: [], held: [] };
+  let wornEquipment: FullPatchSheetInput["equipment"] | null = null;
   if (parsed.data.gear) {
     if (Object.keys(parsed.data.gear).some((name) => !sheet.equipment.some((item) => item.name === name))) {
       return Response.json(
@@ -142,12 +160,41 @@ export async function POST(
     if (attuneProblem) {
       return refuse(attuneProblem);
     }
+    // Equipping is opt-in per sheet; what a never-touched sheet wore stays
+    // on when it first says, and a second cloak, pair of boots or helmet is
+    // refused with the rows to take off (src/lib/dm/usage-rules.ts).
+    const armor = acBreakdownFor(sheet);
+    const worn = gearPatch(sheet, parsed.data.gear, {
+      corrects,
+      armor: { armorName: armor.armorName, shieldName: armor.shieldName },
+    });
+    if ("error" in worn) {
+      return Response.json(
+        { error: worn.error, ...("conflict" in worn ? { wearConflict: worn.conflict } : {}) },
+        { status: worn.status },
+      );
+    }
+    wornEquipment = worn.equipment;
   }
   let shieldBudget: ReturnType<typeof spendAction> | null = null;
   if (encounter && parsed.data.gear) {
+    // Two hands: a weapon or a shield taken up needs one free, as the DM's
+    // handle_item asks (src/lib/dm/gear-hands.ts).
+    const after = wornEquipment ?? sheet.equipment;
+    for (const [name, change] of Object.entries(parsed.data.gear)) {
+      const row = after.find((item) => item.name === name);
+      const kind = row ? gearKindOf(row) : null;
+      if (!row || change?.equipped !== true || (kind !== "weapon" && kind !== "shield")) {
+        continue;
+      }
+      const full = handsFullFor(after, row);
+      if (full.length) {
+        return refuse(handsFullError(sheet.name, name, full, kind === "shield" ? "strapped on" : "drawn"));
+      }
+    }
     if (changes.armor.length) {
       return refuse(
-        `Armor takes minutes to put on or take off, so ${changes.armor[0]} cannot change during a fight. A shield takes one action, and weapons are free.`,
+        `Armor takes minutes to put on or take off, so ${changes.armor[0]} cannot change during a fight. A shield takes one action, and a weapon the free object interaction.`,
       );
     }
     if (changes.attunement.length) {
@@ -170,6 +217,38 @@ export async function POST(
       if (!shieldBudget.ok) {
         return refuse(shieldBudget.error);
       }
+    }
+    // A weapon drawn or stowed, a ring or a cloak put on: the turn's free
+    // object interaction, a second the Use an Object action (issue #424).
+    // Dual Wielder draws two one-handed weapons with the one.
+    if (changes.held.length) {
+      const able = canAct({ sheet, encounter, kind: "free" });
+      if (!able.ok) {
+        return refuse(able.error);
+      }
+      let budget = shieldBudget?.ok ? shieldBudget.budget : budgetFor(encounter, sheet.id, attacksAllowedFor(sheet));
+      if (!budget) {
+        return refuse(`Drawing, stowing or putting something on happens on ${sheet.name}'s own turn.`);
+      }
+      for (const name of changes.held) {
+        const row = sheet.equipment.find((item) => item.name === name);
+        if (!row) {
+          continue;
+        }
+        const on = parsed.data.gear[name]?.equipped === true;
+        const spent = spendInteraction(budget, {
+          what: `${on ? "drawing" : "putting away"} ${name}`,
+          who: sheet.name,
+          oneHandedWeapon: gearKindOf(row) === "weapon" && handsFor(row) === 1,
+          dualWielder: dualWields(sheet.feats, sheet.campaignId),
+          fastHands: hasFastHands(sheet),
+        });
+        if (!spent.ok) {
+          return refuse(spent.error);
+        }
+        budget = spent.budget;
+      }
+      shieldBudget = { ok: true, budget };
     }
   }
 
@@ -227,39 +306,8 @@ export async function POST(
     }
   }
 
-  if (parsed.data.gear) {
-    const gear = parsed.data.gear;
-    // Equipping is opt-in per sheet: the first time anyone touches a toggle,
-    // every other item is explicitly marked unworn so the AC engine stops
-    // treating the whole pack as worn.
-    const explicit = sheet.equipment.some((item) => item.equipped) ||
-      Object.values(gear).some((entry) => entry.equipped);
-    const equipment = sheet.equipment.map((item) => {
-      const entry = gear[item.name];
-      // An attuned item works only while worn, so attuning on a sheet that
-      // says what it wears puts the item on.
-      const wornByAttuning = explicit && entry?.attuned === true && entry.equipped === undefined;
-      const equipped = wornByAttuning
-        ? true
-        : entry?.equipped ?? item.equipped ?? (explicit ? false : undefined);
-      // Attuning takes a short rest spent with the item (SRD 5.1,
-      // Attunement): asked for here, the row waits as `attuning` and the
-      // next short or long rest makes it attuned (src/lib/dm/rest-tools.ts).
-      // Letting go ends it at once, pending or not.
-      const asks = entry?.attuned === true && !item.attuned;
-      const lets = entry?.attuned === false;
-      const attuned = asks ? item.attuned : (entry?.attuned ?? item.attuned);
-      const { attuning: _pending, ...rest } = item;
-      void _pending;
-      const attuning = asks ? true : lets ? undefined : item.attuning;
-      return {
-        ...rest,
-        ...(equipped === undefined ? {} : { equipped }),
-        ...(attuned === undefined ? {} : { attuned }),
-        ...(attuning ? { attuning } : {}),
-      };
-    });
-    patch.equipment = equipment;
+  if (wornEquipment) {
+    patch.equipment = wornEquipment;
   }
 
   if (!Object.keys(patch).length) {

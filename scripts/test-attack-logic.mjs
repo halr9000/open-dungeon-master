@@ -13,7 +13,7 @@ const {
   ragingMeleeBonus,
   splitDamage,
 } = await import("../src/lib/dm/attack-logic.ts");
-const { matchWeapon, isWeaponProficient } = await import("../src/lib/srd/weapons.ts");
+const { weaponNamed, isWeaponProficient } = await import("../src/lib/srd/weapons.ts");
 const { combatRiders } = await import("../src/lib/srd/feature-effects.ts");
 
 const ridersFor = (klass, level, ...names) =>
@@ -34,29 +34,33 @@ const dexDerived = {
   abilityMods: { str: -1, dex: 4, con: 1, int: 1, wis: 2, cha: 0 },
 };
 
-test("matchWeapon: exact, plural, containment both ways", () => {
-  assert.equal(matchWeapon("Longsword")?.name, "Longsword");
-  assert.equal(matchWeapon("longswords")?.name, "Longsword");
-  assert.equal(matchWeapon("Longsword of the Dawn")?.name, "Longsword");
-  assert.equal(matchWeapon("hand crossbow")?.name, "Hand Crossbow");
-  assert.equal(matchWeapon("a rusty pipe"), null);
+test("weaponNamed: whole name, plural, written apart, book order; never a word of a name", () => {
+  assert.equal(weaponNamed("Longsword")?.name, "Longsword");
+  assert.equal(weaponNamed("longswords")?.name, "Longsword");
+  assert.equal(weaponNamed("long sword")?.name, "Longsword");
+  assert.equal(weaponNamed("Crossbow, light")?.name, "Light Crossbow");
+  assert.equal(weaponNamed("Longsword of the Dawn"), null);
+  assert.equal(weaponNamed("Club soda"), null);
+  assert.equal(weaponNamed("hand crossbow")?.name, "Hand Crossbow");
+  assert.equal(weaponNamed("a rusty pipe"), null);
 });
 
 test("isWeaponProficient: category and specific terms", () => {
-  const longbow = matchWeapon("longbow");
+  const longbow = weaponNamed("longbow");
   assert.equal(isWeaponProficient(["martial"], longbow), true);
   assert.equal(isWeaponProficient(["simple"], longbow), false);
   assert.equal(isWeaponProficient(["simple", "longbows"], longbow), true);
 });
 
-test("resolveAttackWeapon: named weapon matches carried equipment", () => {
-  const resolved = resolveAttackWeapon(
-    [{ name: "Longsword of the Dawn", qty: 1 }],
-    ["martial"],
-    "longsword",
-  );
+test("resolveAttackWeapon: a named weapon is the carried line by its whole name", () => {
+  const pack = [{ name: "Longsword of the Dawn", qty: 1, srdName: "Longsword" }];
+  const resolved = resolveAttackWeapon(pack, ["martial"], "longsword of the dawn");
   assert.equal(resolved.displayName, "Longsword of the Dawn");
   assert.equal(resolved.srd?.name, "Longsword");
+  // Its row's name takes it too; a word of its name does not.
+  assert.equal(resolveAttackWeapon(pack, ["martial"], "Longsword").displayName, "Longsword of the Dawn");
+  assert.equal(resolveAttackWeapon([{ name: "Longsword of the Dawn", qty: 1 }], ["martial"], "longsword").carried, false);
+  assert.equal(resolveAttackWeapon(pack, ["martial"], "Dawn").carried, false);
 });
 
 test("resolveAttackWeapon: no arg picks best proficient carried weapon", () => {
@@ -84,6 +88,33 @@ test("resolveAttackWeapon: proficient weapon beats stronger unproficient one", (
   assert.equal(resolved.srd?.name, "Dagger");
 });
 
+// A cleric's starting kit (mace, shield, light crossbow): with the shield on
+// the arm the crossbow cannot be shot, so the unnamed pick is the mace. The
+// server's own companion turn names no weapon and was refused for the
+// crossbow, wasting the turn.
+test("resolveAttackWeapon: a shield on the arm passes over a two-handed weapon", () => {
+  const kit = [
+    { name: "Mace", qty: 1, equipped: true },
+    { name: "Shield", qty: 1, equipped: true },
+    { name: "Light Crossbow", qty: 1 },
+  ];
+  // The mace is the one in hand (issue #424: held before stowed).
+  assert.equal(resolveAttackWeapon(kit, ["simple"], undefined).srd?.name, "Mace");
+  assert.equal(resolveAttackWeapon(kit, ["simple"], undefined, { shieldOnArm: true }).srd?.name, "Mace");
+  // With both held, the crossbow's bigger die wins until the shield is on.
+  const held = kit.map((item) => ({ ...item, equipped: true }));
+  assert.equal(resolveAttackWeapon(held, ["simple"], undefined).srd?.name, "Light Crossbow");
+  assert.equal(resolveAttackWeapon(held, ["simple"], undefined, { shieldOnArm: true }).srd?.name, "Mace");
+  // A named weapon is still the one named; the hands rule refuses it.
+  assert.equal(resolveAttackWeapon(kit, ["simple"], "light crossbow", { shieldOnArm: true }).srd?.name, "Light Crossbow");
+  // Only two-handed weapons carried: still the best of them, so the refusal
+  // says why rather than an unarmed swing nobody asked for.
+  assert.equal(
+    resolveAttackWeapon([{ name: "Greatsword", qty: 1 }], ["martial"], undefined, { shieldOnArm: true }).srd?.name,
+    "Greatsword",
+  );
+});
+
 test("resolveAttackWeapon: nothing usable falls back to unarmed", () => {
   const resolved = resolveAttackWeapon([{ name: "Rope", qty: 1 }], ["simple"], undefined);
   assert.equal(resolved.unarmed, true);
@@ -93,7 +124,7 @@ test("resolveAttackWeapon: nothing usable falls back to unarmed", () => {
 });
 
 test("resolveAttackWeapon: unknown named weapon is improvised", () => {
-  const resolved = resolveAttackWeapon([], ["martial"], "barstool");
+  const resolved = resolveAttackWeapon([], ["martial"], "barstool", { improvised: true });
   assert.equal(resolved.srd, null);
   const profile = weaponAttackProfile(derived, ["martial"], resolved);
   assert.equal(profile.improvised, true);
@@ -276,14 +307,14 @@ test("the off-hand swing loses its modifier without the style", () => {
 
 test("Martial Arts arms the monk's unarmed strike", () => {
   const monk = ridersFor("monk", 5, "Martial Arts");
-  const fist = weaponAttackProfile(dexDerived, [], resolveAttackWeapon([], [], "unarmed"), {
+  const fist = weaponAttackProfile(dexDerived, [], resolveAttackWeapon([], [], "unarmed strike"), {
     riders: monk,
   });
   // DEX 4 beats STR -1, and level 5 rolls a d6.
   assert.equal(fist.damageExpression, "1d6+4");
   assert.equal(fist.ability, "dex");
   // Without the feature it is the SRD's 1 + STR.
-  const untrained = weaponAttackProfile(dexDerived, [], resolveAttackWeapon([], [], "unarmed"));
+  const untrained = weaponAttackProfile(dexDerived, [], resolveAttackWeapon([], [], "unarmed strike"));
   assert.equal(untrained.damageExpression, "1-1");
 });
 
@@ -328,13 +359,13 @@ test("the heavy property lands on the profile for the Small-creature rule", () =
   };
   const greataxe = weaponAttackProfile(derived, ["martial"], {
     displayName: "Greataxe",
-    srd: matchWeapon("Greataxe"),
+    srd: weaponNamed("Greataxe"),
     unarmed: false,
   });
   assert.equal(greataxe.heavy, true);
   const shortsword = weaponAttackProfile(derived, ["martial"], {
     displayName: "Shortsword",
-    srd: matchWeapon("Shortsword"),
+    srd: weaponNamed("Shortsword"),
     unarmed: false,
   });
   assert.equal(shortsword.heavy, false);

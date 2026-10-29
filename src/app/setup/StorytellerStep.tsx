@@ -4,10 +4,11 @@ import { ExternalLink, Loader2, RefreshCw, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
+import { DEFAULT_WINDOW, STORY_WINDOW_NEEDS, windowLabel } from "@/lib/story-window";
 import { BackendProbe } from "@/app/admin/BackendProbe";
-import { CopyLine } from "@/components/CopyLine";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { AgentPanel } from "@/app/setup/AgentPanel";
+import { StartHints } from "@/app/setup/StartHints";
 import { NO_LIST, type Draft, type ModelList } from "@/app/setup/draft";
 import { ChoiceCard, ChoiceCards, FoundRow, ModelPicker, ScanMark, host, type ScanResult } from "@/app/setup/SetupParts";
 import {
@@ -78,7 +79,7 @@ export function StorytellerStep({
           onPick={() => pick("local")}
           glyph="ui-ai"
           title="A model on this computer"
-          sub="llama.cpp, Ollama, LM Studio, vLLM or another server you run. Free to play, private, needs a capable GPU."
+          sub="llama.cpp recommended; Ollama, LM Studio, vLLM and other servers work too. Free to play and private; needs at least 16 GB of graphics memory."
           badge={scanning ? { text: "Looking…", tone: "off" } : found.length ? { text: `Found ${found.length}`, tone: "ready" } : null}
         />
         <ChoiceCard
@@ -114,6 +115,7 @@ export function StorytellerStep({
             onRescan={onRescan}
             savedKeyBase={savedKeyBase}
             inContainer={inContainer}
+            machine={scan?.machine ?? null}
           />
         </div>
       ) : draft.story === "key" ? (
@@ -126,8 +128,8 @@ export function StorytellerStep({
         </div>
       ) : draft.story === "none" ? (
         <p key="none" className="reveal su-note">
-          Tables on this server will have a person in the Dungeon Master&apos;s seat. The app still rolls the dice, keeps
-          every sheet and map, and can step in for the monsters or a read-aloud when the DM asks. You can add an AI
+          Tables on this server will have a person in the Game Master&apos;s seat. The app still rolls the dice, keeps
+          every sheet and map, and can step in for the monsters or a read-aloud when the GM asks. You can add an AI
           storyteller here later.
         </p>
       ) : null}
@@ -143,6 +145,7 @@ function LocalPanel({
   onRescan,
   savedKeyBase,
   inContainer,
+  machine,
 }: {
   draft: Draft;
   update: Update;
@@ -151,6 +154,7 @@ function LocalPanel({
   onRescan: () => void;
   savedKeyBase: string;
   inContainer: boolean;
+  machine: ScanResult["machine"] | null;
 }) {
   const local = draft.local;
   const [looking, setLooking] = useState(false);
@@ -230,7 +234,7 @@ function LocalPanel({
         />
       </div>
 
-      {!scanning && !found.length ? <StartHints inContainer={inContainer} /> : null}
+      {!scanning && !found.length ? <StartHints inContainer={inContainer} machine={machine} /> : null}
 
       {local.typed ? (
         <div key="typed" className="reveal flex flex-wrap items-end gap-2">
@@ -291,41 +295,23 @@ function LocalPanel({
       ) : null}
 
       {local.baseUrl && local.model ? (
-        <BackendProbe which="story" baseUrl={normalizeBaseUrl(local.baseUrl)} model={local.model} apiKey={local.apiKey} />
+        <BackendProbe
+          which="story"
+          baseUrl={normalizeBaseUrl(local.baseUrl)}
+          model={local.model}
+          apiKey={local.apiKey}
+          provider={chosenFound?.ollamaNative ? "local" : "custom"}
+        />
       ) : null}
+      <p className="text-[11px] leading-4 text-stone-500">
+        {STORY_WINDOW_NEEDS}{" "}
+        {chosenFound?.ollamaNative
+          ? `The app asks this Ollama for up to ${windowLabel(DEFAULT_WINDOW)} itself.`
+          : chosenFound?.kind === "ollama"
+            ? `Ollama runs a model at its own context length, 4K on a card under 24 GB: start it with OLLAMA_CONTEXT_LENGTH=${DEFAULT_WINDOW}.`
+            : "The server sets it (llama-server's -c)."}
+      </p>
     </div>
-  );
-}
-
-// What to run when nothing answered. The commands match the README's.
-function StartHints({ inContainer }: { inContainer: boolean }) {
-  return (
-    <details className="reveal rounded-lg border border-stone-800 bg-stone-950/40 px-3 py-2">
-      <summary className="cursor-pointer text-sm text-stone-300">How do I start one?</summary>
-      <div className="mt-3 space-y-3 text-xs text-stone-400">
-        {inContainer ? (
-          <p className="su-note">
-            This server runs in a container, so it looks for your model server on the host as host.docker.internal. Start
-            the server on the host listening on 0.0.0.0, not only 127.0.0.1.
-          </p>
-        ) : null}
-        <div>
-          <span className="mb-1 block">llama.cpp with the default storyteller (Qwen3.6-35B-A3B, 64K window):</span>
-          <CopyLine
-            text={`llama-server -m Qwen3.6-35B-A3B-Q8_0.gguf -c 65536 --jinja --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.7 --top-p 0.95 --top-k 20 --min-p 0.0 --port 8001 --alias qwen3.6-35b${inContainer ? " --host 0.0.0.0" : ""}`}
-            label="llama-server command"
-          />
-        </div>
-        <div>
-          <span className="mb-1 block">Ollama, with the same settings baked in:</span>
-          <CopyLine text="ollama pull qwen3.6:35b-a3b-q8_0 && ollama create qwen3.6-dm -f models/qwen3.6-dm.Modelfile" label="Ollama commands" />
-        </div>
-        <p>
-          LM Studio: load a model and switch on its local server. Any server with OpenAI-style tool calls works. Then press
-          Look again.
-        </p>
-      </div>
-    </details>
   );
 }
 

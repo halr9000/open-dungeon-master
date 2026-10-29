@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { ListTally, sortRows, type RowSort } from "@/app/workshop/ListHead";
 import { CATEGORY_LABELS, type LoreEntryView } from "@/app/workshop/lore/types";
+import { textKey } from "@/lib/language/text-logic";
 
 // The workshop's world lore as full-width rows: the title, whether it is
 // pinned into every DM turn, its category, its tags, and the first line of
@@ -21,12 +22,12 @@ import { CATEGORY_LABELS, type LoreEntryView } from "@/app/workshop/lore/types";
 // a row still says what kind of thing it is once search has mixed them.
 
 function matches(entry: LoreEntryView, query: string): boolean {
-  const needle = query.trim().toLowerCase();
+  const needle = textKey(query);
   if (!needle) {
     return true;
   }
   return [entry.title, entry.body, ...entry.tags].some((text) =>
-    text.toLowerCase().includes(needle),
+    textKey(text).includes(needle),
   );
 }
 
@@ -87,7 +88,7 @@ export function LoreRows({
                   {entry.pinned ? (
                     <Pin
                       className="size-3.5 shrink-0 text-amber-400"
-                      aria-label="Pinned: included in every DM turn"
+                      aria-label="Pinned: included in every GM turn"
                     />
                   ) : null}
                   <span className="font-display tracking-wide text-amber-50">{entry.title}</span>
@@ -144,7 +145,12 @@ export function LoreRows({
       </ul>
 
       {entries.length === 0 ? (
-        <EmptyState size="md" art="scrolls" title={steersStory ? "No lore yet. Write your world's places, factions, and history; the DM treats it as canon." : "The party lead has not written any world lore yet."} />
+        <EmptyState
+          size="md"
+          art="scrolls"
+          title={steersStory ? "No lore yet. Write your world's places, factions, and history; the GM treats it as canon." : "The party lead has not written any world lore yet."}
+          hint={steersStory ? "Each entry is read by players or kept from them, as you choose. Pinned ones reach the narrator every turn." : undefined}
+        />
       ) : shown.length === 0 ? (
         <p className="live-in text-xs text-stone-500">Nothing by that title, body or tag.</p>
       ) : null}

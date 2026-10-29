@@ -1,11 +1,14 @@
 import { getEntryDetail, spellMechanicsFor } from "@/lib/content";
 import { packRaceOptions } from "@/lib/content/race-options";
-import { armorInside, magicItemBonus, matchArmor, SRD_ARMOR, type SrdArmor } from "@/lib/srd/armor";
-import { checkRidersOf } from "@/lib/srd/item-check-riders";
+import { armorNamed } from "@/lib/srd/armor";
+import { magicItemBonus } from "@/lib/srd/item-row";
+import { checkRidersNamed } from "@/lib/srd/item-check-riders";
 import { itemSpellsOf } from "@/lib/srd/item-spells";
-import { gearBaseName, gearDefFor } from "@/lib/srd/magic-gear";
-import { matchMagicItem } from "@/lib/srd/magic-items";
-import { matchWeapon, SRD_WEAPONS, type SrdWeapon } from "@/lib/srd/weapons";
+import { gearDefNamed } from "@/lib/srd/magic-gear";
+import { magicItemNamed } from "@/lib/srd/magic-items";
+import { rowSlot } from "@/lib/srd/wear-slots";
+import { isWornPlace } from "@/lib/srd/worn-places";
+import { weaponNamed } from "@/lib/srd/weapons";
 import type { SpellMech } from "@/lib/srd/spell-mech-types";
 import { subclassFeatureDescription, subclassLevelFor, subclassTableFor } from "@/lib/srd/features";
 import { subclassLevelsFromProse, type SubclassFeatureRow } from "@/lib/srd/subclass-tables";
@@ -14,7 +17,11 @@ import { packFeatText } from "@/lib/srd/feat-text";
 import { mergedBackgroundOptions, srdBackgroundOptions, srdRaceOptions, type RaceOption } from "@/lib/characters/options";
 import { subclassNamesFor } from "@/lib/srd/features";
 import { bundledRaceTraitText, rulebookPageIdFor } from "@/lib/rulebook/catalog-rows";
+import { traitParagraphs } from "@/lib/workshop/species-traits";
 import type { RulebookPage } from "@/lib/rulebook/types";
+import { textKey } from "@/lib/language/text-logic";
+import { thirdCasterProfileForPackSubclass } from "@/lib/srd/third-caster";
+import { classMechanicsOf } from "@/lib/workshop/class-catalog";
 
 // What the engine runs for a published row, handed to the workshop's "start
 // from" pickers (src/app/workshop/homebrew/CatalogStart.tsx) beside the row
@@ -37,11 +44,6 @@ export function spellMechanicsOf(row: Row): SpellMech | null {
   return spellMechanicsFor({ spell: row.name })?.mech ?? null;
 }
 
-const exactWeapon = (name: string): SrdWeapon | null =>
-  SRD_WEAPONS.find((weapon) => weapon.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
-const exactArmor = (name: string): SrdArmor | null =>
-  SRD_ARMOR.find((armor) => armor.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
-
 // The fields a homebrew item's data blob takes (src/lib/homebrew/item-data.ts)
 // for a published item, or null for one the engine reads nothing from.
 export function itemMechanicsOf(row: Row): Record<string, unknown> | null {
@@ -49,26 +51,17 @@ export function itemMechanicsOf(row: Row): Record<string, unknown> | null {
     return null;
   }
   const name = row.name;
-  const worn = matchMagicItem(name);
-  const named = matchWeapon(name);
-  const def = gearDefFor(name, undefined, named?.name ?? matchArmor(name)?.name ?? null);
-  const checks = checkRidersOf(name);
+  const worn = magicItemNamed(name);
+  const named = weaponNamed(name);
+  const def = gearDefNamed(name);
+  const checks = checkRidersNamed(name);
   const spells = itemSpellsOf(name);
   const magic = Boolean(worn || def || checks || spells.length || row.kind === "magic_item");
   const out: Record<string, unknown> = {};
-  // The mundane block a magic weapon or suit is built on, or the item itself.
-  // A name that ends in a weapon or a suit swings or is worn as that one
-  // ("Anointing Mace", "Animated Chain Mail"), as the engine reads it.
-  const weapon = def?.base?.kind === "weapon" ? (named ?? exactWeapon(gearBaseName(def, "weapon") ?? "")) : def?.base ? null : named;
-  const inside = matchArmor(name) ?? armorInside(name);
-  const armor =
-    def?.base?.kind === "armor"
-      ? (inside ?? exactArmor(gearBaseName(def, "armor") ?? ""))
-      : def?.base || weapon
-        ? null
-        : magic && !def?.armor
-          ? matchArmor(name)
-          : inside;
+  // The mundane block a magic weapon or suit is built on (its entry's base,
+  // or the one its composite name names), or the item itself.
+  const weapon = def?.base?.kind === "weapon" ? weaponNamed(def.base.name) : def?.base ? null : named;
+  const armor = def?.base?.kind === "armor" ? armorNamed(def.base.name) : def?.base || weapon ? null : armorNamed(name);
   out.itemKind = magic ? "magic_item" : weapon ? "weapon" : armor ? "armor" : "gear";
   if (weapon) {
     out.weapon = weapon;
@@ -114,6 +107,12 @@ export function itemMechanicsOf(row: Row): Record<string, unknown> | null {
   if (spells.length) {
     out.spells = spells;
   }
+  // Where the published item is worn, so the copy starts in its place
+  // ("Worn on" in the item form).
+  const place = !weapon && !armor ? rowSlot(name) : null;
+  if (isWornPlace(place)) {
+    out.wornOn = place;
+  }
   return out.itemKind === "gear" && !magic ? null : out;
 }
 
@@ -134,7 +133,12 @@ export function archetypeMechanicsOf(row: Row, classId: string): Record<string, 
   }
   const bundled = subclassTableFor(classId, row.name);
   if (!bundled) {
-    return Object.keys(prose).length ? { classSlug: classId, levels: prose } : null;
+    // A pack subclass that casts as a third caster (the Soulspy) keeps
+    // doing so in the copy; its prose headings alone would cast nothing.
+    const castingProfile = thirdCasterProfileForPackSubclass(row.name);
+    return Object.keys(prose).length || castingProfile
+      ? { classSlug: classId, levels: prose, ...(castingProfile ? { castingProfile } : {}) }
+      : null;
   }
   const levels: Record<string, SubclassFeatureRow[]> = {};
   for (const [level, names] of Object.entries(bundled.levels)) {
@@ -144,25 +148,6 @@ export function archetypeMechanicsOf(row: Row, classId: string): Record<string, 
     }));
   }
   return { classSlug: classId, levels, ...(bundled.spells ? { spells: bundled.spells } : {}) };
-}
-
-// A trait paragraph per name, out of a race's markdown: "**_Keen Senses._**
-// You have proficiency..." and "***Brave.*** You have advantage..." both.
-const TRAIT_LINE = /^(?:\*\*\*|\*\*_)(.+?)(?:\*\*\*|_\*\*)\s*(.*)$/;
-
-function traitParagraphs(markdown: string): Map<string, string> {
-  const out = new Map<string, string>();
-  let current: string | null = null;
-  for (const line of String(markdown ?? "").split("\n")) {
-    const head = TRAIT_LINE.exec(line.trim());
-    if (head) {
-      current = head[1].replace(/\.$/, "").trim();
-      out.set(current, head[2].trim());
-    } else if (current && line.trim()) {
-      out.set(current, `${out.get(current)} ${line.trim()}`.trim());
-    }
-  }
-  return out;
 }
 
 const ABILITY_NAME: Record<string, string> = {
@@ -254,17 +239,17 @@ export function backgroundMechanicsOf(row: Row & { slug?: string; documentSlug?:
 // their grants, for "start from": those whose name holds `q`, less any a
 // row in `results` already stands for.
 export function bundledBackgroundRows(q: string, results: Array<{ slug: string }>): Array<Record<string, unknown>> {
-  const wanted = q.trim().toLowerCase();
+  const wanted = textKey(q);
   const held = new Set(results.map((row) => row.slug.toLowerCase().replace(/-/g, "_")));
   return srdBackgroundOptions()
-    .filter((option) => !held.has(option.id) && (!wanted || option.name.toLowerCase().includes(wanted)))
+    .filter((option) => !held.has(option.id) && (!wanted || textKey(option.name).includes(wanted)))
     .slice(0, 120)
     .map((option) => ({
       slug: option.id,
       name: option.name,
       source: "bundled",
       documentSlug: "odm",
-      document: "Open Dungeon Master",
+      document: "Open Game Master",
       data: { desc: option.blurb ?? "", feature: option.feature ?? "", feature_desc: option.featureDesc ?? "" },
       table: {
         grants: {
@@ -287,10 +272,10 @@ export function bundledBackgroundRows(q: string, results: Array<{ slug: string }
 // (`table`), less any a row in `results` already stands for.
 export function bundledRaceRows(q: string, results: Array<{ name: string }>): Array<Record<string, unknown>> {
   // Every word, in any order: "hill dwarf" finds the builder's "Dwarf (Hill)".
-  const words = q.trim().toLowerCase().split(/[^a-z0-9-]+/).filter(Boolean);
-  const held = new Set(results.map((row) => row.name.trim().toLowerCase()));
+  const words = textKey(q).split(" ").filter(Boolean);
+  const held = new Set(results.map((row) => textKey(row.name)));
   return srdRaceOptions()
-    .filter((option) => !held.has(option.name.toLowerCase()) && words.every((word) => option.name.toLowerCase().includes(word)))
+    .filter((option) => !held.has(textKey(option.name)) && words.every((word) => textKey(option.name).includes(word)))
     .map((option) => {
       // The traits in the bundled book's words where it prints them.
       const words = bundledRaceTraitText(option.name);
@@ -311,10 +296,10 @@ export function bundledRaceRows(q: string, results: Array<{ name: string }>): Ar
 
 export function bundledArchetypeRows(classSlug: string, q: string, results: Array<{ name: string }>): Array<Record<string, unknown>> {
   const classId = classSlug.trim().toLowerCase();
-  const wanted = q.trim().toLowerCase();
-  const held = new Set(results.map((row) => row.name.trim().toLowerCase()));
+  const wanted = textKey(q);
+  const held = new Set(results.map((row) => textKey(row.name)));
   return subclassNamesFor(classId)
-    .filter((name) => !held.has(name.toLowerCase()) && (!wanted || name.toLowerCase().includes(wanted)))
+    .filter((name) => !held.has(textKey(name)) && (!wanted || textKey(name).includes(wanted)))
     .map((name) => {
       const row = { name, source: "bundled", data: { desc: "" } };
       return {
@@ -381,6 +366,12 @@ function withMechanicsOnly(kind: string, results: unknown[], params: { classSlug
   if (kind === "archetypes") {
     return results.map((row) => {
       const table = archetypeMechanicsOf(row as Row, String(params.classSlug ?? "").toLowerCase());
+      return table ? { ...(row as Row), table } : row;
+    });
+  }
+  if (kind === "classes") {
+    return results.map((row) => {
+      const table = classMechanicsOf(row as Row & { slug?: string });
       return table ? { ...(row as Row), table } : row;
     });
   }

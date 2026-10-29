@@ -1,6 +1,7 @@
+import { named } from "@/lib/dm/roll-about";
 import { LUCK_SPEND } from "@/lib/dm/roll-riders";
 import { luckPointsLeft } from "@/lib/srd/class-resources";
-import { actorAdvantage, featCheckRider, hasSkulker } from "@/lib/srd/feat-combat";
+import { featCheckRider, hasSkulker } from "@/lib/srd/feat-combat";
 import { d20Expression, type Advantage } from "@/lib/dice";
 import {
   exhaustionRollState,
@@ -27,6 +28,9 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { StreamedToolCall } from "@/lib/model-client";
 import { senseCheckFailure } from "@/lib/srd/sense-checks";
 import { sightRotPenalty } from "@/lib/srd/afflictions";
+import { unknownRef, type ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { authoredCheckFloor } from "@/lib/srd/authored-effects-more";
 
 export { rollArgsSchema, rollDcFor, type RollArgs } from "@/lib/dm/roll-args";
 
@@ -322,7 +326,7 @@ export function resolveRollExpression(
       spendInspiration?: string;
     }
   | { autoFail: true; detail: string; notes: string[] }
-  | { error: string } {
+  | ToolError {
   const derivationKind =
     args.kind === "skill_check" ||
     args.kind === "ability_check" ||
@@ -343,12 +347,12 @@ export function resolveRollExpression(
       ? rollDerivation(sheet.conditions, derivationKind, derivationAbility, {
           rageSuppressed: wearsHeavyArmor(sheet.equipment),
         })
-      : { advantage: "none" as const, autoFail: false, notes: [] };
+      : { advantage: "none" as const, sources: [], autoFail: false, notes: [] };
   if (derivation.autoFail) {
     return { autoFail: true, detail: args.ability ?? "", notes: derivation.notes };
   }
   // Blinded or deafened: a check that needs the lost sense fails (srd/sense-checks.ts).
-  const senseless = sheet && (derivationKind === "skill_check" || derivationKind === "ability_check") ? senseCheckFailure(sheet.conditions, { reason: args.reason }) : null;
+  const senseless = sheet && (derivationKind === "skill_check" || derivationKind === "ability_check") ? senseCheckFailure(sheet.conditions, { by: named(args.by) }) : null;
   if (senseless) {
     return { autoFail: true, detail: args.skill ?? args.ability ?? "", notes: [senseless] };
   }
@@ -437,7 +441,7 @@ export function resolveRollExpression(
     args.advantage ?? "none",
     ...(extras?.effectAdvantage ? ["advantage" as const] : []),
     ...(extras?.effectDisadvantage ? ["disadvantage" as const] : []),
-    derivation.advantage,
+    ...derivation.sources,
     exhaustion.advantage,
     ...effects.advantageSources,
     ...(helped ? ["advantage" as const] : []),
@@ -476,13 +480,13 @@ export function resolveRollExpression(
 
   if (args.kind === "skill_check") {
     if (!sheet) {
-      return { error: "skill_check needs a valid characterId from GAME STATE." };
+      return { error: "skill_check needs a valid characterId from GAME STATE.", retry: true };
     }
     // Models often send display names ("Sleight of Hand"); normalize to ids.
     const normalizedSkill = (args.skill ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
     const skill = normalizedSkill ? findSkill(normalizedSkill) : null;
     if (!skill) {
-      return { error: `Unknown skill "${args.skill ?? ""}". Use a 5e skill id like "stealth".` };
+      return { error: `Unknown skill "${args.skill ?? ""}". Use a 5e skill id like "stealth".`, retry: true };
     }
     const derived = computeSheetDerived(sheet);
     // Reliable Talent: a proficient check treats a d20 face of 9 or lower
@@ -502,16 +506,13 @@ export function resolveRollExpression(
     // Skulker: dim light costs their Perception nothing (feat-combat.ts).
     const veiledBy = skill.id === "perception" ? (extras?.obscured ?? null) : null;
     const veiled = veiledBy && hasSkulker(sheet) && /dim light/i.test(veiledBy) ? null : veiledBy;
-    // Actor: advantage on Deception and Performance while passing as
-    // someone else, read from the check's reason.
-    const acting = actorAdvantage(sheet, skill.id, args.reason);
-    // The other feats' check riders: an expertise die, an advantage, a
-    // doubled proficiency (src/lib/srd/feat-combat.ts).
-    const featRider = featCheckRider(sheet, skill.id, args.reason);
+    // The feats' check riders: an expertise die, an advantage, a doubled
+    // proficiency (src/lib/srd/feat-combat.ts).
+    const featRider = featCheckRider(sheet, skill.id, { about: named(args.about), creature: named(args.creature) });
     const finalAdvantage = mergeAdvantage([
       advantage,
       ...(armorStealth || sunlit || veiled ? ["disadvantage" as const] : []),
-      ...(acting || featRider?.advantage ? ["advantage" as const] : []),
+      ...(featRider?.advantage ? ["advantage" as const] : []),
     ]);
     // A skill check is an ability check: a lasting effect on checks counts,
     // and so does an item that rides checks.
@@ -534,7 +535,8 @@ export function resolveRollExpression(
       checkAbility === "str"
         ? strengthCheckFloor(sheet, computeAbilityScore(sheet, "str"), skillModifier)
         : null;
-    const floor = Math.max(reliable ? 10 : 0, mightFloor ?? 0);
+    // Silver Tongue, Ear for Deceit: a skill's own floor (authored-effects-more.ts).
+    const floor = Math.max(reliable ? 10 : 0, mightFloor ?? 0, authoredCheckFloor(sheet, skill.id));
     // Reroll (Lucky) comes before floor (Reliable Talent): the 1 is rerolled,
     // then the surviving face is raised to 10 if still low.
     const d20Mods = `${lucky ? "r1" : ""}${floor > 1 ? `f${floor}` : ""}`;
@@ -548,7 +550,6 @@ export function resolveRollExpression(
       ...(checkAbility !== skill.ability ? [`a ${checkAbility.toUpperCase()} (${skill.name}) check: ${checkAbility.toUpperCase()} in place of ${skill.ability.toUpperCase()}, the skill's proficiency kept`] : []),
       ...(reliable ? ["Reliable Talent: a d20 face below 10 counts as 10"] : []),
       ...(armorStealth ? ["their armor imposes disadvantage on Stealth"] : []),
-      ...(acting ? ["Actor: advantage while passing as someone else"] : []),
       ...(featRider ? [featRider.note] : []),
       ...(veiledBy && !veiled ? ["Skulker: dim light costs their Perception nothing"] : []),
       ...(sunlit ? ["Sunlight Sensitivity: disadvantage on Perception in direct sunlight"] : []),
@@ -565,7 +566,7 @@ export function resolveRollExpression(
 
   if (args.kind === "saving_throw" && extras?.death) {
     if (!sheet) {
-      return { error: "A death save needs a character." };
+      return { error: "A death save needs a character.", retry: true };
     }
     // What rides every saving throw whatever its ability: a paladin's own
     // aura (the "features" part) and a Ring or Cloak of Protection.
@@ -592,10 +593,10 @@ export function resolveRollExpression(
 
   if (args.kind === "saving_throw" || args.kind === "ability_check") {
     if (!sheet) {
-      return { error: `${args.kind} needs a valid characterId from GAME STATE.` };
+      return { error: `${args.kind} needs a valid characterId from GAME STATE.`, retry: true };
     }
     if (!args.ability) {
-      return { error: `${args.kind} needs an ability (str, dex, con, int, wis, cha).` };
+      return { error: `${args.kind} needs an ability (str, dex, con, int, wis, cha).`, retry: true };
     }
     const derived = computeSheetDerived(sheet);
     // Jack of All Trades / Remarkable Athlete: raw ability checks never
@@ -652,7 +653,7 @@ export function resolveRollExpression(
 
   if (args.kind === "initiative") {
     if (!sheet) {
-      return { error: "initiative needs a valid characterId from GAME STATE." };
+      return { error: "initiative needs a valid characterId from GAME STATE.", retry: true };
     }
     const derived = computeSheetDerived(sheet);
     // A lasting effect on initiative (Gift of Alacrity) adds to the roll.
@@ -676,7 +677,7 @@ export function resolveRollExpression(
   // attack / damage / custom: the model supplies the expression (NPC stat
   // blocks live in its narration for now); the dice library enforces sanity.
   if (!args.expression) {
-    return { error: `${args.kind} needs a dice expression like "1d20+4" or "2d6+2".` };
+    return { error: `${args.kind} needs a dice expression like "1d20+4" or "2d6+2".`, retry: true };
   }
   return { expression: args.expression, detail: args.reason?.slice(0, 60) ?? "" };
 }
@@ -694,7 +695,13 @@ export function resolveSheetRef(
   }
   return (
     sheetsById.get(trimmed) ??
-    sheets.find((entry) => entry.name.toLowerCase() === trimmed.toLowerCase()) ??
+    sheets.find((entry) => textKey(entry.name) === textKey(trimmed)) ??
     null
   );
+}
+
+// The refusal of a character ref resolveSheetRef found nothing for, listing
+// the party.
+export function unknownSheetRef(field: string, ref: string | undefined, sheets: readonly CharacterSheet[], tail = ""): ToolError {
+  return unknownRef(field, ref, sheets.map((sheet) => ({ id: sheet.id, name: sheet.name })), tail);
 }

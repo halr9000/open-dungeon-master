@@ -12,7 +12,7 @@
 //   spell_rider     spell-damage-riders.ts, heal-spell.ts (Enhanced Bond,
 //                   Arcane Firearm)
 //   concentration_guard  concentration.ts, cast-guard.ts (Grasping Tentacles)
-//   twin_spell      cast-at-enemy.ts (Improved Reaper)
+//   twin_spell      authored-reaper.ts (Reaper, Improved Reaper, Moon Fire)
 //   rapid_strike    pc-attack-plan.ts (Rapid Strike)
 //   oa_each_turn    opportunity.ts (Vigilant Defender)
 //   stand_cost      the battle map move route and view.ts (Tipsy Sway)
@@ -23,8 +23,10 @@ import { standsCheaply } from "@/lib/srd/feat-combat";
 import { activeAuthored, resolveFormula, type AuthoredSheet } from "@/lib/srd/authored-effects";
 import type { NaturalWeapon } from "@/lib/srd/authored-effects-types";
 import type { SrdWeapon } from "@/lib/srd/weapons";
-
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
+import { containsPhrase, textKey } from "@/lib/language/text-logic";
+import { hasItemTag } from "@/lib/srd/item-tags";
+import { pluralForms } from "@/lib/srd/name-forms";
+import { bundledSpellSchool, spellNamesOf } from "@/lib/srd/spell-facts";
 
 // ---- weapons the feature is ----
 
@@ -56,21 +58,21 @@ function toSrd(weapon: NaturalWeapon, level: number, mods: Record<string, number
   };
 }
 
-// The weapon a feature makes that pc_attack's `weapon` names ("claws", "the
-// psychic blade", "radiant sun bolt"), when its gate holds (a rage for Form
-// of the Beast). Null when the name is none of them.
+// The weapon a feature makes that pc_attack's `weapon` names, whole
+// ("claws", "psychic blade", "radiant sun bolt"), when its gate holds (a
+// rage for Form of the Beast). Null when the name is none of them.
 export function authoredNaturalWeapon(
   sheet: AuthoredSheet,
-  term: string | undefined,
+  name: string,
   mods: Record<string, number> = {},
 ): HeldNaturalWeapon | null {
-  const wanted = lower(term).replace(/^(the|a|an|her|his|their)\s+/, "");
+  const wanted = textKey(name);
   if (!wanted) {
     return null;
   }
   for (const { effect, held } of activeAuthored(sheet, "natural_weapon")) {
-    const names = [effect.weapon.name, ...(effect.weapon.aliases ?? [])].map(lower);
-    if (names.some((name) => name === wanted || wanted.startsWith(name) || name.startsWith(wanted))) {
+    const names = [effect.weapon.name, ...(effect.weapon.aliases ?? [])].flatMap((name) => pluralForms(textKey(name)));
+    if (names.includes(wanted)) {
       return {
         feature: held.feature,
         weapon: effect.weapon,
@@ -84,14 +86,10 @@ export function authoredNaturalWeapon(
 
 // A natural weapon the sheet would have if its gate held: for the refusal
 // that says why it cannot swing it now ("claws, while raging").
-export function naturalWeaponGated(sheet: AuthoredSheet, term: string | undefined): string | null {
-  const wanted = lower(term);
-  if (!wanted) {
-    return null;
-  }
+export function naturalWeaponGated(sheet: AuthoredSheet, name: string): string | null {
   const open = { ...sheet, conditions: [...(sheet.conditions ?? []), "raging"], equipment: [] };
-  const found = authoredNaturalWeapon(open, term);
-  return found && !authoredNaturalWeapon(sheet, term) ? found.feature : null;
+  const found = authoredNaturalWeapon(open, name);
+  return found && !authoredNaturalWeapon(sheet, name) ? found.feature : null;
 }
 
 // ---- reach, Sneak Attack, saves ----
@@ -109,7 +107,7 @@ export function authoredSneakBonus(
   marks: Array<{ condition: string; source?: string }>,
 ): { dice: number; feature: string } | null {
   for (const { effect, held } of activeAuthored(sheet, "sneak_bonus")) {
-    if (marks.some((mark) => lower(mark.condition) === lower(effect.mark) && mark.source === sheetId)) {
+    if (marks.some((mark) => textKey(mark.condition) === textKey(effect.mark) && mark.source === sheetId)) {
       return { dice: effect.dice, feature: held.feature };
     }
   }
@@ -127,7 +125,7 @@ export function authoredSaveDieVs(
     return null;
   }
   for (const { effect, held } of activeAuthored(sheet, "save_die_vs")) {
-    const mark = forcer.conditions.find((entry) => lower(entry) === lower(effect.mark));
+    const mark = forcer.conditions.find((entry) => textKey(entry) === textKey(effect.mark));
     if (mark && forcer.meta[mark]?.source === sheetId) {
       return { die: effect.die, feature: held.feature };
     }
@@ -141,22 +139,26 @@ export function authoredSaveDieVs(
 // healing, a spell of a class's list, cast through an item the caster carries.
 export function authoredSpellDice(
   sheet: AuthoredSheet & { level?: number },
-  spell: { damageType?: string | null; healing?: boolean },
+  spell: { damageType?: string | null; healing?: boolean; level?: number },
   mods: Record<string, number> = {},
 ): { dice: string[]; notes: string[] } {
   const dice: string[] = [];
   const notes: string[] = [];
   for (const { effect, held } of activeAuthored(sheet, "spell_rider")) {
-    const byType = effect.damageTypes?.includes(lower(spell.damageType));
+    // Potent Spellcasting: cantrips only.
+    if (effect.cantrips && spell.level !== 0) {
+      continue;
+    }
+    const byType = effect.damageTypes?.includes(textKey(spell.damageType ?? ""));
     const byHealing = effect.healing && spell.healing;
     const typed = effect.damageTypes || effect.healing ? Boolean(byType || byHealing) : true;
     // An artificer spell is one the caster casts as an artificer: the class
     // is the caster's (a spell list is shared by several classes).
-    const casterClasses = [lower(sheet.class), ...(sheet.classes ?? []).map((entry) => lower(entry.id))];
+    const casterClasses = [textKey(sheet.class ?? ""), ...(sheet.classes ?? []).map((entry) => textKey(entry.id))];
     const listed = !effect.classes || casterClasses.some((entry) => effect.classes!.includes(entry));
-    const pattern = effect.item ? new RegExp(effect.item, "i") : null;
-    const item = pattern ? (sheet.equipment ?? []).find((entry) => pattern.test(entry.name)) : null;
-    if (!typed || !listed || (pattern && !item)) {
+    const wanted = effect.items;
+    const item = wanted ? (sheet.equipment ?? []).find((entry) => wanted.some((tag) => hasItemTag(entry, tag))) : null;
+    if (!typed || !listed || (wanted && !item)) {
       continue;
     }
     const rolled = resolveFormula(effect.dice, held.level, mods);
@@ -173,27 +175,34 @@ export function authoredConcentrationGuard(
   spell: string | null | undefined,
   mods: Record<string, number> = {},
 ): { feature: string; tempHp: number } | null {
-  const wanted = lower(spell);
-  if (!wanted) {
+  if (!spell?.trim()) {
     return null;
   }
+  // The guarded spell under any name the checklist prints it under: the
+  // bundled row is "Evard's Black Tentacles", the SRD's "Black Tentacles".
+  const names = spellNamesOf(spell).map(textKey);
   for (const { effect, held } of activeAuthored(sheet, "concentration_guard")) {
-    if (wanted.includes(lower(effect.spell)) || lower(effect.spell).includes(wanted)) {
+    // Focused Conjuration: any spell of the school.
+    const bySchool = effect.school ? textKey(bundledSpellSchool(spell) ?? "") === textKey(effect.school) : false;
+    const byName = effect.spell ? names.includes(textKey(effect.spell)) : false;
+    if (bySchool || byName) {
       return { feature: held.feature, tempHp: Math.max(0, Number(resolveFormula(effect.tempHp, held.level, mods)) || 0) };
     }
   }
   return null;
 }
 
-// Improved Reaper: whether this spell may strike a second creature.
+// Whether this spell may strike a second creature within 5 feet of the first:
+// Improved Reaper (a 1st to 5th level necromancy spell), Reaper (a
+// necromancy cantrip), Moon Fire (sacred flame).
 export function authoredTwinSpell(
   sheet: AuthoredSheet,
-  spell: { school?: string | null; level: number },
-): { feature: string; cost: string } | null {
+  spell: { name?: string | null; school?: string | null; level: number },
+): { feature: string } | null {
   for (const { effect, held } of activeAuthored(sheet, "twin_spell")) {
-    if (lower(spell.school) === lower(effect.school) && spell.level >= 1 && spell.level <= effect.maxLevel) {
-      const [count, die] = effect.costPerLevel.split("d");
-      return { feature: held.feature, cost: `${Number(count) * spell.level}d${die}` };
+    const named = !effect.spells || effect.spells.some((entry) => textKey(entry) === textKey(spell.name ?? ""));
+    if (named && textKey(spell.school ?? "") === textKey(effect.school) && spell.level >= (effect.minLevel ?? 1) && spell.level <= effect.maxLevel) {
+      return { feature: held.feature };
     }
   }
   return null;
@@ -231,4 +240,92 @@ export function holdsMote(sheet: AuthoredSheet): string | null {
 
 export function swarmKnocksProne(sheet: AuthoredSheet): string | null {
   return activeAuthored(sheet, "swarm_prone")[0]?.held.feature ?? null;
+}
+
+// ---- issue 474's readers ----
+
+// Darkvision the holder's features give, in feet, over what they already
+// have (`base`): Umbral Sight's 60, or 30 more; Eyes of the Dark's 120.
+export function authoredDarkvisionFeet(sheet: AuthoredSheet, base: number): number {
+  let feet = base;
+  for (const { effect } of activeAuthored(sheet, "darkvision")) {
+    feet = Math.max(feet, effect.orAdd && base > 0 ? base + effect.orAdd : effect.feet);
+  }
+  return feet;
+}
+
+// An ability modifier (at least +1) added to a weapon attack's damage
+// (Aura of Hate, Song of Victory), with the feature for the note.
+export function authoredDamageAbility(
+  sheet: AuthoredSheet,
+  attack: { melee: boolean },
+  mods: Record<string, number>,
+): Array<{ feature: string; amount: number }> {
+  const out: Array<{ feature: string; amount: number }> = [];
+  for (const { effect, held } of activeAuthored(sheet, "damage_ability")) {
+    if (effect.when === "melee" && !attack.melee) {
+      continue;
+    }
+    if (effect.requiresCondition && !(sheet.conditions ?? []).some((entry) => textKey(entry) === textKey(effect.requiresCondition ?? ""))) {
+      continue;
+    }
+    out.push({ feature: held.feature, amount: Math.max(1, mods[effect.ability] ?? 0) });
+  }
+  return out;
+}
+
+// The lowest a d20 may count on a check with this skill (Silver Tongue's 10,
+// Ear for Deceit's 8), or 0.
+export function authoredCheckFloor(sheet: AuthoredSheet, skill: string): number {
+  let floor = 0;
+  for (const { effect } of activeAuthored(sheet, "check_floor")) {
+    if (effect.skills.some((entry) => textKey(entry) === textKey(skill))) {
+      floor = Math.max(floor, effect.floor);
+    }
+  }
+  return floor;
+}
+
+// Expert Divination: the slot level a casting gives back, or null. `slots`
+// are the caster's slots with this casting already paid.
+export function authoredSlotRefund(
+  sheet: AuthoredSheet,
+  cast: { school?: string | null; slotLevel: number | null },
+  slots: Record<string, { max: number; used: number }> | undefined,
+): { feature: string; level: number } | null {
+  if (!cast.slotLevel || !slots) {
+    return null;
+  }
+  for (const { effect, held } of activeAuthored(sheet, "slot_refund")) {
+    if (textKey(cast.school ?? "") !== textKey(effect.school) || cast.slotLevel < effect.minLevel) {
+      continue;
+    }
+    for (let level = Math.min(cast.slotLevel - 1, effect.maxLevel); level >= 1; level -= 1) {
+      if ((slots[String(level)]?.used ?? 0) > 0) {
+        return { feature: held.feature, level };
+      }
+    }
+  }
+  return null;
+}
+
+// A creature's Hit Die by its size: an SRD block's hit points are the
+// average of its dice plus its Constitution modifier for each.
+const HIT_DIE_AVERAGE: Record<string, number> = { Tiny: 2.5, Small: 3.5, Medium: 4.5, Large: 5.5, Huge: 6.5, Gargantuan: 10.5 };
+
+// Mighty Summoner: the hit points a creature the holder summons gains, by
+// its Hit Dice, when it is of a type the feature names; null otherwise.
+export function authoredSummonHitPoints(
+  sheet: AuthoredSheet,
+  form: { type: string; size: string; hp: number; abilities: { con: number } },
+): { feature: string; hp: number } | null {
+  for (const { effect, held } of activeAuthored(sheet, "summon_hp_per_hd")) {
+    if (!effect.types.some((type) => containsPhrase(form.type, type))) {
+      continue;
+    }
+    const perDie = (HIT_DIE_AVERAGE[form.size] ?? 4.5) + Math.floor((form.abilities.con - 10) / 2);
+    const dice = Math.max(1, Math.round(form.hp / Math.max(1, perDie)));
+    return { feature: held.feature, hp: effect.amount * dice };
+  }
+  return null;
 }

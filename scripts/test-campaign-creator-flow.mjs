@@ -30,11 +30,35 @@ function drawnKeys(source) {
 await test("every switch of the old table sheet is drawn exactly once", () => {
   const every = tableSheet({ ...DEFAULT_DRAFT, ambienceEnabled: true, relationships: "on" }, allGates).flatMap((group) => group.rows.map((row) => row.key));
   assert.equal(every.length, 18, "the table sheet's row count changed; update this test with it");
-  const drawn = [...drawnKeys(essentials), ...drawnKeys(experience), ...drawnKeys(narrator)];
+  // Characters per player is drawn as its three answers side by side
+  // (MultiCharacterField), not as a cycling switch.
+  const drawn = [
+    ...drawnKeys(essentials),
+    ...drawnKeys(experience),
+    ...drawnKeys(narrator),
+    ...(experience.includes("<MultiCharacterField ") ? ["multiCharacter"] : []),
+  ];
   for (const key of every) {
     assert.equal(drawn.filter((entry) => entry === key).length, 1, `${key} is drawn ${drawn.filter((entry) => entry === key).length} times`);
   }
   assert.equal(drawn.length, every.length, `a step draws a key the sheet does not have: ${drawn.filter((key) => !every.includes(key))}`);
+});
+
+await test("characters per player offers all three answers at once", () => {
+  assert.match(experience, /\{ value: "off", label: "One each" \}/);
+  assert.match(experience, /\{ value: "one_active", label: "Several, one at a time" \}/);
+  assert.match(experience, /\{ value: "all_active", label: "Several, all at once" \}/);
+  assert.doesNotMatch(experience, /three-way switch/);
+});
+
+await test("a rolled title is in the genre's words and never the one already there", async () => {
+  const { rollCampaignTitle } = await import("../src/app/create-campaign/titles.ts");
+  let n = 0;
+  const steps = () => ((n += 0.137) % 1);
+  const first = rollCampaignTitle("cyberpunk", "", steps);
+  assert.ok(first.length > 4 && first.length <= 80, first);
+  assert.notEqual(rollCampaignTitle("cyberpunk", first, steps), first);
+  assert.ok(rollCampaignTitle("unknown-genre", "", steps).length > 4, "an unknown genre falls back to fantasy words");
 });
 
 await test("every named group sits on the step that owns it, once", () => {

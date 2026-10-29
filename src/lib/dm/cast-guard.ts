@@ -35,12 +35,12 @@ import { freeCastCounter, signatureCounter, spendSignature } from "@/lib/dm/cast
 import { spellFactsFor, spellMechanicsFor, spellSchoolFor } from "@/lib/content";
 import { castShares } from "@/lib/srd/spell-mechanics";
 import { describeCastingTime, type SpellFacts } from "@/lib/srd/spell-facts";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import { canAct } from "@/lib/dm/can-act";
 import { incapacitatedBy } from "@/lib/dm/condition-logic";
 import { attacksAllowedFor, budgetFor, markReactionUsed, storeBudget } from "@/lib/dm/turn-budget";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
-import { clearSpellConditionsByName, setConcentration } from "@/lib/dm/concentration";
+import { droppedLine, setConcentration } from "@/lib/dm/concentration";
 import { repeatSpell } from "@/lib/dm/cast-repeat";
 import {
   casterStateProblem,
@@ -51,7 +51,6 @@ import {
   openCastOf,
   ritualProblem,
   slotPlan,
-  spellKeyOf,
   spellHeldProblem,
   reactionSpellOnOwnTurn,
   turnCharge,
@@ -66,16 +65,23 @@ import { paidByManualTick } from "@/lib/dm/manual-ticks";
 import { reactionRefusal } from "@/lib/dm/reaction-gate";
 import { reactionTimingOf } from "@/lib/dm/reaction-kinds";
 import { readiedRelease, releaseReadied } from "@/lib/dm/readied-spell";
+import { heldBySlow, markSlowedCast, slowHoldsCast } from "@/lib/dm/slow-cast";
 import { antimagicProblem, silenceProblem } from "@/lib/dm/zone-rules";
 import { placeSpellZone } from "@/lib/dm/zone-cast";
 import { spellSaveDcFor } from "@/lib/srd";
 import { castTempHp } from "@/lib/dm/authored-spells";
+import { authoredSlotRefund } from "@/lib/srd/authored-effects-more";
 import { takeItemCast } from "@/lib/srd/item-cast-credit";
 import { castFromItem } from "@/lib/dm/item-casts";
 import { summonSlotProblem } from "@/lib/srd/summon-spells";
 import { spellSupportLine } from "@/lib/srd/spell-support";
 import { wardOnCast } from "@/lib/dm/arcane-ward";
 import { casterCost } from "@/lib/dm/spell-self";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { holdsFeature } from "@/lib/srd/feature-names";
+import { revisedOnlySpell, revisedOnlySpellProblem } from "@/lib/content/edition";
+import { isConditionNamed } from "@/lib/srd/feature-names";
 
 // Which tool the cast came through. It decides two things only: whether a
 // casting whose shares are resolved one call at a time (Eldritch Blast's
@@ -109,7 +115,7 @@ export type CastHooks = {
   publish: () => void;
 };
 
-export type CastResult = Record<string, unknown>;
+export type CastResult = ToolResult;
 
 function inRunningFight(encounter: Encounter | null): encounter is Encounter {
   return Boolean(encounter && encounter.status === "active" && (encounter.kind ?? "fight") === "fight");
@@ -131,18 +137,18 @@ function namelessSlot(
   hooks: CastHooks,
 ): CastResult {
   if (input.ritual) {
-    return { error: "A ritual is a named spell with the ritual tag; name the spell being cast." };
+    return { error: "A ritual is a named spell with the ritual tag; name the spell being cast.", retry: true };
   }
   if (sheet.deathSaves?.dead || sheet.currentHp <= 0) {
-    return { error: `${sheet.name} is ${sheet.deathSaves?.dead ? "dead" : "at 0 HP"} and cannot spend a spell slot.` };
+    return { error: `${sheet.name} is ${sheet.deathSaves?.dead ? "dead" : "at 0 HP"} and cannot spend a spell slot.`, refused: "rules" };
   }
   const stopped = incapacitatedBy(sheet.conditions);
   if (stopped) {
-    return { error: `${sheet.name} is ${stopped} and cannot spend a spell slot until the condition ends.` };
+    return { error: `${sheet.name} is ${stopped} and cannot spend a spell slot until the condition ends.`, refused: "rules" };
   }
   const state = casterStateProblem(sheet);
   if (state && sheet.wildShape) {
-    return { error: state };
+    return state;
   }
   const plan = slotPlan(sheet, "", null, input.level);
   if ("error" in plan) {
@@ -189,7 +195,7 @@ function planTurn(
   spell: string,
   slotLevel: number | null,
   via: CastVia,
-): TurnPlan | { error: string } {
+): TurnPlan | ToolError {
   if (!inRunningFight(encounter)) {
     return { kind: "free" };
   }
@@ -198,7 +204,7 @@ function planTurn(
     encounter,
     sheet.id,
     attacksAllowedFor(sheet),
-    conditionExtraActions(sheet.conditions),
+    conditionTurnShape(sheet.conditions),
   );
   if (time === "reaction") {
     // On the caster's own turn a reaction spell is the turn's other spell
@@ -214,6 +220,7 @@ function planTurn(
     if (encounter.reactionsUsed.includes(sheet.id)) {
       return {
         error: `${sheet.name} has already used their reaction; it comes back at the start of their next turn. ${facts?.name ?? spell} is not cast.`,
+        refused: "rules",
       };
     }
     return { kind: "reaction", ...(own.budget ? { budget: own.budget } : {}) };
@@ -247,8 +254,16 @@ export function castSpell(
   hooks: CastHooks,
 ): CastResult {
   const spell = input.spell.trim();
-  if (!spell) {
+  // Divine Smite is a paladin's feature under the 2014 rules, not a spell: a
+  // slot spent naming it is the nameless slot the feature burns.
+  if (!spell || (revisedOnlySpell(spell) === "Divine Smite" && holdsFeature(sheet, "Divine Smite"))) {
     return namelessSlot(sheet, input, hooks);
+  }
+  // A spell only the 2024 rules print, still on a sheet from before they
+  // were taken out, is not cast here (src/lib/content/edition.ts).
+  const revised = revisedOnlySpellProblem(spell);
+  if (revised) {
+    return { error: `${revised} Nothing was spent.`, refused: "rules" };
   }
   const via = input.via ?? "slot";
   const authors = spellAuthorsFor(campaign);
@@ -264,7 +279,16 @@ export function castSpell(
   // A summoning spell's creatures come through cast_buff (summon-cast.ts).
   const summoning = via === "slot" && !input.dryRun ? summonSlotProblem(engine) : null;
   if (summoning) {
-    return { error: summoning };
+    return summoning;
+  }
+  // A reaction spell answers its trigger through use_reaction, which checks
+  // the trigger and applies the spell (src/lib/dm/reaction-spells.ts): cast
+  // by any other tool it would spend its slot on nothing.
+  // A spell they cannot cast is told so here, as use_reaction would (a cast
+  // an item pays for aside), not sent there to hear it.
+  if (facts?.castingTime === "reaction" && via !== "reaction") {
+    const unheld = takeItemCast(sheet.id, name, { dryRun: true }) ? null : spellHeldProblem(sheet, spell, facts, { extras: subclassExtrasForTable(campaign.id, sheet.userId) });
+    return unheld ?? { error: `${name} is cast as a reaction: use_reaction with feature "${name}" when its trigger happens; the server checks the trigger and applies it. Nothing was spent.`, retry: true };
   }
 
   // A slot level named is a real one. Level 0 is how some callers name a
@@ -273,11 +297,12 @@ export function castSpell(
     const cantrip =
       facts?.level === 0 ||
       [sheet.spellcasting, ...(sheet.spellcasting?.casters ?? [])].some((entry) =>
-        (entry?.cantrips ?? []).some((name) => name.trim().toLowerCase() === spell.toLowerCase()),
+        (entry?.cantrips ?? []).some((name) => textKey(name) === textKey(spell)),
       );
     if (!(input.level === 0 && cantrip)) {
       return {
         error: `A spell slot has a level from 1 to 9, not ${input.level}. Name the slot ${name} is cast from, or leave the level out for the spell's own.`,
+        retry: true,
       };
     }
   }
@@ -291,9 +316,9 @@ export function castSpell(
     mech?.repeat &&
     via !== "slot" &&
     sheet.concentratingOn &&
-    spellKeyOf(sheet.concentratingOn) === spellKeyOf(name)
+    textKey(sheet.concentratingOn) === textKey(name)
   ) {
-    return repeatSpell(campaign, sheet, inRunningFight(encounter) ? encounter : null, facts, name, mech.repeat, input);
+    return repeatSpell(sheet, inRunningFight(encounter) ? encounter : null, facts, name, mech.repeat, input);
   }
 
   // A readied spell released off turn: the reaction, no second slot
@@ -314,16 +339,16 @@ export function castSpell(
   // A reaction spell is asked through the one reaction gate, with the
   // spell's own timing (src/lib/dm/reaction-kinds.ts, issue 233): Shield cast
   // as the hit that dropped the caster lands is judged as they stood before
-  // it, whichever tool casts it; Hellish Rebuke is not.
+  // it; Hellish Rebuke is not.
   if (reactionTime) {
     const refused = reactionRefusal(campaign.id, sheet, encounter, name, reactionTimingOf(engine));
     if (refused) {
-      return { error: refused };
+      return refused;
     }
   } else {
     const able = canAct({ sheet, encounter, kind: "cast" });
     if (!able.ok) {
-      return { error: able.error };
+      return toolError(able);
     }
   }
   const held = spellHeldProblem(sheet, spell, facts, {
@@ -331,25 +356,25 @@ export function castSpell(
     extras: subclassExtrasForTable(campaign.id, sheet.userId),
   });
   if (held) {
-    return { error: held };
+    return held;
   }
   const state = casterStateProblem(sheet);
   if (state) {
-    return { error: state };
+    return state;
   }
   const voice = componentProblem(sheet, facts) ?? focusProblem(sheet, facts) ?? silenceProblem(campaign.id, sheet.id, sheet.name, facts) ?? antimagicProblem(campaign.id, sheet.id, sheet.name);
   if (voice) {
-    return { error: voice };
+    return voice;
   }
   if (input.ritual) {
     const ritual = ritualProblem(sheet, spell, facts, inFight);
     if (ritual) {
-      return { error: ritual };
+      return ritual;
     }
   } else {
     const long = longCastingProblem(facts, inFight);
     if (long) {
-      return { error: long };
+      return long;
     }
   }
   const material = materialPlan(sheet, facts, { inFight, units: input.units, slotLevel: input.level ?? facts?.level ?? null });
@@ -364,7 +389,7 @@ export function castSpell(
   const shared = via !== "slot" && via !== "reaction";
   const liveBudget =
     inFight && shared
-      ? budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions))
+      ? budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions))
       : null;
   const open = liveBudget ? openCastOf(liveBudget, name) : null;
   if (open && liveBudget) {
@@ -383,9 +408,12 @@ export function castSpell(
     };
   }
 
+  // The casting Slow held back last turn, completed now for this turn's
+  // action and no slot, at the slot it was cast from (slow-cast.ts).
+  const slowHeld = input.ritual ? null : heldBySlow(sheet, name);
   // Signature Spells (wizard 20): the chosen 3rd level spells, once each per
   // short rest at 3rd level, spend their counter instead of a slot.
-  const signature = input.ritual ? null : signatureCounter(sheet, facts, input.level);
+  const signature = input.ritual || slowHeld ? null : signatureCounter(sheet, facts, input.level);
   // A feat's free cast (Fey Touched's misty step, Magic Initiate's spell)
   // spends its once-a-day counter instead of a slot while one is left
   // (src/lib/srd/feat-spells.ts); with the counter spent, a slot pays.
@@ -393,9 +421,11 @@ export function castSpell(
   // Mantle of Majesty's Command costs no slot while the mantle holds.
   const mantled =
     !input.ritual && !signature && !freeCast && /^command$/i.test(engine.trim()) &&
-    sheet.conditions.some((entry) => entry.trim().toLowerCase().startsWith(MANTLE_OF_MAJESTY));
-  const slot: SlotPlan | { error: string } = input.ritual
+    sheet.conditions.some((entry) => isConditionNamed(entry, MANTLE_OF_MAJESTY));
+  const slot: SlotPlan | ToolError = input.ritual
     ? { kind: "none", note: `${name} cast as a ritual: no slot spent.` }
+    : slowHeld
+      ? { kind: "none", note: `${name} completes the casting Slow held back: no slot spent.` }
     : signature
       ? { kind: "none", note: `${name} is a Signature Spell: cast at 3rd level with no slot, once until a short rest.` }
       : freeCast
@@ -405,9 +435,12 @@ export function castSpell(
         : // A slot the player marked spent by hand for this cast pays for it.
           paidByManualTick(sheet, slotPlan(sheet, spell, facts, input.level), input.level ?? facts?.level, facts?.level, Boolean(input.dryRun));
   if ("error" in slot) {
-    return slot;
+    // A cast the turn cannot pay for is refused for that first: which slot
+    // to spend is moot when the action is gone.
+    const barred = planTurn(sheet, encounter, facts, spell, input.level ?? facts?.level ?? null, via);
+    return barred && "error" in barred ? barred : slot;
   }
-  const slotLevel = slot.kind === "none" ? null : slot.level;
+  const slotLevel = slowHeld ? slowHeld.slotLevel : slot.kind === "none" ? null : slot.level;
   const turn = input.ritual ? ({ kind: "free" } as const) : planTurn(sheet, encounter, facts, spell, slotLevel, via);
   if ("error" in turn) {
     return turn;
@@ -433,6 +466,17 @@ export function castSpell(
   }
   if (freeCast) {
     patch.resources = spendSignature(sheet.resources, freeCast);
+  }
+  // Expert Divination (School of Divination 6): a divination spell of 2nd
+  // level or higher cast with a slot gives back one spent slot of a lower
+  // level, 5th at most.
+  const refund =
+    slot.kind !== "none" && patch.spellcasting ? authoredSlotRefund(sheet, { school: spellSchoolFor(spell, authors), slotLevel }, patch.spellcasting.slots) : null;
+  if (refund && patch.spellcasting) {
+    const slots = patch.spellcasting.slots;
+    const row = slots[String(refund.level)];
+    patch.spellcasting = { ...patch.spellcasting, slots: { ...slots, [String(refund.level)]: { ...row, used: row.used - 1 } } };
+    result.slotRefund = `${refund.feature}: a spent level ${refund.level} slot comes back.`;
   }
   if (Object.keys(patch).length) {
     patchSheet(sheet.id, patch);
@@ -487,12 +531,32 @@ export function castSpell(
     storeBudget(encounter, turn.budget);
   }
 
+  if (slowHeld) {
+    markSlowedCast(campaign.id, sheet.id, null);
+  } else if (
+    inFight && !input.ritual && facts?.castingTime === "action" && turn.kind === "budget" &&
+    conditionTurnShape(sheet.conditions).slowed && slowHoldsCast(campaign, sheet, name)
+  ) {
+    // Slow: paid for, and nothing happens until the caster's next turn.
+    markSlowedCast(campaign.id, sheet.id, { spell: name, slotLevel });
+    return {
+      error: `Slow holds ${name} back (the d20 came up 11 or higher): the slot and this turn's action are spent and the spell does not take effect yet. On ${sheet.name}'s next turn, cast it again with its tool to complete it: that spends their action and no slot. If they do not, the spell is wasted. Do not resolve it now.`,
+      refused: "rules",
+    };
+  }
+
   // A monster whose block lists Counterspell answers a spell cast at its
   // side, after the slot and the action are spent (enemy-reactions.ts).
   if (inFight && encounter && slotLevel && !input.ritual && (via === "enemy" || via === "aoe" || via === "attack")) {
     const answered = enemyCounterspell(campaign.id, null, encounter, sheet, name, slotLevel);
     if (answered?.countered) {
-      return { error: answered.note, countered: true, slotSpent: result.slot };
+      // A countered casting holds nothing more: no ray, dart or target of it
+      // is left for a later call.
+      const open = encounter.turnBudget ? openCastOf(encounter.turnBudget, name) : null;
+      if (open && encounter.turnBudget) {
+        storeBudget(encounter, withOpenCast(encounter.turnBudget, { ...open, left: 0 }));
+      }
+      return { error: answered.note, refused: "rules", countered: true, slotSpent: result.slot };
     }
     if (answered) {
       result.counterspell = answered.note;
@@ -511,12 +575,12 @@ export function castSpell(
 
   const concentrates = input.concentration === true || facts?.concentration === true;
   if (concentrates) {
-    const { displaced } = setConcentration(campaign, turnId, sheet.id, name);
+    // The first spell ends, and with it every effect it held in place: an
+    // earlier casting of this same spell too.
+    const { displaced } = setConcentration(campaign, turnId, sheet.id, name, slotLevel);
     result.concentration = true;
     if (displaced) {
-      // The first spell ends, and with it every effect it held in place.
-      clearSpellConditionsByName(campaign, displaced, sheet.userId, sheet.id);
-      result.droppedConcentration = `${displaced} ended when ${name} was cast; its effects are gone.`;
+      result.droppedConcentration = droppedLine(displaced, name);
     }
   }
   // Contact Other Plane's toll on its caster (spell-self.ts).

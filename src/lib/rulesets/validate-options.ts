@@ -1,7 +1,12 @@
 import type { Finding } from "@/lib/rulesets/validate";
 import { classFeaturesFor, subclassLevelFor, subclassNamesFor } from "@/lib/srd/features";
 import { featAbilityIncreaseFrom } from "@/lib/srd/feat-effects";
+import { featGrantSpec } from "@/lib/srd/feat-grant-text";
+import { heldTraitNames, resistedByTraits, unreadResistances, unreadTraitLines } from "@/lib/workshop/species-traits";
 import { backgroundMechanics, raceMechanics } from "@/lib/content/mechanics";
+import { checkSpeciesVariants } from "@/lib/content/species-variants";
+import { speciesHoldsTrait } from "@/lib/srd/race-id";
+import { textKey } from "@/lib/language/text-logic";
 
 // What the workshop's checker says about a feat, a background, a species, a
 // subclass or a hazard, measured against the SRD 5.1's own: two skills from
@@ -21,6 +26,17 @@ export function featFindings(name: string, data: Data): Finding[] {
     out.push({ level: "note", text: `Runs at the table as ${String(data.runsAs)}: the server applies its rules under the name ${name || "this feat"}.` });
   } else if (!desc) {
     out.push({ level: "warn", text: "No text and nothing it runs as: the table reads a feat by its words, so this one grants nothing." });
+  }
+  // What the builder hands out from the words (src/lib/srd/feat-grant-text.ts),
+  // so a homebrew feat's grants are seen before a player takes it.
+  const grants = desc ? featGrantWords(desc) : [];
+  if (grants.length) {
+    out.push({ level: "note", text: `From its words the builder grants: ${grants.join("; ")}.` });
+  } else if (desc && !data.runsAs) {
+    out.push({
+      level: "note",
+      text: "Nothing in its words is a grant the builder hands out, so the GM runs it. Written as the books write them (\"Increase your Dexterity by 1\", \"You gain proficiency in the Stealth skill\", \"You learn two languages of your choice\"), the builder grants them; or pick a published feat it runs as.",
+    });
   }
   if (/\b(?:increase|raise)s?\b[^.]*\bby 2\b/i.test(desc) && featAbilityIncreaseFrom(desc) === null) {
     out.push({ level: "warn", text: "Raises a score by 2: an SRD feat that raises a score raises it by 1 (a feat is chosen in place of the +2 of an Ability Score Improvement)." });
@@ -74,6 +90,114 @@ export function speciesFindings(data: Data): Finding[] {
   if (skills > 2) {
     out.push({ level: "note", text: `Grants ${skills} skills: the most any SRD race grants is two (the half-elf's Skill Versatility).` });
   }
+  // The table reads a resistance from a trait's name, never from its words.
+  for (const { trait, types } of unreadResistances(String(data.traits ?? ""))) {
+    out.push({
+      level: "warn",
+      text: `${trait} says it resists ${types.join(" and ")} damage, but the table reads a resistance from a trait's name: pick it under "Add a resistance", or call the trait "${types.map((type) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`).join(" and ")} Resistance".`,
+    });
+  }
+  // A trait the table reads only by a heading it knows; one written another
+  // way is granted to nobody, so it is named here.
+  for (const { name } of unreadTraitLines(String(data.traits ?? ""))) {
+    out.push({
+      level: "warn",
+      text: `"${name}" reads like a trait, but the table does not see it as one: begin its paragraph with the name in bold and a full stop, as **${name}.**`,
+    });
+  }
+  out.push(...speciesChoiceFindings(data, parsed.asi));
+  return out;
+}
+
+// The player's choice of packages (src/lib/content/species-variants.ts):
+// what the save refuses, as errors the editor holds the save on, and what
+// the table will feel of each option beside the species' own traits.
+function speciesChoiceFindings(data: Data, fixedAsi: Partial<Record<string, number>>): Finding[] {
+  const checked = checkSpeciesVariants(data.variants);
+  if ("error" in checked) {
+    return [{ level: "error", text: checked.error }];
+  }
+  const group = checked.group;
+  if (!group) {
+    return [];
+  }
+  const out: Finding[] = [];
+  const traits = String(data.traits ?? "");
+  const held = heldTraitNames(traits);
+  if (speciesHoldsTrait({ traitNames: held }, "draconic ancestry")) {
+    out.push({
+      level: "error",
+      text: "This species already asks for a published dragon through its Draconic Ancestry trait. Rename that trait (Draconic Heritage, say) or remove the player's choice.",
+    });
+  }
+  const heldKeys = new Set(held.map(textKey));
+  if (heldKeys.has(textKey(group.label))) {
+    out.push({ level: "warn", text: `The choice is called ${group.label}, as a trait of the species is: the sheet would hold both, and read them as one.` });
+  }
+  const resisted = new Set(resistedByTraits(traits));
+  for (const option of group.options) {
+    if (heldKeys.has(textKey(option.name))) {
+      out.push({ level: "warn", text: `${option.name} is named as a trait of the species is: call the option something of its own.` });
+    }
+    const twice = (option.resistances ?? []).filter((type) => resisted.has(type));
+    if (twice.length) {
+      out.push({ level: "warn", text: `${option.name} resists ${twice.join(" and ")}, which the species already resists: the pick adds nothing there.` });
+    }
+    for (const [ability, value] of Object.entries(option.asi ?? {})) {
+      const total = (fixedAsi[ability] ?? 0) + (value ?? 0);
+      if (total > 2) {
+        out.push({ level: "warn", text: `${option.name} raises ${ABILITY_NAMES[ability] ?? ability} by ${total} with the species' own: no SRD race raises a score by more than 2.` });
+      }
+    }
+  }
+  // A Breath Weapon trait is read with the counter's own Dexterity save and
+  // no damage type; an option's breath is what gives it one.
+  if (speciesHoldsTrait({ traitNames: held }, "breath weapon")) {
+    const without = group.options.filter((option) => !option.breath);
+    if (!without.length) {
+      out.push({ level: "note", text: "Every option sets a breath, so the Breath Weapon trait is only its description now." });
+    }
+    for (const option of without) {
+      out.push({ level: "note", text: `${option.name} sets no breath: its Breath Weapon deals untyped damage against a Dexterity save.` });
+    }
+  }
+  return out;
+}
+
+const ABILITY_NAMES: Record<string, string> = {
+  str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma",
+};
+const COUNT_WORDS = ["no", "one", "two", "three", "four", "five"];
+const counted = (count: number, one: string, many = `${one}s`) => `${COUNT_WORDS[count] ?? count} ${count === 1 ? one : many}`;
+const listed = (items: string[], last: "and" | "or") =>
+  items.length > 1 ? `${items.slice(0, -1).join(", ")} ${last} ${items[items.length - 1]}` : (items[0] ?? "");
+const titled = (name: string) => name.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+// A feat's grants as the builder reads them from its words.
+export function featGrantWords(desc: string): string[] {
+  const out: string[] = [];
+  const increase = featAbilityIncreaseFrom(desc);
+  if (increase) {
+    out.push(increase.from.length >= 6 ? "+1 to an ability score of the player's choice" : `+1 to ${listed(increase.from.map((ability) => ABILITY_NAMES[ability] ?? ability), "or")}`);
+  }
+  const spec = featGrantSpec(desc);
+  if (spec.fixedSkills.length) out.push(`proficiency in ${listed(spec.fixedSkills.map(titled), "and")}`);
+  if (spec.skills) out.push(`${counted(spec.skills, "skill")} of the player's choice`);
+  if (spec.expertise || spec.fixedExpertise.length || spec.pickedExpertise) out.push("expertise");
+  if (spec.fixedTools.length) out.push(`proficiency with ${listed(spec.fixedTools, "and")}`);
+  if (spec.tools) out.push(`${counted(spec.tools, "tool")} of the player's choice`);
+  if (spec.fixedLanguages.length) out.push(listed(spec.fixedLanguages, "and"));
+  if (spec.languages) out.push(`${counted(spec.languages, "language")} of the player's choice`);
+  if (spec.armor.length) out.push(`${listed(spec.armor.map((armor) => (armor === "shields" ? "shields" : `${armor} armor`)), "and")} training`);
+  if (spec.fixedWeapons.length) out.push(spec.fixedWeapons.length > 3 ? `${spec.fixedWeapons.length} weapons` : `proficiency with ${listed(spec.fixedWeapons, "and")}`);
+  if (spec.weapons) out.push(`${counted(spec.weapons, "weapon")} of the player's choice`);
+  if (spec.any) out.push(`${COUNT_WORDS[spec.any] ?? spec.any} ${listed(spec.anyKinds, "or")} in any combination`);
+  const taught = spec.taught;
+  if (taught.fixedCantrips.length) out.push(`the ${listed(taught.fixedCantrips.map(titled), "and")} cantrip${taught.fixedCantrips.length === 1 ? "" : "s"}`);
+  if (taught.cantrips) out.push(`${counted(taught.cantrips, "cantrip")} of the player's choice`);
+  if (taught.fixedSpells.length) out.push(`the ${listed(taught.fixedSpells.map(titled), "and")} spell${taught.fixedSpells.length === 1 ? "" : "s"}`);
+  if (taught.spells) out.push(`${counted(taught.spells, `level ${taught.spellLevel} spell`)} of the player's choice`);
+  if (spec.damageTypes.length) out.push(`a choice of ${listed(spec.damageTypes, "or")} damage`);
   return out;
 }
 
@@ -140,6 +264,35 @@ export function hazardFindings(data: Data): Finding[] {
     if (num(block.exhaustion) >= 3) {
       out.push({ level: "warn", text: `${num(block.exhaustion)} levels of exhaustion at once: at 3 a character has disadvantage on attacks and saves, and the SRD's diseases give 1.` });
     }
+  }
+  return out;
+}
+
+// A workshop class against the SRD's twelve: what none of them has together.
+export function classFindings(data: Data): Finding[] {
+  const out: Finding[] = [];
+  const saves = Array.isArray(data.saves) ? (data.saves as string[]) : [];
+  if (saves.length !== 2) {
+    out.push({ level: "error", text: "A class is proficient in two saving throws: pick two different abilities." });
+  }
+  // Each SRD class pairs a common save (Dexterity, Constitution, Wisdom)
+  // with a rarer one.
+  const strong = ["dex", "con", "wis"];
+  if (saves.length === 2 && saves.every((save) => strong.includes(save))) {
+    out.push({ level: "warn", text: "Two of the three saves that come up most (Dexterity, Constitution, Wisdom): every SRD class takes one of them and one rarer one." });
+  }
+  const hitDie = Number(data.hitDie ?? 8);
+  const casting = String(data.casterType ?? "none");
+  const armor = Array.isArray(data.armor) ? (data.armor as string[]) : [];
+  if (casting === "full" && (hitDie >= 10 || armor.includes("heavy"))) {
+    out.push({ level: "warn", text: `A full caster with ${hitDie >= 10 ? `a d${hitDie} hit die` : "heavy armor"}: no SRD full caster has more than a d8 or wears heavy armor without a subclass.` });
+  }
+  const skills = rec(data.skillChoices) as { count?: unknown };
+  if (Number(skills.count ?? 2) > 4) {
+    out.push({ level: "warn", text: "More than four skill picks: the rogue's four are the most any SRD class gives." });
+  }
+  if (!Object.keys(rec(data.levels)).length) {
+    out.push({ level: "warn", text: "No features: a character of this class gains only hit points as they level." });
   }
   return out;
 }

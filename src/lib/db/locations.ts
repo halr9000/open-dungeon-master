@@ -1,5 +1,6 @@
-import { foldName } from "@/lib/language/text-logic";
+import { textKey } from "@/lib/language/text-logic";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
+import { placeTree } from "@/lib/overworld/places";
 import type { GeneratedImage } from "@/lib/types";
 
 // Structured location state: the DM records each area's layout and exits so
@@ -17,10 +18,18 @@ export type CampaignLocation = {
   // Why the last map render failed, while the place has no map. Kept so a
   // reload shows the failure instead of a placeholder that never ends.
   mapFailed: string | null;
+  // A render is queued or running for a place with no map, so the narration
+  // that introduced it is still charting it.
+  mapPending: boolean;
   // The prepared map this place stands on, when the DM linked one, and the
   // sound it makes (docs/vtt-parity-implementation-plan.md section 3.5).
   preparedMapId: string | null;
   ambience: { bed: string; music: string } | null;
+  // The bigger place this one is part of (issue 548): that place's name, or
+  // null or "" for a place of its own ("" when the DM said so). Written when
+  // the place is made (src/lib/dm/place-filing.ts), by the DM, or once by the
+  // upgrade; read through src/lib/overworld/places.ts.
+  parentName: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -36,21 +45,27 @@ type LocationRow = {
   map_image_json: string | null;
   prepared_map_id: string | null;
   ambience_json: string | null;
+  parent_name: string | null;
   created_at: string;
   updated_at: string;
 };
 
 // map_image_json holds the map, or, while there is none, why the last render
-// failed ({ failed }): the failure needs to outlive its ephemeral
-// media_status without a column of its own.
-type StoredMap = GeneratedImage | { failed: string };
+// failed ({ failed }) or when the one on its way was queued ({ pending }):
+// both need to outlive their ephemeral media_status without a column of
+// their own.
+type StoredMap = GeneratedImage | { failed: string } | { pending: string };
 
-function storedMap(raw: string | null): { mapImage: GeneratedImage | null; mapFailed: string | null } {
+function storedMap(raw: string | null): Pick<CampaignLocation, "mapImage" | "mapFailed" | "mapPending"> {
   const stored = parseJson<StoredMap | null>(raw, null);
   if (stored && "url" in stored) {
-    return { mapImage: stored, mapFailed: null };
+    return { mapImage: stored, mapFailed: null, mapPending: false };
   }
-  return { mapImage: null, mapFailed: stored && typeof stored.failed === "string" ? stored.failed : null };
+  return {
+    mapImage: null,
+    mapFailed: stored && "failed" in stored && typeof stored.failed === "string" ? stored.failed : null,
+    mapPending: Boolean(stored && "pending" in stored),
+  };
 }
 
 function mapLocation(row: LocationRow): CampaignLocation {
@@ -65,6 +80,7 @@ function mapLocation(row: LocationRow): CampaignLocation {
     ...storedMap(row.map_image_json),
     preparedMapId: row.prepared_map_id ?? null,
     ambience: parseJson<{ bed: string; music: string } | null>(row.ambience_json ?? "", null),
+    parentName: typeof row.parent_name === "string" ? row.parent_name : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -80,8 +96,8 @@ export function getLocation(id: string): CampaignLocation | null {
 // Compared in JavaScript, by Unicode case and form (src/lib/language): SQLite's
 // NOCASE folds ASCII only, so "église" after "Église" would be a second place.
 export function getLocationByName(campaignId: string, name: string): CampaignLocation | null {
-  const wanted = foldName(name);
-  return listLocations(campaignId).find((location) => foldName(location.name) === wanted) ?? null;
+  const wanted = textKey(name);
+  return listLocations(campaignId).find((location) => textKey(location.name) === wanted) ?? null;
 }
 
 export function listLocations(campaignId: string): CampaignLocation[] {
@@ -104,10 +120,10 @@ export function getCurrentLocation(campaignId: string): CampaignLocation | null 
 // the routes already known. update_location remains the way to revise them.
 // Names are compared folded, as places are (getLocationByName).
 export function withNewNames(known: string[], added: string[]): string[] {
-  const seen = new Set(known.map(foldName));
+  const seen = new Set(known.map(textKey));
   const merged = [...known];
   for (const name of added) {
-    const folded = foldName(name);
+    const folded = textKey(name);
     if (!seen.has(folded)) {
       seen.add(folded);
       merged.push(name);
@@ -238,10 +254,11 @@ export function insertKnownLocation(input: {
   return getLocation(id);
 }
 
-// Renames a place and repoints every connection that named it. Connections
-// are stored as names rather than ids, so a rename that touched only this
-// row would quietly cut the location out of the overworld's route graph.
-// Returns null when the name is taken or the location is gone.
+// Renames a place and repoints every connection and every part that named
+// it. Both are stored as names rather than ids, so a rename that touched
+// only this row would quietly cut the location out of the overworld's route
+// graph and set its parts loose on the region map. Returns null when the
+// name is taken or the location is gone.
 export function renameLocation(
   campaignId: string,
   locationId: string,
@@ -252,7 +269,7 @@ export function renameLocation(
   if (!trimmed || !location || location.campaignId !== campaignId) {
     return null;
   }
-  if (trimmed.toLowerCase() === location.name.toLowerCase()) {
+  if (textKey(trimmed) === textKey(location.name)) {
     return location;
   }
   const clash = getLocationByName(campaignId, trimmed);
@@ -272,7 +289,7 @@ export function renameLocation(
         continue;
       }
       const repointed = other.connections.map((connection) =>
-        connection.trim().toLowerCase() === location.name.toLowerCase() ? trimmed : connection,
+        textKey(connection) === textKey(location.name) ? trimmed : connection,
       );
       if (repointed.join("\u0000") !== other.connections.join("\u0000")) {
         db.prepare(`UPDATE locations SET connections_json = ? WHERE id = ?`).run(
@@ -280,9 +297,78 @@ export function renameLocation(
           other.id,
         );
       }
+      if (other.parentName && textKey(other.parentName) === textKey(location.name)) {
+        db.prepare(`UPDATE locations SET parent_name = ? WHERE id = ?`).run(trimmed, other.id);
+      }
     }
   })();
   return getLocation(locationId);
+}
+
+// Files a place under a bigger one, or ("") says it stands on its own. The
+// bigger place has to be another place on record and not one of this
+// place's own parts, which would make a loop. Stored under the bigger
+// place's own spelling, so the folded comparison is only ever needed once.
+export function setLocationParent(
+  campaignId: string,
+  locationId: string,
+  parentName: string,
+): CampaignLocation | { error: string } {
+  const location = getLocation(locationId);
+  if (!location || location.campaignId !== campaignId) {
+    return { error: "That place is not in this campaign." };
+  }
+  const wanted = parentName.trim();
+  let stored = "";
+  if (wanted) {
+    const places = listLocations(campaignId);
+    const parent = places.find((place) => textKey(place.name) === textKey(wanted));
+    if (!parent) {
+      return { error: `There is no place called ${wanted} yet.` };
+    }
+    if (parent.id === location.id) {
+      return { error: "A place cannot be part of itself." };
+    }
+    if (placeTree(places).descendantsOf(location.id).includes(parent.id)) {
+      return { error: `${parent.name} is already part of ${location.name}.` };
+    }
+    stored = parent.name;
+  }
+  getDatabase()
+    .prepare(`UPDATE locations SET parent_name = ?, updated_at = ? WHERE id = ?`)
+    .run(stored, nowIso(), location.id);
+  return getLocation(location.id)!;
+}
+
+// The DM named the bigger place an area is part of (move_party or
+// update_location's partOf): files the area under it, making the bigger
+// place first when it is new. It is made the way a described region's places
+// are, unvisited and nobody's current location, because the party stands in
+// one of its parts and the region map counts that as being there. `created`
+// is what tells the caller to place it on the map and announce it.
+export function fileUnderPlace(
+  campaignId: string,
+  locationId: string,
+  parentName: string,
+): { location: CampaignLocation; parent: CampaignLocation; created: boolean } | { error: string } {
+  const name = parentName.trim().slice(0, 80);
+  const location = getLocation(locationId);
+  if (!name || !location) {
+    return { error: "No bigger place was named." };
+  }
+  if (textKey(name) === textKey(location.name)) {
+    return { error: "A place cannot be part of itself." };
+  }
+  const known = getLocationByName(campaignId, name);
+  const parent = known ?? insertKnownLocation({ campaignId, name });
+  if (!parent) {
+    return { error: "No bigger place was named." };
+  }
+  const filed = setLocationParent(campaignId, location.id, parent.name);
+  if ("error" in filed) {
+    return filed;
+  }
+  return { location: filed, parent: getLocation(parent.id) ?? parent, created: !known };
 }
 
 // null takes the map away: the panel shows the stand-in plate for the kind
@@ -308,13 +394,29 @@ export function setLocationMapFailed(locationId: string, reason: string): boolea
   return true;
 }
 
-// A new render is on its way: the old failure no longer describes the place.
-export function clearLocationMapFailed(locationId: string): boolean {
-  if (!getLocation(locationId)?.mapFailed) {
+// A new render is on its way to a place with no map: an old failure no
+// longer describes the place, and until the render lands or fails, a reload
+// still shows the narration charting it. A place with a map keeps it while
+// a redraw waits. True when what is stored changed.
+export function setLocationMapPending(locationId: string): boolean {
+  const location = getLocation(locationId);
+  if (!location || location.mapImage || location.mapPending) {
     return false;
   }
-  getDatabase().prepare(`UPDATE locations SET map_image_json = NULL WHERE id = ?`).run(locationId);
+  getDatabase()
+    .prepare(`UPDATE locations SET map_image_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ pending: nowIso() } satisfies StoredMap), locationId);
   return true;
+}
+
+// Renders a stopped process had queued or running. The queue lived in its
+// memory, so none of them is coming: each place gets the failure, which
+// shows the reason and leaves the redraw to the Map panel, instead of a
+// placeholder that charts forever. How many places that was.
+export function failPendingLocationMaps(reason: string): number {
+  return getDatabase()
+    .prepare(`UPDATE locations SET map_image_json = ? WHERE map_image_json LIKE '{"pending":%'`)
+    .run(JSON.stringify({ failed: reason } satisfies StoredMap)).changes;
 }
 
 // Link a place to a prepared map and a sound, or clear either with null.

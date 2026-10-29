@@ -159,10 +159,12 @@
     background: rgba(212, 171, 58, 0.07);
   }
 
-  /* The name at the head of a settings row: small caps in the kit's gold. */
+  /* The name at the head of a settings row: small caps in the kit's gold.
+     A column wide, or as wide as a longer name needs ("Conscience"), so a
+     name never runs into the control beside it. */
   .pk-rowlabel {
     flex: none;
-    width: 4.75rem;
+    min-width: 4.75rem;
     font-family: var(--font-display), Georgia, serif;
     font-size: 0.66rem;
     letter-spacing: 0.12em;
@@ -230,9 +232,11 @@ button.pk-tap.pk-display {
 .kit-select.pk-w-28 { width: 7rem; flex: none; }
 .kit-slider.pk-w-28 { width: 7rem; flex: none; }
 
-/* A Game settings row another panel pointed at (the Party panel's "Open
-   Game settings", issue 209): a gold ring that breathes out once. */
-[data-settings-row][data-flash] {
+/* A table settings row another panel pointed at (the Party panel's "Open
+   table settings", issue 209), or the Help section a search or a control
+   jumped to: a gold ring that breathes out once. */
+[data-settings-row][data-flash],
+section[id^="help-"][data-flash] {
   border-radius: 0.5rem;
   animation: settings-row-flash 1.8s var(--ease-settle) 1;
 }
@@ -241,7 +245,8 @@ button.pk-tap.pk-display {
   100% { box-shadow: 0 0 0 2px rgba(227, 193, 92, 0), 0 0 18px rgba(212, 171, 58, 0); background-color: transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-settings-row][data-flash] { animation: none; box-shadow: 0 0 0 2px rgba(227, 193, 92, 0.85); }
+  [data-settings-row][data-flash],
+  section[id^="help-"][data-flash] { animation: none; box-shadow: 0 0 0 2px rgba(227, 193, 92, 0.85); }
 }
 
 /* Arrange party (issue 240): each viewer's own order for the Party cards.
@@ -327,4 +332,16 @@ html[data-theme="light"] .formation-step { color: #44403c; border-color: rgba(12
   .formation-editor { animation: none; }
   .formation-step, .formation-answer { transition: none; }
   .formation-step:not(:disabled):is(:hover, :focus-visible) { transform: none; }
+}
+
+/* A heading whose title is a name the story wrote (an area of the map):
+   "Hollowroot Vault Entrance Passage" in spaced capitals is wider than the
+   column, and kept on one line it pushed the whole panel sideways. It wraps
+   instead, the way a DM card's does. Outside the layer, like the kit's own
+   heading rules (kit.css), or theirs would win. */
+.section-head-wraps .section-head-title {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }

@@ -6,7 +6,10 @@
 // with the scripted fake agent (HARNESS_FAKE) as the picture backend: it
 // declines, the stored message and place carry the reason, the placeholder
 // the passage shows from them (src/app/campaigns/[campaignId]/mediaSlot.ts)
-// is the failure line, and a later picture that does paint clears it.
+// is the failure line, and a later picture that does paint clears it. A map
+// render a restart dropped from the in-memory queue fails the same way when
+// the next process starts, and a place with no render on its way shows
+// nothing at all.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -33,10 +36,11 @@ const { saveGlobalConfig } = await import("../src/lib/db/app-settings.ts");
 const { createUser } = await import("../src/lib/db/users.ts");
 const { createCampaign, getCampaignById, allocateSeq } = await import("../src/lib/db/campaigns.ts");
 const { insertCampaignMessage, getCampaignMessage } = await import("../src/lib/db/messages.ts");
-const { upsertCurrentLocation, getLocation, listLocations } = await import("../src/lib/db/locations.ts");
+const { upsertCurrentLocation, getLocation, listLocations, setLocationMap } = await import("../src/lib/db/locations.ts");
 const { fulfillMessageImage, handleGenerateImage } = await import("../src/lib/dm/images.ts");
 const { enqueueLocationMap } = await import("../src/lib/dm/maps.ts");
 const { enqueueMediaJob } = await import("../src/lib/media-queue.ts");
+const { recoverDmAfterRestart, RESTART_MAP_FAILED } = await import("../src/lib/dm/restart-recovery.ts");
 const { subscribe } = await import("../src/lib/events.ts");
 const { imageVariantsSettled } = await import("../src/lib/image-variants.ts");
 const { scenePictureSlot, locationMapSlot, mediaSlotSpins } = await import(
@@ -158,7 +162,7 @@ try {
   const arrival = narrate({ locationId: location.id });
 
   await test("a map the backend declines is recorded on the place, and the narration stops charting", async () => {
-    assert.equal(mediaSlotSpins(locationMapSlot(getLocation(location.id), arrival.createdAt, undefined)), true);
+    assert.equal(locationMapSlot(getLocation(location.id), arrival.createdAt, undefined), null, "a place nobody asked to draw charts");
     setScript(DECLINE);
     const events = await eventsDuring(campaign.id, () => quietly(() => enqueueLocationMap(getCampaignById(campaign.id), location.id)));
     const live = events.find((event) => event.type === "media_status" && event.data.state === "failed");
@@ -171,8 +175,8 @@ try {
     const slot = locationMapSlot(stored, arrival.createdAt, undefined);
     assert.equal(mediaSlotSpins(slot), false, "the map placeholder would spin after a reload");
     assert.deepEqual([slot.status.state, slot.status.reason], ["failed", live.data.reason]);
-    const updated = events.find((event) => event.type === "location_updated");
-    assert.equal(updated?.data.location.mapFailed, live.data.reason, "open clients get the place as stored");
+    const updates = events.filter((event) => event.type === "location_updated").map((event) => event.data.location);
+    assert.deepEqual(updates.map((place) => [place.mapPending, place.mapFailed]), [[true, null], [false, live.data.reason]], "open clients get the place as stored, waiting and then failed");
   });
 
   await test("a redraw clears the failure while it waits, and the map it paints shows under the narration", async () => {
@@ -180,6 +184,7 @@ try {
     const drawn = enqueueLocationMap(getCampaignById(campaign.id), location.id);
     const waiting = getLocation(location.id);
     assert.equal(waiting.mapFailed, null, "a queued redraw still reads as failed after a reload");
+    assert.equal(waiting.mapPending, true);
     assert.equal(mediaSlotSpins(locationMapSlot(waiting, arrival.createdAt, undefined)), true);
     await drawn;
     const mapped = getLocation(location.id);
@@ -195,6 +200,44 @@ try {
     const after = getLocation(location.id);
     assert.deepEqual(after.mapImage, before);
     assert.equal(after.mapFailed, null);
+    assert.equal(after.mapPending, false, "a place with a map is never waiting on one");
+  });
+
+  await test("a map taken back to the placeholder leaves the narration quiet", () => {
+    setLocationMap(location.id, null);
+    const cleared = getLocation(location.id);
+    assert.deepEqual([cleared.mapImage, cleared.mapFailed, cleared.mapPending], [null, null, false]);
+    assert.equal(locationMapSlot(cleared, arrival.createdAt, undefined), null, "it charts a map nobody is drawing");
+  });
+
+  await test("a map render a restart dropped fails when the next process starts, and the narration says why", async () => {
+    const landing = upsertCurrentLocation({ campaignId: campaign.id, name: "Marrow's Crossing", layoutDescription: "a ferry landing" });
+    const crossing = narrate({ locationId: landing.id });
+    // Another picture holds the queue, so the map is still waiting when the
+    // process stops.
+    void enqueueMediaJob("a render that outlives the process", () => new Promise(() => {}));
+    void enqueueLocationMap(getCampaignById(campaign.id), landing.id);
+    assert.equal(getLocation(landing.id).mapPending, true);
+    assert.equal(mediaSlotSpins(locationMapSlot(getLocation(landing.id), crossing.createdAt, undefined)), true);
+
+    // The restart: the queue and the recovery flag lived in memory.
+    for (const key of ["__odmMediaQueues", "__odmMediaWaiting", "__odmDmRecovered"]) {
+      globalThis[key] = undefined;
+    }
+    const recovery = await quietly(() => recoverDmAfterRestart());
+    assert.equal(recovery.maps, 1, "only the place still waiting is touched");
+
+    const after = getLocation(landing.id);
+    assert.deepEqual([after.mapImage, after.mapFailed, after.mapPending], [null, RESTART_MAP_FAILED, false]);
+    const slot = locationMapSlot(after, crossing.createdAt, undefined);
+    assert.equal(mediaSlotSpins(slot), false, "the narration charts a map that is not coming");
+    assert.deepEqual([slot.status.state, slot.status.reason], ["failed", RESTART_MAP_FAILED]);
+    assert.equal(getLocation(location.id).mapFailed, null, "a place with nothing on its way is left alone");
+
+    // The redraw the failure line points at still paints.
+    setScript(PAINT);
+    await enqueueLocationMap(getCampaignById(campaign.id), landing.id);
+    assert.ok(getLocation(landing.id).mapImage, "the redraw after the restart was not painted");
   });
 
   console.log(`\n${passed} media failure checks passed`);

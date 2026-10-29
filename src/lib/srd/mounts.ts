@@ -10,7 +10,10 @@
 // speed, a capacity and a crew requirement. Nothing simulates a ship's
 // helm.
 //
-// Pure by design: no imports at all, so scripts/test-mounts.mjs can load it.
+// Pure by design: no imports beyond types, so scripts/test-mounts.mjs can load it.
+
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
 
 export type MountProfile = {
   slug: string;
@@ -18,7 +21,8 @@ export type MountProfile = {
   // Feet per round.
   speed: number;
   // Pounds it carries before it slows, which is the 5e carrying-capacity rule
-  // applied to a beast: Strength x 15, doubled for a Large creature.
+  // applied to a beast: Strength x 15, doubled for a Large creature and
+  // quadrupled for a Huge one; a mule's Beast of Burden counts it as Large.
   carry: number;
   // A controlled mount is one trained to bear a rider (PHB p.198): the rider
   // chooses its actions and it shares their initiative. An independent mount
@@ -36,6 +40,9 @@ export type MountSize = (typeof MOUNT_SIZES)[number];
 const SIZE_ORDER: Record<MountSize, number> = { small: 1, medium: 2, large: 3, huge: 4 };
 
 // The SRD's riding animals, with the two flying mounts a table will ask for.
+// Each speed is the stat block's walking speed (the griffon's its flying
+// speed, 80 feet, as it is ridden in the air), held to the SRD creature
+// table by scripts/test-mounts.mjs.
 export const MOUNTS: MountProfile[] = [
   {
     slug: "riding-horse",
@@ -101,6 +108,24 @@ export const MOUNTS: MountProfile[] = [
     blurb: "Ridden by those the wild allows. Keeps its own counsel.",
   },
   {
+    slug: "mule",
+    name: "Mule",
+    speed: 40,
+    carry: 420,
+    controllable: true,
+    size: "medium",
+    blurb: "Sure-footed on a mountain path; carries like a horse.",
+  },
+  {
+    slug: "elephant",
+    name: "Elephant",
+    speed: 40,
+    carry: 1320,
+    controllable: true,
+    size: "huge",
+    blurb: "Carries a howdah and a war band; tramples what stands in front.",
+  },
+  {
     slug: "griffon",
     name: "Griffon",
     speed: 80,
@@ -115,8 +140,7 @@ export function mountProfile(ref: string): MountProfile | null {
   const needle = ref.trim().toLowerCase();
   return (
     MOUNTS.find((mount) => mount.slug === needle) ??
-    MOUNTS.find((mount) => mount.name.toLowerCase() === needle) ??
-    MOUNTS.find((mount) => mount.name.toLowerCase().includes(needle)) ??
+    MOUNTS.find((mount) => textKey(mount.name) === textKey(ref)) ??
     null
   );
 }
@@ -136,7 +160,7 @@ export type MountState = {
   size: MountSize;
 };
 
-export type MountCheck = { ok: true; state: MountState } | { error: string };
+export type MountCheck = { ok: true; state: MountState } | ToolError;
 
 // Mounting. The rules it enforces are the ones the PHB actually states, and
 // the errors say which rule refused, because "you cannot do that" teaches a
@@ -154,6 +178,7 @@ export function checkMount(input: {
     if (!canCarry(input.custom.size, riderSize)) {
       return {
         error: `A mount has to be at least one size larger than its rider; a ${input.custom.size} mount cannot carry a ${riderSize} rider.`,
+        refused: "rules",
       };
     }
     return {
@@ -169,11 +194,12 @@ export function checkMount(input: {
   }
   const profile = mountProfile(input.ref);
   if (!profile) {
-    return { error: `No mount called "${input.ref}". Describe one instead and the DM can write it in.` };
+    return { error: `No mount called "${input.ref}"; the mounts are ${MOUNTS.map((mount) => mount.name).join(", ")}. A listed one is sent in mount by that name whatever the table calls it; an animal no list has is sent in customName with its speed and size.`, retry: true };
   }
   if (!canCarry(profile.size, riderSize)) {
     return {
       error: `A ${riderSize} rider cannot ride a ${profile.size} ${profile.name}; a mount has to be one size larger.`,
+      refused: "rules",
     };
   }
   return {
@@ -243,8 +269,7 @@ export function vehicleProfile(ref: string): VehicleProfile | null {
   const needle = ref.trim().toLowerCase();
   return (
     VEHICLES.find((vehicle) => vehicle.slug === needle) ??
-    VEHICLES.find((vehicle) => vehicle.name.toLowerCase() === needle) ??
-    VEHICLES.find((vehicle) => vehicle.name.toLowerCase().includes(needle)) ??
+    VEHICLES.find((vehicle) => textKey(vehicle.name) === textKey(ref)) ??
     null
   );
 }

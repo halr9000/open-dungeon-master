@@ -4,6 +4,7 @@
 // src/lib/db/prep-cards.ts; the tool is src/lib/dm/prep-card-tool.ts.
 
 import type { StoryArc } from "./arc-logic.ts";
+import { findNamed } from "../language/text-logic.ts";
 
 export const PREP_ROLES = ["beat", "moment", "lore", "quest", "fight", "secret", "unplaced"] as const;
 export type PrepRole = (typeof PREP_ROLES)[number];
@@ -31,7 +32,7 @@ export const PREP_ROLE_LABELS: Record<PrepRole, string> = {
   lore: "a lore entry",
   quest: "a quest",
   fight: "a prepared fight",
-  secret: "a DM-only note",
+  secret: "a GM-only note",
   unplaced: "kept on the shelf: the arc had no room for it as a planned event",
 };
 
@@ -63,8 +64,8 @@ export function placementOf(arc: StoryArc | null, cardId: string): PrepPlacement
 }
 
 // "ev3" finds the event's card, "7" the seventh beat's, anything else a card
-// by title (exact first, then a title that contains the words). Null when
-// nothing matches; the caller says so.
+// by its whole title (src/lib/language/text-logic.ts findNamed) or its id.
+// Null when nothing matches; the caller says so.
 export function resolvePrepRef(arc: StoryArc | null, cards: PrepCard[], ref: string): PrepCard | null {
   const wanted = ref.trim();
   if (!wanted) {
@@ -79,13 +80,7 @@ export function resolvePrepRef(arc: StoryArc | null, cards: PrepCard[], ref: str
     const beat = arc?.beats[Number(wanted) - 1];
     return beat ? byCardId(beat.cardId) : null;
   }
-  const lower = wanted.toLowerCase();
-  return (
-    cards.find((card) => card.title.trim().toLowerCase() === lower) ??
-    cards.find((card) => card.cardId === wanted) ??
-    cards.find((card) => card.title.toLowerCase().includes(lower)) ??
-    null
-  );
+  return findNamed(cards, wanted, (card) => [card.title]) ?? cards.find((card) => card.cardId === wanted) ?? null;
 }
 
 // The card as the DM reads it: whole, line breaks kept, with where it
@@ -106,6 +101,6 @@ export function renderPrepCard(card: PrepCard, placement: PrepPlacement): Record
     ...(card.cues ? { involves: card.cues } : {}),
     text: card.body,
     ...(card.sourceTitle ? { from: card.sourceTitle } : {}),
-    note: "DM-only prep. An opportunity, not a script: play it when the fiction reaches it, adapt it, or let it go; never reveal or quote it.",
+    note: "GM-only prep. An opportunity, not a script: play it when the fiction reaches it, adapt it, or let it go; never reveal or quote it.",
   };
 }

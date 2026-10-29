@@ -13,6 +13,8 @@ import { freeCastOf, freeCastResourceId, freeCastSpellOf, isFreeCastResource } f
 import { LATE_RESOURCE_DEFS } from "@/lib/srd/class-resources-late";
 import { UNLIMITED_USES } from "@/lib/srd/resource-limits";
 import { tableFeat } from "@/lib/srd/feat-effects";
+import { textKey } from "@/lib/language/text-logic";
+import { choiceIn, familyOf, isNamed } from "@/lib/srd/feature-names";
 
 export { isUnlimited, UNLIMITED_USES } from "@/lib/srd/resource-limits";
 
@@ -32,8 +34,8 @@ export type ResourceEffect =
   // (Lay on Hands).
   | { kind: "heal_pool" }
   // Each spent use is one die of healing to the target (Balm of the Summer
-  // Court: a pool of d6s).
-  | { kind: "heal_dice_pool"; die: string }
+  // Court: a pool of d6s), and `tempPerDie` temporary hit points per die.
+  | { kind: "heal_dice_pool"; die: string; tempPerDie?: number }
   // Heals the target for a rolled expression (Healing Light-likes).
   | { kind: "heal_target"; dice: (level: number, abilityMods: Record<string, number>) => string }
   // Grants the spender (or a target) temporary hit points; 5e temp HP never
@@ -80,13 +82,17 @@ export type ResourceEffect =
 
 // The JSON form of an effect, carried on resource rows in resources.json /
 // authored-resources.json. Dice formulas are strings with `level`, `prof`,
-// and ability-mod tokens ("1d8+level", "2d6+wis") resolved at spend time.
+// and ability-mod tokens ("1d8+level", "2d6+wis") resolved at spend time, or
+// a ladder of [class level, formula] steps where the last one reached wins
+// (Drake's Breath: 8d6, then 10d6 from 15th level).
+export type DiceFormula = string | Array<[number, string]>;
+
 export type ResourceFx =
-  | { kind: "heal_self"; dice: string }
+  | { kind: "heal_self"; dice: DiceFormula }
   | { kind: "heal_pool" }
-  | { kind: "heal_dice_pool"; die: string }
-  | { kind: "heal_target"; dice: string }
-  | { kind: "temp_hp"; dice: string }
+  | { kind: "heal_dice_pool"; die: string; tempPerDie?: number }
+  | { kind: "heal_target"; dice: DiceFormula }
+  | { kind: "temp_hp"; dice: DiceFormula }
   | { kind: "condition"; condition: string; rounds: number }
   | {
       kind: "buff";
@@ -94,21 +100,29 @@ export type ResourceFx =
       rounds: number;
       target?: "self" | "ally";
       variants?: string[];
-      tempHp?: string;
+      tempHp?: DiceFormula;
     }
   | { kind: "inspire"; die: string }
-  | { kind: "aoe"; dice: string; save: SaveAbilityId }
-  | { kind: "enemy_save"; save: SaveAbilityId; condition?: string; dice?: string }
+  | { kind: "aoe"; dice: DiceFormula; save: SaveAbilityId }
+  | { kind: "enemy_save"; save: SaveAbilityId; condition?: string; dice?: DiceFormula }
   | { kind: "teleport"; feet: number };
 
 // "1d8+level" at level 5 -> "1d8+5"; "2d6+wis" with WIS +3 -> "2d6+3".
 // Negative modifiers fold into the sign so the dice grammar stays valid.
 export function resolveDiceFormula(
-  formula: string,
+  formula: DiceFormula,
   level: number,
   abilityMods: Record<string, number>,
 ): string {
-  return formula
+  let text = typeof formula === "string" ? formula : (formula[0]?.[1] ?? "0");
+  if (Array.isArray(formula)) {
+    for (const [atLevel, value] of formula) {
+      if (level >= atLevel) {
+        text = value;
+      }
+    }
+  }
+  return text
     // A number of dice equal to the proficiency bonus ("profd4": Healing
     // Hands, MotM).
     .replace(/\bprofd(\d+)\b/g, (_, die) => `${proficiencyBonus(level)}d${die}`)
@@ -137,7 +151,7 @@ export function effectFromFx(fx: ResourceFx | undefined): ResourceEffect {
     case "heal_pool":
       return { kind: "heal_pool" };
     case "heal_dice_pool":
-      return { kind: "heal_dice_pool", die: fx.die };
+      return { kind: "heal_dice_pool", die: fx.die, ...(fx.tempPerDie ? { tempPerDie: fx.tempPerDie } : {}) };
     case "heal_target":
       return {
         kind: "heal_target",
@@ -199,7 +213,7 @@ export type ResourceDef = {
   // level = class level. Absent = scale by the level of whichever class
   // granted the matching feature (feature.classId), else character level.
   classIds?: string[];
-  // Feature name(s) this resource attaches to, lowercased for matching.
+  // Feature name(s) this resource attaches to, compared by key (textKey).
   match: string[];
   // Require the feature name to BE the match term, not merely contain it as
   // a word: "Rage" is barbarian rage, "Road Rage" (road_warrior) is not.
@@ -236,6 +250,13 @@ export type ResourceDef = {
   // Only while the holder has fewer than half their hit points (Unearthly
   // Recovery).
   requires?: "below_half";
+  // The most one use may spend: half the class level (Balm of the Summer
+  // Court's dice) or the Charisma modifier, at least one (Healing Light's).
+  perUse?: "half_level" | "cha";
+  // Spent, it comes back only after this many long rests, rolled (Limited
+  // Wish, Necrotic Husk: 1d4); a marker on the sheet counts them down
+  // (src/lib/dm/rest-logic.ts).
+  recovers?: string;
   // One line of SRD truth handed back to the model in the tool result, so a
   // spend never leaves it guessing what the feature does.
   guidance: string;
@@ -323,7 +344,7 @@ const SRD_RESOURCE_DEFS: ResourceDef[] = [
     recharge: "long",
     effect: { kind: "narrative" },
     guidance:
-      "Sorcery points buy Metamagic on a spell being cast (spend with amount), or convert to and from spell slots: call use_resource with variant like 'create a 2nd-level slot' (costs 2/3/5/6/7 points for levels 1-5) or 'convert my 3rd-level slot into points' and the server moves the points and slots. Either conversion is a bonus action on their turn in a fight. Created slots vanish on a long rest. Quickened Spell: call use_resource with variant 'Quickened Spell' before the cast; the server spends 2 points and the next spell of one action this turn takes the bonus action. The spell itself still goes through use_spell_slot or cast_at_enemy as normal.",
+      "Sorcery points buy Metamagic on a spell being cast (spend with amount), or convert to and from spell slots: call use_resource with variant 'create slot' (costs 2/3/5/6/7 points for levels 1-5) or 'convert slot' (the slot back into points equal to its level), the slot's level in amount, and the server moves the points and slots. Either conversion is a bonus action on their turn in a fight. Created slots vanish on a long rest. Quickened Spell: call use_resource with variant 'Quickened Spell' before the cast; the server spends 2 points and the next spell of one action this turn takes the bonus action. The spell itself still goes through use_spell_slot or cast_at_enemy as normal.",
   },
   // ---- the feats' counters (src/lib/srd/feat-combat.ts) ----
   {
@@ -514,7 +535,7 @@ const SRD_RESOURCE_DEFS: ResourceDef[] = [
     action: "action",
     effect: { kind: "aoe", dice: breathDice, save: "dex" },
     guidance:
-      "A cone or line of the dragonborn's ancestral damage type. Resolve it with aoe_damage using the dice, save, DC and damage type this call reports (the ancestry sets the type and the save).",
+      "A cone or line of the breath's damage type. Resolve it with aoe_damage using the dice, save, DC and damage type this call reports (the ancestry, or the species option the player picked, sets the type and the save).",
   },
   {
     id: "indomitable",
@@ -650,6 +671,8 @@ type SubclassResourceRow = {
   action?: ResourceAction;
   fallbackPool?: { id: string; amount: number };
   requires?: "below_half";
+  perUse?: "half_level" | "cha";
+  recovers?: string;
 };
 
 function proficiencyBonus(level: number): number {
@@ -687,6 +710,8 @@ const SUBCLASS_RESOURCE_DEFS: ResourceDef[] = (
   ...(row.action ? { action: row.action } : {}),
   ...(row.fallbackPool ? { fallbackPool: row.fallbackPool } : {}),
   ...(row.requires ? { requires: row.requires } : {}),
+  ...(row.perUse ? { perUse: row.perUse } : {}),
+  ...(row.recovers ? { recovers: row.recovers } : {}),
 }));
 
 // The spells a race casts once a day by nature (a tiefling's hellish rebuke
@@ -719,6 +744,12 @@ export const RESOURCE_DEFS: ResourceDef[] = [
   ...INNATE_RESOURCE_DEFS,
   ...COMBAT_RESOURCE_DEFS,
 ];
+
+// The marker a counter that returns after several long rests leaves on the
+// sheet while it waits: "limited wish recovering (3)".
+export function recoveringPrefix(displayName: string): string {
+  return `${displayName.trim().toLowerCase()} recovering`;
+}
 
 export type ResourceState = { max: number; used: number };
 export type ResourceMap = Record<string, ResourceState>;
@@ -762,35 +793,26 @@ function freeCastDef(id: string): ResourceDef {
   };
 }
 
-// Whole-word containment: the fragment must appear as its own word(s), so
-// "ki" matches "Ki" and "Ki Points" but never "Skill Versatility" (the
-// half-elf trait that a bare substring test turns into a monk).
-//
-// Both sides are stripped of punctuation, not just the fragment: a feature
-// named "Hexblade's Curse" or "Stone's Endurance" otherwise never matched its
-// own apostrophe-free fragment.
-function containsWord(haystack: string, fragment: string): boolean {
-  const clean = (value: string) => value.replace(/[^a-z ]/g, "");
-  return new RegExp(`(^|[^a-z])${clean(fragment)}([^a-z]|$)`).test(clean(haystack));
-}
+// Words compared without their apostrophes on either side: a feature named
+// "Hexblade's Curse" is also written "Hexblades Curse".
+const unquoted = (text: string) => text.replace(/['‘’ʼ´`]/g, "");
 
-// Fuzzy find by id or display/feature name ("rage", "Ki", "sorcery
-// points"...); used by the use_resource tool with model-supplied names.
+// A resource by its id, its display name or a feature name it is spent
+// under, whole, in the formats ODM writes (src/lib/srd/feature-names.ts):
+// "rage", "Ki Points", "Bardic Inspiration (d8)", and a "Family: Choice"
+// spent from its family's pool ("Channel Divinity: Turn Undead"); used by
+// the use_resource tool with model-supplied names. A word of a name is none:
+// "channel" is no Channel Divinity, Persistent Rage no Rage, and the tool
+// lists the sheet's own.
 export function matchResource(term: string): ResourceDef | null {
-  const wanted = term.trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  const wanted = textKey(term);
   if (!wanted) {
     return null;
   }
-  return (
-    RESOURCE_DEFS.find((def) => def.id.replace(/_/g, " ") === wanted) ??
-    RESOURCE_DEFS.find((def) => def.displayName.toLowerCase() === wanted) ??
-    RESOURCE_DEFS.find((def) =>
-      def.match.some(
-        (name) => name === wanted || containsWord(wanted, name) || containsWord(name, wanted),
-      ),
-    ) ??
-    null
-  );
+  const named = (written: string) =>
+    RESOURCE_DEFS.find((def) => isNamed(written, def.displayName)) ??
+    RESOURCE_DEFS.find((def) => def.match.some((name) => isNamed(unquoted(written), unquoted(name))));
+  return RESOURCE_DEFS.find((def) => textKey(def.id) === wanted) ?? named(term) ?? named(familyOf(term)) ?? null;
 }
 
 // The level a resource counter scales by, and the class it came from.
@@ -826,16 +848,14 @@ function resourceLevelFor(
   return { level, classId: granting };
 }
 
-const plainName = (value: string) =>
-  value.trim().toLowerCase().replace(/[^a-z0-9()]+/g, " ").trim();
-
 // "Hardened (2 uses)" is the feature Hardened, grown: the suffix is what an
 // upgrade line adds to the name of the feature it upgrades.
 const withoutUses = (name: string) => name.replace(/\s*\((?:\d+|[a-z]+) uses?\)\s*$/i, "");
 
 // Whether a feature on a sheet is the one this counter belongs to: the name
-// matches (exactly for the defs that ask for it, as whole words otherwise),
-// and the class that granted the feature is one the counter was written for.
+// matches (exactly for the defs that ask for it, else whole after a
+// "Prefix:" or with a bracket note, src/lib/srd/feature-names.ts), and the
+// class that granted the feature is one the counter was written for.
 // A feature that names no class (story grants, sheets written before the
 // class was kept) is matched on its name alone.
 function featureHolds(def: ResourceDef, feature: { name: string; classId?: string }): boolean {
@@ -845,15 +865,16 @@ function featureHolds(def: ResourceDef, feature: { name: string; classId?: strin
       return false;
     }
   }
-  const name = feature.name.trim().toLowerCase();
+  const name = textKey(feature.name);
   return def.match.some((fragment) => {
-    if (name === fragment || plainName(withoutUses(name)) === plainName(fragment)) {
+    if (name === textKey(fragment) || textKey(withoutUses(feature.name)) === textKey(fragment)) {
       return true;
     }
-    if (def.upgrades?.some((upgrade) => plainName(upgrade.match) === plainName(name))) {
+    if (def.upgrades?.some((upgrade) => textKey(upgrade.match) === name)) {
       return true;
     }
-    return !def.exact && containsWord(name, fragment);
+    // "Channel Divinity: Turn Undead" is spent from Channel Divinity.
+    return !def.exact && (isNamed(unquoted(feature.name), unquoted(fragment)) || choiceIn(feature.name, fragment) !== null);
   });
 }
 
@@ -918,9 +939,8 @@ export function populateResources(
     // A feature that upgrades this one raises the ceiling: by the row the
     // catalog wrote for it, or by the count its own name states.
     for (const feature of held) {
-      const name = feature.name.trim().toLowerCase();
-      const row = def.upgrades?.find((upgrade) => plainName(upgrade.match) === plainName(name));
-      const stated = def.upgrades ? usesNamed(name) : null;
+      const row = def.upgrades?.find((upgrade) => textKey(upgrade.match) === textKey(feature.name));
+      const stated = def.upgrades ? usesNamed(feature.name) : null;
       max = Math.max(max, row?.uses ?? 0, stated ?? 0);
     }
     const key = def.into ?? def.id;

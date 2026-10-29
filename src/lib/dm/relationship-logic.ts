@@ -17,6 +17,8 @@
 // Everything here is deterministic given its inputs; dice arrive as injected
 // rolls.
 
+import type { ToolError } from "@/lib/dm/tool-errors";
+
 export const APPROVAL_MIN = -100;
 export const APPROVAL_MAX = 100;
 
@@ -178,6 +180,8 @@ export const RELATIONSHIP_BEATS = {
   shared_peril: { base: 5, axis: "boldness", axisSign: 1, track: "social", label: "came through danger with" },
   confided: { base: 5, axis: "empathy", axisSign: 1, track: "social", label: "confided in" },
   gift: { base: 5, axis: "warmth", axisSign: 1, skill: "persuasion", track: "social", label: "gave a gift to" },
+  // Making up for something done: what an ultimatum asks (issue 503).
+  amends: { base: 6, track: "social", label: "made amends to" },
   // Things that cost you.
   broke_word: { base: -9, axis: "diligence", axisSign: -1, track: "social", label: "broke their word to" },
   cruelty: { base: -10, axis: "empathy", axisSign: -1, track: "social", label: "was cruel in front of" },
@@ -189,6 +193,20 @@ export const RELATIONSHIP_BEATS = {
   ignored: { base: -4, track: "social", label: "brushed off" },
   insult: { base: -8, track: "social", label: "wounded the feelings of" },
   betrayal: { base: -25, track: "social", label: "betrayed" },
+  // Deeds a companion's conscience weighs (issue 503,
+  // src/lib/dm/companion-values-logic.ts), recorded with witnesses and a
+  // severity and offered in a fight, where most of them happen.
+  murder_helpless: { base: -15, axis: "empathy", axisSign: -1, track: "social", label: "killed someone helpless in front of" },
+  torture: { base: -12, axis: "empathy", axisSign: -1, track: "social", label: "tortured someone in front of" },
+  theft_from_poor: { base: -8, axis: "warmth", axisSign: -1, track: "social", label: "robbed people with little in front of" },
+  necromancy: { base: -6, track: "social", label: "worked necromancy in front of" },
+  desecration: { base: -6, track: "social", label: "desecrated the dead or the holy in front of" },
+  slaving: { base: -14, axis: "empathy", axisSign: -1, track: "social", label: "dealt in slaves in front of" },
+  // Deeds that honour what a companion holds (issue 563), so a value with a
+  // red line has a way back besides amends.
+  laid_to_rest: { base: 5, axis: "empathy", axisSign: 1, track: "social", label: "laid the dead to rest in front of" },
+  freed_captives: { base: 8, axis: "empathy", axisSign: 1, track: "social", label: "freed captives in front of" },
+  upheld_law: { base: 5, axis: "diligence", axisSign: 1, track: "social", label: "handed a wrongdoer to the law in front of" },
   // Romance. flirt is how the romantic track opens; the rest need it open.
   flirt: { base: 4, skill: "persuasion", track: "romantic", label: "flirted with" },
   compliment: {
@@ -216,6 +234,13 @@ export const RELATIONSHIP_BEAT_NAMES = Object.keys(RELATIONSHIP_BEATS) as Relati
 
 export function beatSpec(beat: string): BeatSpec | null {
   return (RELATIONSHIP_BEATS as Record<string, BeatSpec>)[beat] ?? null;
+}
+
+// What standing by while someone else did a deed costs (issue 563): a third
+// of what it cost the doer with that witness, at least a point. Only a cost
+// is shared.
+export function bystanderShare(delta: number): number {
+  return delta < 0 ? Math.min(-1, Math.round(delta / 3)) : 0;
 }
 
 export type BeatOutcome = "strong" | "good" | "weak" | "miss";
@@ -254,7 +279,7 @@ export function beatAlignment(spec: BeatSpec, personality: Personality): number 
 // well under half the first and the fourth is worth nothing. Counts halve at
 // each chapter close, so a friendship built across a story keeps full weight
 // while a burst of flattery in one scene does not.
-const REPEAT_FACTOR = [1, 0.6, 0.3, 0];
+export const REPEAT_FACTOR = [1, 0.6, 0.3, 0];
 
 export type BeatContext = {
   approval: number;
@@ -332,7 +357,7 @@ export function demoteRomance(stage: RomanceStage, approval: number): RomanceSta
 
 // ---- advancing the romance ladder ----
 
-export type AdvanceCheck = { ok: true; target: RomanceStage } | { ok: false; reason: string };
+export type AdvanceCheck = { ok: true; target: RomanceStage } | ({ ok: false } & ToolError);
 
 export function canAdvanceRomance(
   stage: RomanceStage,
@@ -341,30 +366,33 @@ export function canAdvanceRomance(
   status: RelationshipStatus,
 ): AdvanceCheck {
   if (status === "ended") {
-    return { ok: false, reason: "That relationship is over; it cannot be advanced." };
+    return { ok: false, error: "That relationship is over; it cannot be advanced.", refused: "rules" };
   }
   const expected = nextRomanceStage(stage);
   if (!expected) {
-    return { ok: false, reason: "They are already married; there is no further step." };
+    return { ok: false, error: "They are already married; there is no further step.", refused: "rules" };
   }
   if (target !== expected) {
     return {
       ok: false,
-      reason: `Romance moves one step at a time: from ${stage} the only next step is ${expected}.`,
+      error: `Romance moves one step at a time: from ${stage} the only next step is ${expected}.`,
+      refused: "rules",
     };
   }
   const tier = friendshipTier(approval);
   if (tierIndex(tier) < tierIndex(ROMANCE_MIN_TIER)) {
     return {
       ok: false,
-      reason: `${tier === "hostile" || tier === "disliked" ? "They do not even like them" : "They barely know them"} (${TIER_LABEL[tier]}). Nobody is courted into liking someone: build the friendship first.`,
+      error: `${tier === "hostile" || tier === "disliked" ? "They do not even like them" : "They barely know them"} (${TIER_LABEL[tier]}). Nobody is courted into liking someone: build the friendship first.`,
+      refused: "rules",
     };
   }
   const needed = ROMANCE_THRESHOLD[target];
   if (approval < needed) {
     return {
       ok: false,
-      reason: `Not enough between them yet: ${target} needs approval ${needed}, and it stands at ${approval}. Play out more between them first.`,
+      error: `Not enough between them yet: ${target} needs approval ${needed}, and it stands at ${approval}. Play out more between them first.`,
+      refused: "rules",
     };
   }
   return { ok: true, target };
@@ -558,24 +586,36 @@ export type RelationshipLike = {
 
 // The instruction a soured bond earns in GAME STATE. A companion who cannot
 // stand someone is a story problem the DM should be playing, so it says so
-// outright; the server never removes a party member on its own.
+// outright. Who removes them follows the table's companion conscience
+// (issue 503): with it off the DM may, as the story takes them; at Talk they
+// stay; at Leave and Turn whether they go is the server's
+// (src/lib/dm/departure.ts), never the DM's.
+export type SouredLeaving = "dm" | "stays" | "server";
+
 export function souredNote(
   tier: FriendshipTier,
   subjectKind: "npc" | "companion",
   subjectName: string,
+  leaving: SouredLeaving = "dm",
 ): string | null {
   if (tierIndex(tier) > tierIndex("disliked")) {
     return null;
   }
   if (subjectKind === "companion") {
-    return `${subjectName} travels with people they cannot stand: have them argue, refuse favors, and say plainly they are close to walking. If it comes to that, use dismiss_companion`;
+    const tail =
+      leaving === "stays"
+        ? "this table keeps its companions, so they stay and say so"
+        : leaving === "server"
+          ? "whether they leave is the server's, never dismiss_companion them over it"
+          : "If it comes to that, use dismiss_companion";
+    return `${subjectName} travels with people they cannot stand: have them argue, refuse favors, and say plainly ${leaving === "dm" ? "they are close to walking. " : "how they feel; "}${tail}`;
   }
   return `${subjectName} wants nothing to do with them and will not do them favors`;
 }
 
 // One bounded GAME STATE line per relationship. Capped so a large cast
 // cannot crowd the block out.
-export function relationshipFragment(relationship: RelationshipLike): string {
+export function relationshipFragment(relationship: RelationshipLike, leaving: SouredLeaving = "dm"): string {
   const tier = friendshipTier(relationship.approval);
   const parts = [
     `${relationship.characterName} and ${relationship.subjectName} (${relationship.subjectKind})`,
@@ -595,7 +635,7 @@ export function relationshipFragment(relationship: RelationshipLike): string {
   } else if (relationship.apartChapters >= REAPPEAR_AFTER) {
     parts.push(`not seen for ${relationship.apartChapters} chapters`);
   }
-  const soured = souredNote(tier, relationship.subjectKind, relationship.subjectName);
+  const soured = souredNote(tier, relationship.subjectKind, relationship.subjectName, leaving);
   if (soured) {
     parts.push(soured);
   }

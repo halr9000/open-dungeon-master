@@ -1,10 +1,11 @@
 import { getContentDb } from "@/lib/content/db";
 import { packWeightLb } from "@/lib/content/weight";
 import { listHomebrew } from "@/lib/db/homebrew";
+import { workshopClassId } from "@/lib/homebrew/class-data";
 import { normalizeSpellMech } from "@/lib/homebrew/gear";
 import type { HomebrewKind } from "@/lib/schemas/homebrew";
 import { servedSpellRows } from "@/lib/content/spell-overrides";
-import { EDITION_2024_DOCUMENTS } from "@/lib/content/edition";
+import { EDITION_2024_DOCUMENTS, PLAYED_DOCUMENTS_SQL } from "@/lib/content/edition";
 import { backgroundMechanics } from "@/lib/content/mechanics";
 import { authoredFeatBySlug, withAuthoredFeats } from "@/lib/content/authored-feats";
 import {
@@ -22,6 +23,8 @@ import {
   spellMechFor,
   type SpellMech,
 } from "@/lib/srd/spell-mechanics";
+import { textKey } from "@/lib/language/text-logic";
+import type { SqliteDatabase } from "@/lib/db/driver";
 
 export { itemWeightByName, repairedWeight } from "@/lib/content/item-weights";
 
@@ -83,9 +86,33 @@ function clampLimit(limit?: number) {
   return Math.min(Math.max(limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 }
 
-function likeParam(q?: string) {
-  return `%${(q ?? "").trim().replace(/[%_]/g, "")}%`;
+// One page of the pack rows a person's search finds, as slugs in the
+// table's name order. SQLite's LIKE folds case for ASCII only ("épée" never
+// found "Épée de feu"), so every other condition stays in SQL and the names
+// are matched here; the caller then reads just the page's rows whole. No
+// search serves a row of a 2024 document (src/lib/content/edition.ts), which
+// a pack built before the importer left them out still holds. Conditions are
+// rules text read by name and keep every row.
+function foundSlugs(
+  db: SqliteDatabase,
+  table: string,
+  where: { clauses: string[]; params: unknown[] },
+  options: SearchOptions,
+): string[] {
+  const needle = textKey(options.q ?? "");
+  const offset = options.offset ?? 0;
+  const clauses = table === "conditions" ? where.clauses : [PLAYED_DOCUMENTS_SQL, ...where.clauses];
+  const filter = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db
+    .prepare(`SELECT slug, name FROM ${table}${filter} ORDER BY name, slug`)
+    .all(...where.params) as Array<{ slug: string; name: string }>;
+  return rows
+    .filter((row) => textKey(row.name).includes(needle))
+    .slice(offset, offset + clampLimit(options.limit))
+    .map((row) => row.slug);
 }
+
+const slugList = (slugs: string[]) => slugs.map(() => "?").join(", ");
 
 function parseData(raw: string): Record<string, unknown> {
   try {
@@ -96,12 +123,12 @@ function parseData(raw: string): Record<string, unknown> {
 }
 
 function homebrewEntries(options: Pick<SearchOptions, "userId" | "userIds" | "includeArchived">, kind: HomebrewKind, q?: string): ContentEntry[] {
-  const needle = (q ?? "").trim().toLowerCase();
+  const needle = textKey(q ?? "");
   const seen = new Set<string>();
   const out: ContentEntry[] = [];
   for (const userId of authorsOf(options)) {
     for (const entry of listHomebrew(userId, kind, { archived: Boolean(options.includeArchived) })) {
-      const key = entry.name.trim().toLowerCase();
+      const key = textKey(entry.name);
       if ((needle && !key.includes(needle)) || seen.has(key)) {
         continue;
       }
@@ -180,7 +207,7 @@ function authorsOf(options: SpellAuthors): string[] {
 // A name somebody published: in the pack, or on the bundled checklist when
 // there is no pack to ask.
 export function isPublishedSpellName(name: string): boolean {
-  const wanted = name.trim().toLowerCase();
+  const wanted = textKey(name);
   if (!wanted) {
     return false;
   }
@@ -189,8 +216,8 @@ export function isPublishedSpellName(name: string): boolean {
   }
   return allPackSpells().some(
     (entry) =>
-      entry.name.trim().toLowerCase() === wanted ||
-      entry.aliases.some((alias) => alias.trim().toLowerCase() === wanted),
+      textKey(entry.name) === wanted ||
+      entry.aliases.some((alias) => textKey(alias) === wanted),
   );
 }
 
@@ -206,7 +233,7 @@ export function searchSpells(
     attack?: boolean;
   } = {},
 ): SpellEntry[] {
-  const needle = (options.q ?? "").trim().replace(/[%_]/g, "").toLowerCase();
+  const needle = textKey(options.q ?? "");
   const classSlug = (options.classSlug ?? "").trim().toLowerCase();
   const schools = (options.school ?? "").split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
   const offset = Math.max(0, options.offset ?? 0);
@@ -214,8 +241,8 @@ export function searchSpells(
     .filter(
       (row) =>
         (!needle ||
-          row.name.toLowerCase().includes(needle) ||
-          row.aliases.some((alias) => alias.toLowerCase().includes(needle))) &&
+          textKey(row.name).includes(needle) ||
+          row.aliases.some((alias) => textKey(alias).includes(needle))) &&
         (!classSlug || row.classes.some((entry) => entry.includes(classSlug))) &&
         (options.level === undefined || (options.exactLevel ? row.level === options.level : row.level <= options.level)) &&
         (!schools.length || schools.includes(row.school.toLowerCase())) &&
@@ -245,10 +272,10 @@ export function searchSpells(
 // out of a search must go through this rather than comparing `entry.name`,
 // or a book name silently fails to match its SRD-titled row.
 export function spellNameMatches(entry: SpellEntry, name: string): boolean {
-  const wanted = name.trim().toLowerCase();
+  const wanted = textKey(name);
   return (
-    entry.name.trim().toLowerCase() === wanted ||
-    entry.aliases.some((alias) => alias.trim().toLowerCase() === wanted)
+    textKey(entry.name) === wanted ||
+    entry.aliases.some((alias) => textKey(alias) === wanted)
   );
 }
 
@@ -321,18 +348,10 @@ export function searchItems(
   const db = getContentDb();
   const rows: ItemEntry[] = [];
   if (db) {
-    const clauses = ["name LIKE ?"];
-    const params: unknown[] = [likeParam(options.q)];
-    if (options.kind) {
-      clauses.push("kind = ?");
-      params.push(options.kind);
-    }
-    params.push(clampLimit(options.limit), options.offset ?? 0);
+    const slugs = foundSlugs(db, "items", options.kind ? { clauses: ["kind = ?"], params: [options.kind] } : { clauses: [], params: [] }, options);
     const found = db
-      .prepare(
-        `SELECT * FROM items WHERE ${clauses.join(" AND ")} ORDER BY name LIMIT ? OFFSET ?`,
-      )
-      .all(...params) as Array<{
+      .prepare(`SELECT * FROM items WHERE slug IN (${slugList(slugs)}) ORDER BY name, slug`)
+      .all(...slugs) as Array<{
       slug: string;
       name: string;
       document_slug: string;
@@ -385,25 +404,16 @@ function searchSimpleTable(
   if (!db) {
     return [];
   }
-  const clauses = ["name LIKE ?"];
-  const params: unknown[] = [likeParam(options.q)];
-  // The rules rows a 2014 character is offered leave the 2024 documents out
-  // (src/lib/content/edition.ts). Conditions are rules text read by name and
-  // keep every row.
-  if (table !== "conditions" && EDITION_2024_DOCUMENTS.size) {
-    clauses.push(`document_slug NOT IN (${[...EDITION_2024_DOCUMENTS].map(() => "?").join(", ")})`);
-    params.push(...EDITION_2024_DOCUMENTS);
-  }
+  const clauses: string[] = [];
+  const params: unknown[] = [];
   if (options.extraWhere) {
     clauses.push(options.extraWhere);
     params.push(...(options.extraParams ?? []));
   }
-  params.push(clampLimit(options.limit), options.offset ?? 0);
+  const slugs = foundSlugs(db, table, { clauses, params }, options);
   const rows = db
-    .prepare(
-      `SELECT slug, name, document_slug, data_json FROM ${table} WHERE ${clauses.join(" AND ")} ORDER BY name LIMIT ? OFFSET ?`,
-    )
-    .all(...params) as Array<{
+    .prepare(`SELECT slug, name, document_slug, data_json FROM ${table} WHERE slug IN (${slugList(slugs)}) ORDER BY name, slug`)
+    .all(...slugs) as Array<{
     slug: string;
     name: string;
     document_slug: string;
@@ -423,14 +433,13 @@ export function searchFeats(options: SearchOptions = {}): ContentEntry[] {
   const served = searchSimpleTable("feats", options);
   // Every name the pack serves for this search, on any page, so ODM's own
   // feats fill only what the pack lacks (src/lib/content/authored-feats.ts).
-  const editions = [...EDITION_2024_DOCUMENTS];
-  const notIn = editions.length ? ` AND document_slug NOT IN (${editions.map(() => "?").join(", ")})` : "";
+  const needle = textKey(options.q ?? "");
   const packRows = options.offset
     ? []
     : (getContentDb()
-        ?.prepare(`SELECT name FROM feats WHERE name LIKE ?${notIn}`)
-        .all(likeParam(options.q), ...editions) as Array<{ name: string }> | undefined) ?? [];
-  const packNames = packRows.map((row) => row.name);
+        ?.prepare(`SELECT name FROM feats WHERE ${PLAYED_DOCUMENTS_SQL}`)
+        .all() as Array<{ name: string }> | undefined) ?? [];
+  const packNames = packRows.map((row) => row.name).filter((name) => textKey(name).includes(needle));
   return [
     ...homebrewEntries(options, "feat", options.q),
     ...withAuthoredFeats(served, { ...options, packNames }),
@@ -493,7 +502,11 @@ export function listRaces(options: SearchOptions & { includeSubraces?: boolean }
 }
 
 export function listClasses(options: SearchOptions = {}): ContentEntry[] {
-  return searchSimpleTable("classes", { ...options, limit: options.limit ?? MAX_LIMIT });
+  return [
+    ...searchSimpleTable("classes", { ...options, limit: options.limit ?? MAX_LIMIT }),
+    // The workshop's classes, under the id a sheet holds (src/lib/homebrew/class-data.ts).
+    ...homebrewEntries(options, "class", options.q).map((entry) => ({ ...entry, slug: workshopClassId(entry.slug.slice("homebrew:".length)) })),
+  ];
 }
 
 export function listArchetypes(classSlug: string, options: SearchOptions = {}): ContentEntry[] {
@@ -514,21 +527,12 @@ export function searchMonsters(
   options: SearchOptions & { maxCr?: number } = {},
 ): ContentEntry[] {
   const db = getContentDb();
+  const cr = options.maxCr !== undefined ? { clauses: ["cr <= ?"], params: [options.maxCr] } : { clauses: [], params: [] };
+  const slugs = db ? foundSlugs(db, "monsters", cr, options) : [];
   const open5e = db
     ? (db
-        .prepare(
-          `SELECT slug, name, document_slug, data_json FROM monsters WHERE name LIKE ? ${
-            options.maxCr !== undefined ? "AND cr <= ?" : ""
-          } ORDER BY name LIMIT ? OFFSET ?`,
-        )
-        .all(
-          ...[
-            likeParam(options.q),
-            ...(options.maxCr !== undefined ? [options.maxCr] : []),
-            clampLimit(options.limit),
-            options.offset ?? 0,
-          ],
-        ) as Array<{ slug: string; name: string; document_slug: string; data_json: string }>)
+        .prepare(`SELECT slug, name, document_slug, data_json FROM monsters WHERE slug IN (${slugList(slugs)}) ORDER BY name, slug`)
+        .all(...slugs) as Array<{ slug: string; name: string; document_slug: string; data_json: string }>)
     : [];
   return [
     ...open5e.map((row) => ({
@@ -583,12 +587,33 @@ export function listDocuments(): ContentDocument[] {
     return [];
   }
   const rows = db
-    .prepare(`SELECT slug, title, license, author, url FROM documents ORDER BY title`)
+    .prepare(`SELECT slug, title, license, author, url FROM documents WHERE slug NOT IN (${[...EDITION_2024_DOCUMENTS].map((slug) => `'${slug}'`).join(", ")}) ORDER BY title`)
     .all() as ContentDocument[];
   return rows;
 }
 
+type DetailRow = { slug: string; name: string; document_slug: string; data_json: string };
+
+function detailEntry(row: DetailRow): ContentEntry {
+  return {
+    slug: row.slug,
+    name: row.name,
+    source: "open5e",
+    documentSlug: row.document_slug,
+    document: documentTitle(row.document_slug),
+    data: parseData(row.data_json),
+  };
+}
+
+// The order a name's rows are preferred in when one has to stand for it.
+const DOCUMENT_ORDER = `CASE document_slug WHEN 'wotc-srd' THEN 0 WHEN 'srd-2014' THEN 1 WHEN 'odm-expanded' THEN 2 ELSE 3 END`;
+
 // Detail lookup by slug across a kind; homebrew slugs are "homebrew:<id>".
+// It serves what the searches serve: a spell's one row a name, corrected as
+// the pickers show it (servedSpellRows), and never a 2024 row. A slug that
+// names a 2024 row (a stored "srd-2024_spell-scroll", a pack built before
+// the importer left them out) answers with the 2014 row of the same name,
+// or not at all.
 export function getEntryDetail(
   kind: "spells" | "feats" | "conditions" | "backgrounds" | "races" | "classes" | "archetypes" | "items" | "monsters",
   slug: string,
@@ -599,9 +624,13 @@ export function getEntryDetail(
   }
   const row = db
     ?.prepare(`SELECT slug, name, document_slug, data_json FROM ${kind} WHERE slug = ?`)
-    .get(slug) as { slug: string; name: string; document_slug: string; data_json: string } | undefined;
+    .get(slug) as DetailRow | undefined;
+  if (kind === "spells") {
+    const served = allPackSpells();
+    return served.find((entry) => entry.slug === slug) ?? (row ? served.find((entry) => spellNameMatches(entry, row.name)) ?? null : null);
+  }
   // A feat ODM wrote answers for its name where the pack has none, or has
-  // only the 2024 row a 2014 character is never offered (Alert).
+  // only a 2024 row.
   if (kind === "feats" && (!row || EDITION_2024_DOCUMENTS.has(row.document_slug))) {
     const authored = authoredFeatBySlug(slug);
     if (authored) {
@@ -611,14 +640,28 @@ export function getEntryDetail(
   if (!row) {
     return null;
   }
-  return {
-    slug: row.slug,
-    name: row.name,
-    source: "open5e",
-    documentSlug: row.document_slug,
-    document: documentTitle(row.document_slug),
-    data: parseData(row.data_json),
-  };
+  if (EDITION_2024_DOCUMENTS.has(row.document_slug)) {
+    const twin = db
+      ?.prepare(`SELECT slug, name, document_slug, data_json FROM ${kind} WHERE name = ? AND ${PLAYED_DOCUMENTS_SQL} ORDER BY ${DOCUMENT_ORDER}, slug LIMIT 1`)
+      .get(row.name) as DetailRow | undefined;
+    return twin ? detailEntry(twin) : null;
+  }
+  return detailEntry(row);
+}
+
+// Where a row comes from, in words a person can weigh: the SRD 5.1, ODM's
+// own wording, the table's homebrew, or the third-party book by its title.
+export function documentLabel(entry: Pick<ContentEntry, "source" | "documentSlug">, kind: string): string {
+  if (entry.source === "homebrew") {
+    return "your homebrew";
+  }
+  if (entry.documentSlug === "wotc-srd" || entry.documentSlug === "srd-2014") {
+    return `SRD 5.1 ${kind}`;
+  }
+  if (entry.documentSlug === "odm-expanded") {
+    return `ODM ${kind}, written in ODM's own words`;
+  }
+  return `${kind} from ${documentTitle(entry.documentSlug)}`;
 }
 
 // The dice a named spell actually rolls for this caster, derived from the

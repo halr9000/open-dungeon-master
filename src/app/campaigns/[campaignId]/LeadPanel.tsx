@@ -1,5 +1,6 @@
 "use client";
 
+import { romanceCueAllowed } from "@/lib/dm/director-logic";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
 
 import { Check, Crown, Link as LinkIcon, Pencil, QrCode } from "lucide-react";
@@ -358,11 +359,11 @@ export function LeadPanel({
       {directsAi ? (
         <Card glyph="system-cast" title="Direct the story">
           <p className="mb-2 text-xs text-stone-500">
-            Pick Direct in the composer, then Private for a note only the DM sees.
+            Pick Direct in the composer, then Private for a note only the GM sees.
           </p>
           <DirectorArmedBanner campaignId={campaignId} steersStory armed={directorArm} />
           <div className="flex flex-wrap gap-1.5">
-            <DirectorPresets campaignId={campaignId} />
+            <DirectorPresets campaignId={campaignId} romance={romanceCueAllowed(campaign.gameSettings)} />
           </div>
         </Card>
       ) : null}

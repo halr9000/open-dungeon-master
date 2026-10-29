@@ -8,7 +8,8 @@
 //
 // A grant that leaves a choice (which three languages, which skill, which
 // four weapons) is picked where the feat is picked and stored on the sheet
-// as featChoices, keyed by the feat's name. The server applies the grants
+// as featChoices, keyed by the textKey of the feat's name
+// (src/lib/schemas/sheet.ts featChoice). The server applies the grants
 // when the sheet is made, edited or levelled (src/lib/srd/sheet-legality.ts,
 // src/lib/srd/level-up.ts); the builder applies them to its preview. The
 // reading of the text is src/lib/srd/feat-grant-text.ts. Pure.
@@ -17,6 +18,7 @@ import { ALL_SKILLS } from "@/lib/content/mechanics";
 import { featSpellsOwed, type CastingAbility } from "@/lib/srd/feat-spells";
 import { featGrantSpec, featGrantsAnything, lowerText as lower, type FeatGrantSpec, type PickKind } from "@/lib/srd/feat-grant-text";
 import { SRD_WEAPONS } from "@/lib/srd/weapons";
+import { featChoice } from "@/lib/schemas/sheet";
 
 export { featGrantSpec, featGrantsAnything, KNOWN_TOOLS, type FeatGrantSpec, type PickKind } from "@/lib/srd/feat-grant-text";
 
@@ -41,7 +43,6 @@ export type FeatPicks = {
 
 export type FeatChoices = Record<string, FeatPicks>;
 
-const PICK_KINDS: PickKind[] = ["skills", "languages", "tools", "weapons", "armor"];
 const SINGULAR: Record<PickKind, string> = { skills: "skill", languages: "language", tools: "tool", weapons: "weapon", armor: "armor" };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 || word === "armor" ? "" : "s"}`;
 const named = (list: string[] | undefined) => (list ?? []).filter((entry) => entry && entry.trim());
@@ -110,9 +111,15 @@ export type FeatGrantInput = {
   // and the rest is left alone (a stored sheet, a companion the engine
   // drafts).
   strict: boolean;
+  // With strict: a pick left open is owed rather than wrong, and lands in
+  // `owed` instead of `problems`; a pick that is named is still held to the
+  // feat. A file exported before a feat asked for its picks names none of
+  // them (issue #430), and what it does name is still somebody's hand edit.
+  picksMayWait?: boolean;
 };
 
-export type FeatGrantVerdict = { proficiencies: Proficiencies; problems: string[] };
+// `owed`: the picks still to make, when they may wait (picksMayWait).
+export type FeatGrantVerdict = { proficiencies: Proficiencies; problems: string[]; owed?: string[] };
 
 const WEAPON_NAMES = new Set(SRD_WEAPONS.map((weapon) => lower(weapon.name)));
 const weaponName = (name: string) => SRD_WEAPONS.find((weapon) => lower(weapon.name) === lower(name))?.name ?? null;
@@ -121,6 +128,7 @@ const weaponName = (name: string) => SRD_WEAPONS.find((weapon) => lower(weapon.n
 // picks as the sheet records them, held to the feat's text when strict.
 export function applyFeatGrants(input: FeatGrantInput): FeatGrantVerdict {
   const problems: string[] = [];
+  const owedPicks: string[] = [];
   let languages = [...input.proficiencies.languages];
   let skills = [...input.proficiencies.skills];
   let expertise = [...(input.proficiencies.expertise ?? [])];
@@ -133,7 +141,7 @@ export function applyFeatGrants(input: FeatGrantInput): FeatGrantVerdict {
     if (!featGrantsAnything(spec) && !spec.damageTypes.length) {
       continue;
     }
-    const picks = input.choices[lower(feat.name)] ?? input.choices[feat.name] ?? {};
+    const picks = featChoice(input.choices, feat.name) ?? {};
     for (const piece of spec.armor) {
       // A second class's grant reads "light armor" where a class's reads
       // "light"; either means the training is held.
@@ -166,7 +174,7 @@ export function applyFeatGrants(input: FeatGrantInput): FeatGrantVerdict {
     if (input.strict) {
       const owed = featPicksOwed(feat.name, spec, picks);
       if (owed) {
-        problems.push(owed);
+        (input.picksMayWait ? owedPicks : problems).push(owed);
       }
       const element = lower(picks.damageType ?? "");
       if (spec.damageTypes.length && element && !spec.damageTypes.includes(element)) {
@@ -311,6 +319,7 @@ export function applyFeatGrants(input: FeatGrantInput): FeatGrantVerdict {
   return {
     problems,
     proficiencies: { ...input.proficiencies, languages, skills, expertise, weapons, tools, armor },
+    ...(owedPicks.length ? { owed: owedPicks } : {}),
   };
 }
 
@@ -340,5 +349,3 @@ export function withoutFeatPicks(proficiencies: Proficiencies, choices: FeatChoi
     armor: proficiencies.armor.filter((entry) => !armor.has(lower(entry))),
   };
 }
-
-export { PICK_KINDS };

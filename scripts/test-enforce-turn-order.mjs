@@ -289,9 +289,9 @@ await test("A dead enemy is told it is dead before it is told whose turn it is, 
   // The pointer is on the first hero, so the enemy's place is still ahead.
   assert.equal(kit.current().characterId, first.id);
   const turn = createDmTurn(world.campaignId, [], "ai");
-  assert.match(enemyTurnRefusal(world.encounter(), enemy, turn) ?? "", /turn has not come yet/, "a living enemy ahead of the pointer was let act");
+  assert.match(enemyTurnRefusal(world.encounter(), enemy, turn)?.error ?? "", /turn has not come yet/, "a living enemy ahead of the pointer was let act");
   const dead = patchEnemyHp(enemy.id, 0, "dead");
-  assert.equal(enemyTurnRefusal(world.encounter(), dead, turn), `${enemy.displayName} is dead and cannot act.`);
+  assert.equal(enemyTurnRefusal(world.encounter(), dead, turn)?.error, `${enemy.displayName} is dead and cannot act.`);
 
   // Every AI action that asks the turn order first hears the same.
   const actor = { kind: "ai", turnId: turn.id };

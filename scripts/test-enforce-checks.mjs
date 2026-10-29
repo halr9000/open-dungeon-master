@@ -304,11 +304,18 @@ await test("strictness shifts a tier by two and leaves an exact DC alone", async
       // handler the model's call reaches.
       const notice = handleCheckNotice(
         table.campaign(),
+        { actor: "ai" },
         JSON.stringify({ difficulty, characterIds: [hero.id] }),
         table.sheets(),
         new Map(table.sheets().map((sheet) => [sheet.id, sheet])),
       );
       assert.equal(notice.dc, expected, `${strictness} ${difficulty} check_notice`);
+      await table.invoke("start_scene", { kind: "social", title: "Talking the reeve round" });
+      table.dice(10);
+      const scene = await table.invoke("scene_check", { characterId: hero.id, skill: "sleight_of_hand", difficulty });
+      table.clearDice();
+      assert.equal(scene.result.dc, expected, `${strictness} ${difficulty} scene_check`);
+      await table.invoke("end_scene", {});
     }
     table.dice(10);
     const exact = await table.invoke("group_check", { ability: "str", dc: 13, characterIds: [hero.id] });
@@ -317,8 +324,7 @@ await test("strictness shifts a tier by two and leaves an exact DC alone", async
   }
 });
 
-// Held elsewhere: request_roll ignores the table's strictness
-// (test-enforce-variant-rules.mjs, variant-strictness-request-roll).
+// request_roll takes the same shift (invoke-roll.ts).
 
 await test("A lasting effect on ability checks applies to skill checks, which are ability checks.", async () => {
   reset();
@@ -350,7 +356,7 @@ await test("A passive check takes -5 when the character would have disadvantage 
 
 await test("The DM console's passive check uses the sense the DM picked.", async () => {
   reset();
-  const out = await world.invoke("check_notice", { dc: 10, skill: "investigation", characterIds: [scout.id] });
+  const out = await world.invoke("check_notice", { dc: 10, sense: "investigation", characterIds: [scout.id] });
   assert.equal(out.ok, true, out.error);
   assert.equal(out.result.sense, "investigation", `the check was made with passive ${out.result.sense}`);
 });

@@ -21,7 +21,7 @@
 // pronouns as the one exception (src/lib/dm/speech-prose.ts). Pure.
 
 import { genderMark, type Gender, type GenderMark } from "@/lib/gender";
-import { commonWords } from "@/lib/language/text-logic";
+import { commonWords, textKey } from "@/lib/language/text-logic";
 import {
   aboutSubject,
   genderOf,
@@ -30,7 +30,7 @@ import {
   LEAD,
   nameAt,
   opensSentence,
-  pronounAt,
+  englishPronounAt,
   QUOTE,
   QUOTE_OPEN,
   quotedText,
@@ -91,7 +91,7 @@ function tagOf(line: string, after: string, reading: Reading): Subject | null {
   }
   const rest = text.slice(verb[0].length);
   const found = nameAt(rest, reading, false);
-  const pronoun = pronounAt(rest, reading);
+  const pronoun = englishPronounAt(rest, reading);
   return found
     ? { kind: "name", speaker: found.speaker, text: rest, end: found.end }
     : pronoun
@@ -253,12 +253,12 @@ function whoSaid(
 // The message as prose and attributed speech, in order, read from its
 // words. `speakers` are the people the table knows; a quote the prose does
 // not tie to one of them stays prose. `common` is commonWords over the
-// recent story (the passage's own words count too); `pronouns` is true at
+// recent story (the passage's own words count too); `englishPronouns` is true at
 // an English table only.
 export function attributeSpeech(
   text: string,
   speakers: Speaker[],
-  options: { common?: ReadonlySet<string>; pronouns: boolean },
+  options: { common?: ReadonlySet<string>; englishPronouns: boolean },
 ): SpeechSegment[] {
   const out: SpeechSegment[] = [];
   if (!speakers.length) {
@@ -267,7 +267,7 @@ export function attributeSpeech(
   const reading: Reading = {
     matchers: speakerMatchers(speakers),
     common: new Set([...(options.common ?? []), ...commonWords([text])]),
-    pronouns: options.pronouns,
+    englishPronouns: options.englishPronouns,
   };
   const genders = new Map<string, GenderMark>(
     speakers.map((speaker) => [keyOf(speaker), genderMark(speaker.gender)]),
@@ -373,8 +373,8 @@ export function speakersIn(segments: SpeechSegment[]): Speaker[] {
   const seen = new Set<string>();
   const out: Speaker[] = [];
   for (const segment of segments) {
-    if (segment.kind === "speech" && !seen.has(segment.speaker.name.toLowerCase())) {
-      seen.add(segment.speaker.name.toLowerCase());
+    if (segment.kind === "speech" && !seen.has(textKey(segment.speaker.name))) {
+      seen.add(textKey(segment.speaker.name));
       out.push(segment.speaker);
     }
   }

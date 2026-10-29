@@ -205,7 +205,7 @@ export function HarnessPictureTest({
           {keeping.length ? (
             <p className="text-xs text-stone-500">
               {keeping.length === 1 ? "1 campaign keeps its own working backend" : `${keeping.length} campaigns keep their own working backends`} (
-              {[...new Set(keeping.map((row) => BACKEND_NAMES[row.backend] ?? row.backend))].join(", ")}); a lead can switch in the campaign&apos;s Setup tab.
+              {[...new Set(keeping.map((row) => BACKEND_NAMES[row.backend] ?? row.backend))].join(", ")}); a lead can switch in the campaign&apos;s Settings tab, under Story AI.
             </p>
           ) : null}
           {adoptError ? (

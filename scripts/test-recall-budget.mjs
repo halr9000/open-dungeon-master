@@ -230,7 +230,13 @@ await test("an Ask frees its agent session when it is done, so Asks in a row nev
 
 await test("the lore check does the same", async () => {
   const check = () =>
-    runLoreCheck({ campaignId: campaign.id, messageId: lastDm.id, selection: "The Lantern Mill never burned.", category: "contradicts_lore" });
+    runLoreCheck({
+      campaignId: campaign.id,
+      messageId: lastDm.id,
+      selection: "The Lantern Mill never burned.",
+      category: "contradicts_lore",
+      viewer: { ownedCharacterIds: [], dmSecrets: true, storytellerSecrets: false },
+    });
   await atWindow(8_000, async () => {
     globalThis.__odmFakeHarnessLog = [];
     await check();
@@ -292,7 +298,9 @@ await test("the token budget still applies to what the summaries leave", async (
   say(`I tell the whole tale of the ford again: ${"the water, the ash, the miller. ".repeat(400)}`);
   await atWindow(8_000, async () => {
     const { history } = await dmTurn();
-    assert.match(history, /^kept \d+ of 23 messages; 12 covered by the summaries left out; \d+ older dropped over the history budget$/);
+    // The long retelling alone is over an 8K window's allowance: it is kept,
+    // cut at its middle (context-budget.ts fitHistory), not sent whole.
+    assert.match(history, /^kept \d+ of 23 messages; 12 covered by the summaries left out; \d+ older dropped over the history budget(; the newest cut to fit, both ends kept)?$/);
   });
 });
 

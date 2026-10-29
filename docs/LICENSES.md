@@ -2,7 +2,7 @@
 
 ## Application
 
-Open Dungeon Master is a fork of
+Open Game Master is a fork of
 [Open Dungeon](https://github.com/newideas99/open-dungeon) by Jacob Ferrari,
 released under the MIT license. This fork keeps the MIT license; see
 [LICENSE](../LICENSE).
@@ -22,6 +22,19 @@ This work includes material taken from the System Reference Document 5.1
 ("SRD 5.1") by Wizards of the Coast LLC. The SRD 5.1 is licensed under the
 Creative Commons Attribution 4.0 International License.
 
+### The creature table
+
+`src/lib/srd/srd-creatures.json` holds the SRD 5.1 stat blocks the shape and
+summoning spells read: every creature of the SRD but the swarms, as True
+Polymorph and Shapechange may give any of them, with the beasts Wild Shape
+and Polymorph take, Find Familiar's and Pact of the Chain's forms, and the
+creatures the conjuring and necromancy spells call. It is
+written by `scripts/generate-srd-creatures.mjs` from the content pack's copy
+of the SRD 5.1 monsters (document `wotc-srd`) and checked against the SRD's
+own text in the rulebook below; where the two differ the SRD's text is kept.
+The data is the SRD's, under the same CC-BY-4.0 terms and attribution as
+above.
+
 ### The rulebook
 
 `src/lib/rulebook/srd-5.1.json` is the full text of the SRD 5.1 (every rules
@@ -34,6 +47,15 @@ CC-BY-4.0 terms and attribution as above; the import only reorders it into
 chapters, drops each page's repeated title, and corrects the few conversion
 slips listed in the script's `ERRATA`. The rulebook shows the attribution on
 its contents page and ends with the SRD's legal notice as its last page.
+
+### The SRD 5.1 goods in the content pack
+
+The seven equipment packs, ammunition bundles, mounts and tack the Open5e v1
+import lacks are added to the content pack by `scripts/import-open5e.mjs`
+under document `srd-2014`: their names, prices and weights from the bundled
+tables in `src/lib/srd/adventuring-gear.ts`, their descriptions from the
+rulebook above. They are SRD 5.1 material under the same CC-BY-4.0 terms and
+attribution. No SRD 5.2 (2024) material is in the pack.
 
 ## Ambience and music
 
@@ -121,7 +143,7 @@ still find it. Spell aliases live in `src/lib/srd/manifest/spells.json` as
 The workshop's WorldForge tool is ported from WorldForge, Smoebo's
 world-building app. Its code is here with Smoebo's permission, given to this
 project's maintainer on 2026-10-08, and WorldForge now continues inside Open
-Dungeon Master. Smoebo is credited as a co-author of the commits that brought
+Game Master. Smoebo is credited as a co-author of the commits that brought
 it in.
 
 - `src/lib/worldforge/model.ts`: the world document (types and fields,

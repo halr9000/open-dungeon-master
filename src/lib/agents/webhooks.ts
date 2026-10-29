@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { getAppSetting, setAppSetting } from "@/lib/db/app-settings";
 import { getDatabase, nowIso } from "@/lib/db/core";
 import { getCampaignForUser, latestSeq } from "@/lib/db/campaigns";
@@ -6,8 +6,10 @@ import { getSheetForUser } from "@/lib/db/sheets";
 import { listOpenPendingRolls } from "@/lib/db/dm-turns";
 import { getActiveEncounter, turnKey } from "@/lib/db/encounters";
 import { getLatestDmMessage } from "@/lib/db/messages";
+import { listOpenItemProposals } from "@/lib/db/item-proposals";
 import { getDmStatus } from "@/lib/dm/status";
 import { dmQueuePaused } from "@/lib/dm/queue";
+import { levelForXp } from "@/lib/srd";
 import { grantUser, type ConnectionGrant } from "@/lib/agents/grants";
 import { playerOpportunities, type PlayerOpportunity } from "./webhook-opportunities";
 
@@ -19,6 +21,7 @@ const MAX_AGE_MS = 24 * 60 * 60_000;
 type Subscription = {
   id: string; grant_id: string; campaign_id: string; character_id: string;
   url: string; secret: string; authorization_header: string | null; extra_headers: string | null; lifecycle: string | null;
+  poll_token_hash: string | null;
 };
 type Delivery = {
   id: string; subscription_id: string; opportunity_id: string; body: string;
@@ -28,7 +31,7 @@ export type PlayerWebhookEvent = {
   version: 1; eventId: string; subscriptionId: string; campaignId: string;
   playerId: string; characterId: string; opportunityId: string;
   type: PlayerOpportunity["type"] | "campaign_paused" | "campaign_resumed" | "campaign_ended";
-  seq: number; occurredAt: string; pendingRollId?: string; phase?: "act" | "finish";
+  seq: number; occurredAt: string; pendingRollId?: string; phase?: "act" | "finish"; level?: number; proposalId?: string;
   // A plain-language summary with the IDs a guarded write needs. Hosted
   // receivers that pass on only a text field (a Claude Code routine reads
   // just `text`) still tell their agent what woke it.
@@ -81,6 +84,29 @@ export function setAdminReceiverOrigins(values: readonly unknown[]): string[] {
 // origin; with none, no subscription could be made or reached.
 export function playerWebhooksEnabled(): boolean {
   return allowedReceiverOrigins().length > 0;
+}
+
+// Poll links, the pull side of the same subscriptions, for an agent that
+// cannot take incoming requests (a hosted assistant whose hooks can only
+// poll): the server sends nothing, and the agent's hook asks an unguessable
+// link what this character may do now. Off until an admin turns them on in
+// Admin > Player agents; turning them off deletes every link, so turning
+// them on again never brings an old (perhaps leaked) one back.
+const POLL_LINKS_SETTING = "player_poll_links";
+
+export function pollLinksAllowed(): boolean {
+  return getAppSetting<unknown>(POLL_LINKS_SETTING, false) === true;
+}
+
+export function setPollLinksAllowed(on: boolean) {
+  setAppSetting(POLL_LINKS_SETTING, on);
+  if (!on) getDatabase().prepare(`DELETE FROM player_webhooks WHERE poll_token_hash IS NOT NULL`).run();
+}
+
+// Whether connected players see the webhook tools and the guard fields on
+// the play tools: either kind of subscription can be made.
+export function playerSignalsEnabled(): boolean {
+  return playerWebhooksEnabled() || pollLinksAllowed();
 }
 
 // The operator explicitly approves receiver origins. No browser/agent may
@@ -163,20 +189,28 @@ function maySubscribe(grant: ConnectionGrant, campaignId: string, characterId: s
     getSheetForUser(campaignId, grant.userId)?.id === characterId;
 }
 
+// What both kinds of subscription check first: the grant may play this
+// character, the character has no live subscription, and the grant has room.
+function claimCharacter(grant: ConnectionGrant, campaignId: string, characterId: string) {
+  if (!maySubscribe(grant, campaignId, characterId)) throw new Error("Connect with read and play scopes for your active character at this table.");
+  const db = getDatabase();
+  const existing = db.prepare(`SELECT * FROM player_webhooks WHERE campaign_id = ? AND character_id = ?`)
+    .get(campaignId, characterId) as Subscription | undefined;
+  if (existing) {
+    if (liveGrant(existing)) throw new Error("This character already has a webhook receiver or poll link. Unsubscribe it before connecting another.");
+    deletePlayerWebhook(existing.grant_id, existing.id);
+  }
+  const count = db.prepare(`SELECT COUNT(*) AS n FROM player_webhooks WHERE grant_id = ?`).get(grant.id) as { n: number };
+  if (count.n >= MAX_SUBSCRIPTIONS) throw new Error("Remove an existing webhook first (maximum five per connection).");
+}
+
 export function createPlayerWebhook(grant: ConnectionGrant, input: { campaignId: string; characterId: string; url: string; authorizationHeader?: string; headers?: unknown }) {
   if (!maySubscribe(grant, input.campaignId, input.characterId)) throw new Error("Connect with read and play scopes for your active character at this table.");
   const url = webhookUrl(input.url);
   const authorization = webhookAuthorization(input.authorizationHeader);
   const extra = webhookHeaders(input.headers);
   const db = getDatabase();
-  const existing = db.prepare(`SELECT * FROM player_webhooks WHERE campaign_id = ? AND character_id = ?`)
-    .get(input.campaignId, input.characterId) as Subscription | undefined;
-  if (existing) {
-    if (liveGrant(existing)) throw new Error("This character already has a webhook receiver. Unsubscribe it before connecting another.");
-    deletePlayerWebhook(existing.grant_id, existing.id);
-  }
-  const count = db.prepare(`SELECT COUNT(*) AS n FROM player_webhooks WHERE grant_id = ?`).get(grant.id) as { n: number };
-  if (count.n >= MAX_SUBSCRIPTIONS) throw new Error("Remove an existing webhook first (maximum five per connection).");
+  claimCharacter(grant, input.campaignId, input.characterId);
   const id = randomUUID();
   const signingSecret = randomBytes(32).toString("base64url");
   db.prepare(`INSERT INTO player_webhooks (id, grant_id, campaign_id, character_id, url, secret, authorization_header, extra_headers, created_at)
@@ -185,15 +219,100 @@ export function createPlayerWebhook(grant: ConnectionGrant, input: { campaignId:
   return { id, campaignId: input.campaignId, characterId: input.characterId, url, signingSecret, hasAuthorizationHeader: authorization !== null, headerNames: Object.keys(extra ?? {}) };
 }
 
+export const POLL_PATH_PREFIX = "/api/agents/signal/";
+const POLL_TOKEN = /^odmpoll_[A-Za-z0-9_-]{43}$/;
+
+function hashPollToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+// A poll link for the grant's own character. The link is the secret: it is
+// returned once, only its hash is kept, and it stops when the subscription is
+// removed, the connection is revoked or expires, the character changes, or
+// an admin turns poll links off. The caller puts the server's address in
+// front of pollPath.
+export function createPlayerPollLink(grant: ConnectionGrant, input: { campaignId: string; characterId: string }) {
+  if (!pollLinksAllowed()) throw new Error("This server's admin has not turned poll links on (Admin > Player agents).");
+  if (grant.revokedAt || grant.expiresAt <= nowIso()) throw new Error("This connection has expired or been revoked.");
+  // A new link for the same connection and character replaces its old one,
+  // so a lost link is not a dead end.
+  getDatabase().prepare(`DELETE FROM player_webhooks WHERE grant_id = ? AND campaign_id = ? AND character_id = ? AND poll_token_hash IS NOT NULL`)
+    .run(grant.id, input.campaignId, input.characterId);
+  claimCharacter(grant, input.campaignId, input.characterId);
+  const id = randomUUID();
+  const token = `odmpoll_${randomBytes(32).toString("base64url")}`;
+  getDatabase().prepare(`INSERT INTO player_webhooks (id, grant_id, campaign_id, character_id, url, secret, poll_token_hash, created_at)
+    VALUES (?, ?, ?, ?, '', ?, ?, ?)`).run(id, grant.id, input.campaignId, input.characterId, randomBytes(32).toString("base64url"), hashPollToken(token), nowIso());
+  return { id, campaignId: input.campaignId, characterId: input.characterId, delivery: "poll" as const, pollPath: `${POLL_PATH_PREFIX}${token}` };
+}
+
+// One answer per link every few seconds is plenty for a poller, whose
+// interval is a minute in practice; more is refused, not queued.
+export const POLL_MIN_INTERVAL_MS = 2_000;
+const lastPoll = new Map<string, number>();
+
+export type PollAnswer =
+  | { status: 200; body: PollBody }
+  | { status: 404 }
+  | { status: 429; retryAfterSec: number };
+
+type PollBody = {
+  subscriptionId: string; campaignId: string; characterId: string;
+  lifecycle: string; busy: boolean; wake: boolean; fingerprint: string;
+  opportunities: Array<{ opportunityId: string; type: PlayerOpportunity["type"]; phase?: "act" | "finish"; pendingRollId?: string; level?: number }>;
+};
+
+// What a poll link answers: the same opportunities a pushed webhook would
+// carry, and nothing else (no story text, no names). wake says whether the
+// character has something to do now; fingerprint covers only the lifecycle
+// and the opportunity IDs. While the DM narrates the list is briefly empty
+// and then the same decision returns with the same fingerprint, so a poller
+// that compares with the fingerprint it last woke for wakes once per decision.
+// An unknown, revoked or switched-off link reads as not found.
+export function pollLinkAnswer(token: string, now = Date.now()): PollAnswer {
+  if (!POLL_TOKEN.test(token) || !pollLinksAllowed()) return { status: 404 };
+  const sub = getDatabase().prepare(`SELECT * FROM player_webhooks WHERE poll_token_hash = ?`)
+    .get(hashPollToken(token)) as Subscription | undefined;
+  if (!sub) return { status: 404 };
+  const grant = liveGrant(sub);
+  if (!grant) {
+    deletePlayerWebhook(sub.grant_id, sub.id);
+    return { status: 404 };
+  }
+  const last = lastPoll.get(sub.id) ?? 0;
+  if (now - last < POLL_MIN_INTERVAL_MS) return { status: 429, retryAfterSec: Math.ceil((POLL_MIN_INTERVAL_MS - (now - last)) / 1000) };
+  lastPoll.set(sub.id, now);
+  if (lastPoll.size > 10_000) lastPoll.clear();
+  const state = stateFor(sub, grant);
+  const opportunities = state.opportunities.map((o) => ({
+    opportunityId: o.opportunityId, type: o.type,
+    ...(o.phase ? { phase: o.phase } : {}), ...(o.pendingRollId ? { pendingRollId: o.pendingRollId } : {}),
+    ...(o.level ? { level: o.level } : {}),
+    ...(o.proposalId ? { proposalId: o.proposalId } : {}),
+  }));
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify([state.lifecycle, opportunities.map((o) => o.opportunityId)]))
+    .digest("hex").slice(0, 16);
+  return {
+    status: 200,
+    body: {
+      subscriptionId: sub.id, campaignId: sub.campaign_id, characterId: sub.character_id,
+      lifecycle: state.lifecycle, busy: state.busy,
+      wake: state.lifecycle === "active" && opportunities.length > 0,
+      fingerprint, opportunities,
+    },
+  };
+}
+
 export function listPlayerWebhooks(grantId: string) {
   return getDatabase().prepare(`SELECT w.id, w.campaign_id AS campaignId, w.character_id AS characterId,
-    w.url, w.authorization_header IS NOT NULL AS hasAuthorizationHeader, w.extra_headers AS extraHeaders, w.created_at AS createdAt,
+    w.url, w.poll_token_hash IS NOT NULL AS poll, w.authorization_header IS NOT NULL AS hasAuthorizationHeader, w.extra_headers AS extraHeaders, w.created_at AS createdAt,
     (SELECT COUNT(*) FROM player_webhook_deliveries d WHERE d.subscription_id = w.id AND d.state = 'pending') AS pending,
     (SELECT COUNT(*) FROM player_webhook_deliveries d WHERE d.subscription_id = w.id AND d.state = 'failed') AS failed
     FROM player_webhooks w WHERE w.grant_id = ?`).all(grantId)
     .map((row) => {
-      const { extraHeaders, ...rest } = row as Record<string, unknown> & { extraHeaders: string | null };
-      return { ...rest, hasAuthorizationHeader: Boolean(rest.hasAuthorizationHeader), headerNames: Object.keys(parseHeaders(extraHeaders)) };
+      const { extraHeaders, poll, ...rest } = row as Record<string, unknown> & { extraHeaders: string | null; poll: number };
+      return { ...rest, delivery: poll ? "poll" : "push", hasAuthorizationHeader: Boolean(rest.hasAuthorizationHeader), headerNames: Object.keys(parseHeaders(extraHeaders)) };
     });
 }
 
@@ -229,7 +348,15 @@ export function reserveWebhookWrite(grant: ConnectionGrant, input: { subscriptio
       (input.tool === "odm_answer_roll" && opportunity.pendingRollId !== input.pendingRollId) ||
       (input.tool !== "odm_answer_roll" && opportunity.type === "roll_requested") ||
       (input.tool === "odm_take_action" && opportunity.phase === "finish") ||
-      (input.tool === "odm_end_turn" && opportunity.type !== "turn_started")) {
+      (input.tool === "odm_end_turn" && opportunity.type !== "turn_started") ||
+      (input.tool === "odm_pass" && opportunity.type !== "response_requested") ||
+      // An offer is answered with odm_answer_offer and nothing else; a
+      // whisper is answered privately (a whisper back, or a secret action).
+      ((input.tool === "odm_answer_offer") !== (opportunity.type === "offer_received")) ||
+      (opportunity.type === "whisper_received" && input.tool !== "odm_whisper_dm" && input.tool !== "odm_secret_action") ||
+      // A level is taken only with odm_level_up, and odm_level_up takes
+      // nothing but a level: never a way to act at the table out of turn.
+      ((input.tool === "odm_level_up") !== (opportunity.type === "level_up_available"))) {
       throw new Error("That opportunity is stale or does not permit this submission. Read the table again.");
     }
     db.prepare(`INSERT INTO player_webhook_writes (subscription_id, opportunity_id, tool, fingerprint) VALUES (?, ?, ?, ?)`)
@@ -286,7 +413,11 @@ function stateFor(sub: Subscription, grant: ConnectionGrant) {
   const campaign = getCampaignForUser(sub.campaign_id, grant.userId)!;
   const safety = db.prepare(`SELECT seq, type FROM campaign_events WHERE campaign_id = ?
     AND type IN ('x_card', 'safety_resumed') ORDER BY seq DESC LIMIT 1`).get(campaign.id) as { seq: number; type: string } | undefined;
-  const paused = Boolean(dmQueuePaused(campaign.id)) || safety?.type === "x_card" || campaign.floor.mode === "hold";
+  // A table break (src/lib/dm/table-break.ts) holds the queue in memory; its
+  // events say the same across a restart, as the X-card's do.
+  const tableBreak = db.prepare(`SELECT seq, type FROM campaign_events WHERE campaign_id = ?
+    AND type IN ('table_paused', 'table_resumed') ORDER BY seq DESC LIMIT 1`).get(campaign.id) as { seq: number; type: string } | undefined;
+  const paused = Boolean(dmQueuePaused(campaign.id)) || safety?.type === "x_card" || tableBreak?.type === "table_paused" || campaign.floor.mode === "hold";
   const running = db.prepare(`SELECT id FROM dm_turns WHERE campaign_id = ? AND actor = 'ai' AND status = 'running' LIMIT 1`).get(campaign.id);
   const awaiting = db.prepare(`SELECT id FROM dm_turns WHERE campaign_id = ? AND actor = 'ai' AND status = 'awaiting_rolls' LIMIT 1`).get(campaign.id);
   const status = getDmStatus(campaign.id);
@@ -295,9 +426,14 @@ function stateFor(sub: Subscription, grant: ConnectionGrant) {
   const narration = getLatestDmMessage(campaign.id);
   const last = db.prepare(`SELECT MAX(seq) AS seq FROM campaign_messages WHERE campaign_id = ? AND user_id = ? AND author_type = 'player' AND content NOT LIKE '(ooc) %'`)
     .get(campaign.id, grant.userId) as { seq: number | null };
+  // A pass at a table that waits for everyone (src/lib/dm/table-wait.ts)
+  // answers the passage as surely as a post does.
+  const passed = db.prepare(`SELECT MAX(seq) AS seq FROM campaign_events WHERE campaign_id = ? AND type = 'table_pass' AND json_extract(payload_json, '$.userId') = ?`)
+    .get(campaign.id, grant.userId) as { seq: number | null };
   const held = db.prepare(`SELECT MAX(seq) AS seq FROM campaign_events WHERE campaign_id = ? AND type = 'floor_changed' AND json_extract(payload_json, '$.floor.mode') = 'hold'`)
     .get(campaign.id) as { seq: number | null };
-  const gate = Math.max(held.seq ?? 0, safety?.seq ?? 0);
+  const gate = Math.max(held.seq ?? 0, safety?.seq ?? 0, tableBreak?.seq ?? 0);
+  const sheet = getSheetForUser(campaign.id, grant.userId);
   const busy = Boolean(running) || !["idle", "awaiting_rolls"].includes(status);
   const opportunities = playerOpportunities({
     active: campaign.status === "active", paused, busy,
@@ -307,13 +443,22 @@ function stateFor(sub: Subscription, grant: ConnectionGrant) {
     turn: encounter?.orderReady && entry?.kind === "pc" ? {
       id: encounter.id, characterId: entry.characterId, userId: entry.userId, key: turnKey(encounter), waitingSeq: encounter.waitingSeq,
     } : null,
-    narration, lastPlayerSeq: last.seq ?? 0,
+    narration, lastPlayerSeq: Math.max(last.seq ?? 0, passed.seq ?? 0),
+    level: sheet?.id === sub.character_id && !sheet.isCompanion ? { current: sheet.level, earned: Math.min(20, levelForXp(sheet.xp)) } : null,
+    offers: listOpenItemProposals(campaign.id)
+      .filter((offer) => (offer.toolName === "trade" ? offer.toCharacterId === sub.character_id : offer.characterId === sub.character_id && offer.userId === grant.userId))
+      .map((offer) => offer.id),
+    unreadWhisperId:
+      (db.prepare(`SELECT id FROM dm_whispers WHERE campaign_id = ? AND user_id = ? AND read = 0 AND direction = 'to_player' ORDER BY created_at DESC, id DESC LIMIT 1`)
+        .get(campaign.id, grant.userId) as { id: string } | undefined)?.id ?? null,
   });
-  return { opportunities: opportunities.map((o) => ({ ...o, opportunityId: `${o.opportunityId}:gate:${gate}` })), busy,
+  // A pause or hold re-invites a table decision it interrupted. A level is
+  // the same decision before and after one, so it keeps its ID.
+  return { opportunities: opportunities.map((o) => ({ ...o, opportunityId: o.type === "level_up_available" ? o.opportunityId : `${o.opportunityId}:gate:${gate}` })), busy,
     lifecycle: campaign.status === "ended" ? "ended" : campaign.status !== "active" || paused ? "paused" : "active" };
 }
 
-function enqueue(sub: Subscription, grant: ConnectionGrant, opportunity: { type: PlayerWebhookEvent["type"]; opportunityId: string; pendingRollId?: string; phase?: "act" | "finish" }, now: number) {
+function enqueue(sub: Subscription, grant: ConnectionGrant, opportunity: { type: PlayerWebhookEvent["type"]; opportunityId: string; pendingRollId?: string; phase?: "act" | "finish"; level?: number; proposalId?: string }, now: number) {
   // Every tick offers every open opportunity again. Only a new or cancelled
   // one is written, so skip building its text (a campaign and sheet read).
   const queued = getDatabase().prepare(`SELECT state FROM player_webhook_deliveries WHERE subscription_id = ? AND opportunity_id = ?`)
@@ -342,6 +487,9 @@ function eventText(sub: Subscription, grant: ConnectionGrant, event: Omit<Player
   const what = event.type === "roll_requested" ? `a roll is waiting for you in ${at}.`
     : event.type === "turn_started" ? (event.phase === "finish" ? `your combat turn in ${at} is ready to end.` : `it is your turn in combat in ${at}.`)
     : event.type === "response_requested" ? `the table in ${at} may want your response.`
+    : event.type === "level_up_available" ? `your experience in ${at} has earned level ${event.level}. Answer any roll or turn first, then read odm_level_up_options and take it with odm_level_up.`
+    : event.type === "offer_received" ? `an offer in ${at} waits on your answer alone. Read it in odm_get_campaign (itemProposals, id ${event.proposalId}) and answer it with odm_answer_offer.`
+    : event.type === "whisper_received" ? `the Game Master whispered to you in ${at}. Read it with odm_get_whispers.`
     : event.type === "campaign_paused" ? `${at} is paused.`
     : event.type === "campaign_resumed" ? `${at} has resumed.`
     : `${at} has ended.`;
@@ -359,7 +507,8 @@ export function webhookSignature(secret: string, timestamp: string, body: string
 // own Authorization value goes only in that header, to that receiver.
 export async function runPlayerWebhooksOnce(now = Date.now(), send: typeof fetch = fetch) {
   const db = getDatabase();
-  const subs = db.prepare(`SELECT * FROM player_webhooks`).all() as Subscription[];
+  // A poll link is asked, never sent to: nothing to deliver.
+  const subs = db.prepare(`SELECT * FROM player_webhooks WHERE poll_token_hash IS NULL`).all() as Subscription[];
   for (const sub of subs) {
     const grant = liveGrant(sub);
     if (!grant) {

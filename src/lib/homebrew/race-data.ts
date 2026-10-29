@@ -1,5 +1,7 @@
 import { clamp, text, type Raw } from "@/lib/homebrew/coerce";
-import { raceSizeOf } from "@/lib/content/mechanics";
+import { ALL_SKILLS, raceMechanics, raceSizeOf } from "@/lib/content/mechanics";
+import { checkSpeciesVariants } from "@/lib/content/species-variants";
+import { speciesHoldsTrait } from "@/lib/srd/race-id";
 
 // A workshop species in the fields the builder and the creation check read
 // a race by (src/lib/content/mechanics.ts raceMechanics): its scores, speed,
@@ -17,6 +19,9 @@ const SHORT: Record<string, (typeof ABILITY_WORDS)[number]> = {
 };
 const SHORT_IDS = ["str", "dex", "con", "int", "wis", "cha"] as const;
 const CLASS_LISTS = ["bard", "cleric", "druid", "sorcerer", "warlock", "wizard"];
+// The skills a species grants outright and the length of its traits text: a
+// save over either is refused by name (src/lib/homebrew/limits.ts).
+export const RACE_LIMITS = { skills: 6, traits: 6_000 } as const;
 
 function words(value: unknown, count: number, max = 40): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -49,8 +54,13 @@ function asiRows(raw: unknown): Array<{ attributes: string[]; value: number }> {
   return out;
 }
 
-export function normalizeRaceData(source: Raw, data: Raw & { desc: string }): Raw & { desc: string } {
-  data.traits = text(source.traits, 6_000);
+// The species' own choice of packages (src/lib/content/species-variants.ts)
+// is refused by name when it breaks a limit, never trimmed to fit, and so is
+// a choice beside the Draconic Ancestry trait, which already asks the player
+// for a published dragon: two picks would each write a breath and a
+// resistance.
+export function normalizeRaceData(source: Raw, data: Raw & { desc: string }): { data: Raw & { desc: string } } | { error: string } {
+  data.traits = text(source.traits, RACE_LIMITS.traits);
   data.size = raceSizeOf(source.size) ?? "Medium";
   if (source.heavyArmorSpeed === true) data.heavyArmorSpeed = true;
   data.speed = { walk: clamp((source.speed as Raw | undefined)?.walk ?? source.speed, 5, 120, 30) };
@@ -69,10 +79,12 @@ export function normalizeRaceData(source: Raw, data: Raw & { desc: string }): Ra
     const from = Array.isArray(asiChoice.from) ? asiChoice.from.filter((a) => SHORT_IDS.includes(a as (typeof SHORT_IDS)[number])) : [];
     data.asiChoice = { count: clamp(asiChoice.count, 1, 3, 1), amount: clamp(asiChoice.amount, 1, 2, 1), ...(from.length ? { from } : {}) };
   }
-  const skills = words(source.skills, 6, 30)?.map((skill) => skill.toLowerCase().replace(/\s+/g, "_"));
+  const skills = words(source.skills, RACE_LIMITS.skills, 30)?.map((skill) => skill.toLowerCase().replace(/\s+/g, "_"));
   if (skills) data.skills = skills;
-  const skillChoice = clamp((source.skillChoice as Raw | undefined)?.count, 0, 4, 0);
-  if (skillChoice) data.skillChoice = { count: skillChoice };
+  const skillChoice = (source.skillChoice ?? null) as Raw | null;
+  const skillCount = clamp(skillChoice?.count, 0, 4, 0);
+  const skillFrom = words(skillChoice?.from, 18, 30)?.filter((skill) => (ALL_SKILLS as readonly string[]).includes(skill));
+  if (skillCount) data.skillChoice = { count: skillCount, ...(skillFrom?.length ? { from: skillFrom } : {}) };
   const tools = words(source.tools, 6);
   if (tools) data.tools = tools;
   const toolChoice = (source.toolChoice ?? null) as Raw | null;
@@ -86,5 +98,17 @@ export function normalizeRaceData(source: Raw, data: Raw & { desc: string }): Ra
   if (cantrip && CLASS_LISTS.includes(String(cantrip.list))) {
     data.cantripChoice = { list: String(cantrip.list), count: clamp(cantrip.count, 1, 3, 1) };
   }
-  return data;
+  const variants = checkSpeciesVariants(source.variants);
+  if ("error" in variants) {
+    return variants;
+  }
+  if (variants.group) {
+    if (speciesHoldsTrait({ traitNames: raceMechanics({ traits: data.traits }).traitNames }, "draconic ancestry")) {
+      return {
+        error: "This species already asks for a published dragon through its Draconic Ancestry trait. Rename that trait (Draconic Heritage, say) or remove the player's choice.",
+      };
+    }
+    data.variants = variants.group;
+  }
+  return { data };
 }

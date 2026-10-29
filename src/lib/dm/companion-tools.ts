@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { rollCard } from "@/lib/dm/roll-card";
 import { allocateSeq, campaignSeats, countPartySlots, type Campaign } from "@/lib/db/campaigns";
-import { createSheet, listSheets, markSheetAsCompanion } from "@/lib/db/sheets";
+import { createSheet, listSheets, markSheetAsCompanion, setCompanionCommander } from "@/lib/db/sheets";
+import { defaultCommander } from "@/lib/dm/companion-command";
 import { createCompanionUser, deleteCompanionUser } from "@/lib/db/users";
 import {
   partRelationshipsWithSubject,
@@ -37,6 +38,9 @@ import { legalCompanionSheet } from "@/lib/dm/companion-level";
 import { queueCompanionPortrait } from "@/lib/portrait";
 import { settingClassIds } from "@/lib/classes";
 import { TOLD_GENDER_HELP, TOLD_GENDERS, toldGender } from "@/lib/gender";
+import { attractionFromTold, TOLD_ATTRACTION } from "@/lib/attraction";
+import { companionNpcFor, lastingCompanion, rememberDepartingSheet } from "@/lib/db/companion-npcs";
+import { returningCompanion, settleReturn } from "@/lib/dm/companion-return";
 import { presetFor, packFor } from "@/lib/worlds/preset";
 import { packIds } from "@/lib/worlds/reskin-logic";
 import {
@@ -52,6 +56,12 @@ import {
   type CharacterSheet,
   type CreateSheetInput,
 } from "@/lib/schemas/sheet";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { unknownSheetRef } from "@/lib/dm/rolls";
+import { ALIGNMENT_CODES, VALUES_PARAMETER, valuesArgSchema } from "@/lib/dm/companion-values-logic";
+import { setCompanionValues } from "@/lib/db/companion-conscience";
+import { seedAgenda } from "@/lib/dm/companion-agenda";
 
 // AI companion party members: sheets the DM recruits, plays, and dismisses.
 // A companion is a full character sheet owned by an unloginable bot user,
@@ -114,11 +124,27 @@ export const COMPANION_TOOL_NAMES = new Set(["add_companion", "dismiss_companion
 // with a class that can never validate: an unwinnable retry loop. Packs in the
 // repo are checked by scripts/test-world-packs.mjs, but one loaded through
 // WORLD_PACKS_DIR is unvetted.
-function packClassIds(settings: Campaign["gameSettings"]): string[] {
+export function packClassIds(settings: Campaign["gameSettings"]): string[] {
   return packIds(packFor(settings), "classes").filter((id) => findClass(id));
 }
 
-export function companionTools(campaign: Campaign): ToolDef[] {
+export function companionTools(campaign: Campaign, inEncounter = false): ToolDef[] {
+  const tools = companionToolDefs(campaign);
+  // What a party member holds to is settled out of a fight: an ally who
+  // joins mid-fight takes their class's, and the fight's tool set stays lean.
+  if (inEncounter) {
+    for (const tool of tools) {
+      const properties = tool.function.parameters.properties as Record<string, unknown> | undefined;
+      if (tool.function.name === "add_companion" && properties) {
+        delete properties.alignment;
+        delete properties.values;
+      }
+    }
+  }
+  return tools;
+}
+
+function companionToolDefs(campaign: Campaign): ToolDef[] {
   const mode = companionMode(campaign);
   if (mode === "off") {
     return [];
@@ -136,7 +162,7 @@ export function companionTools(campaign: Campaign): ToolDef[] {
     : `SRD race id ('human', 'hill_dwarf', 'high_elf'). ${preset.raceHint}`;
   const kindDescription =
     mode === "full"
-      ? "'party' for a lasting party member who travels with the party until dismissed; 'guest' for a scene-scoped ally (a soldier helping defend the town) who leaves when the scene ends."
+      ? "'party' for a lasting member until dismissed; 'guest' for a scene-scoped ally. A guest leaves when the scene ends, for example a soldier helping defend the town."
       : "Only 'guest' is allowed at this table: a scene-scoped ally (a soldier helping defend the town) who leaves when the scene or battle ends. Lasting party companions are disabled.";
   return [
     {
@@ -157,6 +183,11 @@ export function companionTools(campaign: Campaign): ToolDef[] {
             },
             class: { type: "string", description: classDescription },
             gender: { type: "string", enum: [...TOLD_GENDERS], description: TOLD_GENDER_HELP },
+            drawnTo: {
+              type: "array",
+              items: { type: "string", enum: TOLD_ATTRACTION },
+              description: "Who they could fall for, once the story shows it.",
+            },
             level: {
               type: "integer",
               minimum: 1,
@@ -173,6 +204,18 @@ export function companionTools(campaign: Campaign): ToolDef[] {
               type: "array",
               items: { type: "string" },
               description: "Casters only: the spells they know (level-appropriate).",
+            },
+            // What a party member holds to (issue 503).
+            alignment: {
+              type: "string",
+              enum: [...ALIGNMENT_CODES],
+              description: "Their alignment, when the story has shown it; with their class it sets what a party member holds to.",
+            },
+            values: VALUES_PARAMETER,
+            agenda: {
+              type: "object",
+              properties: { employer: { type: "string" }, aim: { type: "string" } },
+              description: "Party only, a secret from every player: who secretly employs them and what they want of the party. The server brings the order in time.",
             },
           },
           required: ["name", "class", "gender", "personality", "kind"],
@@ -205,10 +248,14 @@ const addArgsSchema = z.object({
   ancestry: z.string().trim().max(40).optional(),
   class: z.string().trim().min(1).max(60),
   gender: z.enum(TOLD_GENDERS),
+  drawnTo: z.array(z.string().max(40)).max(6).optional(),
   level: z.number().int().min(1).max(20).optional(),
   personality: z.string().trim().min(1).max(500),
   kind: z.enum(["party", "guest"]).default("guest"),
   spells: z.array(z.string().trim().min(1).max(60)).max(12).optional(),
+  alignment: z.enum(ALIGNMENT_CODES).optional(),
+  values: valuesArgSchema.optional(),
+  agenda: z.object({ employer: z.string().trim().max(80).optional(), aim: z.string().trim().max(200).optional() }).optional(),
 });
 
 const dismissArgsSchema = z.object({
@@ -217,6 +264,12 @@ const dismissArgsSchema = z.object({
 });
 
 const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+
+// The average level of the real players' characters, or 1 with none.
+function partyAverageLevel(sheets: CharacterSheet[]): number {
+  const levels = sheets.filter((sheet) => !sheet.isCompanion).map((sheet) => sheet.level);
+  return levels.length ? Math.max(1, Math.min(20, Math.round(levels.reduce((sum, level) => sum + level, 0) / levels.length))) : 1;
+}
 function slugify(value: string): string {
   return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
@@ -233,10 +286,10 @@ export function handleAddCompanion(
   campaign: Campaign,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   const mode = companionMode(campaign);
   if (mode === "off") {
-    return { error: "Companions are disabled for this campaign." };
+    return { error: "Companions are disabled for this campaign.", retry: true };
   }
   let args: z.infer<typeof addArgsSchema>;
   try {
@@ -245,7 +298,11 @@ export function handleAddCompanion(
     return {
       error:
         "Invalid arguments: add_companion needs name, class, gender (Female, Male, Nonbinary or Unknown), personality, and kind ('party' or 'guest').",
+      retry: true,
     };
+  }
+  if (args.values?.some((held) => held.value === "faction_loyalty" && !held.faction)) {
+    return { error: "A faction_loyalty value names its faction: send faction with it, or leave that value out. Nothing was added.", retry: true };
   }
 
   const notes: string[] = [];
@@ -267,8 +324,27 @@ export function handleAddCompanion(
   if (existing.length >= cap) {
     const label = kind === "guest" ? "guest ally" : "companion";
     return {
-      error: `The party already has ${existing.length} ${label}${existing.length === 1 ? "" : "s"} (limit ${cap}). Dismiss one before adding another.`,
+      error: `The party already has ${existing.length} ${label}${existing.length === 1 ? "" : "s"} (limit ${cap}): ${existing.map((sheet) => sheet.name).join(", ")}. One is dismissed before another joins. Ask the players which.`,
+      retry: true,
     };
+  }
+
+  // A party companion who left is the same person coming back: the sheet
+  // they left with, at the table's level now (#503 Phase 0.4).
+  if (kind === "party") {
+    const back = returningCompanion(campaign, args.name, args.level ?? partyAverageLevel(sheets));
+    if (back) {
+      const { sheet, hadEncounter } = finalizeNewCompanion(campaign, back.level, back.input, kind, args.personality);
+      settleReturn(campaign, back);
+      return {
+        ok: true,
+        characterId: sheet.id,
+        name: sheet.name,
+        returned: true,
+        summary: `${sheet.name} returns: the same ${sheet.class} they were when they left, now level ${sheet.level}. HP ${sheet.maxHp}, AC ${sheet.ac}.`,
+        note: `They are back with the sheet they left with${back.leftAtLevel !== back.level ? `, brought from level ${back.leftAtLevel} to ${back.level}` : ""}, and every bond with them picks up where it stopped. ${hadEncounter ? "They have an initiative slot and a map token. " : ""}Narrate their return in their own voice.`,
+      };
+    }
   }
 
   const preset = presetFor(campaign.gameSettings);
@@ -276,6 +352,7 @@ export function handleAddCompanion(
   if (!klass) {
     return {
       error: `Unknown class "${args.class}". Use a class id from this world's catalog (e.g. fighter, cleric, rogue, wizard).`,
+      retry: true,
     };
   }
   // Off-genre classes are refused outright: a high-fantasy paladin walking
@@ -287,6 +364,7 @@ export function handleAddCompanion(
   if (allowedClasses.length && !allowedClasses.includes(klass.id)) {
     return {
       error: `${klass.name} does not belong in this world (${preset.name}). Call add_companion again with one of: ${allowedClasses.join(", ")}.`,
+      retry: true,
     };
   }
 
@@ -295,7 +373,7 @@ export function handleAddCompanion(
   // neon city keeps that door open.
   const race = findRace(slugify(args.race ?? "")) ?? findRace("human");
   if (!race) {
-    return { error: "No usable race found." };
+    return { error: "No usable race found.", retry: true };
   }
   const playerRaces = sheets.filter((sheet) => !sheet.isCompanion).map((sheet) => sheet.race);
   const allowedRaces = preset.companionRaces.length
@@ -312,11 +390,7 @@ export function handleAddCompanion(
   }
 
   // Level matches the party (average of the real players' characters).
-  const partyLevels = sheets.filter((sheet) => !sheet.isCompanion).map((sheet) => sheet.level);
-  const averageLevel = partyLevels.length
-    ? Math.round(partyLevels.reduce((sum, level) => sum + level, 0) / partyLevels.length)
-    : 1;
-  const level = Math.max(1, Math.min(20, args.level ?? averageLevel));
+  const level = Math.max(1, Math.min(20, args.level ?? partyAverageLevel(sheets)));
 
   // Standard array by class priority, then racial ASI.
   const priority = abilityPriority(klass);
@@ -351,8 +425,10 @@ export function handleAddCompanion(
     race: chosenRace.id,
     class: klass.id,
     background: "",
-    alignment: "",
+    // What they hold to starts from it (src/lib/dm/companion-values-logic.ts).
+    alignment: args.alignment ?? "",
     gender: toldGender(args.gender) ?? "",
+    attraction: attractionFromTold(args.drawnTo) ?? { genders: [], note: "" },
     abilities,
     // A figure to start from; the legality check derives the real one by
     // the table's hit point method, and the armor engine the armor class.
@@ -385,12 +461,21 @@ export function handleAddCompanion(
     wantedSpells: args.spells ?? [],
   });
   if (!legal.ok) {
-    return { error: legal.error };
+    return toolError(legal);
   }
   notes.push(...legal.notes);
   const input = legal.sheet;
 
   const { sheet, hadEncounter } = finalizeNewCompanion(campaign, level, input, kind, args.personality);
+  // What the DM says they hold to replaces what class and alignment gave.
+  const row = kind === "party" && args.values ? companionNpcFor(sheet) : null;
+  if (row && args.values) {
+    setCompanionValues(row.id, args.values);
+  }
+  // A hidden employer, the DM's or the arc's (issue 503 Phase 8).
+  if (kind === "party") {
+    seedAgenda(campaign, sheet, args.agenda);
+  }
 
   return {
     ok: true,
@@ -415,11 +500,19 @@ export function finalizeNewCompanion(
 ): { sheet: CharacterSheet; hadEncounter: boolean } {
   const botUser = createCompanionUser(input.name);
   const created = createSheet(campaign.id, botUser.id, level, input);
-  const sheet = markSheetAsCompanion(created.id, kind, personality) ?? created;
+  const marked = markSheetAsCompanion(created.id, kind, personality) ?? created;
+  // At a one-player table the AI runs, a party companion follows that player
+  // in fights (src/lib/dm/companion-command.ts).
+  const sheet = setCompanionCommander(marked.id, defaultCommander(campaign, kind)) ?? marked;
   publishPersisted(campaign.id, "sheet_updated", { sheet });
   // A companion the party once travelled with can be written back in; every
   // standing with them picks up exactly where it stopped.
   rejoinRelationshipsWithSubject(campaign.id, sheet.name, sheet.id);
+  // A lasting companion has a person behind the sheet: personality axes a
+  // deed weighs against, and who they are drawn to (#503 Phase 0.1).
+  if (kind === "party") {
+    companionNpcFor(sheet);
+  }
   insertCharacterEvent({
     libraryCharacterId: null,
     campaignCharacterId: sheet.id,
@@ -502,23 +595,23 @@ export function handleDismissCompanion(
   campaign: Campaign,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof dismissArgsSchema>;
   try {
     args = dismissArgsSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: dismiss_companion needs characterId." };
+    return { error: "Invalid arguments: dismiss_companion needs characterId.", retry: true };
   }
-  const needle = args.characterId.trim().toLowerCase();
+  const needle = textKey(args.characterId);
   const sheet =
     sheets.find((candidate) => candidate.id === args.characterId) ??
-    sheets.find((candidate) => candidate.name.toLowerCase() === needle) ??
+    sheets.find((candidate) => textKey(candidate.name) === needle) ??
     null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
   if (!sheet.isCompanion) {
-    return { error: `${sheet.name} is a player's character and cannot be dismissed.` };
+    return { error: `${sheet.name} is a player's character and cannot be dismissed.`, retry: true };
   }
   removeCompanion(campaign, sheet, args.reason);
 
@@ -529,9 +622,20 @@ export function handleDismissCompanion(
   };
 }
 
+// A lasting companion leaving by its own conscience (issue 503,
+// src/lib/dm/departure.ts): the same removal as a dismissal, its sheet kept
+// on the row behind it, and `how` (what the table saw, never the plan it
+// held) told with the sheet's going, so the Party panel dims its card and
+// moves it to the Gone list.
+export function departCompanion(campaign: Campaign, sheet: CharacterSheet, reason: string, how: string) {
+  removeCompanion(campaign, sheet, reason, how);
+}
+
 // The whole removal: initiative slot, map token, story event, sheet, and the
 // bot user behind it. Shared by dismiss_companion and the end-of-fight sweep.
-function removeCompanion(campaign: Campaign, sheet: CharacterSheet, reason?: string) {
+// A lasting companion's going is told with `departed` (how they went: their
+// conscience's words, or a plain parting), so the Party panel shows it.
+function removeCompanion(campaign: Campaign, sheet: CharacterSheet, reason?: string, how?: string) {
   // Mid-combat: pull them out of the order and off the map cleanly.
   const encounter = getActiveEncounter(campaign.id);
   if (encounter) {
@@ -565,9 +669,17 @@ function removeCompanion(campaign: Campaign, sheet: CharacterSheet, reason?: str
   });
   // Their sheet goes, but what the party felt for them does not: a bond with
   // a departing companion is parted, not ended, so it comes back whole if
-  // the story brings them back (src/lib/db/relationships.ts).
+  // the story brings them back (src/lib/db/relationships.ts). Nor does who
+  // they were: a lasting companion's sheet is kept on the row behind them
+  // (#503 Phase 0.4), so a return is the same person.
+  rememberDepartingSheet(sheet);
   partRelationshipsWithSubject(campaign.id, sheet.name);
-  publishPersisted(campaign.id, "sheet_deleted", { sheetId: sheet.id, userId: sheet.userId });
+  const lasting = lastingCompanion(sheet);
+  publishPersisted(campaign.id, "sheet_deleted", {
+    sheetId: sheet.id,
+    userId: sheet.userId,
+    ...(lasting ? { departed: { name: sheet.name, how: how ?? (sheet.deathSaves?.dead ? "Fell" : "Left the party") } } : {}),
+  });
   // The bot user owns nothing but this sheet; the FK cascade removes it.
   deleteCompanionUser(sheet.userId);
 }
@@ -605,14 +717,14 @@ export function applyCompanionCall(
   toolName: string,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   if (toolName === "add_companion") {
     return handleAddCompanion(campaign, rawArguments, sheets);
   }
   if (toolName === "dismiss_companion") {
     return handleDismissCompanion(campaign, rawArguments, sheets);
   }
-  return { error: `Unknown companion tool ${toolName}.` };
+  return { error: `Unknown companion tool ${toolName}.`, retry: true };
 }
 
 // A companion's level-up lives beside the legality check it goes through

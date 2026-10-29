@@ -8,7 +8,7 @@ import { resourceDef, resourceLevel, type ResourceDef } from "@/lib/srd/class-re
 import { psionicOptions } from "@/lib/dm/option-costs";
 import { BONUS_ATTACK_COUNTERS } from "@/lib/dm/feature-bonus-attacks";
 import { isMeleeSpellAttack } from "@/lib/srd/melee-spell";
-import { bundledSpellFacts } from "@/lib/srd/spell-facts";
+import { bundledSpellFacts, type CastingTime, type SpellRange } from "@/lib/srd/spell-facts";
 import { aoeSpendFor } from "@/lib/srd/aoe-spend";
 import type { CombatRiders } from "@/lib/srd/feature-effects";
 import { authoredSpellRow, parseSpellMech, spellMechFor, type SpellMech } from "@/lib/srd/spell-mechanics";
@@ -28,7 +28,6 @@ import {
   primaryClass,
   signed,
   slotLine,
-  spellKey,
   standingGate,
   type Gate,
   type HandCard,
@@ -40,7 +39,8 @@ import {
   type HandTurn,
   type SpellFact,
 } from "@/lib/battlemap/hand-core";
-import { compareNames } from "@/lib/language/text-logic";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { compareNames, textKey } from "@/lib/language/text-logic";
 
 // ---- spells ----
 
@@ -53,26 +53,45 @@ export function spellNames(sheet: CharacterSheet): string[] {
   ];
   const seen = new Set<string>();
   return all.filter((name) => {
-    const key = spellKey(name);
+    const key = textKey(name);
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
 
+// The bundled facts in the words a pack's row uses, so a table without the
+// pack deals the same card the pack would (and the cast guard, which reads
+// these facts, would accept).
+function castingText(time: CastingTime): string {
+  if (typeof time === "number") return `${time} minute${time === 1 ? "" : "s"}`;
+  return time === "bonus" ? "1 bonus action" : time === "reaction" ? "1 reaction" : "1 action";
+}
+
+function rangeText(range: SpellRange): string {
+  if (range.kind === "feet") return `${range.feet} feet`;
+  if (range.kind === "self") return "Self";
+  return range.kind === "unknown" ? "" : range.kind.replace(/^./, (c) => c.toUpperCase());
+}
+
 function factFor(name: string, options: HandOptions): SpellFact | null {
-  const fetched = options.spells?.[spellKey(name)];
+  const fetched = options.spells?.[textKey(name)];
   if (fetched) return fetched;
+  // No pack: the authored rows' prose, and the bundled facts' casting time,
+  // range and concentration. Every spell used to read as one action here,
+  // so Shield and Counterspell were dealt as actions and Misty Step's cost
+  // rested on the cast guard alone.
   const row = authoredSpellRow(name);
-  if (!row) return null;
+  const facts = bundledSpellFacts(name);
+  if (!row && !facts) return null;
   return {
-    level: row.level,
+    level: facts?.level ?? row?.level ?? 0,
     school: "",
-    castingTime: "1 action",
-    range: "",
-    desc: row.desc,
-    higherLevel: row.higher_level ?? "",
-    concentration: Boolean(row.concentration),
+    castingTime: facts ? castingText(facts.castingTime) : "1 action",
+    range: facts ? rangeText(facts.range) : "",
+    desc: row?.desc ?? "",
+    higherLevel: row?.higher_level ?? "",
+    concentration: facts?.concentration ?? Boolean(row?.concentration),
   };
 }
 
@@ -195,7 +214,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
     damage = healing ? addFlat(healing, /spellcasting ability modifier|spellcasting modifier/i.test(fact.desc) ? abilityMod : 0) : null;
   }
   // Agonizing Blast and its kin ride one named cantrip.
-  const rider = riders.cantripAbilityRiders.find((entry) => spellKey(entry.spell) === spellKey(name));
+  const rider = riders.cantripAbilityRiders.find((entry) => textKey(entry.spell) === textKey(name));
   if (rider && damage) {
     damage = addFlat(damage, derived.abilityMods[rider.ability as keyof typeof derived.abilityMods] ?? 0);
   }
@@ -229,7 +248,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   const roll =
     toHit !== null ? `${signed(toHit)} to hit` : save ? (typed ? `DC ${save.dc}${mech.halfOnSave ? ", half on a save" : ""}` : "no attack") : "no roll";
   const notes: string[] = [];
-  if (fact.concentration && sheet.concentratingOn && spellKey(sheet.concentratingOn) !== spellKey(name)) {
+  if (fact.concentration && sheet.concentratingOn && textKey(sheet.concentratingOn) !== textKey(name)) {
     notes.push(`Ends your concentration on ${sheet.concentratingOn}.`);
   }
   if (mech.note) notes.push(mech.note);
@@ -239,7 +258,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   // untrained armor, a verbal component while silenced, no free hand, a
   // costly material neither carried nor affordable, no slot, and the
   // bonus-action spell rule.
-  const problem = (text: string | null, spent = false): Gate => (text ? { reason: text, spent } : null);
+  const problem = (refusal: ToolError | null, spent = false): Gate => (refusal ? { reason: refusal.error, spent } : null);
   const material = materialPlan(sheet, facts, { inFight: true, slotLevel: slot?.level ?? fact.level });
   const slotRefusal = fact.level > 0 && !slot ? slotPlan(sheet, name, facts, fact.level) : null;
   const charge = turnCharge({
@@ -259,7 +278,7 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
   // A feature that moves the spell to the bonus action shows it there.
   const shownCost: HandCost = !("error" in charge) && charge.kind === "budget" && charge.cost === "bonus action" ? "bonus" : cost;
   const card: HandCard = {
-    id: `spell:${spellKey(name)}`,
+    id: `spell:${textKey(name)}`,
     type,
     name,
     cost: shownCost,
@@ -283,6 +302,8 @@ function spellCard(sheet: CharacterSheet, turn: HandTurn, riders: CombatRiders, 
     disabled: null,
     spent: false,
     compose: false,
+    level: fact.level,
+    ...(fact.concentration ? { concentration: true } : {}),
     // A reaction spell (Shield, Hellish Rebuke) is played as a reaction:
     // use_reaction resolves it, off the caster's turn too.
     intent:
@@ -443,6 +464,7 @@ export function featureCards(sheet: CharacterSheet, turn: HandTurn): HandCard[] 
       disabled: null,
       spent: false,
       compose,
+      pool: id,
       intent:
         cost === "reaction"
           ? { card: "reaction", feature: def.displayName }

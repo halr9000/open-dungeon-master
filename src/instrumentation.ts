@@ -5,6 +5,11 @@
 // node-only import stays inside that guard, so the edge bundle never traces it.
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    // First, so the admin's Server log holds every line after it
+    // (src/lib/server-log.ts). The console still prints all of them.
+    const { installServerLog } = await import("@/lib/server-log");
+    installServerLog();
+
     const { startJobRunner } = await import("@/lib/jobs");
     startJobRunner();
 
@@ -13,6 +18,24 @@ export async function register() {
     // itself is left running in the background. A failure here must not stop
     // the server: the worst case is the keyword fallback search already has.
     if (process.env.NEXT_PHASE !== "phase-production-build") {
+      // Whether the pages are cross-origin isolated for an addon's threads
+      // (src/lib/page-isolation.ts), before the first page is served.
+      try {
+        const { refreshPageIsolation } = await import("@/lib/addons/store");
+        refreshPageIsolation();
+      } catch (error) {
+        console.error("[addons] could not read whether the pages are isolated", error);
+      }
+
+      // The classes made in the workshop, registered with the engines before
+      // the first request reads a sheet that holds one (src/lib/db/homebrew.ts).
+      try {
+        const { syncWorkshopClasses } = await import("@/lib/db/homebrew");
+        syncWorkshopClasses();
+      } catch (error) {
+        console.error("[workshop] could not register the workshop's classes", error);
+      }
+
       // What the last process held in memory and a restart took from the
       // DM, put right from the database before the first request
       // (src/lib/dm/restart-recovery.ts). A failure must not stop the server.
@@ -21,6 +44,17 @@ export async function register() {
         recoverDmAfterRestart();
       } catch (error) {
         console.error("[dm] could not recover what the restart interrupted", error);
+      }
+
+      // Tables waiting for everyone lost their timers with the process
+      // (src/lib/dm/table-wait.ts). The loop is loaded first so a deadline
+      // that passed while the server was down can wake the DM.
+      try {
+        await import("@/lib/dm/loop");
+        const { rearmTableWaits } = await import("@/lib/dm/table-wait");
+        rearmTableWaits();
+      } catch (error) {
+        console.error("[dm] could not re-arm the tables waiting for everyone", error);
       }
 
       // Event loop delay for the admin's metrics (src/lib/metrics.ts).

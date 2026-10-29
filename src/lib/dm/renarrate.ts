@@ -1,5 +1,7 @@
 import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
+import { getDatabase } from "@/lib/db/core";
 import { getDmTurn } from "@/lib/db/dm-turns";
+import { recordTurnCorrection } from "@/lib/db/turn-ledger";
 import { listSheets } from "@/lib/db/sheets";
 import {
   getCampaignMessage,
@@ -38,12 +40,14 @@ import {
 // narration segments are reused verbatim, so the "[roll:<id>]" markers land
 // byte-identically in every variant.
 
-export type RenarrateResult = { message: CampaignMessage } | { error: string; status: number };
+// correctionId: the correction ledger's row for the reroll (issue #460), or
+// null when none was written (a table a person runs).
+export type RenarrateResult = { message: CampaignMessage; correctionId?: string | null } | { error: string; status: number };
 
 // The narration mp3 is keyed by message id, so a stale take would keep
 // playing under new prose. Regenerating overwrites the same file and
 // publishes tts_ready, which is all the client needs to swap.
-function refreshNarrationAudio(campaign: Campaign, message: CampaignMessage) {
+export function refreshNarrationAudio(campaign: Campaign, message: CampaignMessage) {
   if (!campaign.gameSettings.ttsEnabled) {
     return;
   }
@@ -64,6 +68,9 @@ export async function runRenarrate(input: {
   // Added to the story model's base temperature for this take only, so a lead
   // browsing takes can push for more variation without retuning the campaign.
   tempOffset?: number;
+  // Who asked for the reroll, for the correction ledger. Left out, nothing
+  // is recorded.
+  userId?: string;
 }): Promise<RenarrateResult> {
   const campaign = getCampaignById(input.campaignId);
   if (!campaign) {
@@ -74,7 +81,7 @@ export async function runRenarrate(input: {
     return { error: "Message not found.", status: 404 };
   }
   if (message.authorType !== "dm") {
-    return { error: "Only DM narration can be rerolled.", status: 400 };
+    return { error: "Only GM narration can be rerolled.", status: 400 };
   }
   if (!message.dmTurnId) {
     return { error: "This narration predates rerolls; there is no turn to replay.", status: 400 };
@@ -113,6 +120,7 @@ export async function runRenarrate(input: {
         // No tools at all, on top of toolChoice "none": a variant that called
         // a tool would re-run mechanics that already resolved.
         toolChoice: "none",
+        meta: { task: "renarrate" },
         // Slightly hotter than the first pass, as a relative offset from the
         // story model's base rather than an absolute value that would
         // override whatever the campaign is tuned to.
@@ -138,10 +146,10 @@ export async function runRenarrate(input: {
   // sentences the reader quotes, and a take that was only the model's plan
   // is no take at all.
   if (narration) {
-    narration = withoutAsides(narration, await readAsides(campaign, listSheets(campaign.id), turn, narration));
+    narration = withoutAsides(narration, await readAsides(campaign, listSheets(campaign.id), turn, narration), campaign.gameSettings.tableLanguage);
   }
   if (!narration) {
-    return { error: "The DM returned nothing; try again.", status: 502 };
+    return { error: "The GM returned nothing; try again.", status: 502 };
   }
 
   const content = assembleVariantContent(turn.narrationParts, turn.rollIds, narration);
@@ -156,12 +164,29 @@ export async function runRenarrate(input: {
   if (appended.capped) {
     return { error: `That is all ${MAX_VARIANTS} takes; pick one.`, status: 409 };
   }
-  const updated = setMessageVariants(input.messageId, appended.variants, appended.index, mergeLines(current.speech, spoken));
+  // The take and its correction ledger row land together.
+  const { updated, correctionId } = getDatabase().transaction(() => {
+    const saved = setMessageVariants(input.messageId, appended.variants, appended.index, mergeLines(current.speech, spoken));
+    return {
+      updated: saved,
+      correctionId:
+        saved && input.userId
+          ? recordTurnCorrection({
+              campaignId: input.campaignId,
+              turnId: turn.id,
+              attribution: "direct",
+              kind: "renarrate",
+              messageId: input.messageId,
+              userId: input.userId,
+            })
+          : null,
+    };
+  })();
   if (!updated) {
     return { error: "Could not store the new take.", status: 500 };
   }
   refreshNarrationAudio(campaign, updated);
-  return { message: updated };
+  return { message: updated, correctionId };
 }
 
 // Browsing the takes: pure bookkeeping, no model call. Kept here rather than

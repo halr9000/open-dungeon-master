@@ -10,6 +10,7 @@ import { featAbilityIncrease } from "@/lib/srd/feat-effects";
 import { ABILITY_LABELS } from "./AbilityEditor";
 import { featSpellsAnything, type CastingAbility } from "@/lib/srd/feat-spells";
 import { SRD_WEAPONS } from "@/lib/srd/weapons";
+import { textKey } from "@/lib/language/text-logic";
 import ContentPicker from "./ContentPicker";
 import { PickPill } from "./steps/shared";
 
@@ -22,8 +23,6 @@ export type KnownTraining = {
   tools: string[];
   armor: string[];
 };
-
-const lower = (value: string) => value.trim().toLowerCase();
 
 // The builder's training as it stands, for the pickers, known on every
 // step (useBuilderDerived's `training` needs no ability score).
@@ -86,8 +85,8 @@ export default function FeatChoicesFields({
   const sharedLeft = spec.any - anyPicksMade(spec, picks);
   // Held by someone other than this feat.
   const heldBy = (kind: keyof KnownTraining) => {
-    const own = new Set(mine[kind].map(lower));
-    return new Set(known[kind].map(lower).filter((entry) => !own.has(entry)));
+    const own = new Set(mine[kind].map(textKey));
+    return new Set(known[kind].map(textKey).filter((entry) => !own.has(entry)));
   };
   const set = (kind: keyof KnownTraining, index: number, value: string) => {
     const next = [...(mine[kind] ?? [])];
@@ -114,7 +113,7 @@ export default function FeatChoicesFields({
   const heldArmor = heldBy("armor");
   // The feat's expertise goes on a skill the character has, the feat's own
   // skill included.
-  const expertiseFrom = [...new Set([...known.skills, ...mine.skills])].filter((skill) => !heldExpertise.has(lower(skill)));
+  const expertiseFrom = [...new Set([...known.skills, ...mine.skills])].filter((skill) => !heldExpertise.has(textKey(skill)));
   const hasPicks = spec.languages + spec.skills + spec.expertise + spec.weapons + spec.tools + spec.any + spec.damageTypes.length > 0;
   const fixed = [
     ...spec.fixedSkills.map((skill) => (spec.fixedExpertise.includes(skill) ? `${skillName(skill)} (expertise)` : skillName(skill))),
@@ -148,11 +147,11 @@ export default function FeatChoicesFields({
     source === "subclass"
       ? "Your subclass grants this training; it goes on the sheet with the character."
       : applied.length
-        ? `The table applies ${applied.join(", ")}; the DM runs the rest from the feat's text.`
-        : "Nothing of this feat is applied by the table itself; the DM runs it from its text.";
+        ? `The table applies ${applied.join(", ")}; the GM runs the rest from the feat's text.`
+        : "Nothing of this feat is applied by the table itself; the GM runs it from its text.";
   if (!hasPicks && !teaches && !fixed.length) {
     return (
-      <p className="mt-1 text-[11px] text-stone-500" data-feat-coverage={feat}>
+      <p className="mt-1 text-sm text-stone-500" data-feat-coverage={feat}>
         {coverage}
       </p>
     );
@@ -161,7 +160,7 @@ export default function FeatChoicesFields({
   // the table knows is offered, as the server allows.
   const toolsOffered = spec.toolsFrom.length ? spec.toolsFrom : KNOWN_TOOLS;
   const weaponsOffered = spec.weaponsFrom.length
-    ? SRD_WEAPONS.filter((weapon) => spec.weaponsFrom.some((offered) => lower(offered) === lower(weapon.name)))
+    ? SRD_WEAPONS.filter((weapon) => spec.weaponsFrom.some((offered) => textKey(offered) === textKey(weapon.name)))
     : SRD_WEAPONS;
   // The spells the feat teaches (src/lib/srd/feat-spells.ts): the class
   // list and casting ability where the feat leaves them open, then one
@@ -185,13 +184,13 @@ export default function FeatChoicesFields({
       const label = `${feat} ${kind === "cantrips" ? (taught.attackCantrip ? "attack cantrip" : "cantrip") : `${level === 1 ? "1st" : `${level}th`}-level ${taught.schools.length ? `${taught.schools.join(" or ")} ` : ""}${taught.ritualBook ? "ritual " : ""}spell`} ${index + 1}`;
       return (
         <div key={`${kind}-${index}`} data-feat-spell={`${feat}:${kind}:${index + 1}`}>
-          <span className="mb-1 block text-[11px] text-stone-400">{label}</span>
+          <span className="mb-1 block text-sm text-stone-400">{label}</span>
           {chosen ? (
             <div className="flex items-center gap-2">
               <PickPill label={chosen} selected onClick={() => setSpell(kind, index, "")}>
                 {capital(chosen)}
               </PickPill>
-              <span className="text-[11px] text-stone-500">Tap to change</span>
+              <span className="text-sm text-stone-500">Tap to change</span>
             </div>
           ) : needsList ? (
             <span className="text-xs text-stone-500">Pick the spell list first.</span>
@@ -216,7 +215,7 @@ export default function FeatChoicesFields({
     <div className="mt-2 space-y-2 rounded-lg border border-amber-900/40 bg-amber-950/10 p-2.5" data-feat-choices={feat}>
       <p className="text-xs text-amber-200/90">{hasPicks || teaches ? `${feat} choices` : feat}</p>
       {spec.any > 0 ? (
-        <p className="text-[11px] text-stone-400" data-feat-shared={feat}>
+        <p className="text-sm text-stone-400" data-feat-shared={feat}>
           Any {spec.any} of {spec.anyKinds.map((kind) => (kind === "armor" ? "shields" : kind)).join(", ")}, in any combination
           {sharedLeft > 0 ? <span className="text-amber-300"> · {sharedLeft} still to choose</span> : null}
         </p>
@@ -235,7 +234,7 @@ export default function FeatChoicesFields({
                 { value: "", label: "Choose a language..." },
                 ...STANDARD_LANGUAGES.filter(
                   (language) =>
-                    !heldLanguages.has(lower(language)) &&
+                    !heldLanguages.has(textKey(language)) &&
                     (mine.languages[index] === language || !mine.languages.includes(language)),
                 ).map((language) => ({ value: language as string, label: language as string })),
               ]}
@@ -245,11 +244,11 @@ export default function FeatChoicesFields({
       ) : null}
       {slots("skills") > 0 ? (
         <div>
-          <span className="mb-1 block text-[11px] text-stone-400">
+          <span className="mb-1 block text-sm text-stone-400">
             Skill proficiency ({spec.anyKinds.includes("skills") ? `up to ${slots("skills")}` : `${spec.skills} of your choice`}{spec.pickedExpertise ? ", with expertise" : ""}){mine.skills.length < spec.skills ? <span className="text-amber-300"> · {spec.skills - mine.skills.length} still to choose</span> : null}
           </span>
           <div className="flex flex-wrap gap-1.5">
-            {SRD_SKILLS.filter((skill) => !heldSkills.has(skill.id) && (!spec.skillsFrom.length || spec.skillsFrom.includes(skill.id))).map((skill) => (
+            {SRD_SKILLS.filter((skill) => !heldSkills.has(textKey(skill.id)) && (!spec.skillsFrom.length || spec.skillsFrom.includes(skill.id))).map((skill) => (
               <PickPill
                 key={skill.id}
                 label={skill.name}
@@ -265,7 +264,7 @@ export default function FeatChoicesFields({
       ) : null}
       {spec.expertise > 0 ? (
         <div>
-          <span className="mb-1 block text-[11px] text-stone-400">
+          <span className="mb-1 block text-sm text-stone-400">
             Expertise ({spec.expertise} of your skills){mine.expertise.length < spec.expertise ? <span className="text-amber-300"> · {spec.expertise - mine.expertise.length} still to choose</span> : null}
           </span>
           <div className="flex flex-wrap gap-1.5">
@@ -298,7 +297,7 @@ export default function FeatChoicesFields({
                 { value: "", label: "Choose a weapon..." },
                 ...weaponsOffered.filter(
                   (weapon) =>
-                    !heldWeapons.has(lower(weapon.name)) &&
+                    !heldWeapons.has(textKey(weapon.name)) &&
                     (mine.weapons[index] === weapon.name || !mine.weapons.includes(weapon.name)),
                 ).map((weapon) => ({ value: weapon.name, label: weapon.name, hint: weapon.damage })),
               ]}
@@ -348,7 +347,7 @@ export default function FeatChoicesFields({
         />
       ) : null}
       {teaches && taught.fixedSpells.length ? (
-        <p className="text-[11px] text-stone-400">
+        <p className="text-sm text-stone-400">
           Known from the feat: {taught.fixedSpells.map(capital).join(", ")}
           {taught.freeCast ? ", castable once per long rest without a slot" : ""}.
         </p>
@@ -368,7 +367,7 @@ export default function FeatChoicesFields({
               options={[
                 { value: "", label: "Choose armor training..." },
                 ...spec.armorFrom.filter(
-                  (piece) => !heldArmor.has(lower(piece)) && (mine.armor[index] === piece || !mine.armor.includes(piece)),
+                  (piece) => !heldArmor.has(textKey(piece)) && (mine.armor[index] === piece || !mine.armor.includes(piece)),
                 ).map((piece) => ({ value: piece, label: capital(piece === "shields" ? "shields" : `${piece} armor`) })),
               ]}
             />
@@ -388,7 +387,7 @@ export default function FeatChoicesFields({
               options={[
                 { value: "", label: "Choose a tool..." },
                 ...toolsOffered.filter(
-                  (tool) => !heldTools.has(lower(tool)) && (mine.tools[index] === tool || !mine.tools.includes(tool)),
+                  (tool) => !heldTools.has(textKey(tool)) && (mine.tools[index] === tool || !mine.tools.includes(tool)),
                 ).map((tool) => ({ value: tool, label: capital(tool) })),
               ]}
             />
@@ -396,11 +395,11 @@ export default function FeatChoicesFields({
         </div>
       ) : null}
       {fixed.length ? (
-        <p className="text-[11px] text-stone-400" data-feat-fixed={feat}>
+        <p className="text-sm text-stone-400" data-feat-fixed={feat}>
           Granted outright: {fixed.map(capital).join(", ")}.
         </p>
       ) : null}
-      <p className="text-[11px] text-stone-500" data-feat-coverage={feat}>
+      <p className="text-sm text-stone-500" data-feat-coverage={feat}>
         {coverage}
       </p>
     </div>

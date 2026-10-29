@@ -6,9 +6,10 @@
 import type { CatalogEntry } from "@/lib/dm/catalog-types";
 import { sceneOptions } from "@/lib/ambience/catalog";
 import { BOARD_ADJUDICATIONS } from "@/lib/dm/catalog-board";
-import { summonFormNames } from "@/lib/srd/summon-forms";
-import { familiarFormNames } from "@/lib/srd/familiar-forms";
-import { BEAST_FORMS } from "@/lib/srd/beast-forms";
+import { ENCOUNTER_OUTCOMES, type EncounterOutcome } from "@/lib/dm/encounter-logic";
+// The SRD creature table's names alone: the blocks stay on the server.
+import CREATURE_NAMES from "@/lib/srd/srd-creature-names.json";
+import { spellCreatureNames } from "@/lib/srd/spell-creatures";
 import { SAMPLE_TRAPS } from "@/lib/srd/trap-specs";
 import {
   ABILITY_OPTIONS as ABILITIES,
@@ -19,6 +20,14 @@ import {
   conditionField,
   damageTypeField,
 } from "@/lib/dm/catalog-vocab";
+
+const OUTCOME_LABELS: Record<EncounterOutcome, string> = {
+  victory: "Victory",
+  enemies_fled: "The enemies fled",
+  party_fled: "The party fled",
+  party_defeated: "The party was defeated",
+  truce: "A truce",
+};
 
 const BONUS_ATTACK = [
   { value: "martial arts", label: "Martial Arts strike" },
@@ -98,7 +107,7 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
         kind: "number",
         min: 5,
         max: 600,
-        help: "How far the nearest enemy stands from the party. Empty, the sides open across the field.",
+        help: "How far the nearest enemy stands from the party. Empty, an ambush or a fight indoors opens 30 feet apart, anything else across the field.",
       },
       {
         name: "lair",
@@ -145,6 +154,7 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
       { name: "characterId", label: "Attacker", kind: "character", required: true },
       { name: "targetEnemyId", label: "Target", kind: "enemy", required: true },
       { name: "weapon", label: "Weapon", kind: "text", help: "From their equipment. Blank uses the best weapon they carry." },
+      { name: "improvised", label: "Improvised weapon", kind: "boolean", help: "An object they picked up that is no weapon on their sheet (a chair, a bottle), named in Weapon." },
       { name: "spell", label: "Attack spell", kind: "text", help: "An attack-roll spell instead of a weapon, such as Fire Bolt. It takes the whole action." },
       { name: "damage", label: "Spell damage", kind: "dice", placeholder: "1d10", help: "Only for a spell the content pack does not know." },
       damageTypeField("damageType", "Spell damage type"),
@@ -192,32 +202,6 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
     ],
   },
   {
-    name: "damage_enemy",
-    label: "Damage an enemy",
-    category: "combat",
-    summary: "Applies damage straight to an enemy, resistances and immunities included.",
-    needsEncounter: true,
-    fields: [
-      { name: "enemyId", label: "Enemy", kind: "enemy", required: true },
-      { name: "amount", label: "Damage", kind: "number", min: 1, max: 200, help: "Leave empty for a fall." },
-      { name: "dice", label: "Or dice", kind: "text", help: "4d10: the server rolls them." },
-      { name: "fallFeet", label: "Falls (feet)", kind: "number", min: 1, max: 1000, help: "The server rolls 1d6 per 10 feet and lays it prone." },
-      damageTypeField("type", "Type"),
-      { name: "magical", label: "From a spell or a magic weapon", kind: "boolean", help: "Resistance to nonmagical attacks does not apply to it." },
-      {
-        name: "source",
-        label: "Source",
-        kind: "select",
-        options: [
-          { value: "hazard", label: "A hazard (a trap, a falling object)" },
-          { value: "environment", label: "The environment (fire, lava, acid)" },
-        ],
-        help: "The AI DM must name one; the console's own hand may leave it empty.",
-      },
-      REASON,
-    ],
-  },
-  {
     name: "cast_at_enemy",
     label: "Cast at an enemy",
     category: "combat",
@@ -243,8 +227,8 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
         kind: "enemy",
         help: "A Death cleric 17: a second enemy within 5 feet of the first, struck by the same necromancy spell from the same slot.",
       },
-      // The engine's beast form table, the one the server checks the CR on.
-      { name: "variant", label: "Polymorph's beast", kind: "select", options: BEAST_FORMS.map((beast) => ({ value: beast.name.toLowerCase(), label: beast.name })), help: "Polymorph or True Polymorph: what the creature becomes on a failed WIS save, no higher in CR than it." },
+      // The engine's form table, the one the server checks the kind and CR on.
+      { name: "variant", label: "Polymorph's form", kind: "select", options: [...CREATURE_NAMES.beasts, ...CREATURE_NAMES.others].sort().map((name) => ({ value: name.toLowerCase(), label: name })), help: "Polymorph (a beast) or True Polymorph (any creature): what the creature becomes on a failed WIS save, no higher in CR than it." },
       ...AREA_PLACEMENT_FIELDS,
       REASON,
     ],
@@ -256,15 +240,15 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
     summary: "An enemy's spell or a trap on one character: the save from their sheet, then the damage or the condition.",
     fields: [
       { name: "characterId", label: "Target", kind: "character", required: true },
-      { name: "saveAbility", label: "Save", kind: "select", required: true, options: ABILITIES },
-      { name: "dc", label: "Save DC", kind: "number", required: true, min: 1, max: 30 },
+      { name: "saveAbility", label: "Save", kind: "select", options: ABILITIES, help: "Needed for a hazard (a trap); an enemy's ability or spell brings its own." },
+      { name: "dc", label: "Save DC", kind: "number", min: 1, max: 30, help: "Needed with Save for a hazard." },
       { name: "damage", label: "Damage", kind: "dice", placeholder: "2d6", help: "Give damage, a condition, or both." },
       damageTypeField("damageType", "Damage type"),
       { name: "halfOnSave", label: "Half on a save", kind: "boolean" },
       conditionField("condition", "Condition on a failed save"),
       { name: "rounds", label: "Rounds it lasts", kind: "number", min: 1, max: 100 },
       { name: "casterEnemyId", label: "Enemy doing it", kind: "enemy", help: "Spends its action; its block or spell sets the save, DC and dice." },
-      { name: "ability", label: "Its ability", kind: "text", placeholder: "Poison Spit", help: "With an enemy: the name as its block lists it." },
+      { name: "enemyAbility", label: "Its ability", kind: "text", placeholder: "Poison Spit", help: "With an enemy: the name as its block lists it." },
       { name: "spell", label: "Or its spell", kind: "text", help: "With an enemy: one on its list. Its slot is spent and its concentration tracked." },
       { name: "source", label: "Source", kind: "text", placeholder: "a poisoned needle" },
       REASON,
@@ -280,19 +264,19 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
       { name: "spell", label: "Spell", kind: "text", required: true },
       { name: "targetCharacterIds", label: "Targets", kind: "characters", help: "Empty targets the caster." },
       { name: "level", label: "Slot level", kind: "number", min: 1, max: 9, help: "Empty for a cantrip or the spell's own level." },
-      { name: "targetEnemyId", label: "Enemy", kind: "enemy", help: "Hunter's Mark and Hex: the quarry. Dispel Magic: whose spells end. Polymorph: the creature to turn into the beast below. Other buffs refuse an enemy." },
+      { name: "targetEnemyId", label: "Enemy", kind: "enemy", help: "Hunter's Mark and Hex: the quarry. Dispel Magic: whose spells end. Polymorph and True Polymorph: the creature to turn into the form below. Other buffs refuse an enemy." },
       {
         name: "variant",
         label: "Choice",
         kind: "select",
-        // The creatures the summoning spells, Polymorph, Animal Shapes and
-        // Shapechange bring, from the engine's own form table, and Find
-        // Familiar's forms from the familiar table; the server checks the
-        // kind and challenge rating the slot allows, and Pact of the Chain
-        // for its four forms.
-        options: [...new Set([...summonFormNames(), ...familiarFormNames()])].sort().map((name) => ({ value: name.toLowerCase(), label: name })),
+        // The creatures the summoning spells, Polymorph, Animal Shapes, True
+        // Polymorph and Shapechange bring, and Find Familiar's forms, from the engine's
+        // own creature table (src/lib/srd/srd-creatures.ts) and the spells'
+        // own (spell-creatures.ts); the server checks the kind and challenge
+        // rating the slot allows, and Pact of the Chain for its four forms.
+        options: [...new Set([...CREATURE_NAMES.beasts, ...CREATURE_NAMES.others, ...spellCreatureNames()])].sort().map((name) => ({ value: name.toLowerCase(), label: name })),
         other: { label: "Another choice", placeholder: "enlarge" },
-        help: "A summoning spell's creature, Find Familiar's form, Polymorph's, Animal Shapes' or Shapechange's beast; or type Enlarge/Reduce, Protection from Energy's type, Enhance Ability, Fire Shield.",
+        help: "A summoning spell's creature (Find Steed's with its kind: fey warhorse), Find Familiar's form, Polymorph's or Animal Shapes' beast, True Polymorph's or Shapechange's creature; or type Enlarge/Reduce, Protection from Energy's type, Enhance Ability, Fire Shield.",
       },
       { name: "count", label: "How many", kind: "number", min: 1, max: 40, help: "A summoning spell: fewer creatures than the slot allows; empty for the most." },
       { name: "endSpell", label: "Dispel Magic ends", kind: "text", help: "The one spell to end when the target holds several; empty ends them all." },
@@ -306,71 +290,24 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
     summary: "One save, many targets: each rolls, and the halves and evasions resolve themselves.",
     needsEncounter: true,
     fields: [
-      { name: "casterId", label: "Cast by character", kind: "character", help: "A player's spell: the server spends the slot once and derives the dice, save and DC." },
+      { name: "casterCharacterId", label: "Cast by character", kind: "character", help: "A player's spell: the server spends the slot once and derives the dice, save and DC." },
       { name: "spell", label: "Spell", kind: "text", placeholder: "Fireball" },
       { name: "level", label: "Slot level", kind: "number", min: 1, max: 9, help: "Upcasting scales the dice." },
       { name: "casterEnemyId", label: "Or an enemy's", kind: "enemy", help: "Its action; the block or its spell sets the numbers." },
-      { name: "ability", label: "Its ability", kind: "text", placeholder: "Fire Breath" },
+      { name: "enemyAbility", label: "Its ability", kind: "text", placeholder: "Fire Breath" },
       { name: "damage", label: "Damage", kind: "dice", placeholder: "8d6", help: "Empty for a spell that deals none (Entangle); a known spell rolls its own." },
       { name: "saveAbility", label: "Save", kind: "select", options: ABILITIES, help: "Needed when no spell is named (a trap); a character's or an enemy's spell brings its own." },
       { name: "dc", label: "DC", kind: "number", min: 1, max: 30, help: "Needed with Save when no spell is named." },
       damageTypeField("type", "Type"),
       { name: "halfOnSave", label: "Half on a save", kind: "boolean", default: true },
+      conditionField("condition", "Condition on a failed save", { help: "When no spell or enemy is named: a class feature, a trap." }),
+      { name: "rounds", label: "Rounds it lasts", kind: "number", min: 1, max: 100, help: "Empty: each creature repeats the save at the end of its turns." },
       { name: "characterIds", label: "Players caught", kind: "characters" },
       { name: "enemyIds", label: "Enemies caught", kind: "enemies" },
       { name: "targets", label: "Anyone else, by name", kind: "text", placeholder: "the cultist, Brother Aldo", help: "Comma separated, for a creature the pickers do not show." },
       { name: "overchannel", label: "Overchannel", kind: "boolean", help: "An evoker's maximum damage; the server rolls what a second use costs." },
-      { name: "sculpt", label: "Sculpted allies", kind: "characters", help: "An evoker's Sculpt Spells: they succeed and take nothing. Empty spares every character caught." },
+      { name: "sparedCharacterIds", label: "Sculpted allies", kind: "characters", help: "An evoker's Sculpt Spells: they succeed and take nothing. Empty spares every character caught." },
       ...AREA_PLACEMENT_FIELDS,
-      REASON,
-    ],
-  },
-  {
-    name: "split_damage",
-    label: "Damage tray",
-    category: "combat",
-    summary: "One rolled total on several creatures, each at full, half, double or none.",
-    fields: [
-      { name: "amount", label: "Damage rolled", kind: "number", requiredUnless: "dice", min: 1, max: 500 },
-      { name: "dice", label: "Or dice", kind: "text", help: "8d6: the server rolls the total once." },
-      damageTypeField("type", "Type"),
-      {
-        name: "targets",
-        label: "Who takes what",
-        kind: "shares",
-        required: true,
-        help: "Each creature at full, half, double or none. Resistances still apply on top.",
-      },
-      REASON,
-    ],
-  },
-  {
-    name: "set_enemy_condition",
-    label: "Condition on an enemy",
-    category: "combat",
-    summary: "Puts a condition on an enemy, with its duration or its save to end.",
-    needsEncounter: true,
-    fields: [
-      { name: "enemyId", label: "Enemy", kind: "enemy", required: true },
-      conditionField("condition", "Condition", { required: true }),
-      { name: "level", label: "Exhaustion level", kind: "number", min: 1, max: 6, help: "Exhaustion only: the level it now has." },
-      { name: "rounds", label: "Rounds", kind: "number", min: 1, max: 100 },
-      { name: "saveAbility", label: "Save to end", kind: "select", options: ABILITIES },
-      { name: "saveDc", label: "Save DC", kind: "number", min: 1, max: 30 },
-      { name: "sourceCharacterId", label: "Caused by character", kind: "character", help: "The grappler, the charmer, the source of the fear." },
-      { name: "sourceEnemyId", label: "Or by enemy", kind: "enemy" },
-      REASON,
-    ],
-  },
-  {
-    name: "clear_enemy_condition",
-    label: "Clear an enemy condition",
-    category: "combat",
-    summary: "Takes a condition back off an enemy.",
-    needsEncounter: true,
-    fields: [
-      { name: "enemyId", label: "Enemy", kind: "enemy", required: true },
-      conditionField("condition", "Condition", { required: true }),
       REASON,
     ],
   },
@@ -450,7 +387,7 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
         ],
       },
       { name: "item", label: "Object", kind: "text" },
-      { name: "enemyId", label: "Enemy escaping", kind: "enemy", help: "Escape only, with no character: an enemy breaking a character's grapple, or the spell that holds it (Web, Entangle, Maze's INT check against 20, Irresistible Dance's WIS save)." },
+      { name: "escapingEnemyId", label: "Enemy escaping", kind: "enemy", help: "Escape only, with no character: an enemy breaking a character's grapple, or the spell that holds it (Web, Entangle, Maze's INT check against 20, Irresistible Dance's WIS save)." },
       {
         name: "shove",
         label: "Shove to",
@@ -558,7 +495,13 @@ export const COMBAT_ADJUDICATIONS: CatalogEntry[] = [
     needsEncounter: true,
     confirm: { message: "End the fight now? XP is awarded and the board clears; it cannot be reopened." },
     fields: [
-      { name: "outcome", label: "Outcome", kind: "text", placeholder: "The party held the bridge" },
+      {
+        name: "outcome",
+        label: "Outcome",
+        kind: "select",
+        options: ENCOUNTER_OUTCOMES.map((value) => ({ value, label: OUTCOME_LABELS[value] })),
+        help: "Left blank, the server decides from the enemies: all dead is a victory, none standing is the enemies fled, any still alive is a truce.",
+      },
       REASON,
     ],
   },

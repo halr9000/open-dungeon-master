@@ -15,6 +15,7 @@ import { trackUtilityCall } from "@/lib/dm/call-tracker";
 import { enqueueDmJob } from "@/lib/dm/queue";
 import { releaseHarnessConversation } from "@/lib/harness/bridge";
 import { computeIdf, lexicalScore } from "@/lib/dm/fusion-logic";
+import { stopWordsFor } from "@/lib/language/language";
 import { extractToolCalls } from "@/lib/dm/rolls";
 import { searchScenes } from "@/lib/dm/memory-index";
 import { scoreChaptersByKeywords } from "@/lib/dm/recall-logic";
@@ -56,7 +57,7 @@ import {
 // the secret story arc, the dm outline, NPC agency internals, and exact enemy
 // numbers never enter it.
 
-const ASK_SYSTEM = `You are the Dungeon Master answering a question at the table, out of character.
+const ASK_SYSTEM = `You are the Game Master answering a question at the table, out of character.
 
 You are a read-only campaign assistant. You never narrate scenes, advance time, roll dice, change any character's state, or continue the story in any way. You are not taking a turn.
 
@@ -134,8 +135,8 @@ function transcriptLines(campaignId: string, messages: CampaignMessage[]): Trans
     who:
       message.authorType === "dm"
         ? message.speaker && message.speaker.kind !== "narrator" && message.speaker.name
-          ? `DM (as ${message.speaker.name})`
-          : "DM"
+          ? `GM (as ${message.speaker.name})`
+          : "GM"
         : message.authorType === "system"
           ? "Table note"
           : (message.characterId && names.get(message.characterId)) || "Player",
@@ -196,6 +197,7 @@ async function retrieveArchive(campaignId: string, query: string, chapterBudget:
   const passages = transcriptPassages(
     transcriptLines(campaignId, listRecentMessages(campaignId, SEARCHED_MESSAGES)),
     query,
+    stopWordsFor(campaignLanguage(campaignId)),
   );
   if (passages.length) {
     evidence.push(`The latest exchanges that mention it, in full where they fit:\n${passages.join("\n\n")}`);
@@ -413,7 +415,7 @@ export async function runAsk(
   ];
 
   let result: AskResult | { error: string } = {
-    error: "The DM did not answer; try again.",
+    error: "The GM did not answer; try again.",
   };
   const answer = async () => {
     // The archive is searched only when the model asks for it, never guessed

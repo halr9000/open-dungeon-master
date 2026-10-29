@@ -185,7 +185,8 @@ test("the passive defs are the ones something else spends", () => {
   // Signature Spells and Overchannel are spent by the cast itself
   // (src/lib/dm/caster-features.ts). The Arcane Ward's pool and its
   // raised-today mark are kept by the abjuration cast and the damage path.
-  assert.deepEqual(passive, ["relentless_endurance", "inspiration", "relentless_rage", "signature_spell_1", "signature_spell_2", "overchannel", "sub_arcane_ward", "sub_arcane_ward_raised"]);
+  // Psionic Recovery is spent by its authored spend, which returns a die.
+  assert.deepEqual(passive, ["relentless_endurance", "inspiration", "relentless_rage", "signature_spell_1", "signature_spell_2", "overchannel", "sub_psionic_recovery", "sub_arcane_ward", "sub_arcane_ward_raised"]);
 });
 
 test("Relentless Endurance spends once, then refuses", () => {
@@ -197,28 +198,15 @@ test("Relentless Endurance spends once, then refuses", () => {
   assert.equal(spendRelentlessEndurance(undefined), null);
 });
 
-const { parseFontOfMagic } = await import("../src/lib/dm/resource-tools.ts");
+const { fontOfMagicDirection } = await import("../src/lib/dm/resource-tools.ts");
 
-test("Font of Magic variants parse direction and slot level", () => {
-  assert.deepEqual(parseFontOfMagic("create a 2nd-level slot"), {
-    direction: "create_slot",
-    level: 2,
-  });
-  assert.deepEqual(parseFontOfMagic("make a level 3 spell slot"), {
-    direction: "create_slot",
-    level: 3,
-  });
-  assert.deepEqual(parseFontOfMagic("convert my 3rd-level slot into points"), {
-    direction: "recover_points",
-    level: 3,
-  });
-  assert.deepEqual(parseFontOfMagic("break a 1st level slot into sorcery points"), {
-    direction: "recover_points",
-    level: 1,
-  });
-  // A plain Metamagic spend carries no slot talk and is not a conversion.
-  assert.equal(parseFontOfMagic("quickened spell"), null);
-  assert.equal(parseFontOfMagic(undefined), null);
+test("Font of Magic's two conversions are fixed variants; anything else is a Metamagic spend", () => {
+  assert.equal(fontOfMagicDirection("create slot"), "create_slot");
+  assert.equal(fontOfMagicDirection("Convert Slot"), "recover_points");
+  // Words are not read for a direction, in English or any table language.
+  for (const variant of ["create a 2nd-level slot", "convert my 3rd-level slot into points", "crea uno slot", "convertir un emplacement", "quickened spell", undefined]) {
+    assert.equal(fontOfMagicDirection(variant), null, String(variant));
+  }
 });
 
 // What a use costs of the turn (ResourceDef.action), charged by use_resource
@@ -253,6 +241,7 @@ const CHARGED_ELSEWHERE = {
   sub_unwavering_mark: "the bonus attack, not the use, costs the bonus action",
   sub_telekinetic_master: "the slotless cast, then pc_attack's bonus attack",
   sub_embodiment_of_the_law: "the enchantment spell's cast is the cost (the use marks it for the bonus action)",
+  sub_waxing_and_waning: "the slotless spell's cast is the cost; the phase is the Lunar Phase choice",
 };
 
 test("every feature whose text names a cost carries it", () => {

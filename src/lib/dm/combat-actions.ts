@@ -10,7 +10,7 @@ import { getActiveEncounter, listEnemies, patchEnemyConditions } from "@/lib/db/
 import { getSheetById } from "@/lib/db/sheets";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { sizeForRace } from "@/lib/srd";
-import { sizeRank, watchfulPassivePerception } from "@/lib/bestiary/statblock";
+import { sizeRank, watchfulPassivePerception } from "@/lib/bestiary/enemy-numbers";
 import type { TurnBudget } from "@/lib/dm/action-budget";
 import { addSheetCondition, rollEnemyContest } from "@/lib/dm/action-common";
 import { handsBusy } from "@/lib/dm/cast-rules";
@@ -18,11 +18,15 @@ import { tilesBetween, wallBetween } from "@/lib/dm/attack-spatial";
 import { seenClearlyDespiteTraits } from "@/lib/dm/hide-traits";
 import { rollCharacterCheck } from "@/lib/dm/contest-roll";
 import { rollCard } from "@/lib/dm/roll-card";
-import { resolveEnemyRef, publishEncounter } from "@/lib/dm/enemy-damage";
+import { publishEncounter } from "@/lib/dm/enemy-damage";
+import { resolveTargetFoe } from "@/lib/dm/sheet-foe";
+import { hostileTo } from "@/lib/dm/combatant";
+import { isSheetFoe } from "@/lib/dm/combat-sides-logic";
 import { HELP_FOR_A_CHECK, HELPED } from "@/lib/dm/help-logic";
 import { pushTokenAway } from "@/lib/dm/map-tools";
 import { resolveSheetRef } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { toolError, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 // Successfully hidden: attacks from here have advantage, and the first one
 // spends it (src/lib/dm/condition-logic.ts).
@@ -45,13 +49,14 @@ export function hide(
   encounter: ReturnType<typeof getActiveEncounter>,
   spend: Spend,
   costs: Record<string, unknown>,
-): Record<string, unknown> {
+): ToolResult {
   // Out of a fight there is no one's passive Perception to compare with and
   // no turn to spend; the Stealth check and whoever is watching are the
   // table's (request_roll, check_notice).
   if (!encounter) {
     return {
       error: `There is no fight, so ${sheet.name} hides with a Stealth check against whoever is watching: call request_roll kind=skill_check skill=stealth, and check_notice for the watchers. Nothing was spent.`,
+      retry: true,
     };
   }
   // Nobody hides from a creature that sees them clearly. On a mapped
@@ -62,6 +67,7 @@ export function hide(
   if (watcher) {
     return {
       error: `${sheet.name} cannot hide: ${watcher} sees them clearly. They move out of its sight, behind cover or into darkness first, then hide.`,
+      refused: "rules",
     };
   }
   spend();
@@ -105,20 +111,21 @@ export function help(
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
   spend: Spend,
-): Record<string, unknown> {
+): ToolResult {
   const target = args.targetCharacterId
     ? resolveSheetRef(args.targetCharacterId, sheets, sheetsById)
     : null;
   if (!target || target.id === sheet.id) {
     return {
       error: "Help goes to another character: pass their targetCharacterId.",
+      retry: true,
     };
   }
   // Help on an attack is against one creature within 5 feet of the helper
   // (SRD 5.1); the ally's first attack against it has advantage.
-  const foe = args.targetEnemyId && encounter ? resolveEnemyRef(encounter.id, args.targetEnemyId) : null;
+  const foe = args.targetEnemyId && encounter ? resolveTargetFoe(campaign.id, encounter, args.targetEnemyId) : null;
   if (args.targetEnemyId && (!foe || foe.status !== "alive")) {
-    return { error: "Help on an attack needs a living targetEnemyId from GAME STATE." };
+    return { error: "Help on an attack needs a living targetEnemyId from GAME STATE.", retry: true };
   }
   if (foe && encounter) {
     const apart = tilesBetween(encounter.id, sheet.id, foe.id);
@@ -127,6 +134,7 @@ export function help(
     if (apart !== null && (apart > reach || wallBetween(encounter.id, sheet.id, foe.id))) {
       return {
         error: `${sheet.name} is ${apart * 5} ft from ${foe.displayName}; Help on an attack is against a creature within ${reach * 5} ft of the helper. They move next to it first, or help an ability check instead.`,
+        retry: true,
       };
     }
   }
@@ -152,26 +160,33 @@ export function contest(
   costs: Record<string, unknown>,
   // A die bought for the Athletics check (Grappling Strike's Superiority
   // Die), paid once the contest's own checks pass, or its refusal.
-  checkDie?: () => { die: string; label: string } | { error: string },
-): Record<string, unknown> {
+  checkDie?: () => { die: string; label: string } | ToolError,
+): ToolResult {
   const action = args.action as "grapple" | "shove";
   if (!encounter) {
-    return { error: `${action} needs an active encounter and a target.` };
+    return { error: `${action} needs an active encounter and a target.`, retry: true };
   }
-  const enemy = args.targetEnemyId ? resolveEnemyRef(encounter.id, args.targetEnemyId) : null;
+  // Any combatant (src/lib/dm/combatant.ts): an enemy, or a character
+  // fighting on the other side, who resists as the character it is.
+  const enemy = args.targetEnemyId ? resolveTargetFoe(campaign.id, encounter, args.targetEnemyId) : null;
   if (!enemy || enemy.status !== "alive") {
-    return { error: `${action} needs a living targetEnemyId from GAME STATE.` };
+    return { error: `${action} needs a living targetEnemyId from GAME STATE.`, retry: true };
+  }
+  if (isSheetFoe(enemy) && !hostileTo(encounter, { kind: "sheet", id: sheet.id }, { kind: "sheet", id: enemy.id })) {
+    return { error: `${enemy.displayName} fights on ${sheet.name}'s side: a ${action} here is aimed at a creature of the other side. Nothing was spent.`, refused: "rules" };
   }
   // SRD: the target can be at most one size larger than the attacker.
   if (sizeRank(enemy.stats.size) > sizeRank(sizeForRace(sheet.race)) + 1) {
     return {
       error: `${enemy.displayName} is ${enemy.stats.size}: too large for ${sheet.name} (${sizeForRace(sheet.race)}) to ${action}. A creature can only ${action} a target at most one size larger than itself.`,
+      refused: "rules",
     };
   }
   // SRD 5.1, Grappling: "Using at least one free hand" (cast-rules.ts handsBusy).
   if (action === "grapple" && handsBusy(sheet) >= 2) {
     return {
       error: `${sheet.name} has no free hand: a weapon and a shield (or two weapons) fill both. A grapple takes at least one free hand; unequip one on the sheet first. Nothing was spent.`,
+      refused: "rules",
     };
   }
   // Hands on the target: it has to be within reach, with no wall between.
@@ -179,11 +194,12 @@ export function contest(
   if (apart !== null && (apart > 1 || wallBetween(encounter.id, sheet.id, enemy.id))) {
     return {
       error: `${sheet.name} is ${apart * 5} ft from ${enemy.displayName}; a ${action} needs the target within 5 ft. They move their token next to it first.`,
+      retry: true,
     };
   }
   const bought = checkDie?.();
   if (bought && "error" in bought) {
-    return { error: bought.error };
+    return toolError(bought);
   }
   spend();
   // SRD contest: the attacker's Athletics, a check like any other
@@ -257,7 +273,7 @@ export function contest(
     contest: contested,
     success: true,
     applied: `${enemy.displayName} is ${condition}. The server applied the condition and its mechanics.${
-      condition === "grappled" ? " It can try to escape with its action (take_action escape with its enemyId)." : ""
+      condition === "grappled" ? " It can try to escape with its action (take_action escape with its escapingEnemyId)." : ""
     }`,
   };
 }

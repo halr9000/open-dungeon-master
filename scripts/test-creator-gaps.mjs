@@ -34,7 +34,7 @@ const srdDrow = {
   slug: "odm-drow",
   name: "Elf (Drow)",
   documentSlug: "odm-expanded",
-  document: "Open Dungeon Master Expanded Options",
+  document: "Open Game Master Expanded Options",
   data: { asi: [{ attributes: ["Dexterity"], value: 2 }, { attributes: ["Charisma"], value: 1 }], speed: { walk: 30 }, languages: "Common and Elvish." },
 };
 const tohDrow = {
@@ -50,7 +50,7 @@ const tohDrow = {
   },
 };
 const highElf = { slug: "high-elf", name: "High Elf", documentSlug: "wotc-srd", document: "5e Core Rules", data: { asi: [{ attributes: ["Intelligence"], value: 1 }], parent_slug: "elf" } };
-const odmHighElf = { slug: "odm-high-elf", name: "Elf (High)", documentSlug: "odm-expanded", document: "Open Dungeon Master Expanded Options", data: { asi: [{ attributes: ["Dexterity"], value: 2 }, { attributes: ["Intelligence"], value: 1 }], speed: { walk: 30 } } };
+const odmHighElf = { slug: "odm-high-elf", name: "Elf (High)", documentSlug: "odm-expanded", document: "Open Game Master Expanded Options", data: { asi: [{ attributes: ["Dexterity"], value: 2 }, { attributes: ["Intelligence"], value: 1 }], speed: { walk: 30 } } };
 const elf = { slug: "elf", name: "Elf", documentSlug: "wotc-srd", document: "5e Core Rules", data: { asi: [{ attributes: ["Dexterity"], value: 2 }], speed: { walk: 30 }, languages: "Common and Elvish." } };
 
 await test("a third-party race under a bundled slug is its own race, under an id no SRD reader matches (issue 115)", () => {
@@ -74,7 +74,7 @@ await test("a third-party race under a bundled slug is its own race, under an id
   const srd = options.find((entry) => entry.id === "odm-drow");
   assert.deepEqual(srd.asi, { dex: 2, cha: 1 });
   assert.deepEqual(innateCantripsFor("odm-drow", 1), ["Dancing Lights"]);
-  assert.equal(srd.source, "Open Dungeon Master Expanded Options");
+  assert.equal(srd.source, "Open Game Master Expanded Options");
 });
 
 await test("a stored Tome of Heroes drow keeps its row in an edit, under whichever id it was saved", () => {
@@ -164,10 +164,10 @@ await test("a race's cantrip is not a class cantrip when a stored sheet is read 
   assert.deepEqual(dropped, [], "the race's cantrip leaving the class list is not a dropped pick");
   // The high elf's pick likewise, under whichever name it was chosen.
   const elfWizard = reconcilePicks(
-    { racialCantrip: "Fire Bolt", cantrips: ["Fire Bolt", "Mage Hand", "Prestidigitation"] },
+    { racialCantrips: ["Fire Bolt"], cantrips: ["Fire Bolt", "Mage Hand", "Prestidigitation"] },
     { race: race("high_elf"), klass: klass("wizard"), background: background("sage"), level: 1 },
   );
-  assert.equal(elfWizard.picks.racialCantrip, "Fire Bolt");
+  assert.deepEqual(elfWizard.picks.racialCantrips, ["Fire Bolt"]);
   assert.deepEqual(elfWizard.picks.cantrips, ["Mage Hand", "Prestidigitation"]);
   // A forest gnome bard's Minor Illusion.
   const gnome = reconcilePicks(
@@ -180,7 +180,7 @@ await test("a race's cantrip is not a class cantrip when a stored sheet is read 
 await test("each step blocker names the block that holds the missing pick (issue 117)", () => {
   const state = {
     name: "", backgroundSkills: [], bonusLanguages: [], racialAsi: [], racialSkills: [], racialTool: "",
-    racialCantrip: "", racialAncestry: "", repeatSkills: [], chosenSkills: [], subclass: "", stylePicks: [],
+    racialCantrips: [], racialAncestry: "", repeatSkills: [], chosenSkills: [], subclass: "", stylePicks: [],
     expertisePicks: [], method: "standard", scores: {}, rollPool: [],
   };
   assert.deepEqual(submit.identityBlocker(state, background("acolyte")), { target: "name", message: "Give your character a name." });
@@ -189,7 +189,7 @@ await test("each step blocker names the block that holds the missing pick (issue
   // An acolyte's two languages, picked on the ancestry step.
   const acolyte = submit.ancestryBlocker(named, race("half_orc"), background("acolyte"));
   assert.equal(acolyte.target, "languages");
-  assert.equal(acolyte.message, "Pick 2 more languages first.");
+  assert.equal(acolyte.message, "Pick 2 more languages your hero can speak.");
   assert.equal(submit.ancestryBlocker({ ...named, bonusLanguages: ["Elvish", "Giant"] }, race("half_orc"), background("acolyte")), null);
   // A half-elf speaks one more tongue, then raises two scores, then picks
   // two skills: each hold names the block that collects it.
@@ -204,6 +204,17 @@ await test("each step blocker names the block that holds the missing pick (issue
   assert.equal(submit.abilitiesBlocker({ abilities: null }).target, "scores");
   assert.equal(submit.gearBlocker({ purse: { problems: ["Over budget by 3 gp."] } }).message, "Over budget by 3 gp.");
   assert.equal(submit.gearBlocker({ purse: { problems: [] } }), null);
+  // The save's own check names what is missing and where, as the gates do:
+  // it used to answer "Assign all six ability scores first." to everything.
+  const save = (input) => submit.validateBuilder({ state: named, derived: { abilities: null }, ...input });
+  assert.deepEqual(save({}), { kind: "error", message: "Choose where your hero comes from (race).", target: "race" });
+  assert.equal(save({ race: race("half_orc") }).target, "class");
+  assert.equal(save({ race: race("half_orc"), klass: { id: "fighter" } }).target, "background");
+  assert.deepEqual(save({ race: race("half_orc"), klass: { id: "fighter" }, background: background("soldier") }), {
+    kind: "error",
+    message: "Give each of the six abilities a score (ability scores).",
+    target: "scores",
+  });
 });
 
 await test("the Core Rules acolyte asks for two languages, on top of the race's own", () => {

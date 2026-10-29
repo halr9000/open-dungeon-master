@@ -60,7 +60,7 @@ export type MonsterTurnOutcome = {
 };
 
 const MONSTER_SYSTEM =
-  'You play one monster\'s turn in a Dungeons & Dragons 5th Edition fight. You are given its stat block, its condition, and every player character it can see with their hit points and armour class. Choose exactly ONE thing for it to do and answer with STRICT JSON only, no code fences, shaped: {"action": "enemy_attack" | "set_enemy_condition" | "enemy_flees" | "hold", "targetCharacterId": string, "attack": string, "why": string}. Prefer enemy_attack and name the target by the id given to you; "attack" is the name of one attack from the stat block, or "" to let the server pick. Use enemy_flees only for a beast or a coward that is badly hurt and has a reason to run. Use hold only when there is genuinely nothing it can do. Play the monster as its stat block and nature suggest: a wolf pack flanks, an archer stays back, a brute hits whoever is closest. Never invent an attack, a spell or a target that is not listed. "why" is one short clause.';
+  'You play one monster\'s turn in a Dungeons & Dragons 5th Edition fight. You are given its stat block, its condition, and every player character it can see with their hit points and armour class. Choose exactly ONE thing for it to do and answer with STRICT JSON only, no code fences, shaped: {"action": "enemy_attack" | "set_condition" | "enemy_flees" | "hold", "targetCharacterId": string, "attack": string, "why": string}. Prefer enemy_attack and name the target by the id given to you; "attack" is the name of one attack from the stat block, or "" to let the server pick. Use enemy_flees only for a beast or a coward that is badly hurt and has a reason to run. Use hold only when there is genuinely nothing it can do. Play the monster as its stat block and nature suggest: a wolf pack flanks, an archer stays back, a brute hits whoever is closest. Never invent an attack, a spell or a target that is not listed. "why" is one short clause.';
 
 // Feet between two tokens, the same nearest-square measure the engine checks
 // (src/lib/dm/board-reach.ts), so the model is told the distance its attack
@@ -115,7 +115,7 @@ async function decideMonsterTurn(
           content: `The monster:\n${describeEnemy(enemy)}\n\nThe party it can see:\n${party}`,
         },
       ],
-      { timeoutMs: arcTextTimeoutMs() },
+      { meta: { task: "monster_turn" }, timeoutMs: arcTextTimeoutMs() },
     ),
   );
   if (error) {
@@ -290,7 +290,7 @@ function summarizeMonsterCall(
 // is a record of play that ALREADY happened, so the expansion has nothing to
 // decide: every die is already rolled and every hit point already spent.
 const EXPAND_DIRECTIVE =
-  "[System] The Dungeon Master ran this stretch at the table and wrote down what happened in one line. Say it to the players in full, in your narrating voice, as the moment they are living through. Every mechanical fact stays exactly as the DM wrote it: the same events, the same outcomes, the same people. Add colour, not consequence. Introduce no new event, no die roll, no decision and no NPC the line does not already contain, do not call any tool, and do not carry the scene past where the DM left it. Two or three short paragraphs at most.";
+  "[System] The Game Master ran this stretch at the table and wrote down what happened in one line. Say it to the players in full, in your narrating voice, as the moment they are living through. Every mechanical fact stays exactly as the GM wrote it: the same events, the same outcomes, the same people. Add colour, not consequence. Introduce no new event, no die roll, no decision and no NPC the line does not already contain, do not call any tool, and do not carry the scene past where the GM left it. Two or three short paragraphs at most.";
 
 export type ExpandOutcome = { content: string } | { error: string };
 
@@ -319,7 +319,7 @@ export async function expandBeat(
     ...(recent.length
       ? [{ role: "user" as const, content: `Recently at this table:\n${recent.join("\n")}` }]
       : []),
-    { role: "user" as const, content: `${EXPAND_DIRECTIVE}\nThe DM wrote: ${beat}` },
+    { role: "user" as const, content: `${EXPAND_DIRECTIVE}\nThe GM wrote: ${beat}` },
   ];
 
   let narration = "";
@@ -332,6 +332,7 @@ export async function expandBeat(
         // called a tool would invent mechanics the DM already resolved by
         // hand at the table.
         toolChoice: "none",
+        meta: { task: "beat_expand" },
       });
       if (error) {
         failure = "The model is unavailable; the beat stands as you wrote it.";

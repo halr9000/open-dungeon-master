@@ -14,6 +14,9 @@ export const IMPORT_KINDS = [
   "encounters",
   "tables",
   "npcs",
+  // The factions, a choice of their own (audit finding WF-07). An NPC still
+  // brings the faction it belongs to; this brings every faction.
+  "factions",
   // Shops with their place, keeper, policy and shelf (#171).
   "shops",
   "maps",
@@ -33,6 +36,7 @@ export const IMPORT_KIND_LABELS: Record<ImportKind, string> = {
   encounters: "Prepared encounters",
   tables: "Roll tables",
   npcs: "NPCs",
+  factions: "Factions",
   shops: "Market",
   maps: "Battle maps",
   storyboard: "The storyboard",
@@ -185,3 +189,23 @@ export function emptyExisting(): ImportExisting {
     IMPORT_KINDS.map((kind) => [kind, [] as string[]]),
   ) as ImportExisting;
 }
+
+// What WorldForge needs beside it (audit finding WF-07): every World entry
+// is one of these records, and a link, a secret or a pin points at them. A
+// world brings them unless the DM leaves one out on purpose.
+export const WORLD_RECORD_KINDS = ["npcs", "locations", "lore", "factions"] as const satisfies readonly ImportKind[];
+export type WorldRecordKind = (typeof WORLD_RECORD_KINDS)[number];
+
+// The selection with what it needs: WorldForge's records, except the ones
+// the DM chose to leave behind.
+export function withRequired(selection: readonly ImportKind[], exclude: readonly ImportKind[] = []): ImportKind[] {
+  const out = new Set(selection);
+  if (out.has("world")) {
+    for (const kind of WORLD_RECORD_KINDS) if (!exclude.includes(kind)) out.add(kind);
+  }
+  return IMPORT_KINDS.filter((kind) => out.has(kind));
+}
+
+// What WorldForge says about one kind of record, for an honest exclusion:
+// how many entries, links, pins, secrets and event mentions go with it.
+export type WorldRecordFacts = { entries: number; links: number; pins: number; secrets: number; events: number };

@@ -18,6 +18,9 @@
 // clock path must not import enemy-damage.ts, which imports it): the
 // resistances, a concentration save, death and the token all follow here.
 
+import { lashOut } from "@/lib/dm/confusion";
+import type { CombatSide } from "@/lib/dm/combat-sides-logic";
+import { sideOf } from "@/lib/dm/combatant";
 import { sheetSpellAuthors } from "@/lib/dm/spell-authors";
 import { dmRoll, rollCard, sheetAttacker } from "@/lib/dm/roll-card";
 import type { Campaign } from "@/lib/db/campaigns";
@@ -31,23 +34,35 @@ import { spellMechanicsFor } from "@/lib/content";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import { addDice } from "@/lib/srd/spell-scaling";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
-import { rollEnemySave } from "@/lib/dm/forced-save";
-import { damageAdjust, removeConditions, resistsAllDamage, type ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { rollCharacterSave, rollEnemySave } from "@/lib/dm/forced-save";
+import { instancesOf, removeConditionInstances, withTempHpClaim, type ConditionMetaMap, type SaveAbilityId } from "@/lib/dm/condition-logic";
+import { meetEnemyPart } from "@/lib/dm/enemy-defenses";
+import { enemyHpCap } from "@/lib/dm/monster-abilities";
+import { createDmTurn, saveDmTurn } from "@/lib/db/dm-turns";
+import type { RollAttacker } from "@/lib/db/rolls";
+import { applyPcDamage } from "@/lib/dm/pc-damage";
+import { healDeathHook } from "@/lib/dm/death";
+import { regainBlockedBy } from "@/lib/dm/vitals-logic";
 import { clearSpellConditionsByName } from "@/lib/dm/concentration";
-import { spellEffectsOnEnemyDamage, spellKey } from "@/lib/dm/spell-effects";
+import { spellEffectsOnEnemyDamage } from "@/lib/dm/spell-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { effectiveMaxHp } from "@/lib/dm/condition-logic";
 import { rollAgainst } from "@/lib/roll-labels";
+import { textKey } from "@/lib/language/text-logic";
 
 const FEET_PER_TILE = 5;
 
 // Damage from a running spell landing on an enemy: its resistances, the
 // hit points, a concentration save, and death. Returns the line for the table.
 export function hurtEnemy(campaign: Campaign, encounter: Encounter, enemy: EncounterEnemy, amount: number, type: string, why: string): string {
-  const adjusted = damageAdjust(amount, type, enemy.stats.resist, enemy.stats.immune, enemy.stats.vulnerable, {
-    magical: true,
-    resistAll: resistsAllDamage(enemy.conditions),
-  });
+  // The board's defences as well as the block's: Silence, the water, a
+  // golem's Absorption (enemy-defenses.ts).
+  const adjusted = meetEnemyPart(campaign.id, enemy, amount, type, { magical: true, spell: true });
+  if (adjusted.absorbed > 0) {
+    const healed = Math.min(enemyHpCap(enemy), enemy.currentHp + adjusted.absorbed);
+    patchEnemyHp(enemy.id, healed, "alive");
+    return `${enemy.displayName} absorbs the ${type} from ${why} and regains ${healed - enemy.currentHp} hit points.`;
+  }
   if (adjusted.amount <= 0) {
     return `${enemy.displayName} takes no damage from ${why}.`;
   }
@@ -85,12 +100,17 @@ export function hurtEnemy(campaign: Campaign, encounter: Encounter, enemy: Encou
 }
 
 // Spirit Guardians and its kind, around every caster holding one.
+// The casters whose ring hurts a creature of the other side only: a
+// creature the party dominates is one the cleric designates unaffected, and
+// a companion that turned on the party is no longer (src/lib/dm/combatant.ts).
+function auraCasters(campaign: Campaign, encounter: Encounter, targetSide: CombatSide): CharacterSheet[] {
+  return listSheets(campaign.id)
+    .map((stale) => getSheetById(stale.id) ?? stale)
+    .filter((caster) => caster.currentHp > 0 && !caster.deathSaves?.dead && sideOf(encounter, "sheet", caster.id, caster) !== targetSide);
+}
+
 function auraHits(campaign: Campaign, encounter: Encounter, enemy: EncounterEnemy, lines: string[]) {
-  for (const stale of listSheets(campaign.id)) {
-    const caster = getSheetById(stale.id) ?? stale;
-    if (caster.currentHp <= 0 || caster.deathSaves?.dead) {
-      continue;
-    }
+  for (const caster of auraCasters(campaign, encounter, sideOf(encounter, "enemy", enemy.id, enemy))) {
     const meta = caster.conditionMeta as ConditionMetaMap;
     for (const condition of caster.conditions) {
       const spell = meta[condition]?.spell ?? (condition.toLowerCase() === "spirit guardians" ? "Spirit Guardians" : null);
@@ -127,56 +147,169 @@ function auraHits(campaign: Campaign, encounter: Encounter, enemy: EncounterEnem
   }
 }
 
-// Phantasmal Killer and its kind: damage at the start of the target's turn
-// unless it saves, a save ending the spell for it.
-function turnStartDamage(campaign: Campaign, encounter: Encounter, enemy: EncounterEnemy, lines: string[]) {
-  const meta = enemy.conditionMeta as ConditionMetaMap;
+// The same ring around a character of the other side (a companion turned on
+// the party starting its turn beside the party's cleric): the character's
+// own save, and the damage through the character's damage path.
+function characterAuraHits(campaign: Campaign, encounter: Encounter, target: CharacterSheet, lines: string[]) {
+  for (const caster of auraCasters(campaign, encounter, sideOf(encounter, "sheet", target.id, target))) {
+    const meta = caster.conditionMeta as ConditionMetaMap;
+    for (const condition of caster.conditions) {
+      const spell = meta[condition]?.spell ?? (condition.toLowerCase() === "spirit guardians" ? "Spirit Guardians" : null);
+      const aura = spell ? spellMechanicsFor({ spell, userIds: sheetSpellAuthors(caster) }) : null;
+      const apart = aura?.mech.aura ? tilesBetween(encounter.id, caster.id, target.id) : null;
+      if (!aura?.mech.aura || apart === null || apart > Math.floor(aura.mech.aura.radiusFeet / FEET_PER_TILE)) {
+        continue;
+      }
+      const live = getSheetById(target.id);
+      if (!live || live.currentHp <= 0 || live.deathSaves?.dead) {
+        return;
+      }
+      const ring = aura.mech.aura;
+      const dc = spellSaveDcFor(caster, aura.name) ?? 13;
+      const slot = meta[condition]?.slotLevel ?? ring.baseLevel;
+      const dice = ring.perSlotLevel ? addDice(ring.dice, ring.perSlotLevel, Math.max(0, slot - ring.baseLevel)) : ring.dice;
+      const turn = createDmTurn(campaign.id, [], "human_dm");
+      try {
+        const save = rollCharacterSave(campaign, turn, live, ring.save, dc, `${ring.save.toUpperCase()} save against ${aura.name}`, { magical: true });
+        const rolled = rollCard(campaign, turn, live.id, "damage", rollAgainst(aura.name, live.name), dice, sheetAttacker(caster)).total;
+        const amount = save.success ? (ring.halfOnSave ? Math.floor(rolled / 2) : 0) : rolled;
+        lines.push(`${live.name} starts their turn in ${caster.name}'s ${aura.name}: ${ring.save.toUpperCase()} save ${save.success ? "made" : "failed"} (DC ${dc}).`);
+        if (amount > 0) {
+          applyPcDamage(campaign, turn.id, live, { amount, type: ring.type, magical: true, spell: true, reason: aura.name });
+        }
+      } finally {
+        turn.status = "done";
+        saveDmTurn(turn);
+      }
+    }
+  }
+}
+
+// The spells holding a creature that hurt it as its turn starts (Black
+// Tentacles' crushing grip): each casting once, read from every instance of
+// every condition (condition-logic.ts), cast by a character or a creature.
+type TurnStartHold = {
+  tag: string;
+  // The conditions the casting keeps on the creature (restrained).
+  held: string[];
+  spell: string;
+  save: SaveAbilityId | undefined;
+  noSave: boolean;
+  dice: string;
+  type: string;
+  dc: number;
+  attacker: RollAttacker;
+  casterSheetId: string | null;
+};
+
+function turnStartHolds(campaign: Campaign, conditions: string[], meta: ConditionMetaMap): TurnStartHold[] {
+  const holds: TurnStartHold[] = [];
   const seen = new Set<string>();
-  for (const condition of enemy.conditions) {
-    const entry = meta[condition];
-    if (!entry?.spell || !entry.source) {
-      continue;
+  for (const condition of conditions) {
+    for (const entry of instancesOf(meta[condition])) {
+      if (!entry.spell || !entry.source) {
+        continue;
+      }
+      const tag = `${textKey(entry.spell)}|${entry.source}`;
+      if (seen.has(tag)) {
+        holds.find((hold) => hold.tag === tag)?.held.push(condition);
+        continue;
+      }
+      seen.add(tag);
+      const resolved = spellMechanicsFor({ spell: entry.spell, userIds: spellAuthorsFor(campaign) });
+      const hurt = resolved?.mech.condition?.turnStart;
+      const casterSheet = getSheetById(entry.source);
+      const casterEnemy = casterSheet ? null : getEnemy(entry.source);
+      if (!resolved || !hurt || (!casterSheet && !casterEnemy) || (!hurt.noSave && !resolved.mech.save)) {
+        continue;
+      }
+      const slot = entry.slotLevel ?? hurt.baseLevel;
+      holds.push({
+        tag,
+        held: [condition],
+        spell: resolved.name,
+        save: resolved.mech.save,
+        noSave: Boolean(hurt.noSave),
+        dice: hurt.perSlotLevel ? addDice(hurt.dice, hurt.perSlotLevel, Math.max(0, slot - hurt.baseLevel)) : hurt.dice,
+        type: hurt.type,
+        dc: casterSheet ? (spellSaveDcFor(casterSheet, resolved.name) ?? 13) : (casterEnemy?.stats.spellcasting?.dc ?? 13),
+        attacker: casterSheet ? sheetAttacker(casterSheet) : { kind: "enemy", id: casterEnemy!.id, name: casterEnemy!.displayName },
+        casterSheetId: casterSheet?.id ?? null,
+      });
     }
-    const tag = `${spellKey(entry.spell)}|${entry.source}`;
-    if (seen.has(tag)) {
-      continue;
-    }
-    seen.add(tag);
-    const resolved = spellMechanicsFor({ spell: entry.spell, userIds: spellAuthorsFor(campaign) });
-    const hurt = resolved?.mech.condition?.turnStart;
-    const caster = getSheetById(entry.source);
-    if (!hurt || !resolved?.mech.save || !caster) {
-      continue;
-    }
+  }
+  return holds;
+}
+
+// The conditions one casting holds on a creature, taken off (a save ended it).
+function withoutHold(conditions: string[], meta: ConditionMetaMap, tag: string) {
+  let next = { conditions, meta };
+  for (const name of conditions) {
+    const result = removeConditionInstances(next.conditions, next.meta, name, (entry) => Boolean(entry.spell) && `${textKey(entry.spell ?? "")}|${entry.source ?? ""}` === tag);
+    next = { conditions: result.conditions, meta: result.meta };
+  }
+  return next;
+}
+
+// Phantasmal Killer and its kind: damage at the start of the target's turn
+// unless it saves, a save ending the spell for it. Black Tentacles crushes
+// what it holds, no save to escape the damage.
+function turnStartDamage(campaign: Campaign, encounter: Encounter, enemy: EncounterEnemy, lines: string[]) {
+  for (const hold of turnStartHolds(campaign, enemy.conditions, enemy.conditionMeta as ConditionMetaMap)) {
     const live = getEnemy(enemy.id);
     if (!live || live.status !== "alive") {
       return;
     }
-    // Black Tentacles crushes what it holds, no save to escape the damage.
-    if (hurt.noSave) {
-      const slot = entry.slotLevel ?? hurt.baseLevel;
-      const dice = hurt.perSlotLevel ? addDice(hurt.dice, hurt.perSlotLevel, Math.max(0, slot - hurt.baseLevel)) : hurt.dice;
-      lines.push(hurtEnemy(campaign, encounter, live, rollCard(campaign, null, caster.id, "damage", rollAgainst(resolved.name, live.displayName), dice, sheetAttacker(caster)).total, hurt.type, resolved.name));
-      continue;
-    }
-    const dc = spellSaveDcFor(caster, resolved.name) ?? 13;
-    const save = rollEnemySave(campaign.id, live, resolved.mech.save, dc, {
-      magical: true,
-      record: { detail: `${live.displayName}: ${resolved.mech.save.toUpperCase()} save against ${resolved.name}` },
-    });
-    if (save.success) {
-      const ending = live.conditions.filter((name) => {
-        const other = (live.conditionMeta as ConditionMetaMap)[name];
-        return other?.spell && `${spellKey(other.spell)}|${other.source ?? ""}` === tag;
+    if (!hold.noSave && hold.save) {
+      const save = rollEnemySave(campaign.id, live, hold.save, hold.dc, {
+        magical: true,
+        against: hold.held,
+        record: { detail: `${live.displayName}: ${hold.save.toUpperCase()} save against ${hold.spell}` },
       });
-      const cleared = removeConditions(live.conditions, live.conditionMeta, ending);
-      patchEnemyConditions(live.id, cleared.conditions, cleared.meta);
-      lines.push(`${live.displayName} masters its terror: ${resolved.name} ends for it (${resolved.mech.save.toUpperCase()} save vs DC ${dc}).`);
-      continue;
+      if (save.success) {
+        const cleared = withoutHold(live.conditions, live.conditionMeta as ConditionMetaMap, hold.tag);
+        patchEnemyConditions(live.id, cleared.conditions, cleared.meta);
+        lines.push(`${live.displayName} masters its terror: ${hold.spell} ends for it (${hold.save.toUpperCase()} save vs DC ${hold.dc}).`);
+        continue;
+      }
     }
-    const slot = entry.slotLevel ?? hurt.baseLevel;
-    const dice = hurt.perSlotLevel ? addDice(hurt.dice, hurt.perSlotLevel, Math.max(0, slot - hurt.baseLevel)) : hurt.dice;
-    lines.push(hurtEnemy(campaign, encounter, live, rollCard(campaign, null, caster.id, "damage", rollAgainst(resolved.name, live.displayName), dice, sheetAttacker(caster)).total, hurt.type, resolved.name));
+    lines.push(hurtEnemy(campaign, encounter, live, rollCard(campaign, null, hold.casterSheetId, "damage", rollAgainst(hold.spell, live.displayName), hold.dice, hold.attacker).total, hold.type, hold.spell));
+  }
+}
+
+// The same at the start of a character's turn, whoever cast it: a monster's
+// Black Tentacles crushes the character it holds as it crushes a monster.
+function characterTurnStartDamage(campaign: Campaign, sheet: CharacterSheet, lines: string[]) {
+  const holds = turnStartHolds(campaign, sheet.conditions, sheet.conditionMeta as ConditionMetaMap);
+  if (!holds.length) {
+    return;
+  }
+  const turn = createDmTurn(campaign.id, [], "human_dm");
+  try {
+    for (const hold of holds) {
+      const live = getSheetById(sheet.id);
+      if (!live || live.deathSaves?.dead) {
+        return;
+      }
+      if (!hold.noSave && hold.save) {
+        const save = rollCharacterSave(campaign, turn, live, hold.save, hold.dc, `${hold.save.toUpperCase()} save against ${hold.spell}`, { magical: true });
+        if (save.success) {
+          const cleared = withoutHold(live.conditions, live.conditionMeta as ConditionMetaMap, hold.tag);
+          const updated = patchSheet(live.id, { conditions: cleared.conditions, conditionMeta: cleared.meta });
+          if (updated) {
+            publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
+          }
+          lines.push(`${live.name} breaks ${hold.spell}'s hold (${hold.save.toUpperCase()} save vs DC ${hold.dc}).`);
+          continue;
+        }
+      }
+      const amount = rollCard(campaign, turn, live.id, "damage", rollAgainst(hold.spell, live.name), hold.dice, hold.attacker).total;
+      applyPcDamage(campaign, turn.id, live, { amount, type: hold.type, magical: true, spell: true, reason: hold.spell });
+      lines.push(`${live.name} takes ${amount} ${hold.type} damage from ${hold.spell}.`);
+    }
+  } finally {
+    turn.status = "done";
+    saveDmTurn(turn);
   }
 }
 
@@ -185,20 +318,28 @@ function turnStartDamage(campaign: Campaign, encounter: Encounter, enemy: Encoun
 function heroism(campaign: Campaign, sheet: CharacterSheet) {
   const meta = sheet.conditionMeta as ConditionMetaMap;
   let best = 0;
+  let owner: { name: string; spell: string; source: string } | null = null;
   for (const condition of sheet.conditions) {
     const entry = meta[condition];
     const resolved = entry?.spell ? spellMechanicsFor({ spell: entry.spell, userIds: spellAuthorsFor(campaign) }) : null;
-    if (!resolved?.mech.buff?.tempHpEachTurn || !entry?.source) {
+    if (!resolved?.mech.buff?.tempHpEachTurn || !entry?.source || !entry.spell) {
       continue;
     }
     const caster = getSheetById(entry.source);
     const ability = caster?.spellcasting?.ability;
-    if (caster && ability) {
-      best = Math.max(best, computeSheetDerived(caster).abilityMods[ability]);
+    const each = caster && ability ? computeSheetDerived(caster).abilityMods[ability] : 0;
+    if (each > best) {
+      best = each;
+      owner = { name: condition, spell: entry.spell, source: entry.source };
     }
   }
-  if (best > sheet.tempHp) {
-    const updated = patchSheet(sheet.id, { tempHp: best });
+  if (best > sheet.tempHp && owner) {
+    patchSheet(sheet.id, { tempHp: best });
+    // Heroism's pool goes when Heroism does (SRD 5.1; sheets.ts).
+    const granted = getSheetById(sheet.id);
+    const updated = granted
+      ? patchSheet(sheet.id, { conditionMeta: withTempHpClaim(granted.conditionMeta as ConditionMetaMap, owner.name, owner, best) })
+      : null;
     if (updated) {
       publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
     }
@@ -207,32 +348,41 @@ function heroism(campaign: Campaign, sheet: CharacterSheet) {
 
 // Confusion: at the start of its turn the creature rolls a d10. 1: it moves
 // at random and takes no action; 2 to 6: it neither moves nor acts; 7 or 8:
-// it spends its action attacking a creature in reach at random; 9 or 10: it
-// acts as it chooses. What it may not do is laid down until its turn ends.
-function confusionRoll(enemy: EncounterEnemy, lines: string[]) {
-  const meta = enemy.conditionMeta as ConditionMetaMap;
+// it spends its action attacking a creature in reach at random, which the
+// engine picks with its own die (src/lib/dm/confusion.ts); 9 or 10: it acts
+// as it chooses. What it may not do is laid down until its turn ends. A
+// character rolls the same (its die shown to the table).
+function confusionRoll(campaign: Campaign, encounter: Encounter, who: { kind: "sheet" | "enemy"; id: string; name: string }, lines: string[]) {
+  const holder = who.kind === "enemy" ? getEnemy(who.id) : getSheetById(who.id);
+  const meta = (holder?.conditionMeta ?? {}) as ConditionMetaMap;
   const entry = meta.confused;
-  if (!enemy.conditions.includes("confused") || !entry) {
+  if (!holder || !holder.conditions.includes("confused") || !entry) {
     return;
   }
-  // The creature's own roll: the DM sees the die, the table what it does.
-  const roll = dmRoll(enemy.campaignId, null, "custom", `${enemy.displayName}: Confusion`, "1d10").total;
+  // The creature's own roll: the DM sees an enemy's die, the table a
+  // character's; everyone sees what it does.
+  const roll = who.kind === "enemy"
+    ? dmRoll(campaign.id, null, "custom", `${who.name}: Confusion`, "1d10").total
+    : rollCard(campaign, null, who.id, "custom", `${who.name}: Confusion`, "1d10", null).total;
   const lost = roll === 1 ? "wandering" : roll <= 6 ? "halted" : null;
-  if (lost && !enemy.conditions.includes(lost)) {
+  if (lost && !holder.conditions.includes(lost)) {
     // Until the end of this turn (src/lib/dm/turn-end.ts reads the mark).
-    const next: ConditionMetaMap = { ...meta, [lost]: { spell: entry.spell, source: entry.source, untilTurnEndOf: enemy.id } };
-    patchEnemyConditions(enemy.id, [...enemy.conditions, lost], next);
+    const next: ConditionMetaMap = { ...meta, [lost]: { spell: entry.spell, source: entry.source, untilTurnEndOf: who.id } };
+    if (who.kind === "enemy") {
+      patchEnemyConditions(who.id, [...holder.conditions, lost], next);
+    } else {
+      const updated = patchSheet(who.id, { conditions: [...holder.conditions, lost], conditionMeta: next });
+      if (updated) {
+        publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
+      }
+    }
   }
   lines.push(
-    `${enemy.displayName} is confused and rolls ${roll} on the d10: ${
-      roll === 1
-        ? "it moves in a random direction and takes no action"
-        : roll <= 6
-          ? "it does not move and takes no action"
-          : roll <= 8
-            ? "it uses its action to attack a random creature in reach, or does nothing if none is"
-            : "it acts as it chooses"
-    }.`,
+    roll === 7 || roll === 8
+      ? `${who.name} is confused and rolls ${roll} on the d10. ${lashOut(campaign, encounter, who.kind, who.id, who.name)}`
+      : `${who.name} is confused and rolls ${roll} on the d10: ${
+          roll === 1 ? "it moves in a random direction and takes no action" : roll <= 6 ? "it does not move and takes no action" : "it acts as it chooses"
+        }.`,
   );
 }
 
@@ -260,17 +410,23 @@ function curseOfWill(campaign: Campaign, enemy: EncounterEnemy, lines: string[])
 // Regenerate: 1 hit point at the start of each of the target's turns while
 // the spell lasts, and only while they are up (a dying creature is healed by
 // the heal tool, which also wakes it).
+// Regenerate's hit point at the start of each of the target's turns: a
+// creature at 0 still living gets it, and with it is no longer dying (the
+// heal tool's settlement, death.ts healDeathHook); the dead and a creature
+// that cannot regain hit points get nothing.
 function regenerate(campaign: Campaign, sheet: CharacterSheet) {
   const entry = (sheet.conditionMeta as ConditionMetaMap).regenerating;
-  if (!sheet.conditions.includes("regenerating") || !entry?.spell || sheet.currentHp <= 0) {
+  if (!sheet.conditions.includes("regenerating") || !entry?.spell || sheet.deathSaves?.dead || regainBlockedBy(sheet)) {
     return;
   }
   const each = spellMechanicsFor({ spell: entry.spell, userIds: spellAuthorsFor(campaign) })?.mech.regainEachTurn ?? 0;
-  const currentHp = Math.min(effectiveMaxHp(sheet), sheet.currentHp + each);
+  const currentHp = Math.min(effectiveMaxHp(sheet), Math.max(0, sheet.currentHp) + each);
   if (currentHp > sheet.currentHp) {
     const updated = patchSheet(sheet.id, { currentHp });
-    if (updated) {
-      publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
+    healDeathHook(campaign, null, sheet);
+    const now = getSheetById(sheet.id) ?? updated;
+    if (now) {
+      publishPersisted(campaign.id, "sheet_updated", { sheet: now });
     }
   }
 }
@@ -291,7 +447,7 @@ export function spellTurnStart(campaign: Campaign, encounter: Encounter, combata
       }
       const after = getEnemy(enemy.id);
       if (after?.status === "alive") {
-        confusionRoll(after, lines);
+        confusionRoll(campaign, encounter, { kind: "enemy", id: after.id, name: after.displayName }, lines);
       }
       const cursed = getEnemy(enemy.id);
       if (cursed?.status === "alive") {
@@ -301,7 +457,13 @@ export function spellTurnStart(campaign: Campaign, encounter: Encounter, combata
     }
     const sheet = getSheetById(id);
     if (sheet && !sheet.deathSaves?.dead) {
-      heroism(campaign, sheet);
+      characterAuraHits(campaign, encounter, sheet, lines);
+      const standing = getSheetById(id);
+      if (standing && standing.currentHp > 0) {
+        confusionRoll(campaign, encounter, { kind: "sheet", id, name: standing.name }, lines);
+      }
+      heroism(campaign, getSheetById(id) ?? sheet);
+      characterTurnStartDamage(campaign, getSheetById(id) ?? sheet, lines);
       regenerate(campaign, getSheetById(id) ?? sheet);
     }
   }

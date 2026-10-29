@@ -82,11 +82,11 @@ const dice = (hero) => world.sheet(hero.id).resources.sub_superiority_dice?.used
 
 await test("A Font of Magic conversion in a fight is the sorcerer's bonus action.", async () => {
   await stage(sorcerer);
-  const out = await spend(sorcerer, "Sorcery Points", { variant: "create a 1st-level slot" });
+  const out = await spend(sorcerer, "Sorcery Points", { variant: "create slot", amount: 1 });
   assert.equal(out.ok, true, out.error);
   assert.equal(budget().bonusUsed, true);
   assert.equal(budget().actionUsed, false);
-  const again = await spend(sorcerer, "Sorcery Points", { variant: "convert my 1st-level slot into points" });
+  const again = await spend(sorcerer, "Sorcery Points", { variant: "convert slot", amount: 1 });
   assert.equal(again.ok, false, "a second bonus action went through");
 });
 
@@ -112,10 +112,10 @@ await test("Artisan's Blessing is an hour's ritual: refused in a fight, and noth
 });
 
 await test("The cost table reads the option from the variant or the resource's own name.", () => {
-  assert.deepEqual(optionCost("channel_divinity", "Channel Divinity: War God's Blessing", true), { option: "war god's blessing", cost: "reaction" });
-  assert.deepEqual(optionCost("channel_divinity", "guided strike", true), { option: "guided strike", cost: "none" });
-  assert.deepEqual(optionCost("channel_divinity", "champion challenge", true), { option: "champion challenge", cost: "bonus" });
-  assert.equal(optionCost("channel_divinity", "something new", true), null);
+  assert.deepEqual(optionCost("channel_divinity", ["Channel Divinity: War God's Blessing"], true), { option: "war god's blessing", cost: "reaction" });
+  assert.deepEqual(optionCost("channel_divinity", ["guided strike"], true), { option: "guided strike", cost: "none" });
+  assert.deepEqual(optionCost("channel_divinity", ["champion challenge"], true), { option: "champion challenge", cost: "bonus" });
+  assert.equal(optionCost("channel_divinity", ["something new"], true), null);
 });
 
 await test("Telekinetic Movement is the Psi Warrior's action.", async () => {

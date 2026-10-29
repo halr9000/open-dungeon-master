@@ -10,7 +10,7 @@
 // map-tools.ts, and src/lib/image-tool.ts.
 
 export const DM_TOOL_NAME_PATTERN =
-  "request_roll|group_check|check_notice|apply_hazard|set_npc|npc_reaction|social_check|roll_treasure|damage_object|travel|request_player_input|move_party|update_location|record_event|complete_beat|recall_story|search_lore|read_card|write_campaign_note|send_whisper|generate_image|apply_damage|heal|stabilize|take_rest|award_xp|modify_gold|grant_item|remove_item|set_enemy_condition|clear_enemy_condition|set_condition|clear_condition|use_item|purchase|use_resource|use_spell_slot|learn_spell|update_sheet|start_encounter|add_enemies|add_companion|dismiss_companion|pc_attack|cast_at_enemy|cast_at_player|cast_buff|damage_enemy|enemy_attack|enemy_flees|declare_intent|aoe_damage|move_token|take_action|use_reaction|end_turn|end_encounter|summon_pet|pet_attack|damage_pet|dismiss_pet|lift|set_lifestyle|downtime|afflict";
+  "request_roll|group_check|check_notice|apply_hazard|set_npc|npc_reaction|social_check|roll_treasure|damage_object|travel|request_player_input|move_party|update_location|record_event|complete_beat|recall_story|search_lore|read_card|write_campaign_note|send_whisper|generate_image|apply_damage|heal|stabilize|take_rest|award_xp|party_award|modify_gold|grant_item|remove_item|handle_item|set_enemy_condition|clear_enemy_condition|set_condition|clear_condition|use_item|purchase|use_resource|use_spell_slot|learn_spell|update_sheet|start_encounter|add_enemies|add_companion|dismiss_companion|pc_attack|cast_at_enemy|cast_at_player|cast_buff|damage_enemy|enemy_attack|enemy_flees|declare_intent|aoe_damage|move_token|take_action|use_reaction|end_turn|end_encounter|summon_pet|pet_attack|damage_pet|dismiss_pet|lift|set_lifestyle|downtime|afflict";
 
 export function toolTextRegex(): RegExp {
   return new RegExp(`\\[(${DM_TOOL_NAME_PATTERN})\\b([^\\]]*)\\]`, "g");
@@ -44,6 +44,15 @@ export function xmlToolCallRegex(): RegExp {
 // bookkeeping text that rolled nothing; players must never see it.
 export function fakeRollMarkerRegex(): RegExp {
   return /\[roll:(?![0-9a-f-]{36}\])[^\]]*\]/gi;
+}
+
+// A reply the model just wrote, before finalize() places the real markers,
+// holds none of the server's: every "[roll:...]" in it is the model's, even
+// one with a real id. Qwen3.6-35B copied ids from the markers in earlier
+// narration (issue #531); a copied id would show that old roll's card in
+// the new passage, and the draft showed the marker raw.
+export function withoutRollMarkers(text: string): string {
+  return text.replace(/\[roll:[^\]]*\][ \t]*/gi, "");
 }
 
 // A third leak shape: a call's arguments written into the reply as a bare

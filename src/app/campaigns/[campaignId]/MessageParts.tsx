@@ -1,6 +1,7 @@
 "use client";
 
-import { Copy, EyeOff, Flag, Scale } from "lucide-react";
+import { Copy, EyeOff, Flag, Scale, VenetianMask } from "lucide-react";
+import { useId } from "react";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { ContextMenu } from "@/components/ui/ContextMenu";
 import { SectionHead } from "@/components/ui/SectionHead";
@@ -18,6 +19,8 @@ import {
   type MessageAction,
 } from "@/app/campaigns/[campaignId]/MessageActions";
 import type { SystemGlyph } from "@/lib/system-glyphs";
+import { PACT_REVEAL_PREFIX } from "@/lib/dm/pact-logic";
+import { kitButtonClass } from "@/app/campaigns/[campaignId]/PanelKit";
 
 // The transcript's smaller voices: the table's own notices and what the
 // players say. The DM's passage, the hero of the screen, is MessageItem.tsx.
@@ -77,6 +80,19 @@ export function SystemMessage({ content, glyph }: { content: string; glyph?: Sys
       </div>
     );
   }
+  // A pact or a secret action come out (issue 503): the server's word, drawn
+  // as a card that unmasks itself (motion-app.css .pact-reveal).
+  if (content.startsWith(PACT_REVEAL_PREFIX)) {
+    return (
+      <div className="pact-reveal panel rounded-xl border-violet-500/45 px-3 py-2" data-pact-reveal="">
+        <p className="eyebrow flex items-center gap-1.5 text-[10px] text-violet-300">
+          <VenetianMask className="size-3.5" aria-hidden="true" />
+          Revealed
+        </p>
+        <p className="mt-0.5 text-sm leading-snug text-violet-50">{content.slice(PACT_REVEAL_PREFIX.length)}</p>
+      </div>
+    );
+  }
   const join = content.startsWith(JOIN_NOTE_PREFIX);
   // The markers the DM reads (a joiner, a settled offer) come off.
   const text = systemNoteWords(content);
@@ -84,6 +100,25 @@ export function SystemMessage({ content, glyph }: { content: string; glyph?: Sys
     <p className="session-sysline">
       <GameIcon icon={{ kind: "glyph", key: join ? "system-party" : (glyph ?? "cue-bell") }} size="size-6" />
       <span className="min-w-0">{text}</span>
+    </p>
+  );
+}
+
+// "<shop> is open", the line a shop opening where the party stands writes
+// (src/lib/dm/shop-tools.ts announceShop), with the way to its shelf: the
+// prices live in the Market, never in the narration. Every seat sees it.
+export function ShopOpenLine({ content, onBrowse }: { content: string; onBrowse?: () => void }) {
+  const lineId = useId();
+  return (
+    <p className="session-sysline">
+      <GameIcon icon={{ kind: "glyph", key: "cue-coin" }} size="size-6" />
+      <span id={lineId} className="min-w-0">{content}</span>
+      {onBrowse ? (
+        <button type="button" onClick={onBrowse} aria-describedby={lineId} data-browse-wares="" className={kitButtonClass("small", "shrink-0 not-italic text-amber-100")}>
+          <GameIcon icon={{ kind: "glyph", key: "tab-market" }} size="size-5" />
+          Browse wares
+        </button>
+      ) : null}
     </p>
   );
 }

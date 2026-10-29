@@ -29,10 +29,10 @@ import type {
 import { ABILITIES } from "@/lib/schemas/sheet";
 import { XP_THRESHOLDS, findSkill, levelForXp } from "@/lib/srd";
 import { ABILITY_SCORE_CAP, applyAsiChoices, earnedAsiCountFor } from "@/lib/srd/asi";
-import { applySubclassTraining, autoSubclassPicks, subclassGrants } from "@/lib/srd/subclass-training";
+import { applySubclassTraining, autoSubclassPicks, grantsForHeldTraining, subclassGrants } from "@/lib/srd/subclass-training";
 import type { SubclassExtras } from "@/lib/srd/subclass-tables";
 import { asiTaken, withAsiLedger } from "@/lib/srd/asi-ledger";
-import { applyFeatIncrease, featSaveProficiency } from "@/lib/srd/feat-effects";
+import { applyFeatIncrease, featSaveProficiency, featsAsRun } from "@/lib/srd/feat-effects";
 import { applyFeatGrants, featGrantSpec } from "@/lib/srd/feat-grants";
 import { elementalAdeptFeatureName } from "@/lib/srd/feat-combat";
 import { featSpellGrants, freeCastFeatures, withFeatSpells } from "@/lib/srd/feat-spells";
@@ -70,6 +70,8 @@ import {
   type FeatFacts,
   type SpellFacts,
 } from "@/lib/srd/legality/types";
+import { textKey } from "@/lib/language/text-logic";
+import { featChoice } from "@/lib/schemas/sheet";
 
 export type LevelUpContext = {
   hpMethod: HpMethod;
@@ -121,9 +123,9 @@ function improvementsAsked(
     return { choices: request.asiChoices };
   }
   const choices: AsiChoice[] = [];
-  const held = new Set(sheet.feats.map(lower));
+  const held = new Set(sheet.feats.map(textKey));
   for (const feat of dedupeNames(request.feats ?? [])) {
-    if (!held.has(lower(feat))) {
+    if (!held.has(textKey(feat))) {
       choices.push({ mode: "feat", feat });
     }
   }
@@ -177,9 +179,10 @@ export function applyChoices(scores: AbilityScores, choices: AsiChoice[]): Abili
   return next;
 }
 
-function emptyView(classId: string, ability: CasterView["ability"], style: CasterView["style"]): CasterView {
+function emptyView(classId: string, ability: CasterView["ability"], style: CasterView["style"], progression?: CasterView["progression"]): CasterView {
   return {
     classId,
+    ...(progression ? { progression } : {}),
     ability,
     level: 0,
     subclass: "",
@@ -253,7 +256,7 @@ export function buildLevelUp(
 
   // ---- the subclass ----
   const wantedSubclass = (request.subclass ?? "").trim();
-  if (wantedSubclass && lower(wantedSubclass) !== lower(leveled.subclass)) {
+  if (wantedSubclass && textKey(wantedSubclass) !== textKey(leveled.subclass)) {
     if (leveled.subclass) {
       return refuse(
         `${sheet.name} is a ${leveled.subclass}; a subclass is chosen once and later levels build on it.`,
@@ -290,12 +293,12 @@ export function buildLevelUp(
   // A half-feat's point (Actor's Charisma, Resilient's chosen score) and
   // Resilient's saving throw come with the feat.
   const featSaves: AbilityScoresKey[] = [];
-  const casts = castingClassesOf(classes, context.classOf).length > 0;
+  const casts = castingClassesOf(classes, context.classOf, context.subclassExtras, sheet.spellcasting).length > 0;
   for (const choice of asked.choices) {
     if (choice.mode !== "feat") {
       continue;
     }
-    if (feats.some((feat) => lower(feat) === lower(choice.feat))) {
+    if (feats.some((feat) => textKey(feat) === textKey(choice.feat))) {
       return refuse(`${sheet.name} already has ${choice.feat}; a feat is taken once.`);
     }
     const facts = context.featOf(choice.feat);
@@ -332,7 +335,7 @@ export function buildLevelUp(
   // maximum of 24. Applied before the hit points, since the Constitution
   // counts for every level held.
   const primalChampion =
-    lower(leveled.id) === "barbarian" &&
+    textKey(leveled.id) === "barbarian" &&
     leveled.level === 20 &&
     !holdsFeature(sheet, "primal champion");
   if (primalChampion) {
@@ -375,7 +378,7 @@ export function buildLevelUp(
     : sheet.proficiencies;
   const union = (current: string[], more: string[]) => [
     ...current,
-    ...more.filter((entry) => !current.some((held) => lower(held) === lower(entry))),
+    ...more.filter((entry) => !current.some((held) => textKey(held) === textKey(entry))),
   ];
   if (isNewClass) {
     const grants = multiclassGrantsFor(klass.id);
@@ -421,18 +424,20 @@ export function buildLevelUp(
   // Mind at 7). Picks are named in the request as a feat's are, keyed by the
   // feature's name (issue 251).
   const trainedBefore = new Set(
-    subclassGrants(before, context.subclassExtras).map((grant) => `${grant.classId}|${lower(grant.name)}`),
+    subclassGrants(before, context.subclassExtras).map((grant) => `${grant.classId}|${textKey(grant.name)}`),
   );
-  const freshTraining = subclassGrants(classes, context.subclassExtras).filter(
-    (grant) => !trainedBefore.has(`${grant.classId}|${lower(grant.name)}`),
+  const freshTraining = grantsForHeldTraining(
+    subclassGrants(classes, context.subclassExtras).filter((grant) => !trainedBefore.has(`${grant.classId}|${textKey(grant.name)}`)),
+    proficiencies,
   );
+  const trainingChoices = context.autoPicks
+    ? autoSubclassPicks(freshTraining, proficiencies, request.featChoices)
+    : (request.featChoices ?? {});
   if (freshTraining.length) {
     const trained = applySubclassTraining({
       proficiencies,
       grants: freshTraining,
-      choices: context.autoPicks
-        ? autoSubclassPicks(freshTraining, proficiencies, request.featChoices)
-        : (request.featChoices ?? {}),
+      choices: trainingChoices,
       strict: true,
       abilities,
     });
@@ -444,7 +449,7 @@ export function buildLevelUp(
   // And the spells they teach (src/lib/srd/feat-spells.ts): every pick
   // named in the request, held to the feat's list, school and level.
   const raisedThisLevel = new Map(
-    asked.choices.flatMap((choice) => (choice.mode === "feat" ? [[lower(choice.feat), choice.ability ?? null] as const] : [])),
+    asked.choices.flatMap((choice) => (choice.mode === "feat" ? [[textKey(choice.feat), choice.ability ?? null] as const] : [])),
   );
   const taught = featSpellGrants({
     feats: featsTaken.map((name) => {
@@ -452,7 +457,7 @@ export function buildLevelUp(
       return { name: facts?.name ?? name, desc: facts?.desc ?? "" };
     }),
     choices: request.featChoices ?? {},
-    raisedAbility: (feat) => raisedThisLevel.get(lower(feat)) ?? null,
+    raisedAbility: (feat) => raisedThisLevel.get(textKey(feat)) ?? null,
     spellOf: context.spellOf,
     strict: true,
   });
@@ -484,43 +489,46 @@ export function buildLevelUp(
   // The sheet's own features, and of the request's only the picks a class
   // feature opens; the regrant keeps as many of those as the classes have
   // slots for, the ones already held first.
-  const heldNames = new Set(sheet.features.map((feature) => lower(feature.name)));
+  const heldNames = new Set(sheet.features.map((feature) => textKey(feature.name)));
   const picked: SheetFeature[] = (request.features ?? [])
     .filter(
       (feature) =>
         feature.source === "choice" &&
         isChoiceFeature(feature.name) &&
-        !heldNames.has(lower(feature.name)),
+        !heldNames.has(textKey(feature.name)),
     )
     .map((feature) => ({ name: feature.name, source: "choice" as const }));
   const elementPicks = featsTaken.flatMap((name) => {
     const spec = featGrantSpec(context.featOf(name)?.desc ?? "");
-    const picked = lower(request.featChoices?.[lower(name)]?.damageType ?? "");
+    const picked = textKey(featChoice(request.featChoices, name)?.damageType ?? "");
     return spec.damageTypes.length && spec.damageTypes.includes(picked) ? [elementalAdeptFeatureName(picked)] : [];
   });
   const freeCasts = [...freeCastFeatures(taught.grants), ...elementPicks].map((name) => ({ name: name.slice(0, 80), source: "story" as const }));
-  let features = populateFeaturesForClasses([...sheet.features, ...picked, ...freeCasts], classes, sheet.race, feats);
+  // A table's workshop copy of Martial Adept opens its slots as the feat it
+  // runs as.
+  const featsRun = featsAsRun(feats, sheet.campaignId);
+  let features = populateFeaturesForClasses([...sheet.features, ...picked, ...freeCasts], classes, sheet.race, featsRun);
   const takenAfter = taken + asked.choices.length;
   if (target >= 4 || takenAfter > 0) {
     features = withAsiLedger(features, takenAfter);
   }
 
   // ---- spells ----
-  const casting = castingClassesOf(classes, context.classOf);
+  const casting = castingClassesOf(classes, context.classOf, context.subclassExtras, sheet.spellcasting);
   const mine = casting.find((entry) => entry.entry.id.toLowerCase() === classId);
   let spellcasting: Spellcasting = sheet.spellcasting;
   if (casting.length && (mine || sheet.spellcasting)) {
     // The lists as the sheet holds them. A sheet with no per-class entries
     // keeps one list, and it belongs to the first of its classes that casts.
-    const owner = castingClassesOf(before, context.classOf)[0]?.entry;
-    const views = (sheet.spellcasting ? casterViewsOf(sheet) : [])
+    const owner = castingClassesOf(before, context.classOf, context.subclassExtras, sheet.spellcasting)[0]?.entry;
+    const views = (sheet.spellcasting ? casterViewsOf(sheet, context.subclassExtras) : [])
       .map((view) =>
         sheet.spellcasting?.casters?.length || !owner
           ? view
           : { ...view, classId: owner.id, level: owner.level, subclass: owner.subclass },
       )
       .filter((view) =>
-        casting.some((entry) => lower(entry.entry.id) === lower(view.classId)),
+        casting.some((entry) => textKey(entry.entry.id) === textKey(view.classId)),
       );
     let shaped: NonNullable<Spellcasting> = sheet.spellcasting ?? {
       ability: casting[0].ability,
@@ -528,6 +536,7 @@ export function buildLevelUp(
       prepared: [],
       known: [],
       cantrips: [],
+      ...(casting[0].progression ? { progression: casting[0].progression } : {}),
     };
     let nextViews = views;
     if (mine) {
@@ -536,7 +545,8 @@ export function buildLevelUp(
         emptyView(
           klass.id,
           mine.ability,
-          isThirdCaster(klass.id, leveled.subclass) ? "known" : emptyStyle(klass.id),
+          isThirdCaster(klass.id, leveled.subclass, mine.progression) ? "known" : emptyStyle(klass.id),
+          mine.progression,
         );
       const picks: SpellPicks | null = request.levelUpSpells?.length || request.levelUpForget
         ? { kind: "picks", spells: request.levelUpSpells ?? [], forget: request.levelUpForget }
@@ -544,7 +554,15 @@ export function buildLevelUp(
           ? { kind: "lists", lists: request.spellcasting }
           : null;
       const learned = levelUpSpells({
-        before: { ...held, ability: mine.ability, level: leveled.level - 1, subclass: leveled.subclass },
+        before: {
+          ...held,
+          ability: mine.ability,
+          level: leveled.level - 1,
+          subclass: leveled.subclass,
+          ...(mine.progression ? { progression: mine.progression } : {}),
+          // A workshop subclass's always-prepared spells, free of the count.
+          ...(context.subclassExtras ? { extras: context.subclassExtras } : {}),
+        },
         level: leveled.level,
         subclass: leveled.subclass,
         list: mine.list,
@@ -568,7 +586,8 @@ export function buildLevelUp(
         ...shaped,
         casters: nextViews.map((view) => ({
           classId: view.classId,
-          ability: casting.find((entry) => lower(entry.entry.id) === lower(view.classId))?.ability ?? view.ability,
+          ability: casting.find((entry) => textKey(entry.entry.id) === textKey(view.classId))?.ability ?? view.ability,
+          ...(view.progression ? { progression: view.progression } : {}),
           known: view.known,
           prepared: view.prepared,
           cantrips: view.cantrips,
@@ -587,23 +606,35 @@ export function buildLevelUp(
         xp: sheet.xp,
         classes: multiclass ? classes : [],
         features,
+        feats: featsRun,
         hitDice: sheet.hitDice,
         hitDicePools: sheet.hitDicePools,
         spellcasting: { ...written, ability: casting[0].ability },
         loneClassBefore: sheet.classes.length ? null : sheet.class,
       },
       classes,
+      context.subclassExtras,
     );
   }
 
   // The feat's spells join the lists, on top of the class's own; a
   // character with no Spellcasting gets a slotless block for them.
   spellcasting = withFeatSpells(spellcasting, taught.grants);
+  // The picks this level applied, recorded beside the ones the sheet already
+  // keeps: without them a feat taken in play went home, to a file and back
+  // to the builder looking unpicked, and was asked for again (issue #430).
+  const recorded = Object.fromEntries(
+    [...featsTaken.map((name) => context.featOf(name)?.name ?? name), ...freshTraining.map((grant) => grant.name)].flatMap((name) => {
+      const picks = featChoice(trainingChoices, name) ?? featChoice(request.featChoices, name);
+      return picks ? [[textKey(name), picks] as const] : [];
+    }),
+  );
   const patch: FullPatchSheetInput = {
     maxHp,
     currentHp,
     proficiencies,
     features,
+    ...(Object.keys(recorded).length ? { featChoices: { ...(sheet.featChoices ?? {}), ...recorded } } : {}),
     ...(asked.choices.length || primalChampion ? { abilities, feats } : {}),
     ...(spellcasting !== sheet.spellcasting ? { spellcasting } : {}),
     ...(multiclass ? { classes } : { level: target, subclass: classes[0].subclass }),

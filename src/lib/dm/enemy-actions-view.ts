@@ -1,10 +1,11 @@
 import type { EnemyAttack } from "@/lib/bestiary/statblock";
 import { manualTraits } from "@/lib/dm/monster-traits";
 import { synthesizeStats } from "@/lib/bestiary/synthesize";
-import type { Encounter, EncounterEnemy } from "@/lib/db/encounters";
+import { turnKey, type Encounter, type EncounterEnemy } from "@/lib/db/encounters";
 import { canEnemyAct, enemyActedThisRound } from "@/lib/dm/can-act";
 import { plannedSwings } from "@/lib/dm/enemy-profile";
 import { abilityFromLine, abilityRefusal, type MonsterAbility } from "@/lib/dm/monster-abilities";
+import { textKey } from "@/lib/language/text-logic";
 
 // What an enemy can do on its turn, for the person running it (issue #108).
 //
@@ -100,14 +101,22 @@ function onHitLine(attack: EnemyAttack): string | undefined {
 }
 
 function abilityResource(ability: MonsterAbility): string {
+  // Two breaths share the one recharge their entry prints.
+  const shared = ability.group ? `, shared as ${ability.group}` : "";
   if (ability.recharge) {
-    return ability.recharge === 6 ? "Recharge 6" : `Recharge ${ability.recharge}-6`;
+    return `${ability.recharge === 6 ? "Recharge 6" : `Recharge ${ability.recharge}-6`}${shared}`;
   }
   if (ability.perDay) {
-    return `${ability.perDay}/day`;
+    return `${ability.perDay}/${ability.perRest ? "rest" : "day"}${shared}`;
   }
-  if (ability.perRest) {
-    return "Once a fight";
+  if (ability.perRest || ability.rechargeSpecial) {
+    return `Once a fight${shared}`;
+  }
+  if (ability.oncePer) {
+    return `Once a ${ability.oncePer}`;
+  }
+  if (ability.partOf) {
+    return `With ${ability.partOf}`;
   }
   return "";
 }
@@ -121,7 +130,7 @@ function abilitiesOf(enemy: EncounterEnemy): MonsterAbility[] {
     : (stats.traits ?? []).map(abilityFromLine).filter((entry): entry is MonsterAbility => entry !== null);
   const seen = new Set<string>();
   return parsed.filter((ability) => {
-    const key = ability.name.trim().toLowerCase();
+    const key = textKey(ability.name);
     if (!key || seen.has(key)) {
       return false;
     }
@@ -137,7 +146,7 @@ export function enemyActionsView(encounter: ActingEncounter, enemy: EncounterEne
   const seen = new Set<string>();
   const attackViews: PublicEnemyAttack[] = [];
   for (const attack of attacks) {
-    const key = attack.name.trim().toLowerCase();
+    const key = textKey(attack.name);
     if (!key || seen.has(key)) {
       continue;
     }
@@ -152,7 +161,7 @@ export function enemyActionsView(encounter: ActingEncounter, enemy: EncounterEne
       melee: (attack.mode ?? (attack.range && !attack.reach ? "ranged" : "melee")) !== "ranged",
       ...(attack.spellAttack ? { spellAttack: true } : {}),
       ...(onHit ? { onHit } : {}),
-      swings: plannedSwings(stats, attacks, attack.name).map((swing) => swing.name),
+      swings: plannedSwings(stats, attacks, attack).map((swing) => swing.name),
     });
   }
 
@@ -171,7 +180,7 @@ export function enemyActionsView(encounter: ActingEncounter, enemy: EncounterEne
       ...(ability.condition ? { condition: ability.condition } : {}),
       ...(ability.rounds ? { rounds: ability.rounds } : {}),
       resource: abilityResource(ability),
-      refusal: abilityRefusal(enemy.displayName, ability, ledger),
+      refusal: abilityRefusal(enemy.displayName, ability, ledger, { turn: turnKey(encounter), round: encounter.round })?.error ?? null,
     }));
 
   const allowed = canEnemyAct({ enemy, encounter, kind: "action" });

@@ -23,6 +23,10 @@ import { publishBattleMapUpdate } from "@/lib/dm/map-tools";
 import type { SettingRef } from "@/lib/worlds/preset";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { dmRoll } from "@/lib/dm/roll-card";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { fieldSheetFoes, sheetFoesByName, type SheetFoe, type SheetFoeEntry } from "@/lib/dm/sheet-foes";
+import { fightingParty, MAX_COMBATANTS } from "@/lib/dm/party-budget";
 
 // Enemy spawning shared by start_encounter and the mid-combat add_enemies
 // tool, so reinforcements and summons are real server-tracked combatants
@@ -41,6 +45,11 @@ export type ResolvedEnemyRequest = {
   slug: string;
   name: string;
   stats: ReturnType<typeof synthesizeStats>;
+  // A character who fights as its own sheet on the foes' side (issue 503:
+  // a companion come back against the party, or one that turned on it): no
+  // enemy row is made for it; `stats` is what the fight is budgeted on
+  // (src/lib/dm/sheet-foes.ts).
+  sheetFoe?: SheetFoe;
 };
 
 // Resolves every requested enemy before anything is created. Returns the
@@ -62,10 +71,20 @@ export function resolveEnemyRequests(
   const resolved: ResolvedEnemyRequest[] = [];
   const authorList = Array.isArray(authors) ? authors : authors ? [authors] : [];
   const cast = campaignId ? listNpcs(campaignId).filter((npc) => npc.statBlock) : [];
+  // A companion who left the party and comes back against it, or one that
+  // turned on it, fights as themselves: once, whatever the count.
+  const sheetFoes = campaignId ? sheetFoesByName(campaignId) : new Map<string, SheetFoeEntry>();
   for (const request of requests) {
     const count = request.count ?? 1;
-    const wanted = request.monster.trim().toLowerCase();
-    const npc = cast.find((entry) => entry.name.toLowerCase() === wanted || entry.aliases.some((alias) => alias.toLowerCase() === wanted));
+    const wanted = textKey(request.monster);
+    const foe = sheetFoes.get(wanted);
+    if (foe) {
+      if (!resolved.some((entry) => entry.sheetFoe && textKey(entry.name) === wanted)) {
+        resolved.push({ slug: "sheet", name: foe.name, stats: foe.stats, sheetFoe: foe.foe });
+      }
+      continue;
+    }
+    const npc = cast.find((entry) => textKey(entry.name) === wanted || entry.aliases.some((alias) => textKey(alias) === wanted));
     const match = npc
       ? (() => {
           const block = resolveMonster(npc.statBlock, setting, { userIds: authorList });
@@ -95,7 +114,7 @@ export const addEnemiesTool: ToolDef = {
   function: {
     name: "add_enemies",
     description:
-      "Bring NEW enemies into the ongoing fight: reinforcements arriving, summoned creatures, an ambusher revealing itself. Call it BEFORE narrating them appearing; they become real server-tracked combatants with initiative slots and map tokens. Never narrate a new combatant into existence without it.",
+      "Bring NEW enemies into the ongoing fight: reinforcements arriving, summoned creatures, an ambusher revealing itself. Call it BEFORE narrating them appearing; they become real server-tracked combatants with initiative slots and map tokens. Never narrate a new combatant into existence without it. The server refuses more than 8 living enemies in all, or reinforcements past the XP ceiling for this party and difficulty.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -166,31 +185,38 @@ export function handleAddEnemies(
   campaign: Campaign,
   rawArguments: string,
   sheets: CharacterSheet[],
-): Record<string, unknown> {
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter; use start_encounter to begin a fight." };
+    return { error: "No active encounter; use start_encounter to begin a fight.", retry: true };
   }
   const args = parseAddArgs(rawArguments);
   if (!args) {
     return {
       error: 'Invalid add_enemies arguments. Send {"enemies":[{"monster":"goblin","count":2}]}.',
+      retry: true,
     };
   }
   const outcome = resolveEnemyRequests(campaign.gameSettings, args.enemies, spellAuthorsFor(campaign), campaign.id);
   if ("unknownMonster" in outcome) {
     return {
       error: `Unknown monster "${outcome.unknownMonster}". Use a real monster slug or name, or pass cr for an invented enemy.`,
+      retry: true,
     };
   }
 
+  // Characters named here fight as their own sheets (sheet-foes.ts): fielded
+  // below, once the enemy rows are in.
+  const rows = outcome.resolved.filter((entry) => !entry.sheetFoe);
+  const foes = outcome.resolved.flatMap((entry) => (entry.sheetFoe ? [entry.sheetFoe] : []));
   const existing = listEnemies(encounter.id);
   const alive = existing.filter((enemy) => enemy.status === "alive");
-  if (alive.length + outcome.resolved.length > 8) {
-    return { error: "Too many combatants: keep the fight to 8 living enemies or fewer." };
+  if (alive.length + outcome.resolved.length > MAX_COMBATANTS) {
+    return { error: `Too many combatants: keep the fight to ${MAX_COMBATANTS} living enemies or fewer.`, retry: true };
   }
-  // Budget check over the whole living opposition, reinforcements included.
-  const partyLevels = sheets.map((sheet) => sheet.level);
+  // Budget check over the whole living opposition, reinforcements included,
+  // against the characters fighting it (src/lib/dm/party-budget.ts).
+  const partyLevels = fightingParty(campaign, sheets).map((sheet) => sheet.level);
   const evaluation = evaluateEncounter(partyLevels, [
     ...alive.map((enemy) => enemy.cr),
     ...outcome.resolved.map((entry) => entry.stats.cr),
@@ -199,6 +225,7 @@ export function handleAddEnemies(
   if (evaluation.adjustedXp > ceiling) {
     return {
       error: `Too deadly: with these reinforcements the adjusted XP is ${evaluation.adjustedXp} vs an allowed ceiling of ${ceiling}. Add fewer or weaker enemies.`,
+      retry: true,
     };
   }
 
@@ -207,7 +234,7 @@ export function handleAddEnemies(
   // that there are more of them: in the tracker, in the order, on the board.
   const { names, renames } = nameArrivals(
     existing.map((enemy) => enemy.displayName),
-    outcome.resolved.map((entry) => entry.name),
+    rows.map((entry) => entry.name),
   );
   const renamed = renames.map(({ index, name }) => ({ enemy: existing[index], name }));
   for (const { enemy, name } of renamed) {
@@ -218,7 +245,7 @@ export function handleAddEnemies(
       }
     }
   }
-  const inserted = outcome.resolved.map((entry, index) =>
+  const inserted = rows.map((entry, index) =>
     insertEnemy({
       encounterId: encounter.id,
       campaignId: campaign.id,
@@ -280,16 +307,20 @@ export function handleAddEnemies(
     });
     publishBattleMapUpdate(campaign.id);
   }
+  const fielded = foes.length ? fieldSheetFoes(campaign, foes) : [];
   publishEncounter(campaign.id);
 
   return {
     ok: true,
-    added: inserted.map((enemy) => ({
-      enemyId: enemy.id,
-      name: enemy.displayName,
-      ac: enemy.ac,
-      hp: `${enemy.currentHp}/${enemy.maxHp}`,
-    })),
+    added: [
+      ...inserted.map((enemy) => ({
+        enemyId: enemy.id,
+        name: enemy.displayName,
+        ac: enemy.ac,
+        hp: `${enemy.currentHp}/${enemy.maxHp}`,
+      })),
+      ...fielded.map((sheet) => ({ characterId: sheet.id, name: sheet.name, ac: sheet.ac, hp: `${sheet.currentHp}/${sheet.maxHp}`, side: "foe" })),
+    ],
     // Told, so the next call and the next passage use the name on the board.
     ...(renamed.length
       ? { renamed: renamed.map(({ enemy, name }) => ({ enemyId: enemy.id, was: enemy.displayName, name })) }

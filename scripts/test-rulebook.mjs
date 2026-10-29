@@ -77,13 +77,13 @@ try {
     assert.ok(count("monsters") + count("creatures") + count("npcs") >= 318);
   });
 
-  await test("the contents bind the chapters as the players', the Dungeon Master's and the monsters' books", () => {
+  await test("the contents bind the chapters as the players', the Game Master's and the monsters' books", () => {
     const { parts, chapters } = rulebookContents();
     assert.deepEqual(
       parts.map((part) => [part.numeral, part.title, part.chapters]),
       [
         ["I", "Players", chapters.slice(0, 11).map((chapter) => chapter.id)],
-        ["II", "The Dungeon Master", ["running-the-game", "magic-items"]],
+        ["II", "The Game Master", ["running-the-game", "magic-items"]],
         ["III", "Monsters", ["monsters", "creatures", "npcs"]],
       ],
     );
@@ -156,6 +156,21 @@ try {
     for (const page of rulebookPages()) {
       for (const match of page.md.matchAll(/\]\(page:([^)]+)\)/g)) {
         assert.ok(rulebookPage(match[1]), `${page.id} links to a missing page ${match[1]}`);
+      }
+    }
+  });
+
+  // A hyphen the PDF broke across a line kept its space ("self- destructive")
+  // and a few came through as soft or Unicode hyphens: the import mends them
+  // (scripts/import-srd-rulebook.mjs). A suspended hyphen ("a 5- to 20-foot
+  // cone"), the conversion's "Table- X" captions and the blink dog's line,
+  // which the SRD does not print, are left as they are.
+  await test("no word is split at a hyphen the PDF broke across a line", () => {
+    for (const page of rulebookPages()) {
+      assert.ok(!/[­‐‑]/.test(page.md), `${page.id} keeps a soft or Unicode hyphen`);
+      for (const match of page.md.matchAll(/(\w+)- (?!to\b|or\b|and\b)([a-z]+)/g)) {
+        if (match[1] === "Table" || (page.id === "blink-dog" && match[0] === "long- standing")) continue;
+        assert.fail(`${page.id} splits "${match[0]}"`);
       }
     }
   });

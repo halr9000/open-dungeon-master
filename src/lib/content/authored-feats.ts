@@ -1,6 +1,6 @@
 import authoredFeatsJson from "@/lib/srd/authored-feats.json";
 import type { ContentEntry } from "@/lib/content";
-import { byName } from "@/lib/language/text-logic";
+import { byName, textKey } from "@/lib/language/text-logic";
 
 // ODM's own feats (src/lib/srd/authored-feats.json) as picker rows, for the
 // feats the content pack does not serve. The importer copies the list into
@@ -38,8 +38,8 @@ function entryOf(feat: AuthoredFeat): ContentEntry {
 
 // The authored feats whose names contain `q`, sorted by name.
 export function authoredFeatEntries(q?: string): ContentEntry[] {
-  const wanted = (q ?? "").trim().toLowerCase();
-  return FEATS.filter((feat) => feat.name.toLowerCase().includes(wanted))
+  const wanted = textKey(q ?? "");
+  return FEATS.filter((feat) => textKey(feat.name).includes(wanted))
     .map(entryOf)
     .sort(byName);
 }
@@ -55,9 +55,9 @@ export function withAuthoredFeats(
   if ((options.offset ?? 0) > 0) {
     return served;
   }
-  const names = new Set(options.packNames.map((name) => name.trim().toLowerCase()));
+  const names = new Set(options.packNames.map(textKey));
   const missing = authoredFeatEntries(options.q).filter(
-    (entry) => !names.has(entry.name.toLowerCase()),
+    (entry) => !names.has(textKey(entry.name)),
   );
   if (!missing.length) {
     return served;

@@ -9,7 +9,9 @@ import {
 } from "@/lib/db/characters";
 import { portraitStatus, queueLibraryPortrait } from "@/lib/portrait";
 import { admitSheet, refusal } from "@/lib/characters/admit";
+import { olderBuilderOf } from "@/lib/srd/legality/older-builder";
 import { createSheetSchema } from "@/lib/schemas/sheet";
+import { workshopClassName } from "@/lib/classes/workshop-registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +42,8 @@ export async function GET(request: Request) {
       ...character,
       portraitStatus: portraitStatus(character.id),
       campaigns: assignments.get(character.id) ?? [],
+      // A workshop class shows by its name, not its id.
+      ...(workshopClassName(character.class) ? { className: workshopClassName(character.class) } : {}),
     })),
   });
 }
@@ -64,6 +68,7 @@ export async function POST(request: Request) {
     level: parsed.data.level,
     sheet: parsed.data.sheet,
     userId: user.id,
+    olderBuilder: olderBuilderOf((raw as { sheet?: unknown } | null)?.sheet),
   });
   if (!admitted.ok) {
     return refusal(admitted.problems);

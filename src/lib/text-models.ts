@@ -13,8 +13,6 @@
 // panel (src/lib/harness/); a campaign only says "use the server's agent".
 export type TextProvider = "local" | "custom" | "none" | "harness";
 
-export const TEXT_PROVIDERS: TextProvider[] = ["local", "custom", "none", "harness"];
-
 // No model is named here. The "local" provider runs whatever tag the
 // admin picked from what Ollama lists (src/lib/model-registry), and a
 // server with exactly one chat model runs that one unasked.
@@ -37,6 +35,24 @@ export function knownLocalContextWindow(modelId: string): number | null {
   const wanted = modelId.toLowerCase();
   for (const [id, tokens] of learnedWindows) {
     if (id.toLowerCase() === wanted) return tokens;
+  }
+  return null;
+}
+
+// How many parameters Ollama said a local model has (/api/show's
+// general.parameter_count), kept beside its window and matched the same way.
+const learnedParams = new Map<string, number>();
+
+export function rememberLocalModelParams(modelId: string, params: number) {
+  if (Number.isFinite(params) && params > 0) {
+    learnedParams.set(modelId, params);
+  }
+}
+
+export function knownLocalModelParams(modelId: string): number | null {
+  const wanted = modelId.toLowerCase();
+  for (const [id, params] of learnedParams) {
+    if (id.toLowerCase() === wanted) return params;
   }
   return null;
 }

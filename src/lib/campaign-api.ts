@@ -1,6 +1,6 @@
 import { currentUser, unauthorized } from "@/lib/auth";
 import { capsFor as capsForCampaign, getCampaignForUser, type Campaign } from "@/lib/db/campaigns";
-import type { ViewerCaps } from "@/lib/dm/viewer";
+import { storytellerSees, type ViewerCaps } from "@/lib/dm/viewer";
 import type { User } from "@/lib/db/users";
 import { isMemberMuted } from "@/lib/db/moderation";
 import { fillUsageScope, openUsageScope } from "@/lib/usage/scope";
@@ -57,6 +57,12 @@ export function steersStory(context: MemberContext): boolean {
   return capsFor(context).steersStory;
 }
 
+// The tier above steersStory (src/lib/dm/viewer.ts, storyteller secrets):
+// what is kept even from the lead who steers an AI table.
+export function seesStorytellerSecrets(context: MemberContext): boolean {
+  return storytellerSees(capsFor(context));
+}
+
 // Membership plus the right to speak. A member the party lead has muted
 // keeps reading the table but every route that puts words in front of other
 // players (actions, asks, side chats) goes through here and is refused.
@@ -96,7 +102,7 @@ export async function requireDm(campaignId: string): Promise<MemberContext | Res
     return context;
   }
   if (!isDm(context)) {
-    return Response.json({ error: "Only the Dungeon Master can do that." }, { status: 403 });
+    return Response.json({ error: "Only the Game Master can do that." }, { status: 403 });
   }
   return context;
 }
@@ -117,7 +123,7 @@ export async function requirePrepAuthority(campaignId: string): Promise<MemberCo
     return Response.json(
       {
         error: context.campaign.dmUserId
-          ? "Only the Dungeon Master can do that."
+          ? "Only the Game Master can do that."
           : "Only the party lead can do that.",
       },
       { status: 403 },
@@ -148,7 +154,7 @@ export async function requireStoryAuthority(
     return Response.json(
       {
         error: context.campaign.dmUserId
-          ? "Only the Dungeon Master can do that."
+          ? "Only the Game Master can do that."
           : "Only the party lead can do that.",
       },
       { status: 403 },

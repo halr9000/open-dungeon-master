@@ -19,6 +19,8 @@ import {
   type HandTarget,
   type HandTurn,
 } from "@/lib/battlemap/hand-core";
+import { textKey } from "@/lib/language/text-logic";
+import { isNamed } from "@/lib/srd/feature-names";
 
 const COST: Record<HeldOption["cost"], HandCost> = {
   action: "action",
@@ -27,8 +29,6 @@ const COST: Record<HeldOption["cost"], HandCost> = {
   none: "free",
   ritual: "action",
 };
-
-const key = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
 function card(
   sheet: CharacterSheet,
@@ -40,7 +40,7 @@ function card(
   const left = state ? state.max - state.used : 0;
   const cost = option.cost;
   const made: HandCard = {
-    id: `option:${pool.id}:${key(option.name)}`,
+    id: `option:${pool.id}:${textKey(option.name).replaceAll(" ", "-")}`,
     type: option.target === "ally" ? "ward" : "feature",
     name: option.name,
     cost,
@@ -66,6 +66,7 @@ function card(
     disabled: null,
     spent: false,
     compose: false,
+    pool: pool.id,
     intent:
       cost === "reaction"
         ? { card: "reaction", feature: option.name }
@@ -117,7 +118,7 @@ export function optionCards(sheet: CharacterSheet, turn: HandTurn): HandCard[] {
   }
   if (sheet.resources.sub_superiority_dice) {
     const die = `1${maneuverDieFor(sheet)}`;
-    const knows = (name: string) => sheet.features.some((feature) => /^maneuver:/i.test(feature.name) && feature.name.toLowerCase().includes(name));
+    const knows = (name: string) => sheet.features.some((feature) => /^maneuver:/i.test(feature.name) && isNamed(feature.name, name));
     if (knows("rally")) {
       cards.push(
         card(sheet, turn, { id: "sub_superiority_dice", label: "Dice" }, {
@@ -130,7 +131,7 @@ export function optionCards(sheet: CharacterSheet, turn: HandTurn): HandCard[] {
         }),
       );
     }
-    if (knows("commander")) {
+    if (knows("commander's strike")) {
       cards.push(
         card(sheet, turn, { id: "sub_superiority_dice", label: "Dice" }, {
           name: "Commander's Strike",

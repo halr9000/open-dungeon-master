@@ -1,10 +1,10 @@
 // Prep and the end of a campaign, once play has begun. Both used to live
 // only server-side at a table in play: the import picker was in the lobby
-// alone, and nothing sent "ended". The Setup tab now brings prep in
+// alone, and nothing sent "ended". The Settings tab now brings prep in
 // mid-campaign (here from a finished campaign; a workshop is the same
 // copy), and ends the campaign behind a confirm; an ended
 // table blocks the composer and says so above it.
-import { check, eventually } from "../lib.mjs";
+import { check, eventually, openPanelTab } from "../lib.mjs";
 
 export default {
   name: "setup-prep-and-end",
@@ -16,13 +16,12 @@ export default {
     check(Boolean(campaignId), `the seed has a closing table for ${viewport}`);
     await t.open(`/campaigns/${campaignId}`);
 
-    const setupTab = page.locator(`${root}[data-tour="tab-settings"]`).locator("visible=true").first();
-    await eventually(() => setupTab.count(), { timeoutMs: 20_000, label: "the Setup tab" });
-    await t.tap(setupTab);
+    // The Settings tab: in the rail on a desktop, under More on a phone.
+    await openPanelTab(t, "settings");
 
     // Bring in prep: the source's roll table, chosen and copied.
     const prep = page.locator(`${root}[data-setup-prep]`).locator("visible=true").first();
-    await eventually(() => prep.count(), { timeoutMs: 20_000, label: "Bring in prep in the Setup tab" });
+    await eventually(() => prep.count(), { timeoutMs: 20_000, label: "Bring in prep in the Settings tab" });
     await prep.scrollIntoViewIfNeeded();
     // The kit's Select: a menu button named by its label, rows as radio items.
     await t.tap(prep.getByRole("button", { name: "Start from" }));
@@ -59,7 +58,7 @@ export default {
       return data.campaign?.status === "ended";
     }, { label: "the campaign saved as ended" });
     await eventually(() => page.locator(`${root}[data-campaign-ended]`).locator("visible=true").count(), {
-      label: "the Setup tab saying the campaign has ended",
+      label: "the Settings tab saying the campaign has ended",
     });
     check((await page.locator(`${root}[data-setup-prep]`).count()) === 0, "an ended campaign offers no more prep");
 

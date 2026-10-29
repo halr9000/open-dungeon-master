@@ -9,7 +9,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ui } from "@/lib/ui";
 import { ImportBundleButton } from "@/app/workshop/ImportBundleButton";
+import { AddonImportButton } from "@/app/workshop/AddonImportButton";
 import type { WorkshopSummary } from "@/app/workshop/types";
+import { CreateButton } from "@/app/workshop/[workshopId]/CreateChooser";
 
 // The hub's masthead: the way back to the shelf, the workshop's name
 // (editable in place), and the four things that act on the workshop as a
@@ -20,10 +22,13 @@ export function WorkshopHeader({
   workshop,
   onRenamed,
   onHelp,
+  onCreate,
 }: {
   workshop: WorkshopSummary;
   onRenamed: (title: string) => void;
   onHelp: () => void;
+  // The Create chooser (CreateChooser.tsx).
+  onCreate: () => void;
 }) {
   const router = useRouter();
   const [renaming, setRenaming] = useState(false);
@@ -154,8 +159,12 @@ export function WorkshopHeader({
           </button>
         </div>
       </div>
-      <div data-tour="hub-import" className="w-fit">
-        <ImportBundleButton label="Import a bundle" className={ui.btnSmall} />
+      <div className="flex flex-wrap gap-2">
+        <CreateButton onClick={onCreate} />
+        <div data-tour="hub-import" className="flex w-fit flex-wrap items-start gap-2">
+          <ImportBundleButton label="Import a bundle" className={ui.btnSmall} />
+          <AddonImportButton className={ui.btnSmall} />
+        </div>
       </div>
     </header>
   );

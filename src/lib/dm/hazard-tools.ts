@@ -10,6 +10,7 @@ import { openFall } from "@/lib/dm/last-hit";
 import { SUFFOCATING } from "@/lib/dm/vitals-logic";
 import { handleCastAtPlayer } from "@/lib/dm/cast-tools";
 import { resolveSheetRef } from "@/lib/dm/rolls";
+import { holdsFeature, isNamed } from "@/lib/srd/feature-names";
 import { getParty } from "@/lib/db/party";
 import { formationView } from "@/lib/dm/formation-logic";
 import { formationPartyIds } from "@/lib/dm/roster";
@@ -31,6 +32,8 @@ import { rollOn } from "@/lib/roll-labels";
 import { springTrapOn } from "@/lib/dm/trap-run";
 import { SAMPLE_TRAPS } from "@/lib/srd/trap-specs";
 import { hazardNamesAt, trapAt } from "@/lib/srd/table-hazards";
+import type { ToolResult } from "@/lib/dm/tool-errors";
+import { hasItemTag } from "@/lib/srd/item-tags";
 
 // Traps and environmental hazards used to be pure narration routed through the
 // generic damage_enemy call, so a "dart trap" or a "40-foot fall" dealt
@@ -59,7 +62,7 @@ export const hazardTools: ToolDef[] = [
     function: {
       name: "apply_hazard",
       description:
-        "Resolve a trap, a fall, or an environmental hazard against one or more characters with real 5e numbers. The server computes the damage and (for traps) the save DC from the book and applies the save and damage itself, so you never invent them. Use this instead of damage_enemy for any harm from the environment. Call it BEFORE narrating the result; narrate exactly what it reports.",
+        "Resolve a trap, a fall, or an environmental hazard against one or more characters with real 5e numbers. The server computes the damage and (for traps) the save DC from the book and applies the save and damage itself, so you never invent them. Use this, never apply_damage, for any harm from the environment to a character. Call it BEFORE narrating the result; narrate exactly what it reports.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -76,19 +79,19 @@ export const hazardTools: ToolDef[] = [
               "extreme_heat",
             ],
             description:
-              "Which hazard math to use: 'falling' (feet), 'trap' (severity, or trap by name), 'generic' (a bespoke hazard like a gout of flame, with your own damage, saveAbility and dc), 'suffocation'/'drowning' (a character out of air: roundsWithoutAir), 'extreme_cold'/'extreme_heat' (hours).",
+              "Hazard math: falling, trap, generic, suffocation, drowning, extreme_cold or extreme_heat. Feet for falling; severity, or a trap by name, for trap; for generic a bespoke hazard (a gout of flame) with your own damage, saveAbility and dc; roundsWithoutAir for suffocation and drowning; hours for extreme_cold and extreme_heat.",
           },
           hours: {
             type: "integer",
             minimum: 1,
             maximum: 48,
             description:
-              "extreme_cold/extreme_heat only: hours of exposure. The server rolls one Constitution save for each hour (cold DC 10; heat DC 5 rising by 1 an hour, at disadvantage in medium or heavy armor) and applies a level of exhaustion for each failure. Cold weather gear or the matching resistance shrugs it off.",
+              "extreme_cold/extreme_heat only: hours of exposure. The server rolls one CON save for each hour (cold DC 10; heat DC 5 rising by 1 an hour, at disadvantage in medium or heavy armor or heavy clothing) and applies a level of exhaustion for each failure. Cold weather gear or the matching resistance shrugs it off.",
           },
           roundsWithoutAir: {
             type: "integer",
             description:
-              "suffocation/drowning only: how many rounds the character has already gone without air; 0 means they have just run out. The server derives from their Constitution how long they last before dropping to 0 HP.",
+              "suffocation/drowning only: rounds already without air; 0 means they have just run out. The server derives from their Constitution how long they last before dropping to 0 HP.",
           },
           characterIds: {
             type: "array",
@@ -100,35 +103,35 @@ export const hazardTools: ToolDef[] = [
             type: "string",
             enum: ["front", "rear"],
             description:
-              "Instead of characterIds, for a trap or hazard the party walks into: the character walking first ('front') or last ('rear') in the party's travel formation (GAME STATE). Refused when no formation is set; then name the characterIds.",
+              "Instead of characterIds: whoever walks first ('front') or last ('rear') in the travel formation. Use it for a trap or hazard the party walks into; the formation is in GAME STATE. Refused when no formation is set; then name the characterIds.",
           },
           feet: {
             type: "integer",
-            description: "falling only: how far the character falls, in feet (1d6 per 10 ft, no save).",
+            description: "falling only: how far the character falls, in feet (1d6 per 10 feet, no save).",
           },
           severity: {
             type: "string",
             enum: [...SEVERITY_ENUM],
             description:
-              "trap only: how dangerous the trap is, for a Dexterity save and damage scaled to each victim's level: setback is a nuisance, dangerous can drop a careless character, deadly can kill.",
+              "trap only: setback is a nuisance, dangerous can drop a careless character, deadly can kill. It sets a DEX save and damage scaled to each victim's level. Default: 'dangerous'.",
           },
           saveAbility: {
             type: "string",
             enum: ["str", "dex", "con", "int", "wis", "cha"],
-            description: "trap and generic only: the save the hazard forces. Default 'dex'.",
+            description: "trap and generic only: the save the hazard forces. Default: 'dex'.",
           },
-          dc: { type: "integer", description: "generic only: the save DC." },
+          dc: { type: "integer", description: "generic: the save DC. Default: 13. For extreme_cold or extreme_heat it replaces the hourly DC." },
           damage: {
             type: "string",
             description: "generic only: the damage dice ('3d6').",
           },
           damageType: {
             type: "string",
-            description: "Damage type (bludgeoning, piercing, fire, poison, ...). Resistances apply.",
+            description: "Damage type (bludgeoning, piercing, fire, poison, ...). Resistances apply. Default: piercing, or bludgeoning for falling.",
           },
           halfOnSave: {
             type: "boolean",
-            description: "Whether a successful save halves the damage. Default true for traps.",
+            description: "Whether a successful save halves the damage. Default: true.",
           },
           condition: {
             type: "string",
@@ -137,7 +140,7 @@ export const hazardTools: ToolDef[] = [
           },
           trap: {
             type: "string",
-            description: `trap only: a trap by name, run by its own numbers (spot and disarm DCs, attack, fall, damage, save, conditions) instead of the severity table: one of the SRD's sample traps (${SAMPLE_TRAPS.map((trap) => trap.name).join(", ")}) or the table's own workshop traps named under GAME STATE.`,
+            description: `trap only: an SRD sample trap or one of the table's own workshop traps, by its listed name. SRD traps: ${SAMPLE_TRAPS.map((trap) => trap.name).join(", ")}; workshop traps are named under GAME STATE. A named trap runs by its own numbers (spot and disarm DCs, attack, fall, damage, save, conditions) instead of the severity table.`,
           },
           reason: { type: "string", description: "Short note on the hazard." },
         },
@@ -177,30 +180,43 @@ const hazardSchema = z.object({
   reason: z.string().optional(),
 });
 
+// Slow Fall and Feather Fall answer a fall that has landed (use_reaction,
+// src/lib/dm/reaction-tools.ts); a turn out of a fight offers use_reaction
+// only to a party holding one.
+export function partyCanSlowAFall(sheets: readonly CharacterSheet[]): boolean {
+  return sheets.some(
+    (sheet) =>
+      holdsFeature(sheet, "slow fall") ||
+      [sheet.spellcasting, ...(sheet.spellcasting?.casters ?? [])].some((caster) =>
+        [...(caster?.known ?? []), ...(caster?.prepared ?? [])].some((name) => isNamed(name, "feather fall")),
+      ),
+  );
+}
+
 export function handleApplyHazard(
   campaign: Campaign,
   turn: DmTurn,
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof hazardSchema>;
   try {
     args = hazardSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: apply_hazard needs a type and characterIds (or rank)." };
+    return { error: "Invalid arguments: apply_hazard needs a type and characterIds (or rank).", retry: true };
   }
   // Who walks first or last, from the formation in force (issue 230).
   let named = args.characterIds ?? [];
   let rankLine = "";
   if (!named.length) {
     if (!args.rank) {
-      return { error: "apply_hazard needs characterIds, or rank 'front' or 'rear' for whoever walks there in the travel formation." };
+      return { error: "apply_hazard needs characterIds, or rank 'front' or 'rear' for whoever walks there in the travel formation.", retry: true };
     }
     const { placed } = formationView(getParty(campaign.id).marchingOrder, formationPartyIds(campaign, sheets));
     const walker = args.rank === "front" ? placed[0] : placed[placed.length - 1];
     if (!walker) {
-      return { error: "The party has set no travel formation, so nobody is at the front or the rear. Name the characterIds the hazard catches." };
+      return { error: "The party has set no travel formation, so nobody is at the front or the rear. Name the characterIds the hazard catches.", retry: true };
     }
     named = [walker];
     rankLine = `${sheetsById.get(walker)?.name ?? "The character"} walks at the ${args.rank} of the travel formation, so the hazard catches them first.`;
@@ -217,7 +233,7 @@ function resolveHazard(
   named: string[],
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   // Resolve the victims once; bad ids are reported, not silently dropped.
   const targets: CharacterSheet[] = [];
   const unknown: string[] = [];
@@ -231,7 +247,7 @@ function resolveHazard(
     }
   }
   if (!targets.length) {
-    return { error: `No valid characterIds${unknown.length ? `: ${unknown.join(", ")}` : ""}.` };
+    return { error: `No valid characterIds${unknown.length ? `: ${unknown.join(", ")}` : ""}.`, retry: true };
   }
 
   const source = (args.reason ?? "").trim() || defaultSource(args);
@@ -284,7 +300,7 @@ function resolveHazard(
       feet: args.feet ?? 0,
       dice,
       results: perTarget,
-      note: `${dice} bludgeoning to each; the server applied it.`,
+      note: `${dice} bludgeoning to each; the server applied it.${partyCanSlowAFall(sheets) ? " A character who declared Feather Fall or Slow Fall answers it now: use_reaction." : ""}`,
     };
   }
 
@@ -390,7 +406,7 @@ function resolveHazard(
     const found = trapAt(args.trap, campaign.id);
     if (!found) {
       const own = hazardNamesAt(campaign.id).trap;
-      return { error: `No trap is named "${args.trap}". The SRD's sample traps are ${SAMPLE_TRAPS.map((trap) => trap.name).join(", ")}${own.length ? `; this table's are ${own.join(", ")}` : ""}. Leave trap out to use the severity table.` };
+      return { error: `No trap is named "${args.trap}". The SRD's sample traps are ${SAMPLE_TRAPS.map((trap) => trap.name).join(", ")}${own.length ? `; this table's are ${own.join(", ")}` : ""}. Leave trap out to use the severity table.`, retry: true };
     }
     return {
       ok: true,
@@ -457,7 +473,7 @@ function exposureShrug(sheet: CharacterSheet, cold: boolean): string | null {
   if (pcResistances(sheet).includes(wanted)) {
     return `${wanted} resistance: unaffected by the ${cold ? "cold" : "heat"}`;
   }
-  if (cold && sheet.equipment.some((item) => /cold[- ]weather gear|winter (?:clothes|clothing|gear)|fur cloak/i.test(item.name))) {
+  if (cold && sheet.equipment.some((item) => hasItemTag(item, "cold_weather_gear"))) {
     return "dressed for the cold: unaffected";
   }
   return null;
@@ -470,7 +486,7 @@ function heatHampers(sheet: CharacterSheet): boolean {
   return (
     category === "medium" ||
     category === "heavy" ||
-    sheet.equipment.some((item) => /heavy clothing|cold[- ]weather gear|fur cloak/i.test(item.name))
+    sheet.equipment.some((item) => hasItemTag(item, "heavy_clothing") || hasItemTag(item, "cold_weather_gear"))
   );
 }
 

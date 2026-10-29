@@ -100,7 +100,7 @@ export function campaignPayload(draft: CampaignDraft, { solo, aiNarrates }: Pick
       maxGuests,
       worldPack,
       voice: voiceChat,
-      // Four gameSettings fields are deliberately not offered here.
+      // These gameSettings fields are deliberately not offered here.
       //
       // `stages` trades turn quality for speed on a slow local model,
       // which is an operator decision, not a table decision, so it
@@ -123,6 +123,24 @@ export function campaignPayload(draft: CampaignDraft, { solo, aiNarrates }: Pick
       // `targetParty` is not a campaign setting at all: it is the stand-in
       // party a workshop budgets prep against, and a campaign reads its real
       // character sheets instead (docs/workshop-plan.md section 1.1).
+      //
+      // `narrationLength` and `styleNotes` say how the AI DM writes for this
+      // table (issue 383). What its prose needs is learned by hearing it on
+      // the table's model, so both start as no change at all and live in the
+      // settings panel's AI group, where the lead tunes them after a session.
+      // `combatPace` (issue #432) beside them, for the same reason: a table
+      // learns it wants more fights or fewer by playing.
+      //
+      // `waitForTable` and `waitForTableSeconds` (PR #438): whether the AI DM
+      // waits for everyone before it answers is learned once the table plays.
+      // It starts on (a lone player is answered at once) and is the Players
+      // group's Pacing picker.
+      //
+      // `companionConscience` (issue 503): how far a lasting companion goes
+      // when the party's deeds break what it holds to. Leave is a safe
+      // default, nothing is decided by it before the first scene, and it
+      // matters only once a lasting companion travels with the party, so it
+      // lives in the campaign's Bonds settings (AGENTS.md settings rule 2).
     },
   };
 }

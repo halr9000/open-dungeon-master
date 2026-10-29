@@ -1,25 +1,33 @@
 "use client";
 
 import { Check, Lock, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import { Select } from "@/components/ui/Select";
 import { KitButton, PanelError } from "@/app/campaigns/[campaignId]/PanelKit";
 import { LoreImageField } from "@/app/workshop/lore/LoreFields";
-import { CANON_STATES, type Canon, type FieldDef, type FieldValue, type WorldDoc, type YearValue } from "@/lib/worldforge/model";
+import { CANON_STATES, LIMITS, type Canon, type FieldDef, type FieldValue, type WorldDoc, type YearValue } from "@/lib/worldforge/model";
 import { folderTree } from "@/lib/worldforge/tree";
 import type { WorldEntity } from "@/lib/db/world-forge";
-import type { EntryInput } from "./useWorld";
+import { changesSince, describeValue, editableOf, same, type Editable, type EntryConflict } from "@/lib/worldforge/entry-merge";
+import { ROW_TEXT, olderText } from "@/lib/worldforge/account";
+import { useUnsavedDraft } from "@/app/workshop/unsaved";
+import type { EntryInput, UpdateOutcome } from "./useWorld";
 import { typeOf } from "./world-ui";
+import { KeptValueText } from "./ImportKept";
 
 // Editing one entry: what its own record holds (name, its line or its text,
 // aliases, tags, picture) and what WorldForge adds (type, folder, canon, the
 // type's fields, the hidden truth, the author's notes), saved together.
+// Only the fields the author changed are sent, each with the value the
+// editor opened with, so another author's change elsewhere survives and a
+// clash on the same field is shown here with the draft kept.
 
 const CANON_WORDS: Record<Canon, string> = { canon: "Canon", draft: "Draft", alternate: "Alternate", retired: "Retired" };
 const LINE_LIMIT = { npc: 200, faction: 400 } as const;
-const TEXT_LIMIT = { location: 2_000, lore: 4_000 } as const;
+// What each record's own row holds (src/lib/worldforge/account.ts).
+const TEXT_LIMIT = ROW_TEXT;
 
 const field = (label: string, child: React.ReactNode, hint?: string) => (
   <label className="flex flex-col gap-1">
@@ -36,6 +44,29 @@ function textList(value: string): string[] {
   return value.split(",").map((part) => part.trim()).filter(Boolean);
 }
 
+type Draft = Omit<Editable, "aliases" | "tags"> & { aliases: string; tags: string };
+const draftOf = (values: Editable): Draft => ({ ...values, aliases: listText(values.aliases), tags: listText(values.tags), fields: { ...values.fields } });
+const valuesOf = (draft: Draft): Editable => ({ ...draft, aliases: textList(draft.aliases), tags: textList(draft.tags) });
+
+// After a clash: the fields this author left alone take the other author's
+// values, the ones they changed keep theirs, and what the entry holds now
+// becomes the new base, so saving again writes this author's choices.
+function rebase(opened: Editable, theirs: Editable, mine: Editable): Editable {
+  const next = { ...mine } as Record<string, unknown>;
+  for (const key of Object.keys(theirs) as (keyof Editable)[]) {
+    if (key === "fields") continue;
+    if (same(mine[key], opened[key])) next[key] = theirs[key];
+  }
+  const fields = { ...mine.fields };
+  for (const id of new Set([...Object.keys(theirs.fields), ...Object.keys(opened.fields), ...Object.keys(mine.fields)])) {
+    if (!same(mine.fields[id], opened.fields[id])) continue;
+    if (theirs.fields[id] === undefined) delete fields[id];
+    else fields[id] = theirs.fields[id];
+  }
+  next.fields = fields;
+  return next as Editable;
+}
+
 export function EntityEditor({
   doc,
   entity,
@@ -49,7 +80,8 @@ export function EntityEditor({
   entity: WorldEntity;
   saving: boolean;
   error: string;
-  onSave: (input: EntryInput) => void;
+  // The changed fields and the value each had when the editor opened.
+  onSave: (input: EntryInput, opened: Partial<Editable>) => Promise<UpdateOutcome>;
   onCancel: () => void;
   // The model's draft of the entry's text, or null when there is no text
   // model (the button is then not offered at all).
@@ -58,21 +90,18 @@ export function EntityEditor({
   const [drafting, setDrafting] = useState(false);
   const [draftHint, setDraftHint] = useState("");
   const type = typeOf(doc, entity);
-  const [draft, setDraft] = useState({
-    name: entity.name,
-    tagline: entity.tagline,
-    text: entity.text,
-    article: entity.entry.article,
-    aliases: listText(entity.aliases),
-    tags: listText(entity.tags),
-    portrait: entity.portrait,
-    typeId: type.id,
-    folderId: entity.entry.folderId,
-    canon: entity.entry.canon,
-    hiddenTruth: entity.entry.hiddenTruth,
-    notes: entity.entry.notes,
-    fields: { ...entity.entry.fields } as Record<string, FieldValue>,
-  });
+  const [opened, setOpened] = useState(() => editableOf(doc, entity));
+  const [draft, setDraft] = useState<Draft>(() => draftOf(opened));
+  const [conflicts, setConflicts] = useState<EntryConflict[]>([]);
+  const clashRef = useRef<HTMLDivElement>(null);
+  // Set by a clash until the next save: the notice says what the error
+  // would, and stays quiet once its fields are settled.
+  const [rebased, setRebased] = useState(false);
+  const clashed = conflicts.length > 0;
+  // The notice sits at the top of the form; a long form puts it out of view.
+  useEffect(() => {
+    if (clashed) clashRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [clashed]);
   const set = <K extends keyof typeof draft>(key: K, value: (typeof draft)[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const chosenType = doc.types.find((entry) => entry.id === draft.typeId) ?? type;
   const sameShelf = doc.types.filter((entry) => entry.shelf === entity.shelf);
@@ -86,33 +115,80 @@ export function EntityEditor({
       return { ...current, fields };
     });
 
-  // The draft lands in the field the entry's text lives in, unsaved, for
-  // the DM to keep, cut or throw away.
+  // The draft lands in the entry's account, unsaved, for the DM to keep,
+  // cut or throw away: a lore entry's body, every other entry's article
+  // (src/lib/worldforge/account.ts). A place's arrival text stays the DM's.
   async function draftIt() {
     if (!onDraft) return;
     setDrafting(true);
     const text = await onDraft(draftHint);
     setDrafting(false);
     if (!text) return;
-    if (shortRow) set("article", text);
-    else set("text", text.slice(0, TEXT_LIMIT[entity.shelf as "location" | "lore"]));
+    if (entity.shelf === "lore") set("text", text.slice(0, TEXT_LIMIT.lore));
+    else set("article", text);
   }
 
-  function save() {
-    onSave({
-      name: draft.name,
-      ...(shortRow ? { tagline: draft.tagline } : { text: draft.text }),
-      article: draft.article,
-      aliases: textList(draft.aliases),
-      tags: textList(draft.tags),
-      portrait: draft.portrait,
-      typeId: draft.typeId,
-      folderId: draft.folderId,
-      canon: draft.canon,
-      hiddenTruth: draft.hiddenTruth,
-      notes: draft.notes,
-      fields: draft.fields,
-    });
+  // A lore entry's older article, when it says something its body does not.
+  const older = olderText({ shelf: entity.shelf, text: draft.text, entry: { article: draft.article } });
+
+  // Changes not saved yet, as save would send them.
+  const unsaved = Object.keys(changesSince(opened, entity.shelf === "lore" ? { ...valuesOf(draft), article: older } : valuesOf(draft)).patch).length > 0;
+  useUnsavedDraft(unsaved);
+
+  async function save() {
+    setRebased(false);
+    const values = valuesOf(draft);
+    // A lore entry keeps an older article only while it differs from the
+    // body; one the body already holds is cleared.
+    const mine = entity.shelf === "lore" ? { ...values, article: older } : values;
+    const { patch, base } = changesSince(opened, mine);
+    const outcome = await onSave(patch as EntryInput, base);
+    if (!outcome || !("conflicts" in outcome)) return;
+    const theirs = editableOf(doc, outcome.entity);
+    setDraft(draftOf(rebase(opened, theirs, mine)));
+    setOpened(theirs);
+    setConflicts(outcome.conflicts);
+    setRebased(true);
+  }
+
+  // Puts another version of one field into the draft: the other author's
+  // in a clash, or the import's for a value a reimport kept.
+  function fill(key: string, theirs: unknown) {
+    if (key.startsWith("fields.")) {
+      const id = key.slice("fields.".length);
+      setDraft((current) => {
+        const fields = { ...current.fields };
+        if (theirs === undefined || theirs === null || theirs === "") delete fields[id];
+        else fields[id] = theirs as FieldValue;
+        return { ...current, fields };
+      });
+    } else {
+      const field = key as keyof Editable;
+      const value = field === "aliases" || field === "tags" ? listText((theirs as string[]) ?? []) : (theirs ?? (field === "bindings" ? [] : ""));
+      setDraft((current) => ({ ...current, [field]: value }));
+    }
+  }
+
+  // Takes the other author's value for one clashing field.
+  function takeTheirs(conflict: EntryConflict) {
+    fill(conflict.key, conflict.theirs);
+    setConflicts((current) => current.filter((entry) => entry.key !== conflict.key));
+  }
+
+  // A value a reimport kept as this campaign has it (src/lib/worldforge/
+  // import-kept.ts): "Use the import's version" puts it in the draft, and
+  // saving takes it; the entry keeps this campaign's version, which its
+  // page offers back. One the entry could not take is not offered.
+  const [filled, setFilled] = useState<string[]>([]);
+  const [filledSaid, setFilledSaid] = useState("");
+  const keptRef = useRef<HTMLDivElement>(null);
+  const kept = (entity.kept ?? []).filter((item) => !item.taken && item.landed !== "not" && !filled.includes(item.key));
+  function takeImported(key: string, label: string, theirs: unknown) {
+    fill(key, theirs);
+    setFilled((current) => [...current, key]);
+    setFilledSaid(`${label}: the import's version is in the form. Save to use it.`);
+    // The button pressed is gone: focus goes to the next one, or the notice.
+    requestAnimationFrame(() => (keptRef.current?.querySelector("button") ?? keptRef.current)?.focus({ preventScroll: true }));
   }
 
   return (
@@ -123,7 +199,55 @@ export function EntityEditor({
         save();
       }}
     >
-      <div className="grid gap-3 sm:grid-cols-2">
+      {conflicts.length ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-100" role="alert" data-testid="entry-conflicts" ref={clashRef} tabIndex={-1}>
+          <p>Another author saved this entry while you had it open. Their other changes are now in the form. These fields clash with yours:</p>
+          <ul className="flex flex-col gap-1.5">
+            {conflicts.map((conflict) => (
+              <li key={conflict.key} className="flex flex-wrap items-center gap-2">
+                <span>
+                  <strong>{conflict.label}</strong>: theirs is {describeValue(conflict.theirs)}.
+                </span>
+                <KitButton tone="small" onClick={() => takeTheirs(conflict)}>
+                  Use theirs
+                </KitButton>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-amber-200/80">Save keeps yours for any field you leave as it is.</p>
+        </div>
+      ) : null}
+      {kept.length || filled.length ? (
+        <div
+          ref={keptRef}
+          tabIndex={-1}
+          className="flex flex-col gap-2 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-100 outline-none focus-visible:ring-2 focus-visible:ring-amber-400/60"
+          data-testid="entry-import-kept"
+        >
+          <span className="sr-only" aria-live="polite">
+            {filledSaid}
+          </span>
+          {kept.length ? (
+            <ul className="flex flex-col gap-2">
+              {kept.map((item) => (
+                <li key={item.key} className="flex flex-col gap-1.5">
+                  <span>
+                    <strong>{item.label}</strong>: this campaign&apos;s version was kept when it was brought in again; the import&apos;s version differs:
+                  </span>
+                  <KeptValueText value={item.theirs} said={item.shown?.theirs} />
+                  <span>
+                    <KitButton tone="small" onClick={() => takeImported(item.key, item.label, item.theirs)} aria-label={`Use the import's version of the ${item.label}`}>
+                      Use the import&apos;s version
+                    </KitButton>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {filled.length ? <p className="text-xs text-amber-200/80">The import&apos;s version is in the form. Save to use it; this campaign&apos;s version stays on the entry&apos;s page, ready to restore.</p> : null}
+        </div>
+      ) : null}
+      <div className="grid gap-3 @lg:grid-cols-2">
         {field("Name", <input className={ui.input} maxLength={80} value={draft.name} onChange={(event) => set("name", event.target.value)} required />)}
         {field(
           "Type",
@@ -153,7 +277,11 @@ export function EntityEditor({
               </button>
             ))}
           </div>,
-          draft.canon === "canon" ? undefined : "Not canon yet: kept from what players read.",
+          draft.canon === "canon"
+                ? undefined
+                : entity.shelf === "lore"
+                  ? "Not canon yet: kept from what players read until it is."
+                  : "Not canon yet: the AI GM treats it as uncertain.",
         )}
       </div>
 
@@ -163,17 +291,34 @@ export function EntityEditor({
             <input className={ui.input} maxLength={LINE_LIMIT[entity.shelf as "npc" | "faction"]} value={draft.tagline} onChange={(event) => set("tagline", event.target.value)} />,
           )
         : field(
-            entity.shelf === "location" ? "The place (what the DM reads on arrival)" : "The entry",
+            entity.shelf === "location" ? "On arrival (what the GM reads when the party arrives)" : "The entry",
             <textarea className={cn(ui.input, "min-h-28")} maxLength={TEXT_LIMIT[entity.shelf as "location" | "lore"]} value={draft.text} onChange={(event) => set("text", event.target.value)} />,
-            `${draft.text.length} of ${TEXT_LIMIT[entity.shelf as "location" | "lore"]} characters`,
+            `${draft.text.length.toLocaleString("en")} of ${TEXT_LIMIT[entity.shelf as "location" | "lore"].toLocaleString("en")} characters${entity.shelf === "lore" ? ". Players read this one when the entry is theirs to read." : ""}`,
           )}
-      {shortRow || draft.article
+      {entity.shelf !== "lore"
         ? field(
-            "Article",
-            <textarea className={cn(ui.input, "min-h-32")} maxLength={12_000} value={draft.article} onChange={(event) => set("article", event.target.value)} />,
-            "The wiki's full account. Names of other entries link themselves.",
+            entity.shelf === "location" ? "In full (the wiki's article)" : "Article",
+            <textarea className={cn(ui.input, "min-h-32")} maxLength={LIMITS.article} value={draft.article} onChange={(event) => set("article", event.target.value)} />,
+            entity.shelf === "location"
+              ? "The wiki's full account, shown above the arrival text. Leave it empty and the wiki shows the arrival text alone."
+              : "The wiki's full account. Names of other entries link themselves.",
           )
         : null}
+      {older ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-100" data-testid="older-text">
+          <span className="eyebrow text-[10px] text-amber-300">An older text from an import</span>
+          <p className="text-xs text-amber-200/80">Kept beside the entry because the two say different things. Players never see it. Nothing is lost until you remove one.</p>
+          <p className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md bg-stone-950/40 p-2 text-xs leading-5 text-stone-300">{older}</p>
+          <span className="flex flex-wrap gap-2">
+            <KitButton tone="small" onClick={() => setDraft((current) => ({ ...current, text: current.article.slice(0, TEXT_LIMIT.lore), article: current.text }))}>
+              Use this one instead
+            </KitButton>
+            <KitButton tone="small" onClick={() => set("article", "")}>
+              Remove it
+            </KitButton>
+          </span>
+        </div>
+      ) : null}
 
       {onDraft ? (
         <div className="flex flex-wrap items-center gap-2 motion-pop">
@@ -185,13 +330,13 @@ export function EntityEditor({
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 @lg:grid-cols-2">
         {field("Also called", <input className={ui.input} placeholder="another name, a title" value={draft.aliases} onChange={(event) => set("aliases", event.target.value)} />, "Separated by commas.")}
         {field("Tags", <input className={ui.input} placeholder="harbour, smugglers" value={draft.tags} onChange={(event) => set("tags", event.target.value)} />, "Separated by commas.")}
       </div>
 
       {chosenType.fields.length ? (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 @lg:grid-cols-2">
           {chosenType.fields.map((def) => (
             <FieldInput key={def.id} def={def} doc={doc} value={draft.fields[def.id]} onChange={(value) => setField(def, value)} />
           ))}
@@ -200,11 +345,11 @@ export function EntityEditor({
 
       {field("Picture", <LoreImageField imagePath={draft.portrait} onChange={(path) => set("portrait", path)} />)}
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 @lg:grid-cols-2">
         {field(
-          "Hidden truth (yours alone)",
+          "Hidden truth (kept from players)",
           <textarea className={cn(ui.input, "min-h-20 border-red-900/50")} maxLength={4_000} value={draft.hiddenTruth} onChange={(event) => set("hiddenTruth", event.target.value)} />,
-          "True in the world, unknown to it. The DM may let it surface; players never read it here.",
+          "True in the world, unknown to it. The GM may let it surface; players never read it here.",
         )}
         {field(
           "Author's notes",
@@ -213,7 +358,7 @@ export function EntityEditor({
         )}
       </div>
 
-      {error ? <PanelError>{error}</PanelError> : null}
+      {error && !rebased ? <PanelError>{error}</PanelError> : null}
       <div className="flex justify-end gap-2">
         <KitButton tone="small" onClick={onCancel}>
           <X className="size-3.5" /> Cancel

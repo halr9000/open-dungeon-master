@@ -1,25 +1,25 @@
+import { getFoe } from "@/lib/dm/sheet-foe";
 import { spendFeatureUse } from "@/lib/dm/attack-onhit";
 import { z } from "zod";
 import type { Campaign } from "@/lib/db/campaigns";
-import { getActiveEncounter, getEnemy, patchEnemyConditions, saveEncounter } from "@/lib/db/encounters";
-import { invisibilityEndedByAction, writeMarks } from "@/lib/dm/attack-marks";
+import { getActiveEncounter, patchEnemyConditions, saveEncounter } from "@/lib/db/encounters";
+import { endInvisibilityOnCast, writeMarks } from "@/lib/dm/attack-marks";
 import { sanctuaryEndedByAttack } from "@/lib/dm/spell-defenses";
 import { publishEncounter } from "@/lib/dm/enemy-damage";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { publishPersisted } from "@/lib/events";
-import { normalizeAdvantage } from "@/lib/dm/arg-coerce";
 import { removeConditions, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { applyDmMutation } from "@/lib/dm/mutations";
 import { strikeDamage } from "@/lib/dm/pc-attack-damage";
 import { FRENZIED } from "@/lib/dm/frenzy";
-import { BONUS_ATTACKS, RECKLESS } from "@/lib/dm/pc-attack-options";
+import { ADVANTAGE_SOURCES, BONUS_ATTACKS, RECKLESS } from "@/lib/dm/pc-attack-options";
 import { parkPcAttack } from "@/lib/dm/pc-attack-parked";
 import { planPcAttack, type AttackPlan } from "@/lib/dm/pc-attack-plan";
 import { rollPcAttack, strikeToHit } from "@/lib/dm/pc-attack-resolve";
 import { castAttackSpell } from "@/lib/dm/pc-attack-spell";
-import { resolveSheetRef } from "@/lib/dm/rolls";
-import { markReactionUsed, storeBudget } from "@/lib/dm/turn-budget";
+import { resolveSheetRef, unknownSheetRef } from "@/lib/dm/rolls";
+import { markReactionUsed, noteSwing, storeBudget } from "@/lib/dm/turn-budget";
 import { spendReadied } from "@/lib/dm/object-actions";
 import { spendGiantKiller } from "@/lib/dm/reaction-attacks";
 import { withAmmoCount } from "@/lib/srd/ammunition";
@@ -28,9 +28,11 @@ import { spendInspirationCounter } from "@/lib/dm/roll-riders";
 import { spendLuckCounter } from "@/lib/srd/class-resources";
 import { moteBurst, moteOf } from "@/lib/dm/authored-mote";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { invalidArguments, type ToolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { attacksLeft } from "@/lib/dm/action-budget";
+import { approachForAttack, withApproach } from "@/lib/dm/pc-attack-approach";
 
-// Re-exported for the callers that learned them here.
-export { superiorityDie } from "@/lib/dm/pc-attack-riders";
+// Re-exported for the callers that learned it here.
 export { resolvePendingPcAttack } from "@/lib/dm/pc-attack-parked";
 
 // The pc_attack engine: full server resolution of player attacks. The
@@ -60,7 +62,7 @@ export const pcAttackTool: ToolDef = {
   function: {
     name: "pc_attack",
     description:
-      "Resolve a player character's attack on an enemy. The server derives their attack bonus and damage from their sheet, rolls to-hit against the enemy's real AC, applies damage on a hit, and reports the outcome for you to narrate. Call it for EVERY weapon attack and attack-roll spell a player makes; never adjudicate a player's attack yourself. Off their own turn a character attacks only with a readied attack or spell, or Giant Killer's reaction against a Large or larger creature within 5 feet that just attacked them; the server checks which and spends the reaction.",
+      "Resolve a character's attack on a foe. The server derives their attack bonus and damage from their sheet, rolls to-hit against the target's real AC, applies damage on a hit, and reports the outcome for you to narrate. Call it for EVERY weapon attack and attack-roll spell a player makes; never adjudicate a player's attack yourself. Off their own turn a character attacks only with a readied attack or spell, or Giant Killer's reaction against a Large or larger creature within 5 feet that just attacked them; the server checks which and spends the reaction.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -70,23 +72,39 @@ export const pcAttackTool: ToolDef = {
         weapon: {
           type: "string",
           description:
-            "Weapon they attack with, from their equipment. Omit to use their best carried weapon. A weapon a subclass feature makes is named here too: a raging Path of the Beast barbarian's 'bite', 'claws' or 'tail', a Soulknife's 'psychic blade' (offHand for the second blade), a Sun Soul monk's 'radiant sun bolt'.",
+            "The weapon from their equipment, or 'unarmed strike' for a punch or kick in any language. Omit to use their best carried weapon. A weapon a subclass feature makes is named here too: a raging Path of the Beast barbarian's 'bite', 'claws' or 'tail', a Soulknife's 'psychic blade' (offHand for the second blade), a Sun Soul monk's 'radiant sun bolt'.",
+        },
+        approach: {
+          type: "boolean",
+          description:
+            "True when the player said their character moves to the target first and it is out of melee reach. Closing in, charging and rushing it all count. The server walks them to the nearest open square beside it out of their movement, drawing any opportunity attacks, then attacks. Too far to reach this turn, they close in as far as they can and nothing is attacked.",
+        },
+        endTurn: {
+          type: "boolean",
+          description:
+            "True when the player ends their turn after this attack: the server ends it; never call end_turn too. A player says \"...then I end my turn\". It ends once the attack resolves, as end_turn does, and the result names who acts next. Send it only on the last attack they declared.",
         },
         spell: {
           type: "string",
           description:
-            "Attack-roll spell (Fire Bolt) instead of a weapon; requires damage.",
+            "Attack-roll spell (Fire Bolt) instead of a weapon; the server rolls a known spell's dice.",
         },
         damage: {
           type: "string",
-          description: "Spell attacks only: the spell's damage dice ('1d10', '4d6').",
+          description: "A homebrew spell attack only: its damage dice ('1d10', '4d6').",
         },
         damageType: { type: "string", description: "Spell attacks only: the damage type." },
         advantage: {
           type: "string",
           enum: ["none", "advantage", "disadvantage"],
           description:
-            "Situational advantage or disadvantage from the fiction that the server cannot see. It counts only with advantageReason. The server already applies conditions (prone, invisible, hidden, restrained...), cover, light and darkness, range, Help, flanking, Reckless Attack and every feature: never claim those.",
+            "Situational advantage or disadvantage from the fiction that the server cannot see. It counts only with advantageSource 'other' and advantageReason. The server already applies conditions (prone, invisible, hidden, restrained...), cover, light and darkness, range, Help, flanking, spells, Reckless Attack and every feature: never claim those.",
+        },
+        advantageSource: {
+          type: "string",
+          enum: [...ADVANTAGE_SOURCES],
+          description:
+            "Where the advantage or disadvantage comes from; only 'other' counts.",
         },
         advantageReason: {
           type: "string",
@@ -96,7 +114,7 @@ export const pcAttackTool: ToolDef = {
           type: "string",
           enum: ["martial arts", "frenzy", "feature"],
           description:
-            "A bonus-action attack a feature grants: 'martial arts' (a monk's unarmed strike after taking the Attack action with an unarmed strike or monk weapon; send weapon 'unarmed strike'), 'frenzy' (a raging Berserker's melee weapon attack), or 'feature' (a subclass's bonus weapon attack: Battle Magic or War Magic after casting with the action, Sudden Strike or Curving Shot after attacking, Telekinetic Master while concentrating on telekinesis; or a feat's: Great Weapon Master after a melee crit or kill, Polearm Master's butt-end strike after an Attack action with a polearm (1d4 bludgeoning), Crossbow Expert's hand crossbow shot after an Attack action with a one-handed weapon, Charger's melee attack after a Dash; the server checks the feature and the turn). The server spends the bonus action.",
+            "A feature's bonus attack: 'martial arts' (weapon 'unarmed strike'), 'frenzy' or 'feature'. The server spends the bonus action. Martial arts is a monk's unarmed strike after taking the Attack action with an unarmed strike or monk weapon; frenzy is a raging Berserker's melee weapon attack; feature is a subclass's bonus weapon attack (Battle Magic or War Magic after casting with the action, Sudden Strike or Curving Shot after attacking, Telekinetic Master while concentrating on telekinesis) or a feat's (Great Weapon Master after a melee crit or kill, Polearm Master's butt-end strike after an Attack action with a polearm (1d4 bludgeoning), Crossbow Expert's hand crossbow shot after an Attack action with a one-handed weapon, Charger's melee attack after a Dash). The server checks the feature and the turn.",
         },
         stunningStrike: {
           type: "boolean",
@@ -111,17 +129,17 @@ export const pcAttackTool: ToolDef = {
         stunShot: {
           type: "boolean",
           description:
-            "Stunning Sniper (a Tome of Heroes feat): on a ranged weapon critical hit, stun the target until the start of the shooter's next turn instead of doubling the damage. The player's choice before the roll; the server checks the feat.",
+            "Stunning Sniper (Tome of Heroes feat): stun on a ranged critical hit instead of doubling the damage. The target is stunned until the start of the shooter's next turn. The player's choice before the roll; the server checks the feat.",
         },
         charged: {
           type: "boolean",
           description:
-            "Charger's bonus-action attack after a Dash (bonusAttack 'feature'): true when they moved at least 10 feet in a straight line at the target first, which adds 5 damage.",
+            "Charger's attack: true when they moved 10+ feet straight at the target first, for +5 damage. It goes with the bonus-action attack after a Dash (bonusAttack 'feature').",
         },
         powerAttack: {
           type: "boolean",
           description:
-            "The accuracy-for-damage trade: Great Weapon Master (a heavy melee weapon) or Sharpshooter (a ranged weapon) take -5 on this attack roll for +10 damage; Level Up's Powerful Attacker rolls a heavy weapon attack at disadvantage for +10; Deadeye drops the proficiency bonus from a ranged attack roll for twice it on the damage. The player's choice before the roll; the server checks the feat and the weapon.",
+            "The accuracy-for-damage trade: -5 to hit for +10 damage (Great Weapon Master, Sharpshooter). Great Weapon Master: a heavy melee weapon; Sharpshooter: a ranged weapon. Level Up's Powerful Attacker rolls a heavy weapon attack at disadvantage for +10; Deadeye drops the proficiency bonus from a ranged attack roll for twice it on the damage. The player's choice before the roll; the server checks the feat and the weapon.",
         },
         reckless: {
           type: "boolean",
@@ -131,12 +149,12 @@ export const pcAttackTool: ToolDef = {
         nonlethal: {
           type: "boolean",
           description:
-            "A melee attack meant to knock out: a creature it drops to 0 hit points falls unconscious instead of dying and is out of the fight.",
+            "A melee attack meant to knock out: a creature it drops to 0 HP falls unconscious, not dying. That creature is out of the fight.",
         },
         hordeBreaker: {
           type: "boolean",
           description:
-            "Hunter ranger with Horde Breaker: once a turn, an extra weapon attack on a different creature within 5 feet of one they already attacked this turn. It uses no attack of their action.",
+            "Horde Breaker: once a turn, an extra weapon attack on another creature within 5 feet of the first. It is a Hunter ranger's feature, and the extra attack uses none of their action's attacks.",
         },
         useInspiration: {
           type: "boolean",
@@ -166,12 +184,17 @@ export const pcAttackTool: ToolDef = {
         whirlwind: {
           type: "boolean",
           description:
-            "Hunter ranger with Whirlwind Attack: the action makes one melee weapon attack against each creature within 5 feet; call pc_attack once per creature with whirlwind true. The first spends the whole action.",
+            "Whirlwind Attack: call pc_attack once per creature within 5 feet, each with whirlwind true. It is a Hunter ranger's feature: each call is one melee weapon attack, and the first spends the whole action.",
         },
         volley: {
           type: "boolean",
           description:
-            "Hunter ranger with Volley: the action makes one ranged weapon attack against each creature within 10 feet of the first target; call pc_attack once per creature with volley true. The first spends the whole action.",
+            "Volley: call pc_attack once per creature within 10 feet of the first target, each with volley true. It is a Hunter ranger's feature: each call is one ranged weapon attack, and the first spends the whole action.",
+        },
+        improvised: {
+          type: "boolean",
+          description:
+            "True when weapon names an object that is no weapon on their sheet (a chair, a bottle). It strikes as an improvised weapon.",
         },
         twoHanded: {
           type: "boolean",
@@ -200,7 +223,7 @@ export const pcAttackTool: ToolDef = {
         maneuver: {
           type: "string",
           description:
-            "Battle Master maneuver riding this weapon attack ('Trip Attack', 'Precision Attack', 'Menacing Attack'). The server spends a Superiority Die, adds it to the damage (Precision: to the attack roll), and rolls the target's save against the maneuver's rider. Feinting Attack (a creature within 5 feet, advantage) and Quick Toss (a thrown weapon) take the bonus action; Grappling Strike saves the die for the grapple that may follow as a bonus action; Maneuvering Attack lets an ally move with its reaction. Parry, Riposte, Brace, Rally and Commander's Strike are not named here.",
+            "A Battle Master maneuver riding this weapon attack, by name ('Trip Attack', 'Precision Attack'). Also 'Menacing Attack'. The server spends a Superiority Die, adds it to the damage (Precision: to the attack roll), and rolls the target's save against the maneuver's rider. Feinting Attack (a creature within 5 feet, advantage) and Quick Toss (a thrown weapon) take the bonus action; Grappling Strike saves the die for the grapple that may follow as a bonus action; Maneuvering Attack lets an ally move with its reaction. Parry, Riposte, Brace, Rally and Commander's Strike are not named here.",
         },
       },
       required: ["characterId", "targetEnemyId"],
@@ -212,17 +235,20 @@ const pcAttackArgsSchema = z.object({
   characterId: z.string(),
   targetEnemyId: z.string(),
   weapon: z.string().max(80).optional(),
+  // The move to the target the player declared (pc-attack-approach.ts).
+  approach: z.coerce.boolean().optional(),
+  // The player ends their turn with this attack (encounter-tools.ts).
+  endTurn: z.coerce.boolean().optional(),
   spell: z.string().max(80).optional(),
   damage: z.string().max(30).optional(),
   damageType: z.string().max(30).optional(),
-  advantage: z.preprocess(
-    normalizeAdvantage,
-    z.enum(["none", "advantage", "disadvantage"]).optional(),
-  ),
+  advantage: z.enum(["none", "advantage", "disadvantage"]).optional(),
+  improvised: z.coerce.boolean().optional(),
   twoHanded: z.coerce.boolean().optional(),
   offHand: z.coerce.boolean().optional(),
   smite: z.coerce.number().int().min(1).max(9).optional(),
   maneuver: z.string().max(60).optional(),
+  advantageSource: z.enum(ADVANTAGE_SOURCES).optional(),
   advantageReason: z.string().max(200).optional(),
   bonusAttack: z.preprocess(
     (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
@@ -268,27 +294,78 @@ export function handlePcAttack(
   sheetsById: Map<string, CharacterSheet>,
   realDiceUserIds: Set<string>,
   toolCallId: string | null,
-): Record<string, unknown> {
+  // The engine's own attacks (Confusion's random target): `anySide` lets the
+  // target be an ally (pc-attack-gate.ts).
+  engine: { anySide?: boolean } = {},
+): ToolResult {
   const encounter = getActiveEncounter(campaign.id);
   if (!encounter) {
-    return { error: "No active encounter. Call start_encounter first." };
+    return { error: "No active encounter. Call start_encounter first.", retry: true };
   }
-  let args: PcAttackArgs;
+  let raw: unknown;
   try {
-    args = pcAttackArgsSchema.parse(JSON.parse(rawArguments || "{}"));
+    raw = JSON.parse(rawArguments || "{}");
   } catch {
-    return { error: "Invalid arguments: pc_attack needs characterId and targetEnemyId." };
+    return { error: "Invalid arguments: pc_attack needs characterId and targetEnemyId.", retry: true };
   }
+  const parsed = pcAttackArgsSchema.safeParse(raw);
+  if (!parsed.success) {
+    return invalidArguments("Invalid arguments: pc_attack needs characterId and targetEnemyId.", parsed.error);
+  }
+  const args: PcAttackArgs = parsed.data;
   const staleSheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = staleSheet ? (getSheetById(staleSheet.id) ?? staleSheet) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
 
+  // The move to the target the player declared, when the swing needs it
+  // (src/lib/dm/pc-attack-approach.ts): the plan is asked first (it spends
+  // nothing), and only a refusal for reach alone walks: asked again with
+  // reach set aside, anything else that would refuse the swing (the turn's
+  // attacks spent, a feature they lack) refuses it where they stand. The
+  // attack is then planned from where it is made.
+  if (args.approach) {
+    const dry = planPcAttack({ campaign, turn, encounter, sheet, args, sheets, sheetsById, anySide: engine.anySide });
+    if ("refused" in dry) {
+      const beside = planPcAttack({ campaign, turn, encounter, sheet, args, sheets, sheetsById, skipReach: true, anySide: engine.anySide });
+      if ("refused" in beside) {
+        return beside.refused;
+      }
+      const approach = approachForAttack(campaign, encounter, sheet, args, dry.refused);
+      if (!approach) {
+        return dry.refused;
+      }
+      if ("refused" in approach) {
+        return approach.refused;
+      }
+      const attack = attackFrom(campaign, turn, sheet, args, sheets, sheetsById, realDiceUserIds, toolCallId, engine);
+      return attack[PC_ATTACK_PARKED] ? attack : withApproach(attack, approach.walked);
+    }
+  }
+  return attackFrom(campaign, turn, sheet, args, sheets, sheetsById, realDiceUserIds, toolCallId, engine);
+}
+
+function attackFrom(
+  campaign: Campaign,
+  turn: DmTurn,
+  sheet: CharacterSheet,
+  args: PcAttackArgs,
+  sheets: CharacterSheet[],
+  sheetsById: Map<string, CharacterSheet>,
+  realDiceUserIds: Set<string>,
+  toolCallId: string | null,
+  engine: { anySide?: boolean } = {},
+): ToolResult {
+  // The walk may have changed the fight: read it again.
+  const encounter = getActiveEncounter(campaign.id);
+  if (!encounter) {
+    return { error: "No active encounter. Call start_encounter first.", retry: true };
+  }
   // ---- refusals: everything that can stop this attack, before any spend ----
   // Asked in one place, in order, by planPcAttack (src/lib/dm/pc-attack-plan.ts).
 
-  const plan = planPcAttack({ campaign, turn, encounter, sheet, args, sheets, sheetsById });
+  const plan = planPcAttack({ campaign, turn, encounter, sheet: getSheetById(sheet.id) ?? sheet, args, sheets, sheetsById, anySide: engine.anySide });
   if ("refused" in plan) {
     return plan.refused;
   }
@@ -298,7 +375,24 @@ export function handlePcAttack(
   // A Creation bard's mote rides the inspiration die the roll spends
   // (src/lib/dm/authored-mote.ts); it bursts once the attack is rolled.
   const mote = moteOf(sheet, plan.attackRiders.spent);
-  spendPcAttack(plan);
+  const countered = spendPcAttack(plan);
+  // Counterspell stopped the spell after it was paid for: no roll follows,
+  // parked or digital.
+  if (countered) {
+    return countered;
+  }
+  // An attack the rules make and miss (pc-attack-plan.ts missesBecause):
+  // spent above, with no roll to make.
+  if (plan.missesBecause) {
+    return {
+      attacker: sheet.name,
+      weapon: plan.profile.weapon,
+      target: plan.enemy.displayName,
+      hit: false,
+      ...(plan.budget && attacksLeft(plan.budget) > 0 && plan.budget.attacksMade > 0 ? { attacksRemaining: attacksLeft(plan.budget) } : {}),
+      note: `${plan.missesBecause} The attack misses; narrate the miss.`,
+    };
+  }
   const strike = { ...strikeToHit(plan), ...strikeDamage(plan) };
 
   // Physical dice: park the to-hit roll for the player; the submit route
@@ -308,14 +402,16 @@ export function handlePcAttack(
     return { [PC_ATTACK_PARKED]: true };
   }
   const rolled = rollPcAttack(plan, strike);
+  noteSwing(campaign.id, sheet.id, rolled);
   const burst = moteBurst(campaign, turn, mote, plan.enemy);
   return burst ? { ...rolled, mote: burst } : rolled;
 }
 
 // What the attack costs, paid now that nothing can refuse it: the turn
 // budget, the cast or the reaction, the round from the quiver, Precision
-// Attack's die, and the conditions this roll uses up.
-function spendPcAttack(plan: AttackPlan) {
+// Attack's die, and the conditions this roll uses up. Returns the refusal of
+// a spell Counterspell stopped (spent, and nothing else follows), or null.
+function spendPcAttack(plan: AttackPlan): ToolError | null {
   const { campaign, turn, encounter, sheet, sheets, sheetsById, budget, ammo, context } = plan;
   if (budget) {
     storeBudget(encounter, budget);
@@ -334,7 +430,10 @@ function spendPcAttack(plan: AttackPlan) {
     }
   }
   if (plan.castsSpell) {
-    castAttackSpell(plan);
+    const countered = castAttackSpell(plan);
+    if (countered) {
+      return countered;
+    }
   } else if (!budget) {
     markReactionUsed(encounter, sheet.id);
     // The readied action (or the Giant Killer answer) this attack is spends
@@ -357,18 +456,28 @@ function spendPcAttack(plan: AttackPlan) {
       `made off their own turn: ${sheet.name}'s reaction is spent until their next turn starts`,
     );
   }
+  // The weapon drawn for this attack is in hand from now on (issue #424).
+  if (plan.drawn) {
+    patchSheet(sheet.id, { equipment: plan.drawn.equipment });
+    context.notes.push(plan.drawn.note);
+  }
   if (ammo && ammo.ok) {
-    const equipment = withAmmoCount(sheet.equipment, ammo.index, ammo.remaining);
+    const carried = plan.drawn?.equipment ?? sheet.equipment;
+    const equipment = withAmmoCount(carried, ammo.index, ammo.remaining);
     patchSheet(sheet.id, { equipment });
     // Tallied under the line's name as it reads NOW: a quiver written
     // "Arrows (20)" is renamed by every shot, and the tally follows it so the
-    // end of the fight finds the line it has to refill.
+    // end of the fight finds the line it has to refill. The last one spent
+    // takes the line off the sheet, so the tally keeps the line itself.
+    const emptied = ammo.remaining <= 0;
     const before = `${sheet.id}|${ammo.name}`;
-    const after = `${sheet.id}|${equipment[ammo.index]?.name ?? ammo.name}`;
+    const after = `${sheet.id}|${emptied ? ammo.name : (equipment[ammo.index]?.name ?? ammo.name)}`;
     const tally = { ...encounter.ammoSpent };
-    const spentSoFar = tally[before] ?? 0;
+    const spentOf = (entry: (typeof tally)[string] | undefined) => (typeof entry === "object" ? entry.spent : (entry ?? 0));
+    const spentSoFar = spentOf(tally[before]);
     delete tally[before];
-    tally[after] = (tally[after] ?? 0) + spentSoFar + 1;
+    const spent = spentOf(tally[after]) + spentSoFar + 1;
+    tally[after] = emptied && carried[ammo.index] ? { spent, line: carried[ammo.index] } : spent;
     encounter.ammoSpent = tally;
     saveEncounter(encounter);
   }
@@ -393,15 +502,13 @@ function spendPcAttack(plan: AttackPlan) {
   }
 
   // Striking from hiding spends the hiding (the attack gives them away
-  // whether it lands or not), an attack ends Invisibility (not Greater
-  // Invisibility, attack-marks.ts), and one-shot riders like True Strike and
-  // a held Help are spent by this roll: clear them all together.
+  // whether it lands or not), and one-shot riders like True Strike and a
+  // held Help are spent by this roll: clear them all together.
   // Skulker keeps the hiding through a ranged attack's roll; a hit spends it
   // (pc-attack-plan.ts hitSpent).
   const keepsHiding = plan.hitSpent.includes("hidden");
   const spentConditions = [
     ...(!keepsHiding && sheet.conditions.some((entry) => entry.toLowerCase() === "hidden") ? ["hidden"] : []),
-    ...invisibilityEndedByAction(sheet),
     // An attack ends the attacker's own Sanctuary (spell-defenses.ts).
     ...sanctuaryEndedByAttack(sheet),
     ...(plan.helped ? [plan.helped] : []),
@@ -417,6 +524,9 @@ function spendPcAttack(plan: AttackPlan) {
       publishPersisted(campaign.id, "sheet_updated", { sheet: revealed });
     }
   }
+  // An attack ends Invisibility, each source but Greater Invisibility's
+  // (attack-marks.ts); a spell attack's cast has already done it.
+  endInvisibilityOnCast(campaign.id, sheet.id);
   // A luck point spent on this roll (Lucky).
   if (plan.extras.luck) {
     const fresh = getSheetById(sheet.id) ?? sheet;
@@ -440,13 +550,14 @@ function spendPcAttack(plan: AttackPlan) {
   writeMarks(campaign.id, sheet.id, plan.marks.assign);
   // The target's one-shot conditions this roll uses up (Guiding Bolt).
   if (plan.targetSpent.length) {
-    const target = getEnemy(plan.enemy.id);
+    const target = getFoe(plan.enemy.id);
     if (target) {
       const cleared = removeConditions(target.conditions, target.conditionMeta, plan.targetSpent);
       patchEnemyConditions(target.id, cleared.conditions, cleared.meta);
       publishEncounter(campaign.id);
     }
   }
+  return null;
 }
 
 // What a feature option leaves on the attacker once the attack is paid for:

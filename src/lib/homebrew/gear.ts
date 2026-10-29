@@ -1,4 +1,5 @@
 import type { SrdArmor } from "@/lib/srd/armor";
+import { FEATURE_LIMITS, SUBCLASS_SPELLS_PER_LEVEL, levelOfKey, normalizeClassData } from "@/lib/homebrew/class-data";
 import type { SrdWeapon } from "@/lib/srd/weapons";
 import type { MagicItemEffect } from "@/lib/srd/magic-items";
 import type { SpellMech } from "@/lib/srd/spell-mechanics";
@@ -10,7 +11,9 @@ import { GEAR_LIMITS, normalizeItemData, type HomebrewData, type Outcome } from 
 import { checkSpellMech } from "@/lib/homebrew/spell-mech-schema";
 import { engineFeatNamed } from "@/lib/srd/feat-effects";
 import { engineSpellNamed, truthy } from "@/lib/srd/spell-facts";
-import type { HomebrewKind } from "@/lib/schemas/homebrew";
+import { HOMEBREW_NAME_MAX, type HomebrewKind } from "@/lib/schemas/homebrew";
+import { defaultThirdCasterProfile, isThirdCasterProfile } from "@/lib/srd/third-caster";
+import { WORN_PLACE_WORDS, isWornPlace } from "@/lib/srd/worn-places";
 
 // What a homebrew entry means to the engine.
 //
@@ -119,28 +122,25 @@ function normalizeOptionData(raw: unknown, kind: HomebrewKind): HomebrewData {
     case "background":
       normalizeBackgroundData(source, data);
       break;
-    case "race":
-      normalizeRaceData(source, data);
-      break;
     case "archetype": {
       data.classSlug = text(source.classSlug, 60).toLowerCase();
       const levels: Record<string, Array<{ n: string; d: string }>> = {};
       const rawLevels = (source.levels ?? {}) as Raw;
       for (const [level, features] of Object.entries(rawLevels)) {
-        // A level outside the game is dropped, not pulled to 20.
-        const at = num(level);
-        if (at === null || at < 1 || at > 20 || !Array.isArray(features)) {
+        // A level outside the game is dropped, not pulled to 20; "3" and
+        // "3.0" are one level, read as a class's are.
+        const at = levelOfKey(level);
+        if (at === null || !Array.isArray(features)) {
           continue;
         }
         const rows = features
           .map((feature) => {
             const row = (feature ?? {}) as Raw;
-            return { n: text(row.n, 80), d: text(row.d, 1_500) };
+            return { n: text(row.n, FEATURE_LIMITS.name), d: text(row.d, FEATURE_LIMITS.text) };
           })
-          .filter((feature) => feature.n)
-          .slice(0, 8);
+          .filter((feature) => feature.n);
         if (rows.length) {
-          levels[String(at)] = rows;
+          levels[String(at)] = [...(levels[String(at)] ?? []), ...rows].slice(0, FEATURE_LIMITS.perLevel);
         }
       }
       data.levels = levels;
@@ -148,14 +148,23 @@ function normalizeOptionData(raw: unknown, kind: HomebrewKind): HomebrewData {
       // same shape the bundled tables give theirs.
       const spells: Record<string, string[]> = {};
       for (const [level, names] of Object.entries((source.spells ?? {}) as Raw)) {
-        const at = num(level);
-        const list = Array.isArray(names) ? [...new Set(names.map((name) => text(name, 60)).filter(Boolean))].slice(0, 6) : [];
-        if (at !== null && at >= 1 && at <= 20 && list.length) {
-          spells[String(at)] = list;
+        const at = levelOfKey(level);
+        const list = Array.isArray(names) ? names.map((name) => text(name, HOMEBREW_NAME_MAX)).filter(Boolean) : [];
+        if (at !== null && list.length) {
+          spells[String(at)] = [...new Set([...(spells[String(at)] ?? []), ...list])].slice(0, SUBCLASS_SPELLS_PER_LEVEL);
         }
       }
       if (Object.keys(spells).length) {
         data.spells = spells;
+      }
+      // Whether it casts as an Eldritch Knight or Arcane Trickster does:
+      // either profile on, "none" off, nothing to follow its features
+      // (src/lib/srd/subclass-tables.ts castingProfileOf). The first
+      // spelling, "third-caster", is stored as the class's own.
+      if (isThirdCasterProfile(source.castingProfile) || source.castingProfile === "none") {
+        data.castingProfile = source.castingProfile;
+      } else if (source.castingProfile === "third-caster") {
+        data.castingProfile = defaultThirdCasterProfile(String(data.classSlug));
       }
       break;
     }
@@ -216,6 +225,17 @@ function normalizeHomebrewKind(
       const data = { desc: text(source.desc, GEAR_LIMITS.descMax) };
       return normalizeHazardData(source, data);
     }
+    case "race": {
+      // A species may be refused: its player's choice is held to its limits
+      // by name (src/lib/content/species-variants.ts).
+      const source = (raw ?? {}) as Raw;
+      return normalizeRaceData(source, { desc: text(source.desc, GEAR_LIMITS.descMax) });
+    }
+    case "class": {
+      // A class (src/lib/homebrew/class-data.ts): the numbers every class has.
+      const normalized = normalizeClassData((raw ?? {}) as Raw);
+      return "error" in normalized ? normalized : { data: normalized.data as unknown as HomebrewData };
+    }
     case "monster": {
       // The bestiary owns monsters (src/lib/bestiary/monster-draft.ts).
       const source = (raw ?? {}) as Raw;
@@ -267,6 +287,9 @@ export function describeHomebrew(kind: HomebrewKind, data: Raw): string {
     if (spells.length) {
       parts.push(`casts ${spells.map((entry) => entry.spell).join(", ")}`);
     }
+    if (!weapon && !armor && isWornPlace(data.wornOn)) {
+      parts.push(`worn on the ${WORN_PLACE_WORDS[data.wornOn]}`);
+    }
     if (data.requiresAttunement) {
       parts.push("attunement");
     }
@@ -298,6 +321,17 @@ export function describeHomebrew(kind: HomebrewKind, data: Raw): string {
   }
   if (kind === "race") {
     return [String(data.size ?? ""), `speed ${(data.speed as Raw | undefined)?.walk ?? 30}`].join(", ");
+  }
+  if (kind === "class") {
+    const casting = String(data.casterType ?? "none");
+    const levels = Object.keys((data.levels as Raw | undefined) ?? {});
+    return [
+      `d${String(data.hitDie ?? 8)}`,
+      casting === "none" ? "" : `${casting === "pact" ? "pact magic" : `${casting} caster`}, ${String(data.spellListFrom ?? "")} list`,
+      levels.length ? `${levels.length} feature levels` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
   }
   if (kind === "background") {
     return String(data.skill_proficiencies ?? "");

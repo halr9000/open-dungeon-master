@@ -5,6 +5,7 @@
 // JSON file): an array of turns, each an array of steps.
 //
 //   { "text": "..." }                       stream narration
+//   { "round": true }                       a tool call starts (Grok's report)
 //   { "call": "request_roll", "args": {} }  call one tool and wait
 //   { "parallel": [ {call, args}, ... ] }   call several at once
 //   { "expectError": true }                 the previous call must have failed
@@ -19,6 +20,7 @@ import type { HarnessAdapter, HarnessErrorKind, HarnessStartOptions } from "../t
 
 type Step =
   | { text: string }
+  | { round: true }
   | { call: string; args?: Record<string, unknown> }
   | { parallel: Array<{ call: string; args?: Record<string, unknown> }> }
   | { fail: HarnessErrorKind; message?: string }
@@ -65,7 +67,7 @@ function log(kind: string, detail: unknown) {
 function loadScript(): Step[][] {
   const file = process.env.HARNESS_FAKE_SCRIPT;
   if (!file) {
-    return [[{ text: "The fake Dungeon Master narrates." }]];
+    return [[{ text: "The fake Game Master narrates." }]];
   }
   return JSON.parse(readFileSync(file, "utf8")) as Step[][];
 }
@@ -159,6 +161,11 @@ async function start(options: HarnessStartOptions) {
       if ("text" in step) {
         narration += step.text;
         options.onEvent({ type: "delta", text: step.text });
+        continue;
+      }
+      if ("round" in step) {
+        // A tool call starting, as Grok Build reports one (its own or ODM's).
+        options.onEvent({ type: "tool_round" });
         continue;
       }
       if ("call" in step) {

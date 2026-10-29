@@ -11,9 +11,12 @@ import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { getActiveEncounter, getEnemy, listEnemies, patchEnemyConditions } from "@/lib/db/encounters";
 import { activePublicEncounter } from "@/lib/db/encounter-view";
 import { getSheetById, listSheets, patchSheet } from "@/lib/db/sheets";
+import { dominatedByFoe } from "@/lib/dm/companion-command";
+import { announceDominated } from "@/lib/dm/combat-sides";
 import { insertSheetAudit } from "@/lib/db/sheet-audit";
 import { insertCharacterEvent } from "@/lib/db/character-events";
 import { listConditions } from "@/lib/content";
+import { CONDITIONS } from "@/lib/bestiary/kit";
 import { publishPersisted } from "@/lib/events";
 import { planConditionFx } from "@/lib/battlemap/fx-plan";
 import { publishFx, tokenPosition } from "@/lib/dm/fx";
@@ -36,27 +39,57 @@ import { awardInspirationCounter, heldInspiration } from "@/lib/dm/roll-riders";
 import { featureConditionImmunities, sourcedConditionImmunity } from "@/lib/srd/trait-rules";
 import { conditionGrantedImmunity } from "@/lib/srd/condition-effect-queries";
 import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { containsPhrase } from "@/lib/language/text-logic";
+import { isConditionNamed } from "@/lib/srd/feature-names";
+import { conditionEffectsFor } from "@/lib/srd/condition-effects";
 
 // A sheet holds this many conditions at once (the stored list's own cap).
 export const MAX_CONDITIONS = 15;
 
-// Conditions are stored lowercase. The model's wording drifts ("poison",
-// "Poisoned by the dart"), so set and clear both map through the SRD names;
-// unmatched strings stay as-is because custom story conditions are legal.
+// The SRD's conditions, and the content's own when the pack is there.
+function knownConditions(): string[] {
+  return [...new Set([...CONDITIONS, ...listConditions({ limit: 50 }).map((entry) => entry.name.toLowerCase())])];
+}
+
+// Conditions are stored lowercase. A name is an SRD condition when it is one
+// whole, or one with a bracket note ("Frightened (dragon)"), by
+// src/lib/srd/feature-names.ts; any other name stays as written, because
+// custom story conditions are legal (conditionNameRefusal turns away the
+// one that only holds a condition among other words).
 export function canonicalCondition(raw: string): string {
   const cleaned = raw.trim().toLowerCase().slice(0, 40);
-  if (!cleaned) {
-    return cleaned;
+  return knownConditions().find((name) => isConditionNamed(cleaned, name)) ?? cleaned;
+}
+
+// A condition no rule knows is the table's own story condition: legal, and
+// said so, so that a misspelt SRD name ("poison") is resent, not kept. The
+// SRD's names are in the tool's description: listed here again, they drew a
+// second call for the SRD condition beside a story one in live runs.
+function storyConditionNote(condition: string): { note?: string } {
+  const known = knownConditions();
+  if (known.includes(condition) || conditionEffectsFor(condition)) {
+    return {};
   }
-  const known = listConditions({ limit: 50 }).map((entry) => entry.name.toLowerCase());
-  if (known.includes(cleaned)) {
-    return cleaned;
+  return { note: `"${condition}" is kept as a story condition: no rule the server knows applies to it.` };
+}
+
+// "frightened of the dragon" is no condition, and no story condition either:
+// the condition is "frightened" and its source has a field of its own. A
+// story condition that holds a condition's word ("paralyzed arm") may be
+// meant as one, and is renamed rather than made the condition.
+export function conditionNameRefusal(raw: string): ToolError | null {
+  const known = knownConditions();
+  if (known.some((name) => isConditionNamed(raw, name))) {
+    return null;
   }
-  const prefix = known.find((name) => name.startsWith(cleaned) || cleaned.startsWith(name));
-  if (prefix) {
-    return prefix;
-  }
-  return known.find((name) => cleaned.includes(name)) ?? cleaned;
+  const held = known.filter((name) => containsPhrase(raw, name));
+  return held.length
+    ? {
+        error: `"${raw.trim()}" is no condition's name. If it is the condition, send condition "${held.join('" or "')}" and who caused it in sourceEnemyId or sourceCharacterId; if it is a story condition no rule applies to, send it again named without the word "${held.join('" or "')}".`,
+        retry: true,
+      }
+    : null;
 }
 
 function audit(
@@ -141,9 +174,9 @@ export function raiseExhaustion(
   turnId: string,
   sheet: CharacterSheet,
   reason: string,
-): Record<string, unknown> {
+): ToolResult {
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead; exhaustion has nothing left to take.` };
+    return { error: `${sheet.name} is dead; exhaustion has nothing left to take.`, retry: true };
   }
   const patch = exhaustionPatch(sheet, sheet.exhaustion + 1);
   patchSheet(sheet.id, patch as FullPatchSheetInput);
@@ -189,7 +222,8 @@ export function conditionImmunity(
   campaign: Campaign,
   sheet: CharacterSheet,
   condition: string,
-  reason: string,
+  // The condition comes from a spell or other magic.
+  magical: boolean,
   sourceEnemyId?: string,
 ): string | null {
   const wanted = condition.trim().toLowerCase();
@@ -209,7 +243,16 @@ export function conditionImmunity(
   if (held) {
     return `${held.because} makes them immune`;
   }
-  if (wanted === "unconscious" && own.magicalSleep && /\bsleep|slumber/i.test(reason)) {
+  // The stat block they wear or are: True Polymorph's fire elemental cannot
+  // be grappled, a summoned zombie cannot be poisoned.
+  const block = [
+    { line: sheet.wildShape?.conditionImmune, what: `their ${sheet.wildShape?.form} form` },
+    { line: sheet.summon?.conditionImmune, what: `the ${sheet.summon?.form}'s stat block` },
+  ].find((entry) => (entry.line ?? "").toLowerCase().split(/,\s*/).includes(wanted));
+  if (block) {
+    return `${block.what} makes them immune`;
+  }
+  if (wanted === "unconscious" && own.magicalSleep && magical) {
     return `${own.magicalSleep}: magic cannot put them to sleep`;
   }
   const aura = allyConditionAura(campaign.id, sheet, wanted);
@@ -222,9 +265,9 @@ function awardInspiration(
   turnId: string,
   sheet: CharacterSheet,
   reason: string,
-): Record<string, unknown> {
+): ToolResult {
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead; Inspiration has nothing to inspire.` };
+    return { error: `${sheet.name} is dead; Inspiration has nothing to inspire.`, retry: true };
   }
   if (heldInspiration(sheet)) {
     return { ok: true, note: `${sheet.name} already has Inspiration; it does not stack.` };
@@ -250,6 +293,8 @@ export type SetConditionArgs = {
   saveDc?: number;
   sourceEnemyId?: string;
   sourceCharacterId?: string;
+  // From magic: Fey Ancestry's "magic can't put you to sleep".
+  magical?: boolean;
 };
 
 export function handleSetCondition(
@@ -261,7 +306,7 @@ export function handleSetCondition(
   // Set by cast_buff: the condition is a spell's effect, cast and paid for,
   // and this is what the spell records on it (src/lib/dm/spell-effects.ts).
   options?: { spellEffect?: ConditionMeta },
-): Record<string, unknown> {
+): ToolResult {
   const raw = args.condition ?? "";
   // Inspiration is the DM's award, held on the sheet until a roll spends it
   // (src/lib/dm/roll-riders.ts), not a condition.
@@ -269,30 +314,33 @@ export function handleSetCondition(
     return awardInspiration(campaign, turnId, sheet, reason);
   }
   // Exhaustion is a leveled track, not a stackable condition: each set
-  // raises it one level (6 = death), whatever word the caller used for it.
+  // raises a character one level (6 = death), "exhaustion" or "exhaustion
+  // N" alike; set_enemy_condition, whose call carries the level, sets it.
   if (namesExhaustion(raw)) {
     return raiseExhaustion(campaign, turnId, sheet, reason);
   }
   const normalized = canonicalCondition(raw);
   if (!normalized) {
-    return { error: "set_condition needs a condition name." };
+    return { error: "set_condition needs a condition name.", retry: true };
   }
-  if (normalized.startsWith("exhaustion")) {
-    return raiseExhaustion(campaign, turnId, sheet, reason);
+  const misnamed = conditionNameRefusal(raw);
+  if (misnamed) {
+    return misnamed;
   }
   if (sheet.deathSaves?.dead) {
-    return { error: `${sheet.name} is dead and takes no new conditions.` };
+    return { error: `${sheet.name} is dead and takes no new conditions.`, retry: true };
   }
   // A spell's effect comes from casting the spell; the AI DM cannot hand it
   // out for free (the human DM console keeps its correction power).
   const unpaid = options?.spellEffect ? null : spellEffectRefusal(normalized, turnId);
   if (unpaid) {
-    return { error: unpaid };
+    return unpaid;
   }
-  const immune = conditionImmunity(campaign, sheet, normalized, reason, args.sourceEnemyId);
+  const immune = conditionImmunity(campaign, sheet, normalized, Boolean(options?.spellEffect || args.magical), args.sourceEnemyId);
   if (immune) {
     return {
       error: `${sheet.name} cannot be ${normalized}: ${immune}. The condition was not applied; narrate them shrugging it off.`,
+      refused: "rules",
     };
   }
   // Duration metadata: timed conditions tick down at round wrap in combat
@@ -344,6 +392,7 @@ export function handleSetCondition(
   if (sheet.conditions.length >= MAX_CONDITIONS) {
     return {
       error: `${sheet.name} already holds ${MAX_CONDITIONS} conditions, the most a sheet keeps, so ${normalized} was NOT applied. Clear one that has ended with clear_condition, then set it again.`,
+      retry: true,
       currentConditions: sheet.conditions,
     };
   }
@@ -356,6 +405,10 @@ export function handleSetCondition(
     conditionMeta: nextMeta,
   });
   publishSheet(campaign, sheet.id);
+  // A Dominate spell from the other side takes the character: the DM plays
+  // it until the charm ends, and the table is told (combat-sides.ts).
+  const held = getSheetById(sheet.id);
+  const dominated = held && dominatedByFoe(campaign.id, held) ? announceDominated(campaign, sheet.name) : null;
   {
     const pos = tokenPosition(campaign.id, sheet.id);
     if (pos) {
@@ -386,6 +439,7 @@ export function handleSetCondition(
   return {
     ok: true,
     condition: normalized,
+    ...storyConditionNote(normalized),
     ...(rounds ? { duration: `${describeConditionDuration(rounds)}, expires automatically` } : {}),
     ...(saveEnds
       ? {
@@ -393,5 +447,6 @@ export function handleSetCondition(
         }
       : {}),
     ...lost,
+    ...(dominated ? { dominated } : {}),
   };
 }

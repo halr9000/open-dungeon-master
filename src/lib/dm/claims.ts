@@ -1,7 +1,13 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { Campaign } from "@/lib/db/campaigns";
-import { getActiveEncounter, listEnemies } from "@/lib/db/encounters";
-import { listNpcs } from "@/lib/db/npcs";
+import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
+import { aiPlaysSheet } from "@/lib/dm/companion-command";
+import { conscienceOn, consciousCompanions } from "@/lib/dm/conscience";
+import { getActiveEncounter, listEnemies, orderEntryId } from "@/lib/db/encounters";
+import { budgetApplies } from "@/lib/dm/action-budget";
+import { listCastNpcs } from "@/lib/db/npcs";
+import { getSheetById } from "@/lib/db/sheets";
+import { declaredThisTurn, wordsThisTurn } from "@/lib/dm/player-word";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { arcTextTimeoutMs } from "@/lib/model-client";
@@ -10,16 +16,20 @@ import { stripReasoningArtifacts } from "@/lib/story-prompt";
 import { SRD_SKILLS } from "@/lib/srd";
 import spellManifest from "@/lib/srd/manifest/spells.json";
 import {
+  collectExchanges,
   guardOutcomes,
   normalizeSpellName,
+  type GuardMessage,
   type LiveState,
   type ResolvedOutcomes,
 } from "@/lib/dm/engine-boundary";
 import { hasQuotedLine, type Speaker } from "@/lib/dm/speech";
-import { foldName } from "@/lib/language/text-logic";
+import { textKey } from "@/lib/language/text-logic";
+import { mergedCallText } from "@/lib/dm/tool-merge-logic";
 import {
   checkClaims,
   claimKindsFor,
+  englishEndsTurn,
   namedSpeakers,
   parseReaderReply,
   readerSystem,
@@ -66,6 +76,10 @@ export function liveStateFor(campaignId: string): LiveState | null {
   if (!encounter) {
     return null;
   }
+  // The swings the acting combatant's turn already rolled; a budget left
+  // from an earlier turn says nothing about this one.
+  const current = encounter.orderReady ? encounter.order[encounter.turnIndex] : undefined;
+  const struck = current && budgetApplies(encounter.turnBudget, orderEntryId(current), encounter.round) ? encounter.turnBudget.struck : undefined;
   return {
     enemies: listEnemies(encounter.id).map((enemy) => ({
       id: enemy.id,
@@ -74,7 +88,80 @@ export function liveStateFor(campaignId: string): LiveState | null {
       maxHp: enemy.maxHp,
       status: enemy.status,
     })),
+    ...(struck?.length ? { struck } : {}),
   };
+}
+
+// The player's character whose turn the narration may end by handing it on
+// (the turn_over claim): the fight's pointer rests on them, their player's
+// word has come in since the DM last spoke, and no call of this DM turn
+// ended it. The default local models wrote "It is now Bram's turn" and left
+// the pointer where it was, so Bram's player was refused and the next words
+// went to the same character (the skirmish smoke, 2026-10-20). A companion's
+// turn is the model's to play whole, unless a player commands it. Null when
+// no such turn waits.
+export function turnOverFor(campaignId: string, turn: Pick<DmTurn, "resolvedCharacterIds">): string | null {
+  const encounter = getActiveEncounter(campaignId);
+  if (!encounter || !encounter.orderReady || encounter.kind === "scene") {
+    return null;
+  }
+  const current = encounter.order[encounter.turnIndex];
+  if (current?.kind !== "pc" || !current.characterId || turn.resolvedCharacterIds.includes(current.characterId)) {
+    return null;
+  }
+  const sheet = getSheetById(current.characterId);
+  return sheet && !aiPlaysSheet(getCampaignById(campaignId), sheet) && declaredThisTurn(campaignId, sheet.id) ? sheet.id : null;
+}
+
+// Whether this DM turn ruled on something the character did: a call that
+// names them ran and answered, as a result or a refusal (a swing out of
+// reach, a walk with no movement left). Asking them a question is no ruling.
+export function ruledFor(conversation: readonly GuardMessage[], sheet: Pick<CharacterSheet, "id" | "name">): boolean {
+  return collectExchanges(conversation).some((exchange) => {
+    if (!exchange.result || exchange.name === "request_player_input") {
+      return false;
+    }
+    try {
+      // Under the names the call ran by: an older name (a walk's tokenName)
+      // names the character all the same.
+      const args = JSON.parse(mergedCallText(exchange.name, exchange.arguments || "{}").rawArguments || "{}") as Record<string, unknown>;
+      // move_token names its walker by name or id.
+      const walker = typeof args.token === "string" ? args.token : "";
+      return args.characterId === sheet.id || args.casterId === sheet.id || args.casterCharacterId === sheet.id || args.healerId === sheet.id || walker === sheet.id || (walker !== "" && textKey(walker) === textKey(sheet.name));
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Whether the player's own words end the turn the fight still waits on
+// ("I close in and attack it, then I end my turn"), once the DM ruled on what
+// they did (ruledFor). gpt-oss-20b answered that line by asking what they do
+// next, and the next player's words went to the same character (the skirmish
+// smoke, 2026-10-20). Read like the narration, in any language; one reader
+// call, made only for a turn that would otherwise stay open.
+export async function readTurnEndInWords(
+  campaign: Campaign,
+  sheets: readonly CharacterSheet[],
+  turn: Pick<DmTurn, "id" | "conversation">,
+  characterId: string,
+): Promise<boolean> {
+  const text = wordsThisTurn(campaign.id, characterId);
+  if (!text.trim()) {
+    return false;
+  }
+  if (campaign.gameSettings.tableLanguage === "english" && englishEndsTurn(text)) {
+    return true;
+  }
+  const claims = await readClaims(campaign, {
+    label: `turn ${turn.id}`,
+    text,
+    kinds: ["turn_over"],
+    outcomes: guardOutcomes(turn.conversation, null, campaign.gameSettings.tableLanguage),
+    sheets,
+    heading: "Player's words",
+  });
+  return claims.some((claim) => claim.kind === "turn_over");
 }
 
 // What the guard can rule on, from engine state alone: the part of the
@@ -83,13 +170,16 @@ export function guardGate(
   campaign: Campaign,
   outcomes: ResolvedOutcomes,
   sheets: readonly CharacterSheet[],
-): Pick<ReaderGate, "guard" | "attacks" | "creatures" | "numbers" | "party"> {
+): Pick<ReaderGate, "guard" | "attacks" | "fight" | "creatures" | "numbers" | "party" | "deeds"> {
   return {
     guard: campaign.gameSettings.narrationGuard,
     attacks: outcomes.attacks.size > 0,
+    fight: Boolean(outcomes.liveFight),
     creatures: outcomes.creatures.size > 0,
     numbers: outcomes.numbers.size > 0 || Boolean(outcomes.liveFight),
     party: sheets.length > 0,
+    // Read in the same call as the rest, never one of its own (issue 503).
+    deeds: conscienceOn(campaign) && consciousCompanions(sheets).length > 0,
   };
 }
 
@@ -108,13 +198,14 @@ export function speakerRoster(
   registering: readonly string[] = [],
 ): Map<string, Speaker> {
   const roster = new Map<string, Speaker>();
-  const npcs = listNpcs(campaignId).filter((npc) => !npc.archived);
+  // A companion's own row stands behind its sheet, which speaks for them.
+  const npcs = listCastNpcs(campaignId).filter((npc) => !npc.archived);
   for (const npc of npcs) {
     roster.set(npc.id, { kind: "npc", id: npc.id, name: npc.name, aliases: npc.aliases, gender: npc.gender });
   }
-  const taken = new Set(npcs.map((npc) => foldName(npc.name)));
+  const taken = new Set(npcs.map((npc) => textKey(npc.name)));
   for (const sheet of sheets) {
-    if (!sheet.summon && !taken.has(foldName(sheet.name))) {
+    if (!sheet.summon && !taken.has(textKey(sheet.name))) {
       roster.set(sheet.id, { kind: "pc", id: sheet.id, name: sheet.name, gender: sheet.gender });
     }
   }
@@ -122,11 +213,36 @@ export function speakerRoster(
     roster.set(ref, { kind: "monster", id: "", name: display });
   }
   for (const name of registering) {
-    if (!taken.has(foldName(name))) {
+    if (!taken.has(textKey(name))) {
       roster.set(`new:${name}`, { kind: "npc", id: "", name });
     }
   }
   return roster;
+}
+
+// Readings kept for a few minutes, a bounded handful (see readClaims).
+const READING_TTL_MS = 10 * 60_000;
+const READINGS_KEPT = 64;
+
+declare global {
+  var __odmReaderReplies: Map<string, { at: number; reply: string }> | undefined;
+}
+
+function readings() {
+  return (globalThis.__odmReaderReplies ??= new Map());
+}
+
+function rememberedReading(key: string): string | null {
+  const known = readings().get(key);
+  return known && Date.now() - known.at < READING_TTL_MS ? known.reply : null;
+}
+
+function rememberReading(key: string, reply: string) {
+  const map = readings();
+  map.set(key, { at: Date.now(), reply });
+  if (map.size > READINGS_KEPT) {
+    map.delete(map.keys().next().value as string);
+  }
 }
 
 export async function readClaims(
@@ -141,6 +257,12 @@ export async function readClaims(
     // NPC names the reply being read registers (set_npc), for a speaker
     // claim on their first line.
     registering?: readonly string[];
+    // A player's own words rather than narration (readTurnEndInWords).
+    heading?: "Player's words";
+    // Told when the reader failed or its reply was unreadable, so the
+    // narration guard can say "unread" rather than "quiet" (issue #460):
+    // either way the passage counts as claiming nothing.
+    onUnread?: () => void;
   },
 ): Promise<NarrationClaim[]> {
   if (!input.kinds.length || !input.text.trim()) {
@@ -167,33 +289,67 @@ export async function readClaims(
   if (!kinds.length) {
     return [];
   }
-  const { message, error } = await requestUtilityMessage(
-    campaign.settings,
-    [
-      { role: "system", content: readerSystem(SKILL_IDS, kinds.includes("speaker"), kinds.length > 1) },
-      {
-        role: "user",
-        content: renderReaderInput(
-          kinds,
-          {
-            creatures: [...creatures].map(([ref, display]) => ({ ref, display })),
-            party: [...party].map(([ref, name]) => ({ ref, name })),
-            speakers: [...named].map(([ref, speaker]) => ({ ref, name: speaker.name, aliases: speaker.aliases })),
-            spent,
-          },
-          input.text,
-        ),
-      },
-    ],
-    { timeoutMs: arcTextTimeoutMs(), thinking: false, temperature: 0 },
-  );
-  if (error) {
-    console.error(`[claims] ${input.label}: the reader call failed; the passage counts as claiming nothing`);
-    return [];
+  const reading = [
+    { role: "system" as const, content: readerSystem(SKILL_IDS, kinds.includes("speaker"), kinds.length > 1) },
+    {
+      role: "user" as const,
+      content: renderReaderInput(
+        kinds,
+        {
+          creatures: [...creatures].map(([ref, display]) => ({ ref, display })),
+          party: [...party].map(([ref, name]) => ({ ref, name })),
+          speakers: [...named].map(([ref, speaker]) => ({ ref, name: speaker.name, aliases: speaker.aliases })),
+          spent,
+        },
+        input.text,
+        input.heading,
+      ),
+    },
+  ];
+  // The same passage read for the same things against the same grounding is
+  // answered from the last reading (a retried or resumed turn reads its kept
+  // narration again); the key is the whole request, so any change reads anew
+  // (the context audit's F10).
+  // The model that read it is part of the request: another backend reads anew.
+  const route = campaign.settings;
+  const key = createHash("sha1")
+    .update(
+      JSON.stringify([
+        campaign.id,
+        route.textProvider,
+        route.customBaseUrl,
+        route.customModel,
+        route.localTextModel,
+        route.utilityProvider,
+        route.utilityBaseUrl,
+        route.utilityModel,
+        reading,
+      ]),
+    )
+    .digest("hex");
+  let reply = rememberedReading(key);
+  if (reply === null) {
+    const { message, error } = await requestUtilityMessage(campaign.settings, reading, {
+      meta: { task: "claims" },
+      timeoutMs: arcTextTimeoutMs(),
+      thinking: false,
+      temperature: 0,
+    });
+    if (error) {
+      console.error(`[claims] ${input.label}: the reader call failed; the passage counts as claiming nothing`);
+      input.onUnread?.();
+      return [];
+    }
+    reply = String(message?.content ?? "");
   }
-  const raw = parseReaderReply(stripReasoningArtifacts(String(message?.content ?? "")));
+  const raw = parseReaderReply(stripReasoningArtifacts(reply));
+  // Only a reading that parsed is kept: an unreadable one is worth asking again.
+  if (raw) {
+    rememberReading(key, reply);
+  }
   if (!raw) {
     console.error(`[claims] ${input.label}: the reader's reply was unreadable; the passage counts as claiming nothing`);
+    input.onUnread?.();
     return [];
   }
   const claims = checkClaims(raw, {
@@ -242,11 +398,11 @@ export function registeringNames(calls: ReadonlyArray<{ name: string; rawArgumen
 export async function readReply(
   campaign: Campaign,
   sheets: readonly CharacterSheet[],
-  turn: Pick<DmTurn, "id" | "conversation">,
+  turn: Pick<DmTurn, "id" | "conversation" | "resolvedCharacterIds">,
   text: string,
   state: { inEncounter: boolean; encounterNudged: boolean; damageNudged: boolean; registering: readonly string[] },
-): Promise<PartRead> {
-  const outcomes = guardOutcomes(turn.conversation, liveStateFor(campaign.id));
+): Promise<PartRead & { outcomes: ResolvedOutcomes }> {
+  const outcomes = guardOutcomes(turn.conversation, liveStateFor(campaign.id), campaign.gameSettings.tableLanguage);
   const kinds = claimKindsFor({
     ...guardGate(campaign, outcomes, sheets),
     rollAsk: true,
@@ -254,11 +410,21 @@ export async function readReply(
     unrolled: !state.damageNudged && !outcomes.damageNumbers.length,
     speech: hasQuotedLine(text),
     aside: true,
+    turnOver: Boolean(turnOverFor(campaign.id, turn)),
   });
-  return {
+  let unread = false;
+  const claims = await readClaims(campaign, {
+    label: `turn ${turn.id}`,
+    text,
     kinds,
-    claims: await readClaims(campaign, { label: `turn ${turn.id}`, text, kinds, outcomes, sheets, registering: state.registering }),
-  };
+    outcomes,
+    sheets,
+    registering: state.registering,
+    onUnread: () => {
+      unread = true;
+    },
+  });
+  return { kinds, claims, outcomes, ...(unread ? { unread: true } : {}) };
 }
 
 // The narrator's asides in prose no reply read covers and that goes to the
@@ -276,7 +442,7 @@ export async function readAsides(
     label: `turn ${turn.id}`,
     text,
     kinds: ["aside"],
-    outcomes: guardOutcomes(turn.conversation, liveStateFor(campaign.id)),
+    outcomes: guardOutcomes(turn.conversation, liveStateFor(campaign.id), campaign.gameSettings.tableLanguage),
     sheets,
   });
 }

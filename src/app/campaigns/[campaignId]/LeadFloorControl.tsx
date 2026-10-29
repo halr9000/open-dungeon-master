@@ -10,7 +10,7 @@ import { SequenceEditor } from "./SequenceEditor";
 import { fitSequence, type PlanSequence } from "@/lib/dm/plan-order";
 import type { Floor } from "@/lib/db/campaigns";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
-import { extraTurnTag, orderRowKey } from "@/lib/battlemap/initiative-rows";
+import { extraTurnTag, litOrderRows, orderRowKey } from "@/lib/battlemap/initiative-rows";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 
 // Who may speak right now, from the lead's desk. The same route the DM
@@ -165,14 +165,14 @@ export function LeadFloorControl({
             {encounter?.orderReady && encounter.order.length ? (
               <>
                 {" · "}
-                {encounter.order.map((entry, index) => (
+                {encounter.order.map((entry, index, order) => (
                   // Keyed by position: a thief's second round-1 turn repeats the id.
                   <span
                     key={orderRowKey(entry, index)}
                     title={extraTurnTag(entry)?.title}
                     className={cn(
                       "transition-colors duration-200",
-                      index === encounter.turnIndex ? "font-medium text-amber-200" : undefined,
+                      litOrderRows(order, encounter.turnIndex, encounter.acting, encounter.enemiesUp).includes(index) ? "font-medium text-amber-200" : undefined,
                     )}
                   >
                     {index > 0 ? " > " : ""}
@@ -267,7 +267,7 @@ export function LeadFloorControl({
                 type="button"
                 disabled={busy} aria-busy={busy}
                 onClick={() => post({})}
-                title="Open the floor now; whatever has been answered goes to the DM"
+                title="Open the floor now; whatever has been answered goes to the GM"
                 className={cn(chip, chipOff, "mt-1.5")}
               >
                 Release
@@ -342,7 +342,7 @@ export function LeadFloorControl({
             aside={planned.length ? `${planned.length} picked` : "whole party"}
           />
           <p className="mb-1.5 text-xs text-stone-500">
-            Each player stages what their characters do in the same moment, edits it until ready or passes, and the DM
+            Each player stages what their characters do in the same moment, edits it until ready or passes, and the GM
             resolves the whole plan as one beat. Companions join without holding it up. Set an order when one move has to
             come before another.
           </p>
@@ -402,7 +402,7 @@ export function LeadFloorControl({
               type="button"
               disabled={busy || !sheets.some((sheet) => !sheet.isCompanion)}
               onClick={() => void coordinate()}
-              title="Open a shared plan; nothing reaches the DM until the players are ready"
+              title="Open a shared plan; nothing reaches the GM until the players are ready"
               className={kitButtonClass("primary", "shrink-0")}
               data-coordinate-start
             >

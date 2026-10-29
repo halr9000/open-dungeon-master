@@ -13,7 +13,9 @@ import { ui } from "@/lib/ui";
 // that number, and whether a newer release is out. It exists so "is the fix
 // in what I am running?" can be answered from the browser, and so a problem
 // can be reported with the build it happened on: the Copy button puts that
-// on the clipboard in the shape an issue wants.
+// on the clipboard in the shape an issue wants. The link to the issues is
+// the admin's alone: a player tells whoever runs the server, who can check
+// its setup before anything reaches GitHub (issue #459's follow-up).
 
 type About = {
   serverName: string;
@@ -53,10 +55,11 @@ function reportText(about: About): string {
   const { build, update } = about;
   const inApp = shellHost() ? "yes" : "no";
   return [
-    `Open Dungeon Master ${build.label}`,
+    `Open Game Master ${build.label}`,
     `Commit: ${build.commit || "unknown"}${build.dirty ? " (with uncommitted changes)" : ""}`,
     `Built: ${build.builtAt || "unknown"}`,
     `Latest release: ${"latest" in update ? update.latest.version : update.state === "off" ? "not checked" : "could not check"}`,
+    ...("channel" in update ? [`Update channel: ${update.channel}`] : []),
     `Inside the desktop or Android app: ${inApp}`,
     `Browser: ${navigator.userAgent}`,
   ].join("\n");
@@ -97,11 +100,14 @@ function UpdateLine({ update, build }: { update: UpdateStatus; build: BuildInfo 
   }
   const { latest } = update;
   const released = day(latest.publishedAt);
+  // On the stable channel the newest release is always a stable one; on the
+  // beta channel it may be either.
+  const kind = update.channel === "stable" ? "stable release" : latest.prerelease ? "beta" : "release";
   if (update.state === "available") {
     return (
       <div className="live-in rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
         <p className="text-sm text-amber-100">
-          Version {latest.version} is out{released ? ` (${released})` : ""}. This server runs {build.version}.
+          {latest.prerelease ? "Beta" : "Version"} {latest.version} is out{released ? ` (${released})` : ""}. This server runs {build.version}.
         </p>
         <a href={latest.url} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs text-amber-300 underline-offset-2 hover:underline">
           What is new in {latest.version} <ExternalLink className="size-3" />
@@ -114,13 +120,13 @@ function UpdateLine({ update, build }: { update: UpdateStatus; build: BuildInfo 
     <p className="flex items-center gap-1.5 text-sm text-stone-200">
       <Check className="size-4 shrink-0 text-emerald-500" />
       {update.state === "ahead"
-        ? `Newer than the latest release (${latest.version}).`
-        : `Up to date: ${latest.version} is the latest release.`}
+        ? `Newer than the latest ${kind} (${latest.version}).`
+        : `Up to date: ${latest.version} is the latest ${kind}.`}
     </p>
   );
 }
 
-export function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function AboutDialog({ open, onOpenChange, isAdmin = false }: { open: boolean; onOpenChange: (open: boolean) => void; isAdmin?: boolean }) {
   const [about, setAbout] = useState<About | null>(null);
   const [failed, setFailed] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -171,10 +177,10 @@ export function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       ) : (
         <div className="reveal space-y-4">
           <div>
-            <p className="gold-title font-display text-xl tracking-wide">Open Dungeon Master</p>
+            <p className="gold-title font-display text-xl tracking-wide">Open Game Master</p>
             <p className="mt-0.5 text-sm text-stone-300">
               Version <span className="font-mono text-amber-100">{build.version}</span>
-              {about.serverName && about.serverName !== "Open Dungeon Master" ? <span className="text-stone-500"> on {about.serverName}</span> : null}
+              {about.serverName && about.serverName !== "Open Game Master" ? <span className="text-stone-500"> on {about.serverName}</span> : null}
             </p>
           </div>
 
@@ -197,6 +203,7 @@ export function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChang
               </Row>
             ) : null}
             {build.builtAt ? <Row label="Built">{moment(build.builtAt)}</Row> : null}
+            {"channel" in about.update ? <Row label="Update channel">{about.update.channel === "beta" ? "Beta (nightly builds)" : "Stable"}</Row> : null}
             {"checkedAt" in about.update ? <Row label="Checked for updates">{moment(about.update.checkedAt)}</Row> : null}
           </dl>
           <p className={cn("text-xs leading-relaxed", build.dirty ? "text-amber-300/90" : "text-stone-500")}>{buildLine(build)}</p>
@@ -204,7 +211,7 @@ export function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChang
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => void copy()} className={cn(ui.btnSmall, "gap-1.5")}>
               {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-              {copied ? "Copied" : "Copy details for a bug report"}
+              {copied ? "Copied" : isAdmin ? "Copy details for a bug report" : "Copy these details"}
             </button>
             {about.canRecheck && about.update.state !== "off" ? (
               <button
@@ -231,9 +238,13 @@ export function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             <a href={`${about.repositoryUrl}/releases`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-stone-400 underline-offset-2 hover:text-amber-200 hover:underline">
               Release notes <ExternalLink className="size-3" />
             </a>
-            <a href={`${about.repositoryUrl}/issues`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-stone-400 underline-offset-2 hover:text-amber-200 hover:underline">
-              Report a problem <ExternalLink className="size-3" />
-            </a>
+            {isAdmin ? (
+              <a href={`${about.repositoryUrl}/issues`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-stone-400 underline-offset-2 hover:text-amber-200 hover:underline">
+                Report a problem <ExternalLink className="size-3" />
+              </a>
+            ) : (
+              <span className="text-stone-500">Something not working? Tell whoever runs this server.</span>
+            )}
           </p>
         </div>
       )}

@@ -1,12 +1,15 @@
 import { z } from "zod";
 import { homebrewGearSchema } from "@/lib/schemas/homebrew";
-import type { SheetSummon } from "@/lib/schemas/summon";
+import { ITEM_TAGS } from "@/lib/schemas/item-tags";
+import { summonAttackSchema, type SheetSummon } from "@/lib/schemas/summon";
 import { ABILITIES } from "@/lib/schemas/abilities";
 import { GENDERS, storedGender, type Gender } from "@/lib/gender";
+import { ATTRACTION_NOTE_MAX, normalizeAttraction, type Attraction } from "@/lib/attraction";
 import { conditionMetaSchema, ROUND_CEILING, type ConditionMetaMap } from "@/lib/schemas/condition-meta";
+import { textKey } from "@/lib/language/text-logic";
 
 export { ABILITIES, type Ability } from "@/lib/schemas/abilities";
-export { conditionMetaSchema, type ConditionMetaMap } from "@/lib/schemas/condition-meta";
+export type { ConditionMetaMap } from "@/lib/schemas/condition-meta";
 
 export const abilityScoresSchema = z.object({
   str: z.number().int().min(1).max(30),
@@ -29,9 +32,11 @@ export type HitDice = z.infer<typeof hitDiceSchema>;
 // scalar class/subclass/level fields and an empty `classes` array; the
 // multiclass helpers (src/lib/srd/multiclass.ts) derive a one-entry list
 // from the scalars so consumers never branch on which shape they hold.
+// A subclass is stored by name, and a workshop subclass's name may run to
+// 80 characters (src/lib/schemas/homebrew.ts).
 export const classEntrySchema = z.object({
   id: z.string().trim().min(1).max(60),
-  subclass: z.string().trim().max(60).default(""),
+  subclass: z.string().trim().max(80).default(""),
   level: z.number().int().min(1).max(20),
 });
 export type ClassEntry = z.infer<typeof classEntrySchema>;
@@ -61,10 +66,57 @@ export const deathSavesSchema = z
   .nullable();
 export type DeathSaves = z.infer<typeof deathSavesSchema>;
 
-const trainingName = z
-  .string()
-  .max(300)
-  .transform((value) => value.slice(0, 40));
+// The longest language, tool, and armor or weapon name a sheet holds.
+export const LANGUAGE_NAME_MAX = 40;
+export const TOOL_NAME_MAX = 60;
+export const TRAINING_NAME_MAX = 40;
+
+// A name within `max`, cut at a word with an ellipsis when it runs longer.
+// The same text always comes to the same name and a fitted name fits to
+// itself, so a name the sheet clipped still matches the grant it was cut
+// from (src/lib/srd/legality/proficiencies.ts compares them this way).
+export function fitName(text: string, max: number): string {
+  const name = text.trim().replace(/\s+/g, " ");
+  if (name.length <= max) {
+    return name;
+  }
+  const cut = name.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
+}
+
+// A name written from a content row's text rather than typed, fitted to
+// `max` rather than refused: a content pack or a workshop entry can say more
+// than a sheet holds, and the server writes these from the row itself.
+const clippedName = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(300)
+    .transform((value) => fitName(value, max));
+const trainingName = clippedName(TRAINING_NAME_MAX);
+
+// The longest item name a sheet holds.
+export const ITEM_NAME_MAX = 80;
+
+// An item name within ITEM_NAME_MAX. A background's kit line the catalog has
+// no item for is carried as the book wrote it, and a few books write more
+// than a name ("A writing kit (small pouch with a quill, ink, folded
+// parchment, and a small penknife)"). The bracketed detail goes first, then
+// every alternative of an "or" line but the book's first (what an unanswered
+// kit choice comes to), then the words past the cap.
+export function fitItemName(text: string): string {
+  const name = text.trim().replace(/\s+/g, " ");
+  if (name.length <= ITEM_NAME_MAX) {
+    return name;
+  }
+  const bare = name.replace(/\s*\([^)]*\)/g, "").trim() || name;
+  if (bare.length <= ITEM_NAME_MAX) {
+    return bare;
+  }
+  const first = bare.split(/,?\s+or\s+/i)[0].trim() || bare;
+  return fitName(first, ITEM_NAME_MAX);
+}
 
 const featPicksSchema = z.object({
   languages: z.array(z.string().trim().max(40)).max(6).optional(),
@@ -82,8 +134,23 @@ const featPicksSchema = z.object({
   // Elemental Adept's damage type (src/lib/srd/feat-combat.ts).
   damageType: z.string().trim().max(20).optional(),
 });
-export const featChoicesSchema = z.record(z.string().trim().min(1).max(80), featPicksSchema);
-export type FeatChoicesInput = z.infer<typeof featChoicesSchema>;
+// A feat's (or a subclass grant's) picks in a feat-choice map, by its
+// name's textKey (src/lib/srd/feat-grants.ts): "Magic Initiate (Wizard)"
+// written with a curly quote or another spacing is one feat. A map sent or
+// stored under other keys (the earlier lower case) is re-keyed where it
+// arrives: featChoicesSchema, and the builder's draft.
+export function featChoice<T>(choices: Record<string, T> | null | undefined, name: string): T | undefined {
+  return choices?.[textKey(name)];
+}
+
+export function withFeatChoice<T>(choices: Record<string, T>, name: string, picks: T): Record<string, T> {
+  return { ...choices, [textKey(name)]: picks };
+}
+
+export function keyedFeatChoices<T>(choices: Record<string, T> | undefined): Record<string, T> {
+  return Object.fromEntries(Object.entries(choices ?? {}).map(([name, picks]) => [textKey(name), picks]));
+}
+export const featChoicesSchema = z.record(z.string().trim().min(1).max(80), featPicksSchema).transform(keyedFeatChoices);
 
 export const proficienciesSchema = z.object({
   saves: z.array(z.enum(ABILITIES)).max(6),
@@ -91,18 +158,25 @@ export const proficienciesSchema = z.object({
   // Skills with doubled proficiency (rogue/bard expertise). The .default
   // heals rows stored before the field existed.
   expertise: z.array(z.string().max(40)).max(6).default([]),
-  languages: z.array(z.string().max(40)).max(12),
-  tools: z.array(z.string().max(60)).max(12),
-  // Clipped rather than refused: the server writes the training itself
-  // (src/lib/srd/legality/proficiencies.ts), and an app built before the
-  // builder read it from the bundled class sends the content pack's sentence.
+  // Languages, tools, armor and weapons are clipped rather than refused: the
+  // server writes the training itself from the race, class and background
+  // rows (src/lib/srd/legality/proficiencies.ts), whose text a content pack
+  // or a workshop entry wrote (a workshop background's tool may run to 120
+  // characters, a tool grant left unanswered is kept in its own words), and
+  // an app built before the builder read the bundled class's training sends
+  // the content pack's sentence.
+  languages: z.array(clippedName(LANGUAGE_NAME_MAX)).max(12),
+  tools: z.array(clippedName(TOOL_NAME_MAX)).max(12),
   armor: z.array(trainingName).max(8),
   weapons: z.array(trainingName).max(16),
 });
 export type Proficiencies = z.infer<typeof proficienciesSchema>;
 
 export const equipmentItemSchema = z.object({
-  name: z.string().trim().min(1).max(80),
+  // Fitted rather than refused: the builder and the server fit a long kit
+  // line the same way (src/lib/srd/gear-choices.ts), and an app built before
+  // they did sends the line whole.
+  name: z.string().trim().min(1).max(300).transform(fitItemName),
   qty: z.number().int().min(1).max(999).default(1),
   // Optional link to a content-db entry (Open5e slug or "homebrew:<id>");
   // free-text items stay valid.
@@ -111,6 +185,11 @@ export const equipmentItemSchema = z.object({
   // Optional so rows written before the field keep validating; when NO item
   // on a sheet carries it, the AC engine treats everything as worn.
   equipped: z.boolean().optional(),
+  // Worn beside another item of its kind on the DM's say (SRD 5.1, Multiple
+  // Items of the Same Kind: "a circlet under a helmet", "two cloaks"). Only
+  // the DM or the party lead sets it; a place's limit (src/lib/srd/
+  // wear-slots.ts) never counts it out. Absent on every other row.
+  layered: z.boolean().optional(),
   // Magic item currently attuned. Capped at 3 per character by patchSheet.
   attuned: z.boolean().optional(),
   // Asked to attune and waiting for the short rest that attuning takes
@@ -137,6 +216,20 @@ export const equipmentItemSchema = z.object({
   // the secret was never written to the sheet. The DM's reveal action renames
   // the row and flips this flag in one step.
   identified: z.boolean().optional(),
+  // The SRD or pack item this is, by the row's English name, when its own
+  // name is the table's ("Elixir of Health" for "Elisir di salute"): the
+  // engines read its row through this (src/lib/srd/item-tags.ts itemRow).
+  srdName: z.string().trim().min(1).max(80).optional(),
+  // What the item is, when no English row says it (loot the model invents,
+  // an item named in the table's language): src/lib/srd/item-tags.ts.
+  tags: z.array(z.enum(ITEM_TAGS)).max(12).optional(),
+  // What one is worth in gold pieces, for a thing the content pack does not
+  // price (a gem, an art object, loot the model invents): its sale and a
+  // material component read it (src/lib/dm/trade-value.ts).
+  worth: z.number().positive().max(100000).optional(),
+  // The spell a spell scroll holds, by the name the spell lists use; what
+  // reading it casts (src/lib/dm/consumables.ts).
+  spell: z.string().trim().min(1).max(80).optional(),
   // A homebrew item's mechanics, snapshotted from the entry so the armour,
   // attack and magic-item engines read it exactly as they read SRD gear
   // (src/lib/homebrew/gear.ts). Refreshed on every sheet read; absent for
@@ -174,7 +267,12 @@ export type SheetFeature = z.infer<typeof sheetFeatureSchema>;
 // sheet can never point the party's browsers at an external host.
 export const attachmentSchema = z.object({
   id: z.string().max(80).optional(),
-  name: z.string().max(120).optional(),
+  // The uploaded file's own name, which nothing caps: clipped, not refused.
+  name: z
+    .string()
+    .max(1000)
+    .transform((value) => value.slice(0, 120))
+    .optional(),
   type: z.string().max(60).optional(),
   url: z.string().max(300).startsWith("/uploads/"),
 });
@@ -188,6 +286,9 @@ export const spellSlotSchema = z.object({
 export const spellcastingSchema = z
   .object({
     ability: z.enum(["int", "wis", "cha"]),
+    // Casts as an Eldritch Knight or Arcane Trickster does (src/lib/srd/
+    // third-caster.ts); "third-caster" is the first spelling, the class's own.
+    progression: z.enum(["eldritch-knight", "arcane-trickster", "soulspy", "underfoot", "third-caster"]).optional(),
     slots: z.record(z.string().regex(/^[1-9]$/), spellSlotSchema),
     prepared: z.array(z.string().trim().min(1).max(80)).max(60),
     // Spells known (for known-casters); prepared casters leave this empty
@@ -214,6 +315,7 @@ export const spellcastingSchema = z
         z.object({
           classId: z.string().trim().min(1).max(60),
           ability: z.enum(["int", "wis", "cha"]),
+          progression: z.enum(["eldritch-knight", "arcane-trickster", "soulspy", "underfoot", "third-caster"]).optional(),
           known: z.array(z.string().trim().min(1).max(80)).max(80).default([]),
           prepared: z.array(z.string().trim().min(1).max(80)).max(60).default([]),
           cantrips: z.array(z.string().trim().min(1).max(80)).max(40).default([]),
@@ -261,14 +363,24 @@ export type AsiChoice = z.infer<typeof asiChoiceSchema>;
 
 // Payload for creating a sheet. HP/AC arrive explicit (the creation UI
 // suggests derived values, the player can adjust before saving).
+// Who a character is drawn to (src/lib/attraction.ts, issue 501). Blank is
+// unspecified, and nothing changes for a character left blank.
+export const attractionSchema = z.object({
+  genders: z.array(z.enum(GENDERS)).max(GENDERS.length).default([]),
+  note: z.string().trim().max(ATTRACTION_NOTE_MAX).default(""),
+});
+
 export const createSheetSchema = z.object({
   name: z.string().trim().min(1).max(60),
   race: z.string().trim().min(1).max(60),
   class: z.string().trim().min(1).max(60),
-  subclass: z.string().trim().max(60).default(""),
+  subclass: z.string().trim().max(80).default(""),
   background: z.string().trim().max(60).default(""),
   alignment: z.string().trim().max(30).default(""),
   gender: z.enum(["", ...GENDERS]).default(""),
+  // Optional rather than defaulted: a sheet written before the field (a
+  // pregen, a library blob, a file) simply has none, which is blank.
+  attraction: attractionSchema.optional(),
   // Free-text physical description; feeds the auto-generated portrait.
   appearance: z.string().trim().max(500).default(""),
   abilities: abilityScoresSchema,
@@ -310,10 +422,31 @@ export const createSheetSchema = z.object({
     .object({
       asi: z.array(z.enum(ABILITIES)).max(3).default([]),
       skills: z.array(z.string().trim().min(1).max(40)).max(4).default([]),
+      // The race's cantrip picks (a homebrew species may offer up to three),
+      // and the first of them again in `cantrip`, the field a sheet held
+      // before there could be more than one, so an older server reading this
+      // sheet keeps that one (src/lib/srd/racial-cantrips.ts).
       cantrip: z.string().trim().max(80).default(""),
+      cantrips: z.array(z.string().trim().min(1).max(80)).max(6).default([]),
       tool: z.string().trim().max(60).default(""),
       // A dragonborn's draconic ancestry ("red"), src/lib/srd/racial-grants.ts.
       ancestry: z.string().trim().max(20).default(""),
+      // The option of a workshop species' choice the player picked, by its
+      // id ("ashen"), src/lib/content/species-variants.ts.
+      variant: z.string().trim().max(40).default(""),
+      // What that option gave the character, written by the server when it
+      // admits the sheet (src/lib/srd/legality/species-variant.ts), never
+      // taken from a request: an edit takes off exactly this, even after the
+      // workshop changes the option or removes it. Held to an option's own
+      // limits (VARIANT_LIMITS).
+      variantGrants: z
+        .object({
+          asi: z.partialRecord(z.enum(ABILITIES), z.number().int().min(1).max(2)).default({}),
+          skills: z.array(z.string().trim().min(1).max(40)).max(2).default([]),
+          tools: z.array(z.string().trim().min(1).max(60)).max(2).default([]),
+          languages: z.array(z.string().trim().min(1).max(40)).max(2).default([]),
+        })
+        .optional(),
       // The score a variant human's half-feat raises where the feat offers a
       // choice (Resilient, Athlete); src/lib/srd/legality/half-feats.ts.
       featAbility: z.enum(ABILITIES).optional(),
@@ -332,7 +465,9 @@ export const createSheetSchema = z.object({
       // ("a dagger or light hammer"), by its words, or the tool's name where
       // the alternative is a kind ("one instrument"), in kit order
       // (src/lib/srd/gear-choices.ts). Absent or short: the book's first.
-      gear: z.array(z.string().trim().max(80)).max(8).default([]),
+      // Matched by its words, so roomy rather than clipped: a workshop kit
+      // line runs to 200 characters (src/lib/homebrew/background-data.ts).
+      gear: z.array(z.string().trim().max(200)).max(8).default([]),
     })
     .optional(),
   // The either-or choices of the class's starting equipment
@@ -357,9 +492,16 @@ export type CreateSheetInput = z.infer<typeof createSheetSchema>;
 
 // A sheet read back from a file or a stored bundle: a gender written as free
 // text before the field was fixed reads as unspecified rather than refusing
-// the whole sheet.
+// the whole sheet, and so does an attraction it cannot read.
 export const storedSheetSchema = z.preprocess(
-  (raw) => (raw && typeof raw === "object" ? { ...raw, gender: storedGender((raw as { gender?: unknown }).gender) } : raw),
+  (raw) =>
+    raw && typeof raw === "object"
+      ? {
+          ...raw,
+          gender: storedGender((raw as { gender?: unknown }).gender),
+          attraction: normalizeAttraction((raw as { attraction?: unknown }).attraction),
+        }
+      : raw,
   createSheetSchema,
 );
 
@@ -393,7 +535,7 @@ export const patchSheetSchema = z.object({
   // Level-up expertise picks (rogue/bard); the server keeps only skills the
   // sheet is actually proficient in.
   expertise: z.array(z.string().max(40)).max(6).optional(),
-  subclass: z.string().trim().max(60).optional(),
+  subclass: z.string().trim().max(80).optional(),
   // Which class takes the new level (existing or a new multiclass). The
   // server validates prerequisites, builds the classes array itself, and
   // applies the multiclass proficiency grants; the client never writes the
@@ -449,12 +591,18 @@ export type SheetResources = z.infer<typeof resourcesSchema>;
 export const wildShapeSchema = z
   .object({
     form: z.string().trim().min(1).max(60),
-    beastHp: z.number().int().min(0).max(300),
-    beastMaxHp: z.number().int().min(1).max(300),
+    // A True Polymorph or a Shapechange may give an ancient dragon's
+    // hundreds of hit points.
+    beastHp: z.number().int().min(0).max(700),
+    beastMaxHp: z.number().int().min(1).max(700),
     beastAc: z.number().int().min(1).max(30),
     // "wildshape" keeps the character's mental stats; "polymorph" replaces
     // every score the form carries. Missing = "wildshape".
     kind: z.enum(["wildshape", "polymorph"]).optional(),
+    // A "polymorph" whose spell keeps the target's proficiencies, features
+    // and lineage (Shapechange). Polymorph and Animal Shapes replace them
+    // with the beast's (src/lib/srd/shape-rules.ts formSees).
+    keepsTraining: z.boolean().optional(),
     // The form's ability scores, overriding the sheet's while transformed.
     // Wild Shape stores only STR/DEX/CON; Polymorph stores all six.
     abilities: z
@@ -469,19 +617,24 @@ export const wildShapeSchema = z
       .optional(),
     // The form's walking speed in feet.
     speed: z.number().int().min(0).max(120).optional(),
-    // Natural attacks with statblock numbers; pc_attack uses these while
-    // transformed instead of the sheet's weapons.
-    attacks: z
-      .array(
-        z.object({
-          name: z.string().trim().min(1).max(40),
-          toHit: z.number().int().min(-5).max(20),
-          damage: z.string().trim().min(1).max(30),
-          type: z.string().trim().max(20),
-        }),
-      )
-      .max(4)
-      .optional(),
+    // Natural attacks with statblock numbers, riders and reach included;
+    // pc_attack uses these while transformed instead of the sheet's weapons.
+    // An empty list is a form with no attack at all (a frog), which leaves
+    // the character nothing to attack with.
+    attacks: z.array(summonAttackSchema).max(4).optional(),
+    // The form's Multiattack: attacks one Attack action holds.
+    attacksPerTurn: z.number().int().min(1).max(4).optional(),
+    // What the creature is: its type ("elemental"), challenge rating, the
+    // saving throws its block lists, and the damage and conditions it
+    // shrugs off. Rows stored before these fields lack them and read as a
+    // beast with none.
+    type: z.string().trim().max(30).optional(),
+    cr: z.number().min(0).max(30).optional(),
+    saves: z.array(z.enum(["str", "dex", "con", "int", "wis", "cha"])).max(6).optional(),
+    resist: z.string().trim().max(200).optional(),
+    immune: z.string().trim().max(200).optional(),
+    vulnerable: z.string().trim().max(120).optional(),
+    conditionImmune: z.string().trim().max(200).optional(),
   })
   .nullable();
 export type WildShape = z.infer<typeof wildShapeSchema>;
@@ -500,19 +653,18 @@ export const petSchema = z.object({
   maxHp: z.number().int().min(1).max(300),
   ac: z.number().int().min(1).max(30),
   speed: z.number().int().min(0).max(120),
-  attacks: z
-    .array(
-      z.object({
-        name: z.string().trim().min(1).max(40),
-        toHit: z.number().int().min(-5).max(20),
-        damage: z.string().trim().min(1).max(30),
-        type: z.string().trim().max(20),
-      }),
-    )
-    .max(3)
-    .default([]),
+  // Its natural attacks with their riders (src/lib/srd/creature-attacks.ts).
+  attacks: z.array(summonAttackSchema).max(3).default([]),
   // One line of senses/traits for the DM to narrate.
   notes: z.string().trim().max(300).default(""),
+  // The damage it shrugs off, in the words damageAdjust reads
+  // (src/lib/dm/damage-logic.ts): its stat block's (an imp is immune to fire
+  // and poison and resists cold) or its bond's (a drake is immune to its
+  // Draconic Essence). Pets stored before these read as none until their
+  // form is looked up again (src/lib/srd/familiar-forms.ts repairedPets).
+  resist: z.string().trim().max(200).optional(),
+  immune: z.string().trim().max(200).optional(),
+  vulnerable: z.string().trim().max(120).optional(),
 });
 export type SheetPet = z.infer<typeof petSchema>;
 
@@ -567,6 +719,16 @@ export type CharacterSheet = {
   // The builder's choice, or "" (src/lib/gender.ts): read by the portrait
   // prompt, the placeholder face, the voice cast and the speech reader.
   gender: Gender;
+  // Who they are drawn to (src/lib/attraction.ts); blank = unspecified.
+  // Optional only for test doubles: every stored sheet reads one.
+  attraction?: Attraction;
+  // The owner opened this character to advances from NPCs at this table
+  // (issue 501). Blanked like the notes for anyone but the owner and a DM
+  // seat (src/lib/dm/sheet-view.ts).
+  openToAdvances?: boolean;
+  // The owner said a pact may approach this character at this table (issue
+  // 503 Phase 7, "Pacts may approach me"). Blanked like the advances opt-in.
+  openToPacts?: boolean;
   level: number;
   xp: number;
   abilities: AbilityScores;
@@ -619,11 +781,18 @@ export type CharacterSheet = {
   // with the party until dismissed; 'guest' is a scene-scoped ally.
   isCompanion: boolean;
   companionKind: "party" | "guest" | null;
+  // The player who takes an AI companion's turns in a fight; null or absent:
+  // the DM plays them (src/lib/dm/companion-command.ts). Out of fights the
+  // DM always does.
+  commandedBy?: string | null;
   // Personality/voice brief the DM roleplays the companion from.
   personality: string;
   // The cards its player keeps in the visible Hand, in order (issue 231,
   // src/lib/battlemap/hand-layout.ts). Absent: the automatic split.
   handLayout?: { fan: string[]; known: string[] };
+  // The picks its feats and subclass grants were made with, by name (the
+  // library copy's own field). Absent on a sheet that records none.
+  featChoices?: CreateSheetInput["featChoices"];
   createdAt: string;
   updatedAt: string;
 };

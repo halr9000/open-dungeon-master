@@ -2,10 +2,12 @@
 // resources, conditions and rests. Names match the tool names the AI DM is
 // offered exactly, because both callers reach the same engine
 // (src/lib/dm/invoke.ts).
-import type { CatalogEntry } from "@/lib/dm/catalog-types";
+import type { CatalogEntry, CatalogField } from "@/lib/dm/catalog-types";
+import { ALIGNMENT_CODES } from "@/lib/dm/companion-values-logic";
+import { ITEM_TAGS } from "@/lib/schemas/item-tags";
 import { UPDATE_SHEET_FIELDS } from "@/lib/dm/update-sheet-args";
 import { DRACONIC_ANCESTRIES } from "@/lib/srd/racial-grants";
-import { GENDER_FIELD } from "@/lib/dm/catalog-world";
+import { DRAWN_TO_FIELD, GENDER_FIELD } from "@/lib/dm/catalog-world";
 import {
   ABILITY_OPTIONS as ABILITIES,
   AREA_PLACEMENT_FIELDS,
@@ -14,22 +16,97 @@ import {
   damageTypeField,
 } from "@/lib/dm/catalog-vocab";
 
+// What an item is beyond its SRD or pack item, or all of it for one no list
+// has (src/lib/srd/item-tags.ts), typed as the tags the server takes.
+const ITEM_TAGS_FIELD: CatalogField = {
+  name: "tags",
+  label: "What it is",
+  kind: "list",
+  placeholder: "potion, healing_potion",
+  help: `Comma separated, from: ${ITEM_TAGS.join(", ")}. For an item no SRD or pack list has, all of what it is; for one that has a row, only what it adds (a silvered longsword: silvered).`,
+};
+
+// The SRD or pack item an item named in the table's language is
+// (src/lib/srd/item-tags.ts itemRow).
+const ITEM_SRD_NAME_FIELD: CatalogField = {
+  name: "srdName",
+  label: "SRD item it is",
+  kind: "text",
+  placeholder: "Elixir of Health",
+  help: "For an item named in the table's language: the SRD or pack item it is, by its English name, so it works as that item does. A magic weapon or armor on a chosen base names both, as the SRD writes it: Flame Tongue Scimitar, Vicious Rapier.",
+};
+
+// What one is worth, for a thing the content pack does not price
+// (src/lib/dm/trade-value.ts).
+const ITEM_WORTH_FIELD: CatalogField = {
+  name: "worth",
+  label: "Worth (gp each)",
+  kind: "number",
+  min: 0.01,
+  max: 100000,
+  help: "For a gem, an art object or anything the book does not price: its sale and a spell's costly material read it. Leave the worth out of the name.",
+};
+
+// The spell a spell scroll holds (src/lib/dm/consumables.ts).
+const ITEM_SPELL_FIELD: CatalogField = {
+  name: "spell",
+  label: "Spell on the scroll",
+  kind: "text",
+  placeholder: "Fireball",
+  help: "A spell scroll only, tagged scroll: the spell reading it casts, by its name in the spell lists, whatever the scroll is called.",
+};
+
+// The builder's alignment codes, named (usePickerGroups.ts ALIGNMENTS).
+const ALIGNMENT_WORDS: Record<(typeof ALIGNMENT_CODES)[number], string> = {
+  LG: "Lawful good",
+  NG: "Neutral good",
+  CG: "Chaotic good",
+  LN: "Lawful neutral",
+  N: "Neutral",
+  CN: "Chaotic neutral",
+  LE: "Lawful evil",
+  NE: "Neutral evil",
+  CE: "Chaotic evil",
+};
+const ALIGNMENT_OPTIONS = ALIGNMENT_CODES.map((code) => ({ value: code, label: ALIGNMENT_WORDS[code] }));
+
 export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
+  // One form for damage no attack resolves, whoever takes it (issue #471):
+  // it took over Damage an enemy, Damage a pet and the Damage tray.
   {
     name: "apply_damage",
-    label: "Damage a character",
+    label: "Damage",
     category: "party",
-    summary: "Temp hit points absorb first, hit points floor at zero, death saves start themselves.",
+    summary: "A character, an enemy, a pet, or several at their share of one total: temp hit points absorb first, resistances and death saves resolve themselves.",
     fields: [
-      { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "amount", label: "Damage", kind: "number", requiredUnless: "dice", min: 1, max: 200 },
+      { name: "characterId", label: "Character", kind: "character", requiredUnless: ["enemyId", "targets"], help: "With a pet named below, its owner." },
+      { name: "enemyId", label: "Or enemy", kind: "enemy", help: "In a fight. The AI GM may only hurt one with a hazard or the environment." },
+      { name: "petName", label: "Their pet", kind: "text", help: "The character's pet takes it instead, by name." },
+      {
+        name: "targets",
+        label: "Or several, each at a share",
+        kind: "shares",
+        help: "One total on several creatures, each at full, half, double or none. Resistances still apply on top.",
+      },
+      { name: "amount", label: "Damage", kind: "number", requiredUnless: ["dice", "fallFeet"], min: 1, max: 500 },
       { name: "dice", label: "Or dice", kind: "text", help: "2d6+3: the server rolls them." },
+      { name: "fallFeet", label: "Or an enemy's fall (feet)", kind: "number", min: 1, max: 1000, help: "The server rolls 1d6 per 10 feet and lays it prone." },
       damageTypeField("type", "Type", "Resistance, immunity and vulnerability read it."),
       {
         name: "magical",
         label: "From a spell or a magic weapon",
         kind: "boolean",
         help: "Resistance to nonmagical attacks does not apply to it.",
+      },
+      {
+        name: "source",
+        label: "An enemy's from",
+        kind: "select",
+        options: [
+          { value: "hazard", label: "A hazard (a trap, a falling object)" },
+          { value: "environment", label: "The environment (fire, lava, acid)" },
+        ],
+        help: "The AI GM must name one for an enemy; the console's own hand may leave it empty.",
       },
       REASON,
     ],
@@ -73,17 +150,6 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     ],
   },
   {
-    name: "award_xp",
-    label: "Award XP",
-    category: "party",
-    summary: "Gives XP to whoever earned it; levels follow on their own.",
-    fields: [
-      { name: "characterIds", label: "Characters", kind: "characters", required: true },
-      { name: "amount", label: "XP each", kind: "number", required: true, min: 1, max: 10000 },
-      REASON,
-    ],
-  },
-  {
     name: "party_stash",
     label: "The party's pack and purse",
     category: "party",
@@ -102,23 +168,23 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         ],
       },
       { name: "characterId", label: "Whose hands", kind: "character", required: true },
-      { name: "name", label: "Item", kind: "text" },
+      { name: "item", label: "Item", kind: "text" },
       { name: "qty", label: "How many", kind: "number", min: 1, max: 999 },
       { name: "coins", label: "Money", kind: "text", placeholder: "3 gp 4 sp" },
-      { name: "amount", label: "Or gold", kind: "number", min: 0, max: 1000000 },
+      { name: "gold", label: "Or gold", kind: "number", min: 0, max: 1000000 },
       REASON,
     ],
   },
   {
     name: "party_award",
-    label: "Award the party",
+    label: "Award XP",
     category: "party",
-    summary: "XP each, a purse split evenly, and one item to the finder, in a single action.",
+    summary: "XP each to whoever earned it, with a purse split evenly and one item to the finder if there are spoils; levels follow on their own.",
     fields: [
-      { name: "characterIds", label: "Who shares it", kind: "characters", required: true },
-      { name: "amount", label: "XP each", kind: "number", min: 1, max: 20000 },
-      { name: "delta", label: "Gold in total", kind: "number", min: -100000, max: 100000, help: "Split evenly; the remainder goes to the first share." },
-      { name: "name", label: "Item", kind: "text", help: "Goes to the first character listed." },
+      { name: "characterIds", label: "Who earned it", kind: "characters", required: true },
+      { name: "xp", label: "XP each", kind: "number", min: 1, max: 20000 },
+      { name: "gold", label: "Gold in total", kind: "number", min: -100000, max: 100000, help: "Split evenly; the remainder goes to the first share." },
+      { name: "item", label: "Item", kind: "text", help: "Goes to the first character listed." },
       { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
       REASON,
     ],
@@ -135,7 +201,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         name: "coins",
         label: "Or in coins",
         kind: "text",
-        placeholder: "340 silver",
+        placeholder: "340 sp",
         help: "Overrides the amount above; the sign of the change still says gain or spend.",
       },
       {
@@ -154,7 +220,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     summary: "Puts an item in a character's hands, weight and all.",
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "name", label: "Item", kind: "text", required: true },
+      { name: "item", label: "Item", kind: "text", required: true },
       { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
       {
         name: "unidentified",
@@ -168,6 +234,10 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         kind: "boolean",
         help: "With item offers on, the same item again within ten minutes of an accepted offer is refused unless it is truly another from a different source.",
       },
+      ITEM_SRD_NAME_FIELD,
+      ITEM_TAGS_FIELD,
+      ITEM_WORTH_FIELD,
+      ITEM_SPELL_FIELD,
       REASON,
     ],
   },
@@ -178,8 +248,12 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     summary: "Turns an unidentified item into what it actually is, on the sheet and in the log.",
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "name", label: "Called on the sheet", kind: "text", required: true },
+      { name: "item", label: "Called on the sheet", kind: "text", required: true },
       { name: "revealedName", label: "Actually", kind: "text", placeholder: "Ring of Protection" },
+      ITEM_SRD_NAME_FIELD,
+      ITEM_TAGS_FIELD,
+      ITEM_WORTH_FIELD,
+      ITEM_SPELL_FIELD,
       REASON,
     ],
   },
@@ -187,11 +261,40 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     name: "remove_item",
     label: "Take an item",
     category: "party",
-    summary: "Lost, stolen or destroyed. Consumables being used go through Use an item.",
+    summary: "Stolen or destroyed for good. Something dropped goes through Handle an item, where it stays on the ground; consumables being used through Use an item.",
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "name", label: "Item", kind: "text", required: true },
+      { name: "item", label: "Item", kind: "text", required: true },
       { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
+      REASON,
+    ],
+  },
+  {
+    name: "handle_item",
+    label: "Handle an item",
+    category: "party",
+    summary: "A shield on or off, a weapon drawn or stowed, something dropped where it stands, picked up or handed over, at its real cost.",
+    fields: [
+      { name: "characterId", label: "Character", kind: "character" },
+      { name: "enemyId", label: "Or enemy", kind: "enemy", help: "An enemy drops what it holds, or picks up what lies near it." },
+      {
+        name: "action",
+        label: "Do",
+        kind: "select",
+        required: true,
+        options: [
+          { value: "equip", label: "Put on or draw" },
+          { value: "unequip", label: "Take off or stow" },
+          { value: "drop", label: "Drop (it stays where it falls)" },
+          { value: "pick_up", label: "Pick up" },
+          { value: "hand", label: "Hand to an ally" },
+        ],
+      },
+      { name: "item", label: "Item", kind: "text", required: true },
+      { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
+      { ...ITEM_SRD_NAME_FIELD, help: `An enemy's drop only. ${ITEM_SRD_NAME_FIELD.help}` },
+      { ...ITEM_TAGS_FIELD, help: `An enemy's drop only. ${ITEM_TAGS_FIELD.help}` },
+      { name: "toCharacterId", label: "Hand to", kind: "character" },
       REASON,
     ],
   },
@@ -213,7 +316,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     name: "purchase",
     label: "Buy or sell",
     category: "party",
-    summary: "Moves the coin and the goods in one action.",
+    summary: "Moves the coin and the goods in one action; a shop here trades from its shelf, at its prices.",
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
       {
@@ -227,8 +330,15 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         ],
       },
       { name: "item", label: "Item", kind: "text", required: true },
-      { name: "price", label: "Gold each", kind: "number", required: true, min: 0, max: 100000 },
       { name: "qty", label: "How many", kind: "number", min: 1, max: 99 },
+      {
+        name: "shop",
+        label: "At the shop",
+        kind: "text",
+        help: "Empty: a shop here that stocks it (or buys it) trades at its own prices, and anywhere else the list price is paid.",
+      },
+      { name: "price", label: "Gold each", kind: "number", min: 0, max: 100000, help: "Only for a thing no shelf or list prices." },
+      { ...ITEM_SRD_NAME_FIELD, help: `Buying only. ${ITEM_SRD_NAME_FIELD.help}` },
       REASON,
     ],
   },
@@ -257,10 +367,12 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     name: "set_condition",
     label: "Condition",
     category: "party",
-    summary: "Applies a condition, with rounds or a save that ends it; the server re-rolls both.",
+    summary: "Applies a condition to a character or an enemy, with rounds or a save that ends it; the server re-rolls both.",
     fields: [
-      { name: "characterId", label: "Character", kind: "character", required: true },
+      { name: "characterId", label: "Character", kind: "character", requiredUnless: "enemyId" },
+      { name: "enemyId", label: "Or enemy", kind: "enemy", help: "In a fight; one immune to the condition refuses it." },
       conditionField("condition", "Condition", { required: true }),
+      { name: "level", label: "An enemy's exhaustion level", kind: "number", min: 1, max: 6, help: "An enemy's exhaustion only: the level it now has. A character's rises one level each time." },
       { name: "rounds", label: "Rounds", kind: "number", min: 1, max: 100 },
       { name: "minutes", label: "Or minutes", kind: "number", min: 1, max: 1440 },
       { name: "hours", label: "Or hours", kind: "number", min: 1, max: 24 },
@@ -274,6 +386,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         help: "Who they are frightened of, charmed or grappled by; it ends when that enemy falls.",
       },
       { name: "sourceCharacterId", label: "Or by character", kind: "character" },
+      { name: "magical", label: "From magic", kind: "boolean", help: "A creature's magical sleep, an enchanted trap: traits that resist magic apply." },
       REASON,
     ],
   },
@@ -307,6 +420,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         name: "mode",
         label: "How",
         kind: "select",
+        help: "Set it to: Armor Class and Speed only. Advantage or disadvantage: attack rolls, saves, checks and initiative.",
         options: [
           { value: "add", label: "By an amount" },
           { value: "override", label: "Set it to" },
@@ -366,9 +480,10 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     name: "clear_condition",
     label: "Clear a condition",
     category: "party",
-    summary: "Cured, dispelled, rested off or shaken off.",
+    summary: "Cured, dispelled, rested off or shaken off, on a character or an enemy.",
     fields: [
-      { name: "characterId", label: "Character", kind: "character", required: true },
+      { name: "characterId", label: "Character", kind: "character", requiredUnless: "enemyId" },
+      { name: "enemyId", label: "Or enemy", kind: "enemy" },
       conditionField("condition", "Condition", { required: true }),
       REASON,
     ],
@@ -380,7 +495,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
     summary: "Marks a spell slot used and starts concentration when the spell needs it.",
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
-      { name: "level", label: "Slot level", kind: "number", required: true, min: 1, max: 9 },
+      { name: "level", label: "Slot level", kind: "number", requiredUnless: ["spell"], min: 1, max: 9, help: "Empty for the spell's own level." },
       // The handler reads `spell`: the name is what it checks the list, the
       // slot level, the casting time and concentration against. It may be
       // left out: a slot burned with no spell (Divine Smite) still spends.
@@ -431,7 +546,13 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
         name: "value",
         label: "Becomes",
         kind: "text",
-        help: "A whole number for a number. Conditions as a list (poisoned, prone), or none to clear them.",
+        // The hint promises that Conditions left empty clears them, so the
+        // empty box reaches the handler as an answer (it used to be dropped
+        // on the way and refused as no answer, table audit 2026-10-26, T09);
+        // the handler still asks again for an empty name or number
+        // (update-sheet-args.ts).
+        keepsEmpty: true,
+        help: "A whole number for a number. Conditions as a list (poisoned, prone), or left empty to clear them.",
       },
       REASON,
     ],
@@ -471,6 +592,7 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
       { name: "class", label: "Class", kind: "text", required: true },
       { name: "race", label: "Race", kind: "text" },
       { ...GENDER_FIELD, required: true },
+      DRAWN_TO_FIELD,
       {
         name: "ancestry",
         label: "Draconic ancestry",
@@ -485,6 +607,13 @@ export const PARTY_ADJUDICATIONS: CatalogEntry[] = [
       ] },
       { name: "personality", label: "Personality", kind: "text", required: true },
       { name: "spells", label: "Spells they know", kind: "list", placeholder: "Cure Wounds, Bless", help: "For a caster, comma separated; the server keeps what their level allows." },
+      {
+        name: "alignment",
+        label: "Alignment",
+        kind: "select",
+        help: "With their class it sets what a party member holds to (issue 503).",
+        options: ALIGNMENT_OPTIONS,
+      },
     ],
   },
   {

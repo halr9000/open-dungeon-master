@@ -159,12 +159,12 @@ await test("The prompt says what a spell does beyond its damage is the server's,
   assert.match(text, /Name the choice in condition on cast_at_enemy: Command's word \(grovel, halt\), Eyebite's form \(unconscious, frightened, sickened\), Bestow Curse's curse/);
   assert.match(text, /Lesser Restoration, Greater Restoration and Remove Curse go through cast_buff/);
   assert.match(text, /A creature held by Entangle, Web or Black Tentacles breaks free the same way, take_action escape/);
-  assert.match(text, /Sculpt Spells; send sculpt \[\] on aoe_damage to spare nobody/);
+  assert.match(text, /Sculpt Spells; send sparedCharacterIds \[\] on aoe_damage to spare nobody/);
   assert.match(text, /Overchannel is overchannel true on cast_at_enemy or aoe_damage/);
   assert.match(text, /Signature Spells cost no slot once per short rest/);
   assert.doesNotMatch(text, /Phantasmal Killer[^.]*start of (the target's|its) turn/);
   const aoe = offered("aoe_damage").parameters.properties;
-  assert.ok(aoe.sculpt && aoe.overchannel, "aoe_damage does not take sculpt and overchannel");
+  assert.ok(aoe.sparedCharacterIds && aoe.overchannel, "aoe_damage does not take sparedCharacterIds and overchannel");
   assert.ok(offered("cast_at_enemy").parameters.properties.overchannel, "cast_at_enemy does not take overchannel");
 });
 
@@ -173,7 +173,8 @@ await test("request_roll offers advantageReason, which the engine reads, and nam
   assert.ok(roll.advantageReason, "request_roll's schema has no advantageReason");
   assert.match(roll.advantageReason.description, /sets the claim aside/);
   assert.match(roll.advantage.description, /advantageReason/);
-  assert.match(roll.against.description, /spell cast by a fiend/);
+  assert.match(roll.casterType.description, /Holy Nimbus/);
+  assert.ok(roll.casterType.enum.includes("fiend") && roll.casterType.enum.includes("undead"));
   assert.match(systemText(), /gives the paladin advantage on saves against spells cast by fiends or undead/);
 });
 
@@ -291,7 +292,7 @@ async function walkAway(owner, count) {
     kit.freshRound();
     world.clearDice();
     world.dice(15, 4);
-    await world.invoke("move_token", { tokenName: enemy.id, x: 1 + index * 8, y: 10 });
+    await world.invoke("move_token", { token: enemy.id, x: 1 + index * 8, y: 10 });
     world.clearDice();
   }
   return newRolls(before).filter((roll) => roll.kind === "attack" && roll.characterId === owner.id).length;
@@ -359,7 +360,7 @@ await test("Relentless Avenger: after the paladin's opportunity attack hits, the
   assert.equal(early.ok, false, "no opportunity attack has hit");
   world.clearDice();
   world.dice(18, 5);
-  await world.invoke("move_token", { tokenName: enemy.id, x: 5, y: 10 });
+  await world.invoke("move_token", { token: enemy.id, x: 5, y: 10 });
   world.clearDice();
   const out = await react(avenger, "Relentless Avenger", { x: 5, y: 8 });
   assert.equal(out.ok, true, out.error);
@@ -411,7 +412,7 @@ await test("Grasping Tentacles: casting Evard's Black Tentacles gives the warloc
   const [enemy] = await stage(fathomless);
   fresh(fathomless.id);
   world.dice(1, 1, 1);
-  const cast = await world.invoke("aoe_damage", { spell: "Evard's Black Tentacles", casterId: fathomless.id, enemyIds: [enemy.id], saveAbility: "dex", dc: 15 });
+  const cast = await world.invoke("aoe_damage", { spell: "Evard's Black Tentacles", casterCharacterId: fathomless.id, enemyIds: [enemy.id], saveAbility: "dex", dc: 15 });
   world.clearDice();
   assert.equal(cast.ok, true, cast.error);
   assert.equal(world.sheet(fathomless.id).tempHp, 10, "the warlock level in temporary hit points");
@@ -474,7 +475,7 @@ const reaper = hero({
   spellcasting: { ability: "wis", slots: slotsOf(FULL_CASTER_SLOTS[16]), prepared: ["Blindness/Deafness"], known: [], cantrips: [] },
 });
 
-await test("Improved Reaper: a necromancy spell of 1st to 5th level that targets one creature strikes a second creature within 5 feet of the first with the same slot, at 1d8 of the cleric's hit points per spell level.", async () => {
+await test("Improved Reaper: a necromancy spell of 1st to 5th level that targets one creature strikes a second creature within 5 feet of the first with the same slot, at no cost in hit points.", async () => {
   const [first, second] = await stage(reaper, { enemies: 2 });
   kit.place(second.id, 6, 6);
   const slotsBefore = world.sheet(reaper.id).spellcasting.slots["2"].used;
@@ -489,7 +490,7 @@ await test("Improved Reaper: a necromancy spell of 1st to 5th level that targets
   assert.ok(kit.enemy(first.id).conditions.includes("blinded"));
   assert.ok(kit.enemy(second.id).conditions.includes("blinded"), "the second creature is struck too");
   assert.equal(world.sheet(reaper.id).spellcasting.slots["2"].used, slotsBefore + 1, "one slot for both");
-  assert.ok(world.sheet(reaper.id).currentHp < hpBefore, "the cleric pays in hit points");
+  assert.equal(world.sheet(reaper.id).currentHp, hpBefore, "Improved Reaper costs no hit points (issue 474)");
 });
 
 const creation = hero({ class: "bard", subclass: "College of Creation", level: 3, abilities: { cha: 16 } });

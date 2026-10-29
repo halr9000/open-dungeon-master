@@ -1,4 +1,5 @@
 import { readiedReleaseFor } from "@/lib/dm/readied-release";
+import { tokenSides } from "@/lib/dm/combatant";
 import { getCampaignById, getFloor } from "@/lib/db/campaigns";
 import { actingSheetFor } from "@/lib/character-seat";
 import { getClock } from "@/lib/db/clock";
@@ -7,13 +8,16 @@ import { breakDown } from "@/lib/dm/calendar";
 import { effectiveAmbient } from "@/lib/battlemap/daylight";
 import { weatherObscurementTiles } from "@/lib/srd/weather";
 import { listEffects } from "@/lib/db/active-effects";
-import { getActiveBoard, getActiveEncounter, listEnemies, type Encounter } from "@/lib/db/encounters";
+import { applyField, resolveField } from "@/lib/dm/effects-logic";
+import { getActiveBoard, getActiveEncounter, getEnemy, listEnemies, type Encounter } from "@/lib/db/encounters";
+import { listDroppedItems } from "@/lib/db/dropped-items";
+import { tokenFootprint } from "@/lib/dm/board-reach";
 import { speedFor } from "@/lib/srd";
 import { getMounts } from "@/lib/db/mounts";
 import { effectiveMaxHp, effectiveSpeed, exhaustionSpeed } from "@/lib/dm/condition-logic";
 import { budgetApplies } from "@/lib/dm/action-budget";
 import { listSheets } from "@/lib/db/sheets";
-import { footprintForSize, footprintIndexes, type Footprint } from "@/lib/battlemap/footprint";
+import { footprintDistance, footprintForSize, footprintIndexes, type Footprint } from "@/lib/battlemap/footprint";
 import { healthWord } from "@/lib/battlemap/health-words";
 import { orderEntryId } from "@/lib/db/encounters";
 import {
@@ -45,9 +49,20 @@ import { lightsWithZones, sightTerrainFor, withZoneSteps } from "@/lib/dm/zone-r
 import { viewZones } from "@/lib/dm/zone-view";
 import { standUpTiles } from "@/lib/srd/authored-effects-more";
 import { addSilenceChips, viewerMoves } from "@/lib/battlemap/view-moves";
+import { undoableMove, undoOffer } from "@/lib/battlemap/move-undo";
 import type { AuraTone, PlayerMapView } from "@/lib/battlemap/view-types";
+import { ENEMY_TURN_NAME, turnOwner } from "@/lib/dm/turn-owner";
+import { holdsFeature } from "@/lib/srd/feature-names";
 
 export type { PlayerMapView } from "@/lib/battlemap/view-types";
+
+// A token's side when it is not its kind's: the rim the board draws.
+function offSide(token: { kind: string }, side: string): { side?: "party" | "foe" } {
+  if (token.kind === "pc" && side === "foe") {
+    return { side: "foe" };
+  }
+  return token.kind === "enemy" && side === "party" ? { side: "party" } : {};
+}
 
 // Per-player projection of the battle map. This is the ONLY battlemap
 // module that touches the DB, and the only shape clients ever see: terrain
@@ -58,7 +73,7 @@ export type { PlayerMapView } from "@/lib/battlemap/view-types";
 // Aura of Protection reaches 10 ft from paladin 6 and 30 ft from 18; the
 // save bonus itself is applied by src/lib/dm/aura.ts. This is only the ring.
 function paladinAura(sheet: CharacterSheet): { radiusFeet: number; tone: AuraTone } | null {
-  const hasAura = sheet.features.some((feature) => /aura of protection/i.test(feature.name));
+  const hasAura = holdsFeature(sheet, "Aura of Protection");
   if (!hasAura) {
     return null;
   }
@@ -119,7 +134,9 @@ export function pcMoveBudget(
     : flying ?? speedFor(sheet, {
         encumbrance: campaign?.gameSettings.variantRules.encumbrance ?? false,
       });
-  const speed = exhaustionSpeed(sheet.exhaustion ?? 0, effectiveSpeed(sheet.conditions, base));
+  // An active effect on their speed (set_effect) moves the base first.
+  const moved = Math.max(0, applyField(base, resolveField(listEffects(campaignId, { kind: "character", id: sheet.id }), "speed")));
+  const speed = exhaustionSpeed(sheet.exhaustion ?? 0, effectiveSpeed(sheet.conditions, moved));
   // A scene has no rounds, so there is no per-round budget to spend: the
   // party walks the board while the DM describes it.
   if (encounter.kind === "scene") {
@@ -150,6 +167,39 @@ export function getActiveBattleMap(campaignId: string): BattleMap | null {
     return null;
   }
   return getBattleMapForEncounter(board.id);
+}
+
+// What lies on this board and where (issue #424): dropped things on their
+// square, and what a fallen enemy held on its body. Only on squares the
+// viewer has explored; the DM's explored set is the whole board.
+function dropsOn(
+  campaignId: string,
+  mapId: string,
+  width: number,
+  explored: Set<number>,
+  mine: BattleToken | null,
+): NonNullable<PlayerMapView["drops"]> {
+  const out: NonNullable<PlayerMapView["drops"]> = [];
+  for (const entry of listDroppedItems(campaignId)) {
+    let at: { x: number; y: number } | null = entry.mapId === mapId && entry.x !== null && entry.y !== null ? { x: entry.x, y: entry.y } : null;
+    if (entry.heldByEnemy) {
+      const enemy = getEnemy(entry.heldByEnemy);
+      const body = enemy?.status === "dead" ? getTokenByRef(mapId, enemy.id) : null;
+      at = body ? { x: body.x, y: body.y } : null;
+    }
+    if (!at || !explored.has(tileIndex(width, at.x, at.y))) {
+      continue;
+    }
+    out.push({
+      id: entry.id,
+      name: `${entry.item.qty > 1 ? `${entry.item.qty} ` : ""}${entry.item.name}`,
+      x: at.x,
+      y: at.y,
+      by: entry.droppedBy,
+      reach: Boolean(mine && footprintDistance(mine, tokenFootprint(mine), at, 1) <= 1),
+    });
+  }
+  return out;
 }
 
 export function buildPlayerMapView(
@@ -240,6 +290,10 @@ export function buildPlayerMapView(
 
   const enemiesById = new Map(listEnemies(encounter.id).map((enemy) => [enemy.id, enemy]));
   const sheetsById = new Map(listSheets(campaignId).map((entry) => [entry.id, entry]));
+  // Sides (src/lib/dm/combatant.ts): who is an ally of this viewer, and the
+  // rim of a creature fighting on the side its kind does not.
+  const sides = tokenSides(encounter);
+  const viewerSide = sheet ? sides({ kind: "pc", refId: sheet.id }) : "party";
   const shownTokens = tokens
     .filter((token) => {
       // The DM hid it, so for everyone but the DM it is not on the board at
@@ -254,6 +308,12 @@ export function buildPlayerMapView(
           return false;
         }
         // Seen, or felt through the ground by tremorsense. The DM sees all.
+        // A creature fighting at the viewer's side is drawn as an ally is.
+        return fullVision || sides(token) === viewerSide || (viewer ? perceivesToken(vision, viewer, token, visible) : false);
+      }
+      // A character fighting against the viewer's side is fog-gated as an
+      // enemy is: the party does not see through a turncoat's eyes.
+      if (token.kind === "pc" && sides(token) !== viewerSide) {
         return fullVision || (viewer ? perceivesToken(vision, viewer, token, visible) : false);
       }
       // Allies are always drawn: the party coordinates aloud at the table.
@@ -277,6 +337,7 @@ export function buildPlayerMapView(
       hidden: token.hidden,
       light: lightRemaining(token, clockInstant),
       stamp: token.stamp ?? "",
+      ...offSide(token, sides(token)),
     }));
 
   // Reachable tiles for click-to-move, only when the player may move now.
@@ -290,7 +351,11 @@ export function buildPlayerMapView(
   // their full speed (readied-release.ts; the move route charges it the same).
   const readiedMove = sheet ? readiedReleaseFor(sheet, encounter, "move") : null;
   const readiedWalk = Boolean(readiedMove && !("error" in readiedMove));
-  if (!fullVision && sheet && myToken && sheet.currentHp > 0 && (canMoveNow(campaignId, sheet.id) || readiedWalk)) {
+  // The DM's full view moves nobody, except a character the DM plays
+  // (a test fight a person runs, issue 553): on its turn it walks by the
+  // same rules as anyone's. `sheet` is the viewer's own, so at any other
+  // table the DM, who holds none, still gets none.
+  if (sheet && myToken && sheet.currentHp > 0 && (canMoveNow(campaignId, sheet.id) || readiedWalk)) {
     const turnBudget = pcMoveBudget(campaignId, encounter, map, sheet, myToken);
     const budget = readiedWalk ? { ...turnBudget, tiles: speedToTiles(turnBudget.speed), fullTiles: speedToTiles(turnBudget.speed) } : turnBudget;
     budgetLeft = budget.tiles;
@@ -307,7 +372,7 @@ export function buildPlayerMapView(
           1,
           myToken.movement === "fly",
           // The same passage the move route allows (src/lib/battlemap/passage.ts).
-          withZoneSteps(pcMoveTraits({ width: map.width, tokens, mover: myToken, sheet, footprintOf: footprintLookup(enemiesById), enemySize: (refId) => enemiesById.get(refId)?.stats.size }), map, "pc"),
+          withZoneSteps(pcMoveTraits({ width: map.width, tokens, mover: myToken, sheet, footprintOf: footprintLookup(enemiesById), enemySize: (refId) => enemiesById.get(refId)?.stats.size, sideOf: tokenSides(encounter) }), map, "pc"),
         ).entries(),
       ];
       // What the move route will charge for each square, and what the move
@@ -323,7 +388,15 @@ export function buildPlayerMapView(
     }
   }
 
-  const currentEntry = encounter.orderReady ? encounter.order[encounter.turnIndex] : undefined;
+  // Whose turn it is, which is not always who the pointer rests on: while
+  // the enemies before the player up next still have their turns, the turn
+  // is theirs, so the board lights no figure and names the enemy side
+  // (src/lib/dm/turn-owner.ts), as the encounter's `acting` does. The turn
+  // chime, the turn banner and End turn key on `turn`, so they wait for the
+  // player's turn to begin as well.
+  const owner = turnOwner(encounter);
+  const enemiesFirst = owner.enemies.length > 0;
+  const currentEntry = enemiesFirst ? undefined : (owner.next ?? undefined);
 
   // The stage layer: facts about each shown token, keyed by token id.
   // Names a condition's metadata may point at: the combatants this viewer
@@ -340,7 +413,8 @@ export function buildPlayerMapView(
   const tokenByRef = new Map(tokens.map((token) => [token.refId, token]));
   const effectAuras = new Map<string, Array<{ id: string; radiusFeet: number; tone: AuraTone }>>();
   for (const effect of listEffects(campaignId)) {
-    if (!effect.aura) {
+    // An effect the party cannot tell is there draws no ring on their board.
+    if (!effect.aura || (!effect.visible && !fullVision)) {
       continue;
     }
     const list = effectAuras.get(effect.targetId) ?? [];
@@ -445,6 +519,8 @@ export function buildPlayerMapView(
         enemyNumbers: fullVision || options.enemyNumbers === true,
       })
     : [];
+  // The viewer's last walk, while it can still be taken back.
+  const undoMove = sheet && myToken && encounter.kind !== "scene" ? undoOffer(undoableMove(encounter, map.id, sheet.id)) : undefined;
 
   return {
     mapId: map.id,
@@ -456,6 +532,9 @@ export function buildPlayerMapView(
     terrain: terrainChars.join(""),
     backdrop: map.backdrop,
     skin: map.skin,
+    // Cosmetic like the backdrop, and fetched only by the addon's own board
+    // view (src/lib/addons/board-bridge.ts).
+    addonView: map.addonView,
     visible: [...visible],
     explored: [...explored],
     tokens: shownTokens,
@@ -466,12 +545,15 @@ export function buildPlayerMapView(
     reachableCost,
     ...(moves ? { moves } : {}),
     budgetLeft,
+    ...(undoMove ? { undoMove } : {}),
     myTokenId: myToken?.id ?? null,
     round: encounter.round,
-    currentTurnName: currentEntry?.name ?? "",
+    currentTurnName: enemiesFirst ? ENEMY_TURN_NAME : (currentEntry?.name ?? ""),
     board: encounter.kind,
     fullVision,
     labels: labelsFor(map.labels, map.width, { dm: fullVision, explored }),
+    drops: dropsOn(campaignId, map.id, map.width, explored, myToken),
+    mounts: Object.fromEntries(Object.entries(getMounts(campaignId)).map(([characterId, mount]) => [characterId, mount.name])),
     spellZones,
     drawings: drawingsFor(map.drawings, { dm: fullVision, round: encounter.round }),
     tokenConditions,
@@ -483,7 +565,7 @@ export function buildPlayerMapView(
     targets,
     intents,
     edges:
-      !fullVision && sheet && myToken && encounter.kind === "fight"
+      sheet && myToken && encounter.kind === "fight"
         ? targetEdges({
             encounterId: encounter.id,
             characterId: sheet.id,

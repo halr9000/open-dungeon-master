@@ -9,10 +9,12 @@ import { paintedRailIcon } from "@/app/campaigns/[campaignId]/SessionGlyph";
 import { SUBTAB_GLYPHS, TABLE_GLYPH, TAB_GLYPHS } from "@/app/campaigns/[campaignId]/sessionGlyphs";
 import type { PlayerMapView } from "@/lib/battlemap/view";
 import {
+  phoneBarSplit,
   visiblePanelTabs,
   type TableTabId,
   type TableTabInput,
 } from "@/lib/dm/table-tabs";
+import { Sheet } from "@/components/ui/Sheet";
 
 // The id list is owned by src/lib/dm/table-tabs.ts, where the visibility
 // rules are testable without React; this alias keeps the name the rest of
@@ -82,7 +84,7 @@ const TableIcon = paintedRailIcon(TABLE_GLYPH);
 // a given viewer sees, and in what order, is visiblePanelTabs's decision.
 const TAB_PRESENTATION: Record<PanelTab, [string, LucideIcon, string]> = {
   dm: [
-    "DM",
+    "GM",
     RAIL_ICONS.dm,
     "Everything waiting on you, and every ruling the engine can make on your say-so.",
   ],
@@ -97,23 +99,28 @@ const TAB_PRESENTATION: Record<PanelTab, [string, LucideIcon, string]> = {
     "Character sheets, HP and conditions for the whole party, and their bonds with the people they have met.",
   ],
   battle: ["Battle", RAIL_ICONS.battle, "The tactical battle map. Move your token on your turn."],
-  map: ["Map", RAIL_ICONS.map, "The scene map and discovered locations."],
+  map: ["Map", RAIL_ICONS.map, "The scene map, the places the party has found, and the Atlas maps the GM has shown."],
   story: [
     "Story",
     RAIL_ICONS.story,
     "Chapters and the tale so far, the world-state record, and the audited log of rolls and stat changes.",
   ],
   notes: ["Notes", RAIL_ICONS.notes, "Suggest story notes; the party lead approves them."],
-  chat: ["Chat", RAIL_ICONS.chat, "Side chat between players. The DM does not see it."],
+  chat: ["Chat", RAIL_ICONS.chat, "Side chat between players. The GM does not see it."],
+  world: [
+    "World",
+    RAIL_ICONS.world,
+    "This campaign's own copy of its world: the wiki, the web of links, the timeline, the atlas and its secrets. Players never see it.",
+  ],
   context: [
     "Context",
     RAIL_ICONS.context,
-    "What the DM was actually sent last turn, and anything the budget cut.",
+    "What the GM was actually sent last turn, and anything the budget cut.",
   ],
   settings: [
-    "Setup",
+    "Settings",
     RAIL_ICONS.settings,
-    "Campaign settings, game toggles, prep from your workshops, and ending the campaign.",
+    "Table settings, the campaign's details and Story AI, prep from your workshops, and ending the campaign.",
   ],
 };
 
@@ -193,8 +200,11 @@ export function useSessionTabs({
   return { panelTab, setPanelTab, mobileView, setMobileView };
 }
 
-// Mobile-only navigation: the main game chat ("Table") plus every panel tab,
-// each filling the screen when selected. Hidden at lg and up.
+// Mobile-only navigation: the main game chat ("Table"), the tabs this seat
+// uses most, and More, which lists every other tab in a sheet
+// (phoneBarSplit in src/lib/dm/table-tabs.ts decides which go where). Every
+// destination stays one or two taps away and none hides past the edge of a
+// sideways-scrolling bar. Hidden at lg and up.
 function BottomTabBarInner({
   tabs,
   mobileView,
@@ -220,48 +230,119 @@ function BottomTabBarInner({
   // quiet.
   steersStory: boolean;
 }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const byId = new Map(tabs.map((def) => [def[0], def]));
+  const { bar, more } = phoneBarSplit(tabs.map(([id]) => id));
+  const overflowActive = mobileView === "panel" && more.includes(panelTab);
+  const shownActive = overflowActive ? byId.get(panelTab) : undefined;
+  const count = (value: PanelTab) =>
+    (value === "notes" || (value === "lead" && steersStory)) && pendingCount
+      ? pendingCount
+      : value === "chat" && chatUnread
+        ? chatUnread
+        : 0;
+  const due = (value: PanelTab) => (value === "dm" && storyDue) || (value === "chat" && chatUnread > 0);
+  // Something under More is waiting: the button says so before it is opened.
+  const moreWaiting = more.some((value) => count(value) > 0 || due(value));
+  const ActiveIcon = shownActive?.[2];
   return (
-    <nav className="cine-bottombar glass no-scrollbar flex items-stretch gap-1 overflow-x-auto border-t border-stone-700/40 px-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-1 lg:hidden">
-      <button
-        type="button"
-        onClick={onSelectChat}
-        aria-current={mobileView === "chat" ? "page" : undefined}
-        className={cn(ui.railCell, "shrink-0 grow basis-auto", mobileView === "chat" && ui.railCellActive)}
-      >
-        <TableIcon />
-        <span className="eyebrow whitespace-nowrap text-[9px] leading-none">Table</span>
-      </button>
-      {tabs.map(([value, label, Icon]) => {
-        const active = mobileView === "panel" && panelTab === value;
-        return (
+    <>
+      <nav className="cine-bottombar glass no-scrollbar flex items-stretch gap-1 overflow-x-auto border-t border-stone-700/40 px-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] pt-1 lg:hidden">
+        <button
+          type="button"
+          onClick={onSelectChat}
+          aria-current={mobileView === "chat" ? "page" : undefined}
+          className={cn(ui.railCell, "min-w-0 shrink-0 grow basis-0", mobileView === "chat" && ui.railCellActive)}
+        >
+          <TableIcon />
+          <span className="eyebrow whitespace-nowrap text-[9px] leading-none">Table</span>
+        </button>
+        {bar.map((value) => {
+          const def = byId.get(value);
+          if (!def) return null;
+          const [, label, Icon] = def;
+          const active = mobileView === "panel" && panelTab === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              onClick={() => onSelectPanel(value)}
+              data-tour={`tab-${value}`}
+              aria-current={active ? "page" : undefined}
+              className={cn(ui.railCell, "min-w-0 shrink-0 grow basis-0", tabAccentClass(value, active))}
+            >
+              <Icon className={cn("size-5", value === "chat" && chatUnread > 0 && "animate-wiggle")} />
+              <span className="eyebrow whitespace-nowrap text-[9px] leading-none">{label}</span>
+              {value === "chat" && chatUnread > 0 ? (
+                <span className="absolute left-1.5 top-1 size-1.5 rounded-full bg-red-500" />
+              ) : null}
+              {value === "dm" && storyDue ? <span className="absolute right-1.5 top-1 size-1.5 rounded-full bg-amber-400" /> : null}
+              {count(value) ? <span className={tabBadgeClass(value)}>{count(value)}</span> : null}
+            </button>
+          );
+        })}
+        {more.length ? (
           <button
-            key={value}
             type="button"
-            onClick={() => onSelectPanel(value)}
-            data-tour={`tab-${value}`}
-            aria-current={active ? "page" : undefined}
-            className={cn(ui.railCell, "shrink-0 grow basis-auto", tabAccentClass(value, active))}
+            onClick={() => setMoreOpen(true)}
+            data-tour="tab-more"
+            aria-haspopup="dialog"
+            aria-expanded={moreOpen}
+            aria-current={overflowActive ? "page" : undefined}
+            className={cn(ui.railCell, "min-w-0 shrink-0 grow basis-0", overflowActive && ui.railCellActive)}
           >
-            <Icon
-              className={cn("size-5", value === "chat" && chatUnread > 0 && "animate-wiggle")}
-            />
-            <span className="eyebrow whitespace-nowrap text-[9px] leading-none">{label}</span>
-            {value === "chat" && chatUnread > 0 ? (
-              <span className="absolute left-1.5 top-1 size-1.5 rounded-full bg-red-500" />
-            ) : null}
-            {value === "dm" && storyDue ? (
-              <span className="absolute right-1.5 top-1 size-1.5 rounded-full bg-amber-400" />
-            ) : null}
-            {(value === "notes" || (value === "lead" && steersStory)) && pendingCount ? (
-              <span className={tabBadgeClass(value)}>{pendingCount}</span>
-            ) : null}
-            {value === "chat" && chatUnread ? (
-              <span className={tabBadgeClass(value)}>{chatUnread}</span>
-            ) : null}
+            {ActiveIcon ? (
+              <ActiveIcon className="size-5" />
+            ) : (
+              <span className="tab-more-diamonds" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+            )}
+            <span className="eyebrow whitespace-nowrap text-[9px] leading-none">{shownActive ? shownActive[1] : "More"}</span>
+            {moreWaiting ? <span className="absolute right-1.5 top-1 size-1.5 rounded-full bg-amber-400" /> : null}
           </button>
-        );
-      })}
-    </nav>
+        ) : null}
+      </nav>
+      {more.length ? (
+        <Sheet open={moreOpen} onOpenChange={setMoreOpen} title="More of the table">
+          <ul className="stagger-up space-y-1.5 overflow-y-auto pb-1" aria-label="Every other tab">
+            {more.map((value) => {
+              const def = byId.get(value);
+              if (!def) return null;
+              const [, label, Icon, hint] = def;
+              const active = mobileView === "panel" && panelTab === value;
+              return (
+                <li key={value}>
+                  <button
+                    type="button"
+                    data-more-tab={value}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => {
+                      onSelectPanel(value);
+                      setMoreOpen(false);
+                    }}
+                    className={cn(
+                      "motion-press relative flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left",
+                      active ? "border-amber-400/50 bg-amber-400/10" : "border-stone-800 bg-stone-950/50 hover:border-amber-500/40",
+                    )}
+                  >
+                    <Icon className="size-7 shrink-0" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-display text-sm tracking-wide text-amber-100">{label}</span>
+                      <span className="block text-xs text-stone-400">{hint}</span>
+                    </span>
+                    {count(value) ? <span className={cn(tabBadgeClass(value), "static px-1.5 text-[10px]")}>{count(value)}</span> : null}
+                    {!count(value) && due(value) ? <span className="size-2 rounded-full bg-amber-400" aria-label="Waiting on you" /> : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </Sheet>
+      ) : null}
+    </>
   );
 }
 

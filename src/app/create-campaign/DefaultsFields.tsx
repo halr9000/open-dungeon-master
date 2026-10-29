@@ -57,6 +57,20 @@ const savedOn = (iso: string) => {
 
 export function DefaultsBar({ actions }: { actions: DefaultsActions }) {
   const { state, startFrom, late, kept } = actions;
+  // Nothing saved yet: one quiet line, since there is nothing to choose
+  // between before the person has made a table worth keeping. Saving it
+  // waits on the review step, and Manage stays a tap away.
+  if (state.status === "none" && !kept.length) {
+    return (
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-stone-500" role="status">
+        <GameIcon icon={{ kind: "glyph", key: "ui-pin" }} size="size-4" className="shrink-0" />
+        <span className="min-w-0 flex-1">Starting from the app&apos;s defaults. Like this table? Save it as your usual one on the last step.</span>
+        <button type="button" onClick={actions.onManage} className="cc-link">
+          About defaults
+        </button>
+      </p>
+    );
+  }
   const line =
     state.status === "loading"
       ? "Looking for your saved defaults..."

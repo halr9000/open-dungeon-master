@@ -28,18 +28,20 @@ import {
 } from "@/lib/dm/condition-logic";
 import { tickConcentrationClocks } from "@/lib/dm/concentration-clock";
 import { wakeStable } from "@/lib/dm/death";
-import { breakConcentration, LETHARGY, lethargyMeta } from "@/lib/dm/concentration";
+import { breakConcentration, lethargyMeta, withLethargy } from "@/lib/dm/concentration";
 import { endConcentrationOnFadedSummons, endSpentConcentration } from "@/lib/dm/concentration-upkeep";
 import { STABLE_SOURCE, STABLE_WAKE_HOURS_MAX, UNCONSCIOUS } from "@/lib/dm/vitals-logic";
 import { holdsFeature } from "@/lib/srd/trait-rules";
 import { tickEffectRound } from "@/lib/db/active-effects";
+import { rollEffectSaves } from "@/lib/dm/effect-saves";
 import { spellTurnStart } from "@/lib/dm/spell-aura";
 import { zoneTurnStart } from "@/lib/dm/zone-triggers";
 import { violetRayTurnStart } from "@/lib/dm/prismatic-violet";
 import { authoredTurnStart } from "@/lib/dm/authored-turns";
 import { readiedSpellOf } from "@/lib/dm/readied-spell";
-import { spellKeyOf as castKeyOf } from "@/lib/dm/cast-rules";
 import { sweepSummons } from "@/lib/dm/summon-store";
+import { textKey } from "@/lib/language/text-logic";
+import { listedAgainst } from "@/lib/dm/roll-about";
 
 // Condition upkeep: timed conditions count down and expire, save-ends
 // conditions get their re-save rolled server-side (enemy saves from stat
@@ -59,9 +61,14 @@ export function tickEncounterConditions(campaign: Campaign, encounter: Encounter
 
   // Active effects count down with conditions, so an effect and a condition
   // applied in the same breath end in the same breath
-  // (src/lib/dm/effects-logic.ts).
-  for (const expired of tickEffectRound(campaign.id)) {
-    lines.push(`${expired.name} wears off.`);
+  // (src/lib/dm/effects-logic.ts). One the party could not tell was there
+  // ends as quietly as it began, and still counts as a change below: its end
+  // can move an enemy's maximum on the tracker.
+  const expired = tickEffectRound(campaign.id, encounter.round);
+  for (const effect of expired) {
+    if (effect.visible) {
+      lines.push(`${effect.name} wears off.`);
+    }
   }
 
   // What belongs to a turn is counted there (startTurnConditions, and the
@@ -76,17 +83,20 @@ export function tickEncounterConditions(campaign: Campaign, encounter: Encounter
   };
   tickEnemyConditions(campaign, encounter, 1, lines, outside);
   tickSheetConditions(campaign, 1, lines, { encounter, ...outside });
+  rollEffectSaves(campaign, encounter, (holderId) => !inOrder.has(holderId), lines);
   lines.push(...tickConcentrationClocks(campaign, 1, (casterId) => !inOrder.has(casterId)));
-  if (lines.length) {
+  if (lines.length || expired.length) {
     endSpentConcentration(campaign, lines);
   }
   // A frenzy outliving its rage costs its level of exhaustion (frenzy.ts).
   lines.push(...settleFrenzies(campaign));
 
-  if (lines.length) {
+  if (lines.length || expired.length) {
     publishPersisted(campaign.id, "encounter_updated", {
       encounter: activePublicEncounter(campaign.id),
     });
+  }
+  if (lines.length) {
     noteAtTable(campaign.id, lines);
   }
 }
@@ -104,6 +114,7 @@ export function tickClockConditions(campaign: Campaign, minutes: number) {
   }
   const lines: string[] = [];
   tickSheetConditions(campaign, rounds, lines, { endTurnBound: true });
+  rollEffectSaves(campaign, null, () => true, lines);
   // A concentration spell lasts no longer than its duration on the road
   // either (src/lib/dm/concentration-clock.ts).
   lines.push(...tickConcentrationClocks(campaign, rounds, () => true));
@@ -181,7 +192,7 @@ export function startTurnConditions(
     const lostSpell = ending.some((name) => name.toLowerCase() === "readied")
       ? readiedSpellOf(sheet)?.spell
       : undefined;
-    if (lostSpell && castKeyOf(sheet.concentratingOn ?? "") === castKeyOf(lostSpell)) {
+    if (lostSpell && textKey(sheet.concentratingOn ?? "") === textKey(lostSpell)) {
       breakConcentration(campaign, null, sheet.id, "the readied spell was never released");
     }
     const updated = patchSheet(sheet.id, {
@@ -282,7 +293,7 @@ function endTurnRage(
   if (!sheet || !ragingAs) {
     return;
   }
-  if (sheet.features.some((feature) => feature.name.toLowerCase().includes("persistent rage"))) {
+  if (holdsFeature(sheet, "Persistent Rage")) {
     return;
   }
   const meta = sheet.conditionMeta as ConditionMetaMap;
@@ -335,12 +346,8 @@ function tickEnemyConditions(campaign: Campaign, encounter: Encounter, by: numbe
     // Haste running out costs an enemy its next turn as it costs a character
     // (tickSheetConditions below). This clock only runs at the round wrap.
     const hastedAs = tick.expired.find((name) => name.toLowerCase() === "hasted");
-    if (hastedAs && !conditions.includes(LETHARGY)) {
-      conditions = [...conditions, LETHARGY];
-      meta = {
-        ...meta,
-        [LETHARGY]: lethargyMeta(enemy.id),
-      };
+    if (hastedAs) {
+      ({ conditions, meta } = withLethargy(conditions, meta, lethargyMeta(enemy.id)));
       lines.push(`${enemy.displayName} is overcome by lethargy as Haste ends and loses its next turn.`);
     }
     for (const due of tick.savesDue) {
@@ -367,6 +374,7 @@ function tickEnemyConditions(campaign: Campaign, encounter: Encounter, by: numbe
           // A creature with Legendary Resistance spends one to end what binds
           // it, as it would against the first save (src/lib/dm/legendary-tools.ts).
           resist: true,
+          against: due.name,
           // On the record like every roll, for the DM's eyes (enemy saves are
           // rolled silently at the table).
           record: { detail: `${enemy.displayName}: ${due.ability.toUpperCase()} save to end ${due.name}` },
@@ -425,11 +433,10 @@ function tickSheetConditions(
     const hasteLeft = hastedAs
       ? ((sheet.conditionMeta as ConditionMetaMap)[hastedAs]?.rounds ?? by)
       : 0;
-    if (hastedAs && by - hasteLeft < 1 && !conditions.includes(LETHARGY)) {
-      conditions = [...conditions, LETHARGY];
+    if (hastedAs && by - hasteLeft < 1) {
       // In a fight the lethargy holds through the creature's next turn and
       // ends with it; on the clock it is the one round of six seconds.
-      meta = { ...meta, [LETHARGY]: options?.encounter ? lethargyMeta(sheet.id) : { rounds: 1, source: "haste" } };
+      ({ conditions, meta } = withLethargy(conditions, meta, options?.encounter ? lethargyMeta(sheet.id) : { rounds: 1, source: "haste" }));
       lines.push(`${sheet.name} is overcome by lethargy as Haste ends and loses their next turn.`);
     }
     // The wait of a stabilized creature ran out: it regains its hit point
@@ -460,7 +467,7 @@ function tickSheetConditions(
         due.ability,
         due.dc,
         `${due.ability.toUpperCase()} save to end ${due.name}`,
-        due.name,
+        { against: listedAgainst(due.name) },
       );
       // A carrier the save spent (an inspiration die) is gone from the
       // stored sheet; the conditions this tick writes back must not restore it.
@@ -532,6 +539,7 @@ export function endTurnSaves(campaign: Campaign, encounter: Encounter, holderIds
   const ownSave: HolderTick = { counts: () => false, saves: (holderId) => ending.has(holderId), only: ending };
   tickEnemyConditions(campaign, encounter, 0, lines, ownSave);
   tickSheetConditions(campaign, 0, lines, { encounter, ...ownSave });
+  rollEffectSaves(campaign, encounter, (holderId) => ending.has(holderId), lines);
   if (lines.length) {
     endSpentConcentration(campaign, lines);
     publishPersisted(campaign.id, "encounter_updated", {

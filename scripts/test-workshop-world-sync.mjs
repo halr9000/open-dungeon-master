@@ -81,14 +81,15 @@ await test("F14: an entry's fields go with its article; its hidden truth is mark
   assert.match(block, new RegExp(`${field.name}: Lamplighter`));
   // A Cast member's hidden truth rides on their own line of the roster.
   assert.match(npcNotes.get("Mara Quill"), /secretly: Mara drowned the last keeper/);
-  assert.match(block, /anything marked secretly is the DM's/);
+  assert.match(block, /anything marked secretly is the GM's/);
 });
 
 await test("F14: a draft entry is marked as not canon yet, and a retired one is left out.", () => {
   make({ typeId: "t_other", name: "The Pale Tithe", article: "A tax paid in salt.", canon: "draft" });
   make({ typeId: "t_other", name: "The Old Tithe", article: "A tax long abolished.", canon: "retired" });
   const block = worldForPrompt(workshopId, { text: "The Pale Tithe and the Old Tithe come up." }).block;
-  assert.match(block, /The Pale Tithe \[draft: not canon yet/);
+  assert.match(block, /The Pale Tithe \[draft\]/);
+  assert.match(block, /\[draft\] not settled yet; use it only if it fits/, "the draft tag was not explained");
   assert.doesNotMatch(block, /long abolished/);
 });
 

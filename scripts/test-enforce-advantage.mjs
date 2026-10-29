@@ -286,6 +286,10 @@ await test("A lasting effect on attack rolls changes the attack roll (set_effect
   try {
     const outcome = await roll(hero, enemy, { weapon: "Longsword" });
     assert.equal(outcome.state, "advantage", "an effect granting advantage on attacks left the roll straight");
+    // A name they are not under lists the ones they are under.
+    const missed = await world.invoke("clear_effect", { characterId: hero.id, name: "Battle Song" });
+    assert.equal(missed.ok, false);
+    assert.match(String(missed.error), /is not under "Battle Song"; they are under Battle Hymn\./);
   } finally {
     await world.invoke("clear_effect", { characterId: hero.id, name: "Battle Hymn" });
   }

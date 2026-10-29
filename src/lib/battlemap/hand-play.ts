@@ -7,7 +7,7 @@ import { spendAction, spendAttack } from "@/lib/dm/action-budget";
 import { BONUS_SPELL, LEVELLED_SPELL } from "@/lib/dm/cast-rules";
 import { attackContext, mergeAdvantage } from "@/lib/dm/condition-logic";
 import { asPercent, attackOdds, averageDetail } from "@/lib/srd/odds";
-import { matchWeapon } from "@/lib/srd/weapons";
+import { weaponNamed } from "@/lib/srd/weapons";
 import {
   budgetOf,
   type HandAttackOption,
@@ -18,6 +18,7 @@ import {
   type HandTurn,
 } from "@/lib/battlemap/hand-core";
 import { areaArgs, describePick, hasPick, type AreaPick, type HandArea } from "@/lib/battlemap/hand-area";
+import { textKey } from "@/lib/language/text-logic";
 
 // Who a card is aimed at. `ac` only ever arrives in the DM's projection; a
 // player's preview works from the challenge rating, which they can see.
@@ -60,7 +61,13 @@ function chosenLabel(card: HandCard, choices: HandChoices): string | null {
   return card.choice?.options.find((option) => option.value === value)?.label ?? value;
 }
 
-export type PreviewRow = { key: string; value: string; tone: "damage" | "heal" | "plain" | "save" | "muted" | "applies" | "cost" };
+export type PreviewRow = {
+  key: string;
+  value: string;
+  tone: "damage" | "heal" | "plain" | "save" | "muted" | "applies" | "cost";
+  // The Cost row's cost, so it wears that cost's colour (issue 529).
+  cost?: HandCost;
+};
 
 // The armour class a creature of this challenge usually carries (the SRD's
 // monster statistics by challenge rating). An estimate, and labelled as one.
@@ -128,7 +135,7 @@ export function previewRows(
         adjacent,
         requested: "none",
       });
-      const sources = [context.advantage];
+      const sources = [...context.sources];
       if (edge?.flanking && card.melee) sources.push("advantage");
       if (choices.options?.includes("reckless")) sources.push("advantage");
       if (choices.options?.includes("useInspiration")) sources.push("advantage");
@@ -159,7 +166,7 @@ export function previewRows(
   }
   if (card.damageType) rows.push({ key: "Type", value: card.damageType, tone: "muted" });
   if (card.condition) rows.push({ key: "Applies", value: card.condition, tone: "applies" });
-  rows.push({ key: "Cost", value: card.resource ? `${costLabel(card.cost)} · ${card.resource}` : costLabel(card.cost), tone: "cost" });
+  rows.push({ key: "Cost", value: card.resource ? `${costLabel(card.cost)} · ${card.resource}` : costLabel(card.cost), tone: "cost", cost: card.cost });
   return rows;
 }
 
@@ -243,6 +250,23 @@ export function composeSentence(
   if (intent.card === "monster") {
     return "";
   }
+  if (intent.card === "gear") {
+    const item = chosenLabel(card, choices) ?? "it";
+    switch (intent.action) {
+      case "equip":
+        return card.id === "gear:don-shield" ? `I strap on my ${item}.` : `I draw my ${item}.`;
+      case "unequip":
+        return card.id === "gear:doff-shield" ? `I take off my ${item}.` : `I stow my ${item}.`;
+      case "drop":
+        return `I drop my ${item}.`;
+      case "pick_up":
+        return `I pick up the ${item}.`;
+      case "hand":
+        return `I hand my ${item} to ${who || "my ally"}.`;
+      case "use":
+        return aim && aim.kind !== "self" ? `I give ${who} my ${item} to drink.` : `I drink my ${item}.`;
+    }
+  }
   // The feature that routes it to the bonus action is the card's name
   // before the colon ("Cunning Action: Dash").
   const route = intent.bonus ? card.name.split(":")[0].trim() : "";
@@ -280,6 +304,10 @@ export function composeSentence(
       return "I end my turn.";
     case "stand-up":
       return "I stand up.";
+    case "stabilize":
+      return `I try to stabilize ${who || "my dying ally"}.`;
+    case "dismount":
+      return "I dismount.";
   }
 }
 
@@ -368,6 +396,9 @@ export function afterCommit(turn: HandTurn, card: HandCard, allowed = 1): HandTu
       : card.cost === "action" || card.cost === "bonus" || card.cost === "reaction"
         ? spendAction(budget, card.cost, card.name, "")
         : null;
+  // A gear card that is the object interaction marks it; once it is gone,
+  // the card's cost is the Use an Object action and is spent above.
+  const interacts = card.interaction === true;
   const spent = result && result.ok ? result.budget : budget;
   const next: HandTurn = {
     ...turn,
@@ -379,12 +410,13 @@ export function afterCommit(turn: HandTurn, card: HandCard, allowed = 1): HandTu
     grantedActions: spent.grantedActions,
     flurryStrikes: spent.flurryStrikes,
     marks: spent.oncePerTurn,
+    ...(turn.interactionUsed || interacts ? { interactionUsed: true } : {}),
   };
   // What the Attack action was made with, as the engine records it
   // (pc-attack-spend.ts) and the public turn says it: the off-hand card
   // reads it (issue 210).
   if (swing && result?.ok && intent.card === "attack") {
-    const properties = matchWeapon(intent.weapon ?? "")?.properties ?? [];
+    const properties = weaponNamed(intent.weapon ?? "")?.properties ?? [];
     const wielded = card.melee && intent.weapon !== "Unarmed strike";
     next.lightMeleeAttack = Boolean(turn.lightMeleeAttack) || (wielded && properties.includes("light"));
     next.oneHandMeleeAttack = Boolean(turn.oneHandMeleeAttack) || (wielded && !properties.includes("two-handed"));
@@ -413,9 +445,9 @@ export function afterCommit(turn: HandTurn, card: HandCard, allowed = 1): HandTu
 export function targetFromComposedText(text: string, names: string[]): string | null {
   const match = /^I (?:attack|cast\s+at)\s+(.+?)\.?\s*$/i.exec(text.trim());
   if (!match) return null;
-  const said = match[1].trim().toLowerCase();
+  const said = textKey(match[1]);
   const sorted = [...names].sort((a, b) => b.length - a.length);
-  return sorted.find((name) => name.trim().toLowerCase() === said) ?? null;
+  return sorted.find((name) => textKey(name) === said) ?? null;
 }
 
 // Window events a board can use to aim a raised card directly: the Hand

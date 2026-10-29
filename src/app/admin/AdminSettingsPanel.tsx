@@ -28,6 +28,8 @@ import { AdminSpeechSection } from "@/app/admin/AdminSpeechSection";
 import { AmbienceLibraryCard } from "@/app/admin/AmbienceLibraryCard";
 import { AdminHarnessSection } from "@/app/admin/AdminHarnessSection";
 import { mergeAdminConfigDraft } from "@/app/admin/merge-config-draft";
+import { Lamp, type Tone } from "@/app/setup/SetupParts";
+import { useCapabilities } from "@/lib/use-capabilities";
 import {
   Field,
   SECRET_KEPT,
@@ -35,6 +37,7 @@ import {
   SelectField,
   type EnvDefaults,
   type MaskedConfig,
+  inheritedHint,
 } from "@/app/admin/AdminSettingsFields";
 
 // The sticky contents rail: one stop per section, left out where a device
@@ -65,6 +68,10 @@ function jumpTo(id: string) {
 
 export function AdminSettingsPanel() {
   const [config, setConfig] = useState<MaskedConfig | null>(null);
+  // The config as the server last saved it, so the panel can say whether
+  // anything here is waiting for Save settings.
+  const [savedConfig, setSavedConfig] = useState<MaskedConfig | null>(null);
+  const capabilities = useCapabilities();
   const [env, setEnv] = useState<EnvDefaults | null>(null);
   const [apiKey, setApiKey] = useState(SECRET_KEPT);
   const [utilityApiKey, setUtilityApiKey] = useState(SECRET_KEPT);
@@ -96,6 +103,7 @@ export function AdminSettingsPanel() {
       .then((data) => {
         if (data) {
           setConfig(data.config);
+          setSavedConfig(data.config);
           setEnv(data.envDefaults);
           setVoiceUnroutable(Boolean(data.voiceAnnounceUnroutable));
           setDeviceWorld(Boolean(data.deviceWorld));
@@ -126,9 +134,58 @@ export function AdminSettingsPanel() {
     };
   }, [drawn, section]);
 
+  const secretsTouched = [apiKey, utilityApiKey, openaiImageKey, ttsApiKey, discordSecret].some((value) => value !== SECRET_KEPT);
+  const dirty = Boolean(config && savedConfig) && (secretsTouched || JSON.stringify(config) !== JSON.stringify(savedConfig));
+
+  // Leaving with changes unsaved asks first: the form saves only with its
+  // button, and nothing else on the page says a change is waiting.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
   if (!config || !env) {
     return <PageSkeleton kind="flat" className="px-0 py-2" />;
   }
+  // The utility model runs on Ollama when that is picked, here or by the
+  // environment, or when it is left to follow a storyteller on Ollama;
+  // otherwise on an OpenAI-compatible server, the story's own when no
+  // address is typed (src/lib/runtime-defaults.ts, src/lib/model-client.ts).
+  const storyOnOllama = (config.text.provider || env.textProvider) === "local";
+  const utilityOnOllama = (config.text.utilityProvider || env.utilityProvider || (storyOnOllama ? "local" : "custom")) === "local";
+
+  function discard() {
+    if (!savedConfig) return;
+    setConfig(savedConfig);
+    setApiKey(SECRET_KEPT);
+    setUtilityApiKey(SECRET_KEPT);
+    setOpenaiImageKey(SECRET_KEPT);
+    setTtsApiKey(SECRET_KEPT);
+    setDiscordSecret(SECRET_KEPT);
+    setError("");
+  }
+
+  // What the rail says beside the AI sections, in four states a person can
+  // tell apart: working, set up but not answering, not set up yet, switched
+  // off on purpose; and "checking" until the server has said. Read from the
+  // live capabilities and the saved settings, so it reflects what is saved
+  // rather than what is typed.
+  const lampFor = (id: string): { tone: Tone; words: string } | null => {
+    const part = id === "admin-text" ? "story" : id === "admin-images" ? "images" : id === "admin-speech" ? "tts" : null;
+    if (!part) return null;
+    if (!capabilities) return { tone: "wait", words: "Checking" };
+    const switchedOff =
+      (part === "story" && savedConfig?.text.provider === "none") ||
+      (part === "tts" && (savedConfig?.speech.ttsProvider === "off" || capabilities.tts?.provider === "off"));
+    if (switchedOff) return { tone: "off", words: "Switched off" };
+    const state = capabilities[part];
+    if (!state.configured) return { tone: "warn", words: "Not set up yet" };
+    return state.reachable ? { tone: "ok", words: "Working" } : { tone: "bad", words: "Set up, but not answering" };
+  };
 
   async function save() {
     if (!config) return;
@@ -201,6 +258,7 @@ export function AdminSettingsPanel() {
         return;
       }
       setConfig(data.config);
+      setSavedConfig(data.config);
       setVoiceUnroutable(Boolean(data.voiceAnnounceUnroutable));
       setApiKey(SECRET_KEPT);
       setUtilityApiKey(SECRET_KEPT);
@@ -218,12 +276,44 @@ export function AdminSettingsPanel() {
   return (
     <div className="space-y-4">
       <nav aria-label="Settings sections" className="contents-rail panel">
-        {STOPS.filter((stop) => !(deviceWorld && stop.server)).map((stop) => (
-          <button key={stop.id} type="button" onClick={() => jumpTo(stop.id)} className="motion-press">
-            <GameIcon icon={{ kind: "glyph", key: stop.glyph }} size="size-7" /> {stop.label}
-          </button>
-        ))}
+        {STOPS.filter((stop) => !(deviceWorld && stop.server)).map((stop) => {
+          const lamp = lampFor(stop.id);
+          return (
+            <button key={stop.id} type="button" onClick={() => jumpTo(stop.id)} className="motion-press">
+              <GameIcon icon={{ kind: "glyph", key: stop.glyph }} size="size-7" /> {stop.label}
+              {lamp ? (
+                <span title={lamp.words}>
+                  <Lamp tone={lamp.tone} className="ml-0.5" />
+                  <span className="sr-only">: {lamp.words}</span>
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
       </nav>
+      <p className="text-xs text-stone-500">
+        Changes on this page wait for <span className="text-stone-300">Save settings</span>, which follows you down the
+        page. Invites, backups, storage and player agents act at once.
+      </p>
+      {/* The lamps in words, so the four states are read rather than told
+          apart by colour alone. */}
+      <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-400" data-admin-status>
+        {(
+          [
+            ["admin-text", "Text model"],
+            ["admin-images", "Images"],
+            ["admin-speech", "Speech"],
+          ] as const
+        ).map(([id, label]) => {
+          const lamp = lampFor(id);
+          return lamp ? (
+            <span key={`${id}-${lamp.words}`} className="reveal inline-flex items-center gap-1.5">
+              <Lamp tone={lamp.tone} />
+              {label}: {lamp.words.toLowerCase()}
+            </span>
+          ) : null;
+        })}
+      </p>
       {deviceWorld ? (
         <p className="reveal text-xs text-stone-500">
           This world runs inside the app, which manages its address, sharing
@@ -237,14 +327,14 @@ export function AdminSettingsPanel() {
           <div className="mb-3">
             <Field
               label="Server name"
-              hint="Shown on the login screen and in client apps' server pickers. Blank = Open Dungeon Master."
+              hint="Shown on the login screen and in client apps' server pickers. Blank = Open Game Master."
             >
               <input
                 className={ui.input}
                 value={config.serverName}
                 maxLength={100}
                 onChange={(event) => setConfig({ ...config, serverName: event.target.value })}
-                placeholder="Open Dungeon Master"
+                placeholder="Open Game Master"
               />
             </Field>
           </div>
@@ -252,7 +342,7 @@ export function AdminSettingsPanel() {
             label="Public URL"
             hint={
               env.publicUrl
-                ? `Env: ${env.publicUrl}`
+                ? inheritedHint(config.publicUrl, env.publicUrl)
                 : "The address players actually use (needed for Discord sign-in behind a reverse proxy). Blank = auto-detect."
             }
           >
@@ -380,15 +470,17 @@ export function AdminSettingsPanel() {
             onChange={(provider) => setConfig({ ...config, text: { ...config.text, provider } })}
             options={[
               { value: "" as const, label: "Auto (env or built-in)" },
-              { value: "custom" as const, label: "OpenAI-compatible server" },
-              ...(phoneWorld ? [] : [{ value: "local" as const, label: "Ollama (native)" }]),
+              { value: "custom" as const, label: "llama.cpp or another OpenAI-compatible server" },
+              ...(phoneWorld ? [] : [{ value: "local" as const, label: "Ollama" }]),
               ...(phoneWorld ? [] : [{ value: "harness" as const, label: "The agent program (below)" }]),
               { value: "none" as const, label: "No AI storyteller" },
             ]}
           />
-          {phoneWorld ? null : (
+          {/* Only where Ollama is what runs: picked here, or what a blank
+              provider means in the environment. */}
+          {phoneWorld || (config.text.provider || env.textProvider) !== "local" ? null : (
             <ModelChoiceField
-              label="Local model (Ollama native)"
+              label="Ollama model"
               hint="What this machine's Ollama has pulled; any tag it serves can be typed."
               role="story"
               provider="local"
@@ -397,14 +489,14 @@ export function AdminSettingsPanel() {
               blankLabel={env.localTextModel ? fromEnv(env.localTextModel, "LOCAL_TEXT_MODEL") : BLANK.story}
             />
           )}
-          <Field label="Backend base URL" hint={env.customBaseUrl ? `Env: ${env.customBaseUrl}` : undefined}>
+          <Field label="Backend base URL" hint={inheritedHint(config.text.customBaseUrl, env.customBaseUrl)}>
             <input
               className={ui.input}
               value={config.text.customBaseUrl}
               onChange={(event) =>
                 setConfig({ ...config, text: { ...config.text, customBaseUrl: event.target.value } })
               }
-              placeholder={env.customBaseUrl || "http://127.0.0.1:11434/v1"}
+              placeholder={env.customBaseUrl || "http://127.0.0.1:8001/v1"}
             />
           </Field>
           <ModelChoiceField
@@ -461,9 +553,12 @@ export function AdminSettingsPanel() {
         <AdminHarnessSection
           textProvider={config.text.provider}
           imagesBackend={config.images.defaultBackend}
-          onConfig={(patch) =>
-            setConfig((current) => (current ? mergeAdminConfigDraft(current, patch) : current))
-          }
+          onConfig={(patch) => {
+            // The agent section saves its own fields: they are saved, so the
+            // snapshot takes them too and they never read as unsaved.
+            setConfig((current) => (current ? mergeAdminConfigDraft(current, patch) : current));
+            setSavedConfig((current) => (current ? mergeAdminConfigDraft(current, patch) : current));
+          }}
           speedNotes={speedNotes}
         />
       )}
@@ -483,17 +578,25 @@ export function AdminSettingsPanel() {
             value={config.text.utilityProvider}
             onChange={(utilityProvider) => setConfig({ ...config, text: { ...config.text, utilityProvider } })}
             options={[
-              { value: "" as const, label: "Auto (Ollama)" },
-              ...(phoneWorld ? [] : [{ value: "local" as const, label: "Ollama (native)" }]),
-              { value: "custom" as const, label: "OpenAI-compatible server" },
+              {
+                value: "" as const,
+                label:
+                  env.utilityProvider === "local"
+                    ? "Auto (Ollama, from UTILITY_TEXT_PROVIDER)"
+                    : storyOnOllama
+                      ? "Auto (the story's server, Ollama)"
+                      : "Auto (the story's server)",
+              },
+              { value: "custom" as const, label: "llama.cpp or another OpenAI-compatible server" },
+              ...(phoneWorld ? [] : [{ value: "local" as const, label: "Ollama" }]),
             ]}
           />
           <ModelChoiceField
             label="Model name"
             hint="Anything in the 4B-8B class is plenty."
             role="utility"
-            provider={config.text.utilityProvider === "custom" ? "custom" : "local"}
-            baseUrl={config.text.utilityProvider === "custom" ? config.text.utilityBaseUrl : ""}
+            provider={utilityOnOllama ? "local" : "custom"}
+            baseUrl={utilityOnOllama ? "" : config.text.utilityBaseUrl || config.text.customBaseUrl || env.customBaseUrl}
             apiKey={utilityApiKey === SECRET_KEPT ? "" : utilityApiKey}
             value={config.text.utilityModel}
             onChange={(utilityModel) => setConfig({ ...config, text: { ...config.text, utilityModel } })}
@@ -501,7 +604,7 @@ export function AdminSettingsPanel() {
           />
           <Field
             label="Backend base URL"
-            hint="Only for an OpenAI-compatible utility server. Blank uses the Ollama endpoint."
+            hint="For a llama.cpp or other OpenAI-compatible helper on another machine. Blank uses the story's server."
           >
             <input
               className={ui.input}
@@ -512,7 +615,7 @@ export function AdminSettingsPanel() {
                   text: { ...config.text, utilityBaseUrl: event.target.value },
                 })
               }
-              placeholder="http://127.0.0.1:11434/v1"
+              placeholder={config.text.customBaseUrl || env.customBaseUrl || "http://127.0.0.1:8001/v1"}
             />
           </Field>
           <SecretField
@@ -522,13 +625,13 @@ export function AdminSettingsPanel() {
             onChange={setUtilityApiKey}
             hint="Most local servers need none."
           />
-          {config.text.utilityProvider === "custom" && config.text.utilityModel.trim() ? (
+          {!utilityOnOllama && config.text.utilityModel.trim() ? (
             <SpeedField
               label="Processing speed"
               value={config.text.utilitySpeed}
               onChange={(utilitySpeed) => setConfig({ ...config, text: { ...config.text, utilitySpeed } })}
               eligibility={apiSpeedEligibility({
-                endpointKind: describeEndpoint(config.text.utilityBaseUrl).kind,
+                endpointKind: describeEndpoint(config.text.utilityBaseUrl || config.text.customBaseUrl || env.customBaseUrl || "").kind,
                 model: config.text.utilityModel,
               })}
               note={speedNotes.utility}
@@ -591,10 +694,20 @@ export function AdminSettingsPanel() {
         <AdminStorageSection />
       </PageSection>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="admin-savebar flex flex-wrap items-center gap-3" data-dirty={dirty || undefined}>
         <button type="button" onClick={save} disabled={saving} aria-busy={saving} className={ui.btnPrimary}>
           {saving ? <Loader2 className="size-4 animate-spin" /> : null} Save settings
         </button>
+        {dirty && !saving ? (
+          <>
+            <span role="status" className="live-in inline-flex items-center gap-1.5 text-sm text-amber-200">
+              <Lamp tone="wait" /> Unsaved changes
+            </span>
+            <button type="button" onClick={discard} className={ui.btnSmall}>
+              Undo changes
+            </button>
+          </>
+        ) : null}
         {saved ? (
           <span role="status" className="live-in inline-flex items-center gap-1 text-sm text-emerald-400">
             <Check className="size-4" /> Saved

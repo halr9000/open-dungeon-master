@@ -1,13 +1,14 @@
 import { subclassSpellsFor } from "@/lib/srd/features";
 import { FEAT_ONLY_SPEED } from "@/lib/srd/feature-effects";
+import { formSees } from "@/lib/srd/form-sees";
 import { hasMediumArmorMaster } from "@/lib/srd/feat-combat";
 import backgroundsJson from "@/lib/srd/backgrounds.json";
 import classesJson from "@/lib/srd/classes.json";
 import racesJson from "@/lib/srd/races.json";
 import skillsJson from "@/lib/srd/skills.json";
 import spellSlotsJson from "@/lib/srd/spell-slots.json";
-import { CUSTOM_CLASSES } from "@/lib/classes";
-import { computeArmorClass, matchArmor, unarmoredFormulaFor, type AcBreakdown } from "@/lib/srd/armor";
+import { CUSTOM_CLASSES, findCustomClass } from "@/lib/classes";
+import { computeArmorClass, unarmoredFormulaFor, type AcBreakdown } from "@/lib/srd/armor";
 import { conditionAcRiders } from "@/lib/srd/condition-effects";
 import { combatRiders, defenseRiders, halfProficiencyCovers } from "@/lib/srd/feature-effects";
 import { featureSaveProficiencies } from "@/lib/srd/trait-rules";
@@ -26,6 +27,7 @@ import type {
 import { itemCastNumbers } from "@/lib/srd/item-cast-credit";
 
 import type { SrdBackground, SrdClass, SrdRace, SrdSkill } from "@/lib/srd/srd-types";
+import { textKey } from "@/lib/language/text-logic";
 
 export type { SrdBackground, SrdClass, SrdRace, SrdSkill } from "@/lib/srd/srd-types";
 
@@ -44,8 +46,9 @@ const SLOT_TABLES = spellSlotsJson as unknown as {
 // SRD classes first, then the setting-specific custom catalog.
 export const ALL_CLASSES: SrdClass[] = [...SRD_CLASSES, ...CUSTOM_CLASSES];
 
-export function findClass(id: string) {
-  return ALL_CLASSES.find((entry) => entry.id === id) ?? null;
+// A workshop class is registered at run time (src/lib/classes/index.ts).
+export function findClass(id: string): SrdClass | null {
+  return ALL_CLASSES.find((entry) => entry.id === id) ?? findCustomClass(id);
 }
 
 export function findRace(id: string) {
@@ -92,9 +95,10 @@ export function spellSlotsFor(
   classId: string,
   level: number,
   subclass?: string | null,
+  progression?: string | null,
 ): Record<string, number> {
   const klass = findClass(classId);
-  if (klass?.casterType === "none" && isThirdCaster(classId, subclass)) {
+  if (klass?.casterType === "none" && isThirdCaster(classId, subclass, progression)) {
     return thirdCasterSlots(level);
   }
   if (!klass || klass.casterType === "none") {
@@ -244,19 +248,20 @@ export function effectiveAcFor(
     abilities?: AbilityScores;
   },
 ): number {
-  if (sheet.wildShape?.beastAc !== undefined && sheet.wildShape?.beastAc !== null) {
-    return sheet.wildShape.beastAc;
-  }
-  if (!sheet.acOverride || !sheet.conditions?.length) {
+  // A form's own AC is the base the ongoing effects ride (Shield of Faith,
+  // Haste, Slow, Barkskin's floor); the stored AC already carries them.
+  const formAc = sheet.wildShape?.beastAc ?? null;
+  if (formAc === null && (!sheet.acOverride || !sheet.conditions?.length)) {
     return sheet.ac;
   }
-  const mods = sheet.abilities
+  const scores = sheet.abilities ? { ...sheet.abilities, ...(sheet.wildShape?.abilities ?? {}) } : undefined;
+  const mods = scores
     ? Object.fromEntries(
-        Object.entries(sheet.abilities).map(([ability, score]) => [ability, abilityMod(score)]),
+        Object.entries(scores).map(([ability, score]) => [ability, abilityMod(score)]),
       )
     : undefined;
-  const riders = conditionAcRiders(sheet.conditions, mods);
-  const raised = sheet.ac + riders.bonus;
+  const riders = conditionAcRiders(sheet.conditions ?? [], mods);
+  const raised = (formAc ?? sheet.ac) + riders.bonus;
   return riders.floor ? Math.max(raised, riders.floor) : raised;
 }
 
@@ -285,7 +290,7 @@ export function speedFor(
   // Test doubles and half-built sheets may lack these lists. A feat that
   // moves speed (Mobile) is read from sheet.feats as a feature by its name.
   const featNames = (source.feats ?? []).filter(
-    (feat) => !(source.features ?? []).some((feature) => feature.name.toLowerCase() === feat.toLowerCase()),
+    (feat) => !(source.features ?? []).some((feature) => textKey(feature.name) === textKey(feat)),
   );
   const features = [...(source.features ?? []), ...featNames.map((name) => ({ name }))];
   const equipment = source.equipment ?? [];
@@ -297,7 +302,7 @@ export function speedFor(
     campaignId: source.campaignId,
   });
   const breakdown = acBreakdownFor({ ...source, features, equipment });
-  const worn = breakdown.armor ?? (breakdown.armorName ? matchArmor(breakdown.armorName) : null);
+  const worn = breakdown.armor;
   // One feature's tiers replace each other; different features add up.
   const bySource = new Map<object | undefined, number>();
   for (const entry of riders.speedBonuses) {
@@ -307,11 +312,15 @@ export function speedFor(
     if (entry.gate === "armor_or_shield" && (worn || breakdown.shieldName)) {
       continue;
     }
+    // Raging, and not in heavy armor (Totem Spirit: Elk).
+    if (entry.gate === "raging" && (!(source.conditions ?? []).some((name) => name.trim().toLowerCase() === "raging") || worn?.category === "heavy")) {
+      continue;
+    }
     bySource.set(entry.source, Math.max(bySource.get(entry.source) ?? 0, entry.amount));
   }
   // A feat whose name a class feature shares is read from sheet.feats alone
   // (feature-effects.ts FEAT_ONLY_SPEED: Level Up's Skirmisher).
-  const featOnly = (source.feats ?? []).reduce((sum, feat) => sum + (FEAT_ONLY_SPEED[feat.trim().toLowerCase()] ?? 0), 0);
+  const featOnly = (source.feats ?? []).reduce((sum, feat) => sum + (FEAT_ONLY_SPEED[textKey(feat)] ?? 0), 0);
   const bonus = [...bySource.values()].reduce((sum, amount) => sum + amount, 0) + featOnly;
   const carried = source.abilities
     ? encumbranceFor({
@@ -396,7 +405,13 @@ export function computeSheetDerived(
     campaignId?: string;
   },
 ): SheetDerived {
-  const pb = proficiencyBonus(sheet.level);
+  // A Polymorph's beast is its own creature: none of the character's
+  // proficiencies, features, feats or gear (form-sees.ts).
+  sheet = formSees(sheet);
+  // A creature Polymorph, Animal Shapes or True Polymorph made has the
+  // proficiency bonus its challenge rating carries, not the character's.
+  const shape = sheet.wildShape;
+  const pb = shape?.kind === "polymorph" && !shape.keepsTraining && shape.cr !== undefined ? proficiencyBonus(Math.max(1, shape.cr)) : proficiencyBonus(sheet.level);
   // Ability-setting magic items raise the scores every other number reads.
   const withItems = sheet.equipment
     ? effectiveAbilities(sheet.abilities, sheet.equipment, sheet)
@@ -545,33 +560,44 @@ function casterEntryForSpell(
   // domain's, an oath's, a circle's), which no list on the sheet names.
   classes: Array<{ id: string; subclass?: string; level: number }> = [],
 ): NonNullable<NonNullable<CharacterSheet["spellcasting"]>["casters"]>[number] | null {
-  const wanted = spellName.trim().toLowerCase();
+  const wanted = textKey(spellName);
   if (!wanted || !spellcasting.casters?.length) {
     return null;
   }
   const listed = spellcasting.casters.find((caster) =>
     allSpellNames(caster).some(
-      (entry) => entry.trim().toLowerCase() === wanted,
+      (entry) => textKey(entry) === wanted,
     ),
   );
   if (listed) {
     return listed;
   }
   const granter = classes.find(
-    (entry) => entry.subclass && subclassSpellsFor(entry.id, entry.subclass, entry.level).some((name) => name.trim().toLowerCase() === wanted),
+    (entry) => entry.subclass && subclassSpellsFor(entry.id, entry.subclass, entry.level).some((name) => textKey(name) === wanted),
   );
   if (granter) {
     return spellcasting.casters.find((caster) => caster.classId.toLowerCase() === granter.id.toLowerCase()) ?? null;
   }
   // A ritual read from a wizard's book, prepared or not, is the wizard's.
-  return spellcasting.casters.find((caster) => (caster.spellbook ?? []).some((entry) => entry.trim().toLowerCase() === wanted)) ?? null;
+  return spellcasting.casters.find((caster) => (caster.spellbook ?? []).some((entry) => textKey(entry) === wanted)) ?? null;
+}
+
+type DerivedSheet = Parameters<typeof computeSheetDerived>[0];
+export type CastingSheet<T extends DerivedSheet = DerivedSheet> = T & { spellcasting: NonNullable<T["spellcasting"]> };
+
+// A sheet with spellcasting, which always has a save DC (its ability is
+// required by the sheet schema).
+export function castsSpells<T extends DerivedSheet>(sheet: T): sheet is CastingSheet<T> {
+  return Boolean(sheet.spellcasting);
 }
 
 // The save DC a named spell is cast at: the owning caster class's ability
 // on a multiclass sheet, the sheet's single DC otherwise. Falls back to the
 // primary DC for spells no caster entry lists (scrolls, story grants).
+export function spellSaveDcFor(sheet: CastingSheet, spellName: string): number;
+export function spellSaveDcFor(sheet: DerivedSheet, spellName: string): number | null;
 export function spellSaveDcFor(
-  sheet: Parameters<typeof computeSheetDerived>[0],
+  sheet: DerivedSheet,
   spellName: string,
 ): number | null {
   // A spell cast from a scroll or a wand carries the item's DC
@@ -592,8 +618,10 @@ export function spellSaveDcFor(
 }
 
 // The spell-attack bonus for a named spell, same ownership rule as the DC.
+export function spellAttackFor(sheet: CastingSheet, spellName: string): number;
+export function spellAttackFor(sheet: DerivedSheet, spellName: string): number | null;
 export function spellAttackFor(
-  sheet: Parameters<typeof computeSheetDerived>[0],
+  sheet: DerivedSheet,
   spellName: string,
 ): number | null {
   const fromItem = itemCastNumbers((sheet as { id?: string }).id, spellName)?.attackBonus;

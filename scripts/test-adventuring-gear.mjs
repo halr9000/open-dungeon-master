@@ -15,7 +15,7 @@ const { SRD_GEAR, matchGear, gearPriceCopper, gearWeightLb, resolveGearLine, res
 const { PACKS } = await import("../src/lib/srd/starting-kit-data.ts");
 const { bundledPrices, bundledPriceCopper, judgeStartingGear, layeredPrice, packRowPrice } = await import("../src/lib/srd/starting-wealth.ts");
 const { lineWeightLb } = await import("../src/lib/srd/encumbrance.ts");
-const { matchArmor, suggestArmor, armorOfRow } = await import("../src/lib/srd/armor.ts");
+const { armorNamed, suggestArmor, armorOfRow } = await import("../src/lib/srd/armor.ts");
 const { srdBackgroundOptions } = await import("../src/lib/characters/options.ts");
 const { classGenres } = await import("../src/lib/classes/index.ts");
 const { acBreakdownFor } = await import("../src/lib/srd/index.ts");
@@ -128,13 +128,14 @@ test("what the catalog does not know stays as the book wrote it, tidied, and a c
 });
 
 test("'work leathers' is not Leather armor: a barbarian keeps Unarmored Defense (#113)", () => {
-  assert.equal(matchArmor("work leathers"), null);
-  assert.equal(matchArmor("Work Leathers"), null);
+  assert.equal(armorNamed("work leathers"), null);
+  assert.equal(armorNamed("Work Leathers"), null);
   assert.equal(armorOfRow({ name: "Work leathers" }), null);
-  // The tail rule still finds armor written out in full.
-  assert.equal(matchArmor("Dwarven Chain Mail")?.name, "Chain Mail");
-  assert.equal(matchArmor("+1 Studded Leather")?.name, "Studded Leather");
-  assert.equal(matchArmor("Shields")?.name, "Shield");
+  // Armor is found by its whole name, past a "+N" bonus; a name around it
+  // ("Dwarven Chain Mail") is a different item, which srdName names.
+  assert.equal(armorNamed("Dwarven Chain Mail"), null);
+  assert.equal(armorNamed("+1 Studded Leather")?.name, "Studded Leather");
+  assert.equal(armorNamed("Shields")?.name, "Shield");
   const ac = acBreakdownFor({
     class: "barbarian",
     level: 1,
@@ -251,12 +252,14 @@ test("a priced pack row the bundled table never priced is bought at the pack's p
 
 test("a name the pack files as both a magic item and priced gear is offered as the gear row, the one the server prices (#136 review)", async () => {
   const { uniqueByName } = await import("../src/app/characters/builder/pickerRows.ts");
-  const magic = { slug: "spell-scroll", name: "Spell Scroll", source: "open5e", kind: "magic_item", cost: "" };
-  const gear = { slug: "srd-2024_spell-scroll", name: "Spell Scroll", source: "open5e", kind: "gear", cost: "30 gp" };
+  // A potion of healing is both: a magic item, and 50 gp on SRD 5.1's
+  // Adventuring Gear table.
+  const magic = { slug: "potion-of-healing", name: "Potion of Healing", source: "open5e", kind: "magic_item", cost: "" };
+  const gear = { slug: "srd_potion-of-healing", name: "Potion of Healing", source: "open5e", kind: "gear", cost: "50 gp" };
   const other = { slug: "rope", name: "Rope, Hempen (50 feet)", source: "open5e", kind: "gear", cost: "1 gp" };
   // Whichever order the pack answers in, the gear row is the one kept, in the name's first position.
-  assert.deepEqual(uniqueByName([magic, other, gear]).map((row) => row.slug), ["srd-2024_spell-scroll", "rope"]);
-  assert.deepEqual(uniqueByName([gear, magic, other]).map((row) => row.slug), ["srd-2024_spell-scroll", "rope"]);
+  assert.deepEqual(uniqueByName([magic, other, gear]).map((row) => row.slug), ["srd_potion-of-healing", "rope"]);
+  assert.deepEqual(uniqueByName([gear, magic, other]).map((row) => row.slug), ["srd_potion-of-healing", "rope"]);
   // Two rows of the same kind: the first wins, as before.
   assert.deepEqual(uniqueByName([{ ...magic, slug: "a" }, { ...magic, slug: "b" }]).map((row) => row.slug), ["a"]);
   assert.deepEqual(uniqueByName([{ ...gear, slug: "a" }, { ...gear, slug: "b" }]).map((row) => row.slug), ["a"]);

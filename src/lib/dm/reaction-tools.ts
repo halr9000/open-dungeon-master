@@ -14,6 +14,7 @@
 //     the map is resolved here as one attack with the reaction.
 // Split from action-tools.ts, which re-exports the handler.
 
+import { resolveTargetFoe } from "@/lib/dm/sheet-foe";
 import { defensiveDuelist, lucky, mageSlayer, reservesRecovery, sentinel } from "@/lib/dm/feat-reactions";
 import { z } from "zod";
 import type { Campaign } from "@/lib/db/campaigns";
@@ -27,17 +28,18 @@ import { acBreakdownFor, computeSheetDerived } from "@/lib/srd";
 import { martialArtsDie } from "@/lib/srd/feature-effects";
 import { enemyAcWithEffects } from "@/lib/dm/ac-effects";
 import { kiSpend } from "@/lib/dm/bonus-actions";
-import { applyEnemyDamage, publishEncounter, resolveEnemyRef } from "@/lib/dm/enemy-damage";
+import { applyEnemyDamage, publishEncounter } from "@/lib/dm/enemy-damage";
 import { classLevelFor } from "@/lib/srd/multiclass";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { spellEngineName, spellFactsFor } from "@/lib/content";
 import { addSheetCondition, rollCard } from "@/lib/dm/action-common";
 import { tilesBetween } from "@/lib/dm/attack-spatial";
 import { reactionRefusal } from "@/lib/dm/reaction-gate";
+import { devotedGuard } from "@/lib/dm/devoted-guard";
 import { reactionTimingOf, timingOfDoes, type ReactionTiming } from "@/lib/dm/reaction-kinds";
 import { authoredReactionNamed, heldReaction } from "@/lib/srd/authored-effects";
 import { removeConditions } from "@/lib/dm/condition-logic";
-import { freshLastHit, rerollAttacker, type LastHit, type SwingRecord } from "@/lib/dm/last-hit";
+import { attackerFoeId, freshLastHit, rerollAttacker, type LastHit, type SwingRecord } from "@/lib/dm/last-hit";
 import type { RollAttacker } from "@/lib/db/rolls";
 import { rollAgainst } from "@/lib/roll-labels";
 import { opportunity, reactionSpell } from "@/lib/dm/reaction-spells";
@@ -49,9 +51,14 @@ import { maneuverReaction } from "@/lib/dm/maneuver-reactions";
 // For the counter reactions' spend; mutations never imports back.
 import { applyDmMutation } from "@/lib/dm/mutations";
 import { matchResource } from "@/lib/srd/class-resources";
-import { resolveSheetRef } from "@/lib/dm/rolls";
+import { resolveSheetRef, unknownSheetRef } from "@/lib/dm/rolls";
 import { spellAuthorsFor } from "@/lib/dm/spell-authors";
 import { PRONE } from "@/lib/dm/vitals-logic";
+import type { ToolError, ToolResult } from "@/lib/dm/tool-errors";
+import { engineFeatNamed } from "@/lib/srd/feat-effects";
+import { isPublishedFeatureName } from "@/lib/srd/features";
+import { holdsFeature, isNamed } from "@/lib/srd/feature-names";
+import { subclassNamed } from "@/lib/srd/subclass-name";
 
 const useReactionSchema = z.object({
   characterId: z.string(),
@@ -79,10 +86,6 @@ export type Ctx = {
   sheetsById: Map<string, CharacterSheet>;
   encounter: ReturnType<typeof getActiveEncounter>;
 };
-
-function holds(sheet: CharacterSheet, name: string): boolean {
-  return sheet.features.some((feature) => feature.name.toLowerCase().includes(name));
-}
 
 export function spendReaction(ctx: Ctx) {
   const live = ctx.encounter ? getActiveEncounter(ctx.campaign.id) : null;
@@ -112,8 +115,14 @@ function heaviestHit(swings: SwingRecord[], which: (swing: SwingRecord) => boole
   return best;
 }
 
-export function noHit(who: string, feature: string, what = "an attack that hit them"): string {
-  return `${feature} answers ${what} this turn, and the server has none on record against ${who}. Nothing was spent.`;
+// A fall reaction sent before the fall: the fall is resolved first, then the
+// reaction answers it, in the same turn.
+export function noFall(who: string, feature: string): ToolError {
+  return { error: `${feature} answers a fall that has landed: call apply_hazard falling for ${who} first, then send this use_reaction again. Nothing was spent.`, retry: true };
+}
+
+export function noHit(who: string, feature: string, what = "an attack that hit them"): ToolError {
+  return { error: `${feature} answers ${what} this turn, and the server has none on record against ${who}. Nothing was spent.`, refused: "rules" };
 }
 
 export function settle(ctx: Ctx, record: LastHit, corrected: SwingRecord[], label: string) {
@@ -122,15 +131,15 @@ export function settle(ctx: Ctx, record: LastHit, corrected: SwingRecord[], labe
 
 // ---- features ----
 
-function uncannyDodge(ctx: Ctx): Record<string, unknown> {
+function uncannyDodge(ctx: Ctx): ToolResult {
   const { sheet, campaign } = ctx;
-  if (classLevelFor(sheet, "rogue") < 5 && !holds(sheet, "uncanny dodge")) {
-    return { error: `${sheet.name} does not have Uncanny Dodge (a rogue's feature from 5th level). Nothing was spent.` };
+  if (classLevelFor(sheet, "rogue") < 5 && !holdsFeature(sheet, "uncanny dodge")) {
+    return { error: `${sheet.name} does not have Uncanny Dodge (a rogue's feature from 5th level). Nothing was spent.`, refused: "rules" };
   }
   const record = freshLastHit(campaign.id, sheet.id);
   const index = record && record.source === "attack" && !record.answered.includes("uncanny dodge") ? heaviestHit(record.swings) : -1;
   if (!record || index < 0) {
-    return { error: noHit(sheet.name, "Uncanny Dodge") };
+    return noHit(sheet.name, "Uncanny Dodge");
   }
   const corrected = record.swings.map((swing, at) => (at === index ? { ...swing, raw: Math.floor(swing.raw / 2) } : swing));
   spendReaction(ctx);
@@ -144,11 +153,11 @@ function uncannyDodge(ctx: Ctx): Record<string, unknown> {
   };
 }
 
-function deflectMissiles(ctx: Ctx): Record<string, unknown> {
+function deflectMissiles(ctx: Ctx): ToolResult {
   const { sheet, campaign } = ctx;
   const monk = classLevelFor(sheet, "monk");
-  if (monk < 3 && !holds(sheet, "deflect missile")) {
-    return { error: `${sheet.name} does not have Deflect Missiles (a monk's feature from 3rd level). Nothing was spent.` };
+  if (monk < 3 && !holdsFeature(sheet, "deflect missiles")) {
+    return { error: `${sheet.name} does not have Deflect Missiles (a monk's feature from 3rd level). Nothing was spent.`, refused: "rules" };
   }
   const record = freshLastHit(campaign.id, sheet.id);
   const index =
@@ -156,7 +165,7 @@ function deflectMissiles(ctx: Ctx): Record<string, unknown> {
       ? heaviestHit(record.swings, (swing) => swing.ranged ?? record.ranged)
       : -1;
   if (!record || index < 0) {
-    return { error: noHit(sheet.name, "Deflect Missiles", "a ranged weapon attack that hit them") };
+    return noHit(sheet.name, "Deflect Missiles", "a ranged weapon attack that hit them");
   }
   spendReaction(ctx);
   const dex = computeSheetDerived(sheet).abilityMods.dex;
@@ -189,7 +198,7 @@ function deflectMissiles(ctx: Ctx): Record<string, unknown> {
 // hit and damage, the Martial Arts die.
 function throwBack(ctx: Ctx, record: LastHit, monkLevel: number): Record<string, unknown> {
   const { sheet, campaign, encounter } = ctx;
-  const enemy = encounter && ctx.args.targetEnemyId ? resolveEnemyRef(encounter.id, ctx.args.targetEnemyId) : null;
+  const enemy = encounter && ctx.args.targetEnemyId ? resolveTargetFoe(encounter.campaignId, encounter, ctx.args.targetEnemyId) : null;
   if (!encounter || !enemy || enemy.status !== "alive") {
     return { error: "The missile can be thrown back at a living enemy from GAME STATE; it was caught and kept." };
   }
@@ -226,30 +235,31 @@ function bardDie(sheet: CharacterSheet): string {
   return level >= 15 ? "1d12" : level >= 10 ? "1d10" : level >= 5 ? "1d8" : "1d6";
 }
 
-function cuttingWords(ctx: Ctx): Record<string, unknown> {
+function cuttingWords(ctx: Ctx): ToolResult {
   const { sheet, campaign, encounter } = ctx;
-  const lore = /lore/i.test(sheet.subclass ?? "") && classLevelFor(sheet, "bard") >= 3;
-  if (!lore && !holds(sheet, "cutting words")) {
-    return { error: `${sheet.name} does not have Cutting Words (a College of Lore bard's feature from 3rd level). Nothing was spent.` };
+  const lore = subclassNamed(sheet.subclass ?? "", "College of Lore") && classLevelFor(sheet, "bard") >= 3;
+  if (!lore && !holdsFeature(sheet, "cutting words")) {
+    return { error: `${sheet.name} does not have Cutting Words (a College of Lore bard's feature from 3rd level). Nothing was spent.`, refused: "rules" };
   }
   const pool = sheet.resources?.bardic_inspiration;
   if (!pool || pool.used >= pool.max) {
-    return { error: `${sheet.name} has no Bardic Inspiration left to spend on Cutting Words. Nothing was spent.` };
+    return { error: `${sheet.name} has no Bardic Inspiration left to spend on Cutting Words. Nothing was spent.`, refused: "rules" };
   }
   const target = allyOf(ctx) ?? sheet;
   const record = freshLastHit(campaign.id, target.id);
   const index =
-    record && record.source === "attack" && record.attacker.kind === "enemy" && !record.answered.includes("cutting words")
+    record && record.source === "attack" && attackerFoeId(record) !== null && !record.answered.includes("cutting words")
       ? record.swings.map((swing) => swing.hit).lastIndexOf(true)
       : -1;
   if (!record || index < 0) {
-    return { error: noHit(target.name, "Cutting Words", `an attack that hit ${target.name}`) };
+    return noHit(target.name, "Cutting Words", `an attack that hit ${target.name}`);
   }
   // The attacker has to be within 60 feet of the bard.
   const apart = encounter && record.attacker.id ? tilesBetween(encounter.id, sheet.id, record.attacker.id) : null;
   if (apart !== null && apart > 12) {
     return {
       error: `${record.attacker.name} is ${apart * 5} ft from ${sheet.name}; Cutting Words reaches a creature within 60 ft. Nothing was spent.`,
+      refused: "rules",
     };
   }
   spendReaction(ctx);
@@ -280,22 +290,23 @@ function cuttingWords(ctx: Ctx): Record<string, unknown> {
   };
 }
 
-function protection(ctx: Ctx): Record<string, unknown> {
+function protection(ctx: Ctx): ToolResult {
   const { sheet, campaign, encounter } = ctx;
-  if (!holds(sheet, "protection")) {
-    return { error: `${sheet.name} does not have the Protection fighting style. Nothing was spent.` };
+  if (!holdsFeature(sheet, "protection")) {
+    return { error: `${sheet.name} does not have the Protection fighting style. Nothing was spent.`, refused: "rules" };
   }
   if (!acBreakdownFor(sheet).shieldName) {
-    return { error: `The Protection style needs a shield, and ${sheet.name} is not carrying one. Nothing was spent.` };
+    return { error: `The Protection style needs a shield, and ${sheet.name} is not carrying one. Nothing was spent.`, refused: "rules" };
   }
   const ally = allyOf(ctx);
   if (!ally || ally.id === sheet.id) {
-    return { error: "Protection covers another creature: pass the ally's targetCharacterId. Nothing was spent." };
+    return { error: "Protection covers another creature: pass the ally's targetCharacterId. Nothing was spent.", retry: true };
   }
   const apart = encounter ? tilesBetween(encounter.id, sheet.id, ally.id) : null;
   if (apart !== null && apart > 1) {
     return {
       error: `${ally.name} is ${apart * 5} ft from ${sheet.name}; Protection covers a creature within 5 ft. Nothing was spent.`,
+      refused: "rules",
     };
   }
   spendReaction(ctx);
@@ -357,15 +368,15 @@ export function softenFall(ctx: Ctx, target: CharacterSheet, label: string, redu
   return settled;
 }
 
-function slowFall(ctx: Ctx): Record<string, unknown> {
+function slowFall(ctx: Ctx): ToolResult {
   const { sheet } = ctx;
   const monk = classLevelFor(sheet, "monk");
-  if (monk < 4 && !holds(sheet, "slow fall")) {
-    return { error: `${sheet.name} does not have Slow Fall (a monk's feature from 4th level). Nothing was spent.` };
+  if (monk < 4 && !holdsFeature(sheet, "slow fall")) {
+    return { error: `${sheet.name} does not have Slow Fall (a monk's feature from 4th level). Nothing was spent.`, refused: "rules" };
   }
   const record = freshLastHit(ctx.campaign.id, sheet.id);
   if (!record || record.source !== "fall") {
-    return { error: noHit(sheet.name, "Slow Fall", "a fall (apply_hazard falling)") };
+    return noFall(sheet.name, "Slow Fall");
   }
   spendReaction(ctx);
   const settled = softenFall(ctx, sheet, "slow fall", 5 * (monk || sheet.level))!;
@@ -412,28 +423,30 @@ export function handleUseReaction(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
-): Record<string, unknown> {
+): ToolResult {
   let args: Args;
   try {
     args = useReactionSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments: use_reaction needs characterId and feature." };
+    return { error: "Invalid arguments: use_reaction needs characterId and feature.", retry: true };
   }
   const staleSheet = resolveSheetRef(args.characterId, sheets, sheetsById);
   const sheet = staleSheet ? (getSheetById(staleSheet.id) ?? staleSheet) : null;
   if (!sheet) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return unknownSheetRef("characterId", args.characterId, sheets);
   }
   const encounter = getActiveEncounter(campaign.id);
   const feature = args.feature.trim();
   const refused = reactionRefusal(campaign.id, sheet, encounter, feature, timingOfUseReaction(campaign, sheet, args, sheets, sheetsById));
   if (refused) {
-    return { error: refused };
+    return refused;
   }
-  const lowered = feature.toLowerCase();
-  const falling = /slow fall|feather fall/.test(lowered);
+  // Each rule below is the reaction its whole name is (src/lib/srd/
+  // feature-names.ts): Sentinel at Death's Door is no Sentinel, and a
+  // homebrew Arcane Protection no Protection.
+  const falling = isNamed(feature, "slow fall", "feather fall");
   if (!encounter && !falling) {
-    return { error: "Reactions only exist in combat; there is no active encounter." };
+    return { error: "Reactions only exist in combat; there is no active encounter.", refused: "rules" };
   }
   // Part of a reaction already taken (Relentless Avenger's move after the
   // opportunity attack): src/lib/dm/authored-reactions-more.ts.
@@ -448,11 +461,17 @@ export function handleUseReaction(
   if (encounter?.reactionsUsed.includes(sheet.id)) {
     return {
       error: `${sheet.name} has already used their reaction; it comes back at the start of their next turn. ${feature} does not happen.`,
+      refused: "rules",
     };
   }
   const ctx: Ctx = { campaign, turn, sheet, args, sheets, sheetsById, encounter };
+  // A devoted companion's Take the Blow (src/lib/dm/devoted-guard.ts).
+  const guarded = devotedGuard(ctx);
+  if (guarded) {
+    return guarded;
+  }
 
-  if (/opportunity|attack of opportunity/.test(lowered)) {
+  if (isNamed(feature, "opportunity attack", "attack of opportunity")) {
     return opportunity(ctx);
   }
   // The authored subclass reactions (Spirit Shield, Spectral Defense, Storm's
@@ -500,50 +519,55 @@ export function handleUseReaction(
   if (maneuver) {
     return maneuver;
   }
-  if (/uncanny dodge/.test(lowered)) {
+  if (isNamed(feature, "uncanny dodge")) {
     return uncannyDodge(ctx);
   }
-  if (/deflect missile/.test(lowered)) {
+  if (isNamed(feature, "deflect missiles", "deflect missile")) {
     return deflectMissiles(ctx);
   }
-  if (/cutting words/.test(lowered)) {
+  if (isNamed(feature, "cutting words")) {
     return cuttingWords(ctx);
   }
-  if (/protection/.test(lowered)) {
+  if (isNamed(feature, "protection")) {
     return protection(ctx);
   }
-  if (/slow fall/.test(lowered)) {
+  if (isNamed(feature, "slow fall")) {
     return slowFall(ctx);
   }
   // The feats with a reaction (src/lib/dm/feat-reactions.ts).
-  if (/defensive duelist/.test(lowered)) {
+  if (isNamed(feature, "defensive duelist")) {
     return defensiveDuelist(ctx);
   }
-  if (/mage slayer/.test(lowered)) {
+  if (isNamed(feature, "mage slayer")) {
     return mageSlayer(ctx);
   }
-  if (/sentinel|guarded warrior/.test(lowered)) {
+  if (isNamed(feature, "sentinel", "guarded warrior")) {
     return sentinel(ctx);
   }
-  if (/^(?:lucky|fortunate|luck point)$/.test(lowered)) {
+  if (isNamed(feature, "lucky", "fortunate", "luck point")) {
     return lucky(ctx);
   }
-  if (/boundless reserves/.test(lowered)) {
+  if (isNamed(feature, "boundless reserves")) {
     return reservesRecovery(ctx, "ki");
   }
-  if (/sorcerous vigor/.test(lowered)) {
+  if (isNamed(feature, "sorcerous vigor")) {
     return reservesRecovery(ctx, "sorcery_points");
   }
   // Any other reaction must be one the sheet holds; the reaction is spent
   // and the effect is the feature's own text.
-  const held = sheet.features.find((entry) => {
-    const name = entry.name.toLowerCase();
-    return name.includes(lowered) || lowered.includes(name);
-  });
+  const held = sheet.features.find((entry) => isNamed(entry.name, feature) || isNamed(feature, entry.name));
   if (!held) {
-    return {
-      error: `${sheet.name} has no reaction called "${feature}" on their sheet: no feature by that name, and no reaction spell they can cast. Nothing was spent.`,
-    };
+    // A spell, feat or feature the rules know is one they lack; a name nobody
+    // knows is the call's to fix, from what is on their sheet.
+    return spellFactsFor(feature, spellAuthorsFor(ctx.campaign)) || engineFeatNamed(feature) || isPublishedFeatureName(feature)
+      ? {
+          error: `${sheet.name} has no reaction called "${feature}" on their sheet: no feature by that name, and no reaction spell they can cast. Nothing was spent.`,
+          refused: "rules",
+        }
+      : {
+          error: `No reaction called "${feature}" is known. ${sheet.name}'s features are ${sheet.features.map((entry) => entry.name).join(", ") || "none"}: send the one meant, by the name on the sheet. Nothing was spent.`,
+          retry: true,
+        };
   }
   spendReaction(ctx);
   return {

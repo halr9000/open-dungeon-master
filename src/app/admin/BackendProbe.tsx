@@ -3,6 +3,7 @@
 import { Check, Loader2, X, Zap } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
+import { RECOMMENDED_WINDOW, STORY_WINDOW_NEEDS, aWindow, storyWindowVerdict, windowFlag, windowLabel } from "@/lib/story-window";
 import { ui } from "@/lib/ui";
 
 // The three things the DM loop needs from a backend, in the order the probe
@@ -27,6 +28,9 @@ type ProbeResult = {
   // campaign on this model runs the same way.
   route?: "chat" | "chat-no-reasoning" | "responses";
   stages?: Record<string, ProbeStage>;
+  // The story window a campaign on it packs against; `reported` is false
+  // when the server named no size.
+  window?: { tokens: number; reported: boolean };
 };
 
 const ROUTE_NOTES: Record<string, string> = {
@@ -36,17 +40,20 @@ const ROUTE_NOTES: Record<string, string> = {
 
 // baseUrl/model/apiKey are the field values as typed; blanks fall back to the
 // saved settings and env server-side, mirroring how a real turn resolves
-// them. Pass the API key field only when it holds a freshly typed key.
+// them. Pass the API key field only when it holds a freshly typed key, and
+// the provider only when it is not yet saved (the guided setup).
 export function BackendProbe({
   which,
   baseUrl,
   model,
   apiKey = "",
+  provider,
 }: {
   which: "story" | "utility";
   baseUrl: string;
   model: string;
   apiKey?: string;
+  provider?: "local" | "custom";
 }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ProbeResult | null>(null);
@@ -58,7 +65,7 @@ export function BackendProbe({
       const response = await fetch("/api/admin/backend-probe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ which, baseUrl, model, apiKey }),
+        body: JSON.stringify({ which, baseUrl, model, apiKey, ...(provider ? { provider } : {}) }),
       });
       const data = await response.json().catch(() => null);
       setResult(
@@ -87,7 +94,9 @@ export function BackendProbe({
           Test backend
         </button>
         <span className="text-xs text-stone-500">
-          Checks streaming and tool calls, the way a campaign uses them. Takes a few seconds.
+          {which === "story"
+            ? "Checks streaming, tool calls and the context window, the way a campaign uses them. Takes a few seconds."
+            : "Checks streaming and tool calls, the way a campaign uses them. Takes a few seconds."}
         </span>
       </div>
       {testing ? (
@@ -116,7 +125,9 @@ export function BackendProbe({
               <Check className="size-4" /> {result.model} can run the storyteller loop
               {result.route && ROUTE_NOTES[result.route] ? ` (${ROUTE_NOTES[result.route]})` : ""}.
             </p>
-          ) : (
+          ) : null}
+          {result.ok && result.window ? <WindowLine size={result.window} /> : null}
+          {result.ok ? null : (
             <p role="alert" className="motion-shake text-red-400">
               {result.error
                 ? result.error
@@ -134,5 +145,32 @@ export function BackendProbe({
         </p>
       ) : null}
     </div>
+  );
+}
+
+// Whether the window is big enough to narrate and to fight, and what to
+// change when it is not.
+function WindowLine({ size }: { size: { tokens: number; reported: boolean } }) {
+  const raise = `Give it a larger window (llama-server -c ${windowFlag(RECOMMENDED_WINDOW)}, Ollama's num_ctx, LM Studio's context length) or choose a model with one.`;
+  if (!size.reported) {
+    return (
+      <p className="text-xs leading-5 text-amber-200">
+        This server does not report its context window, so tables plan for {windowLabel(size.tokens)}. {STORY_WINDOW_NEEDS} Run
+        it with at least that, and set OPENAI_COMPAT_CONTEXT to the size it runs so tables use all of it.
+      </p>
+    );
+  }
+  const verdict = storyWindowVerdict(size.tokens);
+  if (verdict.level === "ok") {
+    return (
+      <p className="flex items-center gap-1 text-emerald-400">
+        <Check className="size-4 shrink-0" /> {aWindow(size.tokens)} context window: room to narrate, fight and remember the story.
+      </p>
+    );
+  }
+  return (
+    <p role="alert" className="text-xs leading-5 text-amber-200">
+      {verdict.text} {raise}
+    </p>
   );
 }

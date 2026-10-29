@@ -7,7 +7,6 @@ import {
   setEnemyInitiative,
   saveEncounter,
   turnKey,
-  type Encounter,
 } from "@/lib/db/encounters";
 import { insertCampaignMessage } from "@/lib/db/messages";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
@@ -73,7 +72,7 @@ export function editInitiative(campaign: Campaign, edit: InitiativeEdit): Initia
     }
     const now = getActiveEncounter(campaign.id);
     const next = now?.order[now.turnIndex]?.name;
-    const note = `The DM moved the turn on${leaving ? ` from ${leaving}` : ""}.${next ? ` It is now ${next}'s turn.` : ""}`;
+    const note = `The GM moved the turn on${leaving ? ` from ${leaving}` : ""}.${next ? ` It is now ${next}'s turn.` : ""}`;
     announce(campaign, note);
     settleTurn(campaign, holder);
     return { ok: true, note };
@@ -145,18 +144,7 @@ export function resetInitiative(campaign: Campaign): InitiativeResult {
   setFloor(campaign.id, { mode: "open" });
   publishPersisted(campaign.id, "floor_changed", { floor: { mode: "open" } });
   publishEncounter(campaign.id);
-  const note = "The DM reset the initiative. Roll again.";
+  const note = "The GM reset the initiative. Roll again.";
   announce(campaign, note);
   return { ok: true, note };
-}
-
-// Who the DM may point at, with the ids the edit operations take.
-export function initiativeRoster(encounter: Encounter) {
-  return encounter.order.map((entry, index) => ({
-    id: orderEntryId(entry),
-    kind: entry.kind,
-    name: entry.name,
-    initiative: entry.initiative,
-    current: index === encounter.turnIndex,
-  }));
 }

@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { ITEM_TAGS } from "@/lib/schemas/item-tags";
 import type { Sentience } from "@/lib/homebrew/sentience";
 import type { HomebrewGearDef } from "@/lib/homebrew/item-data";
 import type { ItemMagic } from "@/lib/homebrew/item-magic-schema";
 import type { ItemSpell } from "@/lib/srd/item-spells";
 import type { AttunementRule } from "@/lib/srd/magic-items";
+import { WORN_PLACES } from "@/lib/srd/worn-places";
 
 export const HOMEBREW_KINDS = [
   "spell",
@@ -14,6 +16,7 @@ export const HOMEBREW_KINDS = [
   "archetype",
   "monster",
   "hazard",
+  "class",
 ] as const;
 
 export type HomebrewKind = (typeof HOMEBREW_KINDS)[number];
@@ -72,6 +75,9 @@ export const gearSnapshotShape = z.object({
   weight: z.number().min(0).optional(),
   // A sentient item's mind (src/lib/homebrew/sentience.ts).
   sentience: z.custom<Sentience>().optional(),
+  tags: z.array(z.enum(ITEM_TAGS)).optional(),
+  // Where its author said it is worn (src/lib/srd/worn-places.ts).
+  wornOn: z.enum(WORN_PLACES).optional(),
 });
 export type HomebrewGearSnapshot = z.infer<typeof gearSnapshotShape>;
 
@@ -89,9 +95,15 @@ export const homebrewGearSchema = z
 // through src/lib/homebrew/gear.ts, which is where a weapon's damage
 // expression is refused and an armour's class is clamped. name + desc are
 // required; kind-specific fields are what the normalizers read.
+// The longest description an entry keeps. Start from copies a published
+// entry whole, and the longest of those run past 15,000 characters (the
+// Figurine of Wondrous Power, the Warlock); at 8,000 their copies could not
+// be saved, nor a class or subclass copied without losing its tail.
+export const HOMEBREW_DESC_MAX = 20_000;
+
 export const homebrewDataSchema = z
   .object({
-    desc: z.string().trim().max(8_000).default(""),
+    desc: z.string().trim().max(HOMEBREW_DESC_MAX).default(""),
     // spell hints
     level: z.number().int().min(0).max(9).optional(),
     school: z.string().trim().max(40).optional(),
@@ -100,6 +112,8 @@ export const homebrewDataSchema = z
     concentration: z.boolean().optional(),
     // item hints
     itemKind: z.enum(["weapon", "armor", "gear", "magic_item"]).optional(),
+    // What the item is, for the engines that ask (src/lib/srd/item-tags.ts).
+    tags: z.array(z.enum(ITEM_TAGS)).max(12).optional(),
     rarity: z.string().trim().max(40).optional(),
     cost: z.string().trim().max(40).optional(),
     // class/archetype hints
@@ -107,14 +121,19 @@ export const homebrewDataSchema = z
   })
   .loose();
 
+// The longest name an entry keeps. Whatever names a homebrew spell (a
+// subclass's list, an item's or a monster's spells) keeps as many letters,
+// so a spell is named whole wherever it is cast from.
+export const HOMEBREW_NAME_MAX = 80;
+
 export const createHomebrewSchema = z.object({
   kind: z.enum(HOMEBREW_KINDS),
-  name: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(HOMEBREW_NAME_MAX),
   data: homebrewDataSchema.default({ desc: "" }),
 });
 
 export const patchHomebrewSchema = z.object({
-  name: z.string().trim().min(1).max(80).optional(),
+  name: z.string().trim().min(1).max(HOMEBREW_NAME_MAX).optional(),
   data: homebrewDataSchema.optional(),
 });
 

@@ -20,8 +20,10 @@
 // modifiers that the same resolvers add in, and it is the only one a person
 // can create at the table.
 //
-// Pure by design: no imports at all, so scripts/test-active-effects.mjs can
+// Pure by design: no imports beyond types, so scripts/test-active-effects.mjs can
 // load it and the console can preview a stack before applying it.
+
+import type { ToolError } from "@/lib/dm/tool-errors";
 
 // What an effect can modify. Every one of these corresponds to a number the
 // engine already computes, so an effect can never claim to change something
@@ -60,6 +62,22 @@ export const EFFECT_FIELD_LABELS: Record<EffectField, string> = {
 export const EFFECT_MODES = ["add", "override", "advantage", "disadvantage"] as const;
 export type EffectMode = (typeof EFFECT_MODES)[number];
 
+// What each field's engine reads, so the editor offers nothing that does
+// nothing: a set-to value is Armor Class's and speed's; advantage belongs to
+// the d20 rolls; damage and the maximum move by an amount. A creature rolls
+// no initiative once the fight it is in has begun.
+export const FIELD_MODES: Record<EffectField, readonly EffectMode[]> = {
+  ac: ["add", "override"],
+  attack: ["add", "advantage", "disadvantage"],
+  damage: ["add"],
+  save: ["add", "advantage", "disadvantage"],
+  check: ["add", "advantage", "disadvantage"],
+  initiative: ["add", "advantage", "disadvantage"],
+  speed: ["add", "override"],
+  maxHp: ["add"],
+};
+const MODE_WORDS: Record<EffectMode, string> = { add: "an amount", override: "a set-to value", advantage: "advantage", disadvantage: "disadvantage" };
+
 export type EffectModifier = {
   field: EffectField;
   mode: EffectMode;
@@ -69,11 +87,14 @@ export type EffectModifier = {
 
 // When an effect ends.
 //
-// "rounds" counts down at the top of each round, exactly as condition
-// durations already do. "minutes" counts against the in-world clock
-// (src/lib/dm/calendar.ts), which is what makes "until dawn" and "for an
-// hour" expressible for the first time. "encounter" ends when the fight does.
-// "manual" never expires on its own, for a curse that needs lifting.
+// "rounds" and "minutes" are one lifetime counted in two units, on one clock
+// at a time, as timed conditions are: in a fight the round wrap counts it (a
+// round off a "rounds" effect each wrap, a minute off a "minutes" one every
+// tenth), and outside one the in-world clock does (src/lib/dm/calendar.ts),
+// ten rounds to the minute. A "rounds" effect that outlasts the fight wears
+// off on the road, and "for an hour" ends mid-fight when the hour is up.
+// "encounter" ends when the fight does. "manual" never expires on its own,
+// for a curse that needs lifting.
 export const EFFECT_DURATIONS = ["rounds", "minutes", "encounter", "manual"] as const;
 export type EffectDuration = (typeof EFFECT_DURATIONS)[number];
 
@@ -121,8 +142,9 @@ export type ActiveEffect = {
   // Rounds left, for "rounds". Minutes left, for "minutes". Ignored
   // otherwise.
   remaining: number;
-  // Optional save to shake it off, re-rolled at the top of the target's turn
-  // exactly as a save-ends condition is.
+  // Optional save to shake it off, rolled at the end of each of the target's
+  // turns exactly as a save-ends condition is (src/lib/dm/effect-saves.ts),
+  // and once per stretch of in-world time outside a fight.
   saveAbility: string;
   saveDc: number;
   // Shown to the players. Off means only the DM and the AI see it, which is
@@ -140,6 +162,8 @@ export type EffectInput = {
   saveAbility?: unknown;
   saveDc?: unknown;
   visible?: unknown;
+  // Who it lands on: an enemy's initiative is already rolled.
+  targetKind?: EffectTargetKind;
 };
 
 const ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
@@ -147,36 +171,42 @@ const ABILITIES = ["str", "dex", "con", "int", "wis", "cha"];
 // Validating what a form or a tool call sent. Returns an error string rather
 // than throwing, because every caller is a route or a tool handler that has
 // to say what went wrong.
-export function checkEffect(input: EffectInput): { effect: Omit<ActiveEffect, "id" | "campaignId" | "targetKind" | "targetId" | "createdAt"> } | { error: string } {
+export function checkEffect(input: EffectInput): { effect: Omit<ActiveEffect, "id" | "campaignId" | "targetKind" | "targetId" | "createdAt"> } | ToolError {
   const name = String(input.name ?? "").trim().slice(0, EFFECT_NAME_MAX);
   if (!name) {
-    return { error: "Name the effect." };
+    return { error: "Name the effect.", retry: true };
   }
   if (!Array.isArray(input.modifiers) || !input.modifiers.length) {
-    return { error: "An effect has to change at least one thing." };
+    return { error: "An effect has to change at least one thing.", retry: true };
   }
   if (input.modifiers.length > MAX_MODIFIERS) {
-    return { error: `An effect changes at most ${MAX_MODIFIERS} things; split it in two.` };
+    return { error: `An effect changes at most ${MAX_MODIFIERS} things; split it in two.`, retry: true };
   }
 
   const modifiers: EffectModifier[] = [];
   for (const raw of input.modifiers) {
     const field = String(raw?.field ?? "") as EffectField;
     if (!EFFECT_FIELDS.includes(field)) {
-      return { error: `"${raw?.field}" is not something an effect can change.` };
+      return { error: `"${raw?.field}" is not something an effect can change.`, retry: true };
     }
     const mode = (String(raw?.mode ?? "add") as EffectMode) || "add";
     if (!EFFECT_MODES.includes(mode)) {
-      return { error: `"${raw?.mode}" is not add, override, advantage or disadvantage.` };
+      return { error: `"${raw?.mode}" is not add, override, advantage or disadvantage.`, retry: true };
+    }
+    if (!FIELD_MODES[field].includes(mode)) {
+      return { error: `${EFFECT_FIELD_LABELS[field]} takes ${FIELD_MODES[field].map((entry) => MODE_WORDS[entry]).join(" or ")}, not ${MODE_WORDS[mode]}.`, retry: true };
+    }
+    if (field === "initiative" && input.targetKind === "enemy") {
+      return { error: "An enemy's initiative is rolled as the fight begins; an effect cannot move it now.", retry: true };
     }
     let value = 0;
     if (mode === "add" || mode === "override") {
       value = Math.round(Number(raw?.value));
       if (!Number.isFinite(value) || value === 0) {
-        return { error: `${EFFECT_FIELD_LABELS[field]} needs a nonzero amount.` };
+        return { error: `${EFFECT_FIELD_LABELS[field]} needs a nonzero amount.`, retry: true };
       }
       if (Math.abs(value) > MAX_EFFECT_VALUE) {
-        return { error: `${MAX_EFFECT_VALUE} is as far as one effect moves a number.` };
+        return { error: `${MAX_EFFECT_VALUE} is as far as one effect moves a number.`, retry: true };
       }
     }
     modifiers.push({ field, mode, value });
@@ -184,13 +214,13 @@ export function checkEffect(input: EffectInput): { effect: Omit<ActiveEffect, "i
 
   const duration = (String(input.duration ?? "manual") as EffectDuration) || "manual";
   if (!EFFECT_DURATIONS.includes(duration)) {
-    return { error: `"${input.duration}" is not rounds, minutes, encounter or manual.` };
+    return { error: `"${input.duration}" is not rounds, minutes, encounter or manual.`, retry: true };
   }
   let remaining = 0;
   if (duration === "rounds" || duration === "minutes") {
     remaining = Math.round(Number(input.remaining));
     if (!Number.isFinite(remaining) || remaining <= 0) {
-      return { error: `Say how many ${duration} it lasts.` };
+      return { error: `Say how many ${duration} it lasts.`, retry: true };
     }
     remaining = Math.min(duration === "rounds" ? MAX_EFFECT_ROUNDS : 60 * 24 * 30, remaining);
   }
@@ -198,10 +228,10 @@ export function checkEffect(input: EffectInput): { effect: Omit<ActiveEffect, "i
   const saveAbility = String(input.saveAbility ?? "").trim().toLowerCase().slice(0, 3);
   const saveDc = Math.round(Number(input.saveDc));
   if (saveAbility && !ABILITIES.includes(saveAbility)) {
-    return { error: `"${saveAbility}" is not an ability.` };
+    return { error: `"${saveAbility}" is not an ability.`, retry: true };
   }
   if (saveAbility && (!Number.isFinite(saveDc) || saveDc < 1 || saveDc > 30)) {
-    return { error: "A save to end needs a DC between 1 and 30." };
+    return { error: "A save to end needs a DC between 1 and 30.", retry: true };
   }
 
   return {
@@ -248,7 +278,10 @@ export function resolveField(effects: ActiveEffect[], field: EffectField): Field
       if (modifier.field !== field) {
         continue;
       }
-      const label = effect.source ? `${effect.name} (${effect.source})` : effect.name;
+      // These lines land on the roll's breakdown, which the whole table
+      // reads; an effect the party cannot tell is there still moves the
+      // number, honestly, but is not named.
+      const label = effect.visible === false ? "something unseen" : effect.source ? `${effect.name} (${effect.source})` : effect.name;
       if (modifier.mode === "add") {
         out.bonus += modifier.value;
         out.sources.push(`${label} ${modifier.value >= 0 ? "+" : ""}${modifier.value}`);
@@ -291,17 +324,19 @@ export type TickResult = {
   expired: ActiveEffect[];
 };
 
-// One round passing. Only "rounds" effects count down here; "minutes" ones
-// are the clock's business and "encounter" ones end with the fight.
-export function tickRound(effects: ActiveEffect[]): TickResult {
+// One round of a fight passing: a round off every "rounds" effect, and a
+// minute off every "minutes" one when this round completes a minute.
+// "encounter" ones end with the fight.
+export function tickRound(effects: ActiveEffect[], minutePassed = false): TickResult {
   const kept: ActiveEffect[] = [];
   const expired: ActiveEffect[] = [];
   for (const effect of effects) {
-    if (effect.duration !== "rounds") {
+    const spent = effect.duration === "rounds" ? 1 : effect.duration === "minutes" && minutePassed ? 1 : 0;
+    if (!spent) {
       kept.push(effect);
       continue;
     }
-    const remaining = effect.remaining - 1;
+    const remaining = effect.remaining - spent;
     if (remaining <= 0) {
       expired.push(effect);
     } else {
@@ -311,15 +346,17 @@ export function tickRound(effects: ActiveEffect[]): TickResult {
   return { kept, expired };
 }
 
-// In-world minutes passing, from travel, a rest, or pass_time. This is what
-// the calendar bought: before the clock existed, "for an hour" had nothing to
-// count against.
-export function tickMinutes(effects: ActiveEffect[], minutes: number): TickResult {
-  const spent = Math.max(0, Math.round(minutes));
+// In-world minutes passing outside a fight, from travel, a rest, or
+// pass_time: the minutes off a "minutes" effect, and as many rounds as they
+// hold off a "rounds" one. This is what the calendar bought: before the
+// clock existed, "for an hour" had nothing to count against.
+export function tickMinutes(effects: ActiveEffect[], minutes: number, roundsPerMinute: number): TickResult {
+  const passed = Math.max(0, Math.round(minutes));
   const kept: ActiveEffect[] = [];
   const expired: ActiveEffect[] = [];
   for (const effect of effects) {
-    if (effect.duration !== "minutes") {
+    const spent = effect.duration === "minutes" ? passed : effect.duration === "rounds" ? passed * roundsPerMinute : 0;
+    if (!spent) {
       kept.push(effect);
       continue;
     }

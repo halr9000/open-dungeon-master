@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { appConfirm } from "@/components/ui/ConfirmDialog";
 import { cn } from "@/lib/cn";
@@ -8,9 +8,9 @@ import { ui } from "@/lib/ui";
 import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
-import { Listed, RowMenu, panelRow } from "@/app/campaigns/[campaignId]/PanelKit";
-import { readLoad, useLoadStatus } from "@/lib/load-state";
-import { formatRoster, TEMPLATE_NAME_MAX } from "@/lib/dm/encounter-template-logic";
+import { Listed, PanelError, RowMenu, panelRow } from "@/app/campaigns/[campaignId]/PanelKit";
+import { findLostCreate, readLoad, readWrite, useLoadStatus, type LostCreate } from "@/lib/load-state";
+import { formatRoster, rosterSummary, TEMPLATE_NAME_MAX } from "@/lib/dm/encounter-template-logic";
 import { thresholdsForParty } from "@/lib/srd/encounter-math";
 import { targetPartyLevels, type TargetParty } from "@/lib/workshop/kind";
 import { Sheet } from "@/components/ui/Sheet";
@@ -25,6 +25,9 @@ import {
   type PreparedEncounter,
   type TemplateReadout,
 } from "@/app/workshop/encounters/types";
+import { useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
+import { OpenTestFightCard, useTestFight } from "@/app/workshop/encounters/OpenTestFight";
+import { TestFightSheet } from "@/app/workshop/encounters/TestFightSheet";
 
 // Prepared encounters: the roster a DM writes down before the session and
 // deploys in one action.
@@ -41,7 +44,24 @@ import {
 // through the same thresholdsForParty the workbench route and the target
 // party bar read, so the three never disagree about what "deadly" is.
 
-function DifficultyLine({ readout }: { readout: TemplateReadout }) {
+// At a table the AI narrates (where the lead cues fights), the storyteller
+// cuts a fight beyond the party down to fit, or holds it when even its
+// strongest creature is too much (src/lib/dm/prepared-fit.ts); a DM's own
+// Deploy is refused as written, for the DM to change.
+function refusedLine(readout: TemplateReadout, cue: boolean): string {
+  if (!readout.tooDeadly) {
+    return "";
+  }
+  if (cue && readout.held) {
+    return ". Beyond the party even cut down: the storyteller holds it until they are stronger.";
+  }
+  if (cue && readout.scaledWithout) {
+    return `. The storyteller cuts it to fit: it runs without ${readout.scaledWithout}.`;
+  }
+  return ". The engine will refuse this as written.";
+}
+
+function DifficultyLine({ readout, cue }: { readout: TemplateReadout; cue: boolean }) {
   if (readout.unknownMonster) {
     return (
       <p className="text-[11px] text-red-400">
@@ -50,10 +70,15 @@ function DifficultyLine({ readout }: { readout: TemplateReadout }) {
     );
   }
   return (
-    <p className={cn("text-[11px]", readout.tooDeadly ? "text-red-400" : "text-stone-400")}>
+    <p
+      className={cn(
+        "text-[11px]",
+        !readout.tooDeadly ? "text-stone-400" : cue && readout.scaledWithout && !readout.held ? "text-amber-400" : "text-red-400",
+      )}
+    >
       {readout.count} creature{readout.count === 1 ? "" : "s"}, {readout.verdict} ({readout.adjustedXp} XP
       against a {readout.ceiling} ceiling)
-      {readout.tooDeadly ? ". The engine will refuse this as written." : ""}
+      {refusedLine(readout, cue)}
     </p>
   );
 }
@@ -63,8 +88,20 @@ export function DmEncounterPrepPanel({
   layout = "list",
   targetParty,
   cue = false,
+  openOnArrival,
+  only = false,
+  onClose,
+  testFight,
 }: {
   campaignId: string;
+  // The fight to open on arrival, by id: a World entry's "Add to a fight"
+  // (src/app/workshop/world/BoundRecords.tsx), a place's "Open encounter"
+  // (PlaceBattleMaps.tsx).
+  openOnArrival?: string | null;
+  // That one fight's form and nothing else, in a sheet that calls onClose
+  // when it shuts: the table's World tab, which has no list of its own.
+  only?: boolean;
+  onClose?: () => void;
   layout?: "list" | "rows";
   // The lead's desk at an AI-narrated table (#154): Deploy becomes a cue the
   // storyteller runs when the scene reaches the fight, and can be taken back.
@@ -73,7 +110,13 @@ export function DmEncounterPrepPanel({
   // workshop declares one; a real campaign has no need of it because the
   // console never shows the bar.
   targetParty?: TargetParty;
+  // The workshop's Encounters, which has no table to deploy to: each fight's
+  // button tests it on a table of its own instead (issue 553,
+  // src/lib/workshop/test-fight.ts).
+  testFight?: { workshopId: string };
 }) {
+  const [testing, setTesting] = useState<PreparedEncounter | null>(null);
+  const test = useTestFight(testFight?.workshopId ?? null);
   const [templates, setTemplates] = useState<PreparedEncounter[]>([]);
   const [draft, setDraft] = useState<EncounterDraft>(EMPTY_ENCOUNTER_DRAFT);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -89,6 +132,8 @@ export function DmEncounterPrepPanel({
   // effect linter, which is what it is.
   // A refused or failed list is settled, not dropped (issue 140), so the
   // list says "nothing prepared" only once the server has said so.
+  // The list it read, or null when it could not, so a create whose answer
+  // was lost can look for its fight.
   const { loaded, loadError, settle } = useLoadStatus();
   const load = useCallback(
     () =>
@@ -98,6 +143,7 @@ export function DmEncounterPrepPanel({
             setTemplates(outcome.payload.templates);
           }
           settle(outcome);
+          return outcome.payload?.templates ?? null;
         },
       ),
     [campaignId, settle],
@@ -131,8 +177,12 @@ export function DmEncounterPrepPanel({
   // The tour's "open the editor" step, answered only where the editor is a
   // sheet; in the console the form is always on screen.
   useTourPrepare((name) => {
-    if (name === "open-encounter-editor" && rows && !editorOpen) openEditor(null);
+    if (name !== "open-encounter-editor") return;
+    if (rows && !editorOpen) openEditor(null);
+    return true;
   });
+
+  useOpenOnArrival(openOnArrival, loaded ? templates : null, openEditor);
 
   function openEditor(template: PreparedEncounter | null) {
     setError("");
@@ -157,32 +207,70 @@ export function DmEncounterPrepPanel({
   // One request for both a new fight and an edit to an old one: the create
   // and update routes take the same body, so the only difference is where it
   // goes. The list layout never sets editingId and so always creates.
+  function showEditor(open: boolean) {
+    setEditorOpen(open);
+    if (!open && only) onClose?.();
+  }
+
+  // Every write goes through readWrite (WA-05), so one that dies on the
+  // connection is said here and leaves the roster in the form. A create
+  // whose answer was lost never clears the form and never invites a blind
+  // second press: the list is read again first, and the fight found there
+  // counts as prepared.
+  function lostCreate(found: LostCreate, what: { made: string; missing: string; unknown: string }) {
+    if (found === "made") {
+      setNote(what.made);
+      return true;
+    }
+    setError(found === "missing" ? what.missing : what.unknown);
+    return false;
+  }
+
   async function save() {
     setBusy(true);
     setError("");
     setNote("");
     try {
       const base = `/api/campaigns/${campaignId}/dm/encounter-templates`;
-      const response = await fetch(editingId ? `${base}/${editingId}` : base, {
-        method: editingId ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: draft.name,
-          enemies: draft.enemies,
-          battlefield: draft.battlefield,
-          notes: draft.notes,
-          map: { mapId: draft.mapId || null, scene: draft.scene || null },
-          extras: draft.extras,
+      const sent = await readWrite(
+        fetch(editingId ? `${base}/${editingId}` : base, {
+          method: editingId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: draft.name,
+            enemies: draft.enemies,
+            battlefield: draft.battlefield,
+            notes: draft.notes,
+            map: { mapId: draft.mapId || null, scene: draft.scene || null },
+            extras: draft.extras,
+          }),
         }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError((payload as { error?: string }).error ?? "That could not be saved.");
+        "That could not be saved.",
+      );
+      if (sent.error !== null) {
+        if (sent.unanswered && !editingId) {
+          const name = draft.name.trim();
+          const found = await findLostCreate(loaded ? templates : null, load, (template) => template.name === name);
+          const prepared = lostCreate(found, {
+            made: "Prepared. The server's answer was lost on the way, so the list was read again to make sure.",
+            missing: "The server did not answer and the fight is not in the list, so it was not prepared. Your roster is kept; press Prepare it again.",
+            unknown: "The server could not be reached, so it is not known yet whether the fight was prepared. Your roster is kept. Check the list before preparing it again.",
+          });
+          if (prepared) {
+            setDraft(EMPTY_ENCOUNTER_DRAFT);
+            setEditingId(null);
+            showEditor(false);
+          }
+          return;
+        }
+        setError(sent.unanswered ? `${sent.error} Your changes are kept here; the list was read again.` : sent.error);
+        // An edit with no answer may have landed all the same.
+        if (sent.unanswered) await load();
         return;
       }
       setDraft(EMPTY_ENCOUNTER_DRAFT);
       setEditingId(null);
-      setEditorOpen(false);
+      showEditor(false);
       await load();
     } finally {
       setBusy(false);
@@ -196,21 +284,34 @@ export function DmEncounterPrepPanel({
     setError("");
     setNote("");
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/encounter-templates`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `${template.name} (copy)`.slice(0, TEMPLATE_NAME_MAX),
-          enemies: formatRoster(template.enemies),
-          battlefield: template.battlefield,
-          notes: template.notes,
-          map: template.map,
-          extras: template.extras,
+      const name = `${template.name} (copy)`.slice(0, TEMPLATE_NAME_MAX);
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/encounter-templates`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            enemies: formatRoster(template.enemies),
+            battlefield: template.battlefield,
+            notes: template.notes,
+            map: template.map,
+            extras: template.extras,
+          }),
         }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError((payload as { error?: string }).error ?? "That could not be copied.");
+        "That could not be copied.",
+      );
+      if (sent.error !== null) {
+        if (sent.unanswered) {
+          const copy = name.trim();
+          const found = await findLostCreate(loaded ? templates : null, load, (row) => row.name === copy);
+          lostCreate(found, {
+            made: "Copied. The server's answer was lost on the way, so the list was read again to make sure.",
+            missing: "The server did not answer and the copy is not in the list, so it was not made. Duplicate it again.",
+            unknown: "The server could not be reached, so it is not known yet whether the copy was made. Check the list before duplicating it again.",
+          });
+          return;
+        }
+        setError(sent.error);
         return;
       }
       await load();
@@ -227,10 +328,11 @@ export function DmEncounterPrepPanel({
     }
     setError("");
     setNote("");
-    const response = await fetch(`/api/campaigns/${campaignId}/dm/encounter-templates/${id}`, { method: "DELETE" }).catch(() => null);
-    if (!response?.ok) {
-      const payload = (await response?.json().catch(() => ({}))) as { error?: string } | undefined;
-      setError(payload?.error ?? (response ? "That could not be deleted." : "Could not reach the server."));
+    const sent = await readWrite(fetch(`/api/campaigns/${campaignId}/dm/encounter-templates/${id}`, { method: "DELETE" }), "That could not be deleted.");
+    if (sent.error !== null) {
+      setError(sent.error);
+      // No answer: it may be gone all the same, and the list says which.
+      if (sent.unanswered) await load();
       return;
     }
     if (editingId === id) {
@@ -245,23 +347,22 @@ export function DmEncounterPrepPanel({
     setError("");
     setNote("");
     try {
-      const response = await fetch(
-        `/api/campaigns/${campaignId}/dm/encounter-templates/${id}/deploy`,
-        {
+      const sent = await readWrite<{ mapError?: string | null; cued?: boolean }>(
+        fetch(`/api/campaigns/${campaignId}/dm/encounter-templates/${id}/deploy`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(cue ? { cue: cueIt } : {}),
-        },
+        }),
+        "That could not be deployed.",
       );
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        mapError?: string | null;
-        cued?: boolean;
-      };
-      if (!response.ok) {
-        setError(payload.error ?? "That could not be deployed.");
+      if (sent.error !== null) {
+        // A deploy with no answer may have put the fight on the table; a
+        // second press would put it there twice.
+        setError(sent.unanswered ? `${sent.error} The fight may already be on the table; look before deploying it again.` : sent.error);
+        if (sent.unanswered) await load();
         return;
       }
+      const payload = sent.payload;
       if (payload.cued !== undefined) {
         setNote(
           payload.cued
@@ -281,12 +382,29 @@ export function DmEncounterPrepPanel({
     }
   }
 
+  // In the sheet the sentence sits under a long form; a new one is scrolled
+  // to, so it is seen as well as announced.
+  const sheetFeedback = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error) sheetFeedback.current?.scrollIntoView({ block: "nearest" });
+  }, [error]);
+
   const feedback = (
     <>
-      {error ? <p className="motion-shake text-[11px] text-red-400">{error}</p> : null}
+      {error ? <PanelError className="text-[11px]">{error}</PanelError> : null}
       {note ? <p className="live-in text-[11px] text-emerald-400">{note}</p> : null}
     </>
   );
+
+  if (only) {
+    const editing = templates.find((template) => template.id === editingId) ?? null;
+    return (
+      <Sheet open={editorOpen} onOpenChange={showEditor} title={editing ? editing.name : "Encounter"} className="lg:w-[min(92vw,40rem)]">
+        <EncounterForm campaignId={campaignId} value={draft} onChange={setDraft} maps={maps} busy={busy} submitLabel="Save" onSubmit={() => void save()} variant="sheet" />
+        <div ref={sheetFeedback} className="mt-2">{feedback}</div>
+      </Sheet>
+    );
+  }
 
   if (rows) {
     const thresholds = targetParty ? thresholdsForParty(targetPartyLevels(targetParty)) : null;
@@ -294,6 +412,7 @@ export function DmEncounterPrepPanel({
     return (
       <div className="space-y-3">
         <DmWorkbenchPanel campaignId={campaignId} collapsible />
+        {testFight ? <OpenTestFightCard workshopId={testFight.workshopId} info={test.info} onEnded={test.reload} /> : null}
         <Listed loaded={loaded} error={loadError} onRetry={() => void load()} loading="Opening the fights...">
           <EncounterRows
             encounters={templates}
@@ -301,15 +420,28 @@ export function DmEncounterPrepPanel({
             thresholds={thresholds}
             busy={busy}
             onOpen={openEditor}
-            onDeploy={(template) => void deploy(template.id)}
+            onDeploy={(template) => {
+              if (!testFight) {
+                void deploy(template.id);
+                return;
+              }
+              // What the sheet offers is read again as it opens: a model set
+              // up, or a test ended, since this tool was opened.
+              test.reload();
+              setTesting(template);
+            }}
+            deployLabel={testFight ? "Test fight" : undefined}
             onDuplicate={(template) => void duplicate(template)}
             onDelete={(template) => void remove(template)}
           />
         </Listed>
         {feedback}
+        {testFight ? (
+          <TestFightSheet workshopId={testFight.workshopId} encounter={testing} info={test.info} onClose={() => setTesting(null)} />
+        ) : null}
         <Sheet
           open={editorOpen}
-          onOpenChange={setEditorOpen}
+          onOpenChange={showEditor}
           title={editing ? editing.name : "New encounter"}
           className="lg:w-[min(92vw,40rem)]"
         >
@@ -323,7 +455,7 @@ export function DmEncounterPrepPanel({
             onSubmit={() => void save()}
             variant="sheet"
           />
-          <div className="mt-2">{feedback}</div>
+          <div ref={sheetFeedback} className="mt-2">{feedback}</div>
         </Sheet>
       </div>
     );
@@ -369,10 +501,10 @@ export function DmEncounterPrepPanel({
                         ) : null}
                       </p>
                       <p className="truncate text-xs text-stone-400">
-                        {formatRoster(template.enemies).replace(/\n/g, ", ")}
+                        {rosterSummary(template.enemies, template.readout.names)}
                         {template.battlefield ? ` on ${template.battlefield}` : ""}
                       </p>
-                      <DifficultyLine readout={template.readout} />
+                      <DifficultyLine readout={template.readout} cue={cue} />
                       {template.notes ? (
                         <p className="reveal mt-0.5 whitespace-pre-wrap text-[11px] text-stone-500">
                           {template.notes}
@@ -397,7 +529,12 @@ export function DmEncounterPrepPanel({
             })}
           </ul>
         ) : (
-          <EmptyState size="sm" art="map" title="Nothing prepared. Write a roster below and it is one button at the table." />
+          <EmptyState
+            size="sm"
+            art="map"
+            title="Nothing prepared. Write a roster below and it is one button at the table."
+            hint="Pick monsters from the Bestiary or the rulebook and a map to fight on; the difficulty is measured against the party."
+          />
         )}
         </Listed>
       </section>

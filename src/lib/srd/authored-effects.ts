@@ -21,11 +21,12 @@
 //
 // Pure and database-free, like the rest of src/lib/srd.
 
-import { matchArmor } from "@/lib/srd/armor";
+import { isWorn, matchArmor } from "@/lib/srd/armor";
 import { AUTHORED_DATA_A } from "@/lib/srd/authored-effects-data";
 import { AUTHORED_DATA_A2 } from "@/lib/srd/authored-effects-data-b";
 import { AUTHORED_DATA_B } from "@/lib/srd/authored-effects-data2";
 import { AUTHORED_DATA_B2 } from "@/lib/srd/authored-effects-data3";
+import { AUTHORED_DATA_C } from "@/lib/srd/authored-effects-data4";
 import { GENRE_AUTHORED } from "@/lib/srd/authored-effects-genre";
 import type {
   Ability,
@@ -37,6 +38,9 @@ import type {
   Formula,
   Gate,
 } from "@/lib/srd/authored-effects-types";
+import { textKey } from "@/lib/language/text-logic";
+import type { CheckAbout } from "@/lib/dm/roll-about";
+import { keyFits, type RollKey } from "@/lib/srd/roll-keys";
 
 export type { Ability, AuthoredEffect, AuthoredEntry, AuthoredReaction, AuthoredSpend, Formula, Gate };
 
@@ -45,15 +49,14 @@ export const AUTHORED_TABLE: Record<string, AuthoredEntry> = {
   ...AUTHORED_DATA_A2,
   ...AUTHORED_DATA_B,
   ...AUTHORED_DATA_B2,
+  ...AUTHORED_DATA_C,
 };
-
-const lower = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
 
 type Row = { key: string; classId: string; feature: string; entry: AuthoredEntry };
 const BY_KEY = new Map<string, Row>(
   Object.entries(AUTHORED_TABLE).map(([key, entry]) => {
     const [classId, feature] = key.split("::");
-    return [lower(key), { key, classId, feature, entry }];
+    return [`${textKey(classId)}::${textKey(feature)}`, { key, classId, feature, entry }];
   }),
 );
 
@@ -78,41 +81,78 @@ export type AuthoredSheet = {
 export type HeldAuthored = Row & { choice: string | null; level: number; name: string };
 
 function classLevel(sheet: AuthoredSheet, classId: string): number {
-  const entry = (sheet.classes ?? []).find((item) => lower(item.id) === classId);
+  const entry = (sheet.classes ?? []).find((item) => textKey(item.id) === classId);
   if (entry) {
     return entry.level;
   }
   return Math.max(1, sheet.level ?? 1);
 }
 
+// The rows by feature name alone, for a feature a workshop subclass borrowed
+// from another class's subclass (a barbarian subclass with War Magic, from
+// the workshop's feature catalog). Taken only when a single class's table
+// carries that name, so a name two classes mean differently is never guessed.
+const BY_NAME = new Map<string, Row[]>();
+for (const row of BY_KEY.values()) {
+  const name = textKey(row.feature);
+  BY_NAME.set(name, [...(BY_NAME.get(name) ?? []), row]);
+}
+
+function borrowedRow(name: string): Row | undefined {
+  const rows = BY_NAME.get(name);
+  return rows?.length === 1 ? rows[0] : undefined;
+}
+
+// The option a held name chose ("bear" of "Totem Spirit (Bear)"), when the
+// row matched on the bare name.
+function choiceOf(exact: Row | undefined, chosen: RegExpExecArray | null): string | null {
+  return !exact && chosen ? chosen[2].trim().toLowerCase() : null;
+}
+
 // The authored features a sheet holds, each with the option chosen for it
 // ("Totem Spirit (Bear)") and the level of the class that granted it.
 export function heldAuthored(sheet: AuthoredSheet): HeldAuthored[] {
   const out: HeldAuthored[] = [];
-  const classIds = [lower(sheet.class), ...(sheet.classes ?? []).map((entry) => lower(entry.id))].filter(Boolean);
+  const classIds = [textKey(sheet.class ?? ""), ...(sheet.classes ?? []).map((entry) => textKey(entry.id))].filter(Boolean);
   for (const feature of sheet.features ?? []) {
-    const full = lower(feature.name);
-    const chosen = /^(.*?)\s*\(([^)]+)\)\s*$/.exec(full);
-    const candidates = feature.classId ? [lower(feature.classId)] : classIds;
+    const full = textKey(feature.name);
+    const chosen = /^(.*?)\s*\(([^)]+)\)\s*$/.exec(feature.name.trim());
+    const candidates = feature.classId ? [textKey(feature.classId)] : classIds;
     let found = false;
     for (const classId of candidates) {
       const exact = BY_KEY.get(`${classId}::${full}`);
-      const bare = chosen ? BY_KEY.get(`${classId}::${chosen[1]}`) : undefined;
+      const bare = chosen ? BY_KEY.get(`${classId}::${textKey(chosen[1])}`) : undefined;
       const row = exact ?? bare;
       if (row) {
         out.push({
           ...row,
           name: feature.name,
-          choice: !exact && chosen ? chosen[2].trim().toLowerCase() : null,
+          choice: choiceOf(exact, chosen),
           level: classLevel(sheet, classId),
         });
         found = true;
         break;
       }
     }
+    // A class feature its own class's table does not carry: borrowed from
+    // another class's subclass, it runs as there, by the level of the class
+    // that holds it.
+    if (!found && feature.classId && feature.source === "class") {
+      const exact = borrowedRow(full);
+      const row = exact ?? (chosen ? borrowedRow(textKey(chosen[1])) : undefined);
+      if (row) {
+        out.push({
+          ...row,
+          name: feature.name,
+          choice: choiceOf(exact, chosen),
+          level: classLevel(sheet, textKey(feature.classId)),
+        });
+        found = true;
+      }
+    }
     // A genre class's feature, found by its name (authored-effects-genre.ts).
     const genre = found ? undefined : GENRE_BY_NAME.get(full);
-    if (genre && (!genre.classes || genre.classes.some((id) => candidates.includes(lower(id))))) {
+    if (genre && (!genre.classes || genre.classes.some((id) => candidates.includes(textKey(id))))) {
       const classId = candidates[0] ?? "";
       out.push({ key: `genre::${full}`, classId, feature: genre.feature, entry: genre.entry, name: feature.name, choice: null, level: classLevel(sheet, classId) });
     }
@@ -120,27 +160,25 @@ export function heldAuthored(sheet: AuthoredSheet): HeldAuthored[] {
   return out;
 }
 
-const GENRE_BY_NAME = new Map(GENRE_AUTHORED.map((row) => [lower(row.feature), row]));
+const GENRE_BY_NAME = new Map(GENRE_AUTHORED.map((row) => [textKey(row.feature), row]));
 
 export function hasCondition(sheet: AuthoredSheet, name: string): boolean {
-  const wanted = lower(name);
+  const wanted = textKey(name);
   return (sheet.conditions ?? []).some((entry) => {
-    const held = lower(entry);
+    const held = textKey(entry);
     return held === wanted || held.startsWith(`${wanted} (`) || held.startsWith(`${wanted}:`);
   });
 }
 
-// Heavy armor on the body, read the way the rage rule reads it: the items
-// marked worn when any are, otherwise everything carried.
+// Heavy armor on the body, read the way the armor engine reads "worn"
+// (src/lib/srd/armor.ts isWorn): the rows as marked once any row says, so a
+// character who took the last piece off wears none; everything carried on a
+// sheet that never said.
 export function wearsHeavy(sheet: AuthoredSheet): boolean {
   const items = sheet.equipment ?? [];
-  const anyExplicit = items.some((item) => item.equipped);
-  return items.some((item) => {
-    if (anyExplicit && !item.equipped) {
-      return false;
-    }
-    return (item.gear?.armor?.category ?? matchArmor(item.name)?.category) === "heavy";
-  });
+  return items.some(
+    (item) => isWorn(item, items) && (item.gear?.armor?.category ?? matchArmor(item)?.category) === "heavy",
+  );
 }
 
 export function gateHolds(gate: Gate | undefined, sheet: AuthoredSheet, held: HeldAuthored): boolean {
@@ -162,12 +200,15 @@ export function gateHolds(gate: Gate | undefined, sheet: AuthoredSheet, held: He
   if (gate.notCondition && hasCondition(sheet, gate.notCondition)) {
     return false;
   }
-  if (gate.choice && held.choice !== lower(gate.choice)) {
+  if (gate.choice && textKey(held.choice ?? "") !== textKey(gate.choice)) {
+    return false;
+  }
+  if (gate.level && held.level < gate.level) {
     return false;
   }
   if (gate.choiceOf) {
-    const other = heldAuthored(sheet).find((entry) => lower(entry.feature) === lower(gate.choiceOf!.feature));
-    if (!other || other.choice !== lower(gate.choiceOf.value)) {
+    const other = heldAuthored(sheet).find((entry) => textKey(entry.feature) === textKey(gate.choiceOf!.feature));
+    if (!other || textKey(other.choice ?? "") !== textKey(gate.choiceOf.value)) {
       return false;
     }
   }
@@ -220,9 +261,14 @@ export function activeAuthored<K extends AuthoredEffectKind>(
 
 // ---- defenses ----
 
-export function authoredResistances(sheet: AuthoredSheet, options: { magical?: boolean; spell?: boolean } = {}): string[] {
+// `except`: features set aside for this blow (Emissary of Redemption against
+// a creature the paladin attacked).
+export function authoredResistances(sheet: AuthoredSheet, options: { magical?: boolean; spell?: boolean; except?: string[] } = {}): string[] {
   const out: string[] = [];
-  for (const { effect } of activeAuthored(sheet, "resist")) {
+  for (const { effect, held } of activeAuthored(sheet, "resist")) {
+    if (options.except?.includes(held.feature)) {
+      continue;
+    }
     if (effect.spells && !options.spell) {
       continue;
     }
@@ -251,19 +297,26 @@ export function authoredCritImmune(sheet: AuthoredSheet): string | null {
 
 // ---- saves ----
 
-export function authoredSaveAdvantages(sheet: AuthoredSheet, ability: string | undefined, against: string | undefined): string[] {
-  const text = lower(against);
-  const notes: string[] = [];
-  for (const { effect, held } of activeAuthored(sheet, "save_adv")) {
-    if (effect.ability && effect.ability !== ability) {
-      continue;
-    }
-    if (effect.against && !(text && new RegExp(effect.against, "i").test(text))) {
-      continue;
-    }
-    notes.push(`${held.feature}: advantage on this save`);
-  }
-  return notes;
+// The save advantages the sheet's authored features give, each as the roll
+// it rides and the values it reads (src/lib/srd/roll-keys.ts), read with the
+// other save traits (trait-rules.ts heldSaveTraits).
+export function authoredSaveTraits(sheet: AuthoredSheet): Array<RollKey & { note: string }> {
+  return activeAuthored(sheet, "save_adv").map(({ effect, held }) => ({
+    roll: "save" as const,
+    ...(effect.ability ? { abilities: [effect.ability] } : {}),
+    ...(effect.against ? { against: effect.against } : {}),
+    ...(effect.magical ? { magical: true as const } : {}),
+    note: `${held.feature}: advantage on this save`,
+  }));
+}
+
+// The check advantages the sheet's authored features give, by skill, or by
+// ability and what the check is about.
+export function authoredCheckTraits(sheet: AuthoredSheet): Array<RollKey & { note: string }> {
+  return activeAuthored(sheet, "check_adv").flatMap(({ effect, held }) => [
+    ...(effect.skills ? [{ roll: "check" as const, skills: effect.skills }] : []),
+    ...(effect.abilities ? [{ roll: "check" as const, abilities: effect.abilities, ...(effect.about ? { about: effect.about } : {}) }] : []),
+  ].map((key) => ({ ...key, note: `${held.feature}: advantage` })));
 }
 
 export function authoredSaveProficiencies(sheet: AuthoredSheet): Ability[] {
@@ -333,16 +386,16 @@ const HELD_CHECKS: Array<{ condition: string; skills: string[]; label: string }>
 
 export function authoredRollRiders(
   sheet: AuthoredSheet,
-  input: { kind: "check" | "save" | "initiative"; ability?: string; skill?: string; reason?: string },
+  input: { kind: "check" | "save" | "initiative"; ability?: string; skill?: string; about?: CheckAbout },
 ): { advantage: string[]; spent: string[] } {
   const advantage: string[] = [];
   const spent: string[] = [];
-  const skill = lower(input.skill);
+  const skill = textKey(input.skill ?? "");
   for (const carrier of ONE_SHOT_ROLLS) {
     if (carrier.kind !== input.kind || (carrier.skills && !carrier.skills.includes(skill))) {
       continue;
     }
-    const condition = (sheet.conditions ?? []).find((entry) => lower(entry) === carrier.condition);
+    const condition = (sheet.conditions ?? []).find((entry) => textKey(entry) === textKey(carrier.condition));
     if (condition) {
       advantage.push(`${carrier.label}: advantage, spent by this roll`);
       spent.push(condition);
@@ -354,15 +407,9 @@ export function authoredRollRiders(
         advantage.push(`${held.label}: advantage`);
       }
     }
-    for (const { effect, held } of activeAuthored(sheet, "check_adv")) {
-      const bySkill = skill && effect.skills?.includes(skill);
-      const byAbility =
-        input.ability &&
-        effect.abilities?.includes(input.ability as Ability) &&
-        (!effect.reason || new RegExp(effect.reason, "i").test(input.reason ?? ""));
-      if (bySkill || byAbility) {
-        advantage.push(`${held.feature}: advantage`);
-      }
+    const roll = { roll: "check" as const, skill, ability: input.ability, about: input.about };
+    for (const note of new Set(authoredCheckTraits(sheet).filter((key) => keyFits(key, roll)).map((key) => key.note))) {
+      advantage.push(note);
     }
   }
   return { advantage, spent };
@@ -393,11 +440,11 @@ export function authoredInitiativeRefills(
 // Later features win a shared name (Runic Juggernaut's Giant's Might over
 // Great Stature's).
 export function authoredSpendFor(sheet: AuthoredSheet, resourceName: string): { spend: AuthoredSpend; held: HeldAuthored } | null {
-  const wanted = lower(resourceName);
+  const wanted = textKey(resourceName);
   let found: { spend: AuthoredSpend; held: HeldAuthored } | null = null;
   for (const held of heldAuthored(sheet)) {
     for (const spend of held.entry.spends ?? []) {
-      const names = [spend.name, ...(spend.aliases ?? [])].map(lower);
+      const names = [spend.name, ...(spend.aliases ?? [])].map(textKey);
       if (names.includes(wanted)) {
         found = { spend, held };
       }
@@ -407,10 +454,10 @@ export function authoredSpendFor(sheet: AuthoredSheet, resourceName: string): { 
 }
 
 export function authoredReactionNamed(name: string): { reaction: AuthoredReaction; row: Row } | null {
-  const wanted = lower(name);
+  const wanted = textKey(name);
   for (const row of BY_KEY.values()) {
     for (const reaction of row.entry.reactions ?? []) {
-      if ([reaction.name, ...(reaction.aliases ?? [])].map(lower).includes(wanted)) {
+      if ([reaction.name, ...(reaction.aliases ?? [])].map(textKey).includes(wanted)) {
         return { reaction, row };
       }
     }
@@ -419,10 +466,10 @@ export function authoredReactionNamed(name: string): { reaction: AuthoredReactio
 }
 
 export function heldReaction(sheet: AuthoredSheet, name: string): { reaction: AuthoredReaction; held: HeldAuthored } | null {
-  const wanted = lower(name);
+  const wanted = textKey(name);
   for (const held of heldAuthored(sheet)) {
     for (const reaction of held.entry.reactions ?? []) {
-      if ([reaction.name, ...(reaction.aliases ?? [])].map(lower).includes(wanted)) {
+      if ([reaction.name, ...(reaction.aliases ?? [])].map(textKey).includes(wanted)) {
         return { reaction, held };
       }
     }

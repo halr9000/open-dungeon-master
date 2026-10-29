@@ -1,6 +1,11 @@
 import { groupTraits } from "@/lib/bestiary/block-sections";
+import { legendaryCountIn } from "@/lib/dm/ability-entries";
 import type { EnemyStats } from "@/lib/bestiary/statblock";
 import { normalizeAbilityLedgers, type AbilityLedger } from "@/lib/dm/monster-abilities";
+import { ABILITY_WORDS, parseSaveEffect } from "@/lib/dm/save-effect";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { isNamed } from "@/lib/srd/feature-names";
 
 // Legendary and lair actions and legendary resistance (docs/vtt-parity-
 // implementation-plan.md 4.1): what a stat block says a creature may do
@@ -35,6 +40,9 @@ export type LegendaryState = {
   // Enemies whose next enemy_attack is the one attack a legendary action
   // bought: one swing, not the Multiattack. Optional, like everything below.
   strikes?: string[];
+  // A concentration area's explicit strikes off the board: "<spell>|<caster
+  // id>|<creature id>" -> the turn it struck (src/lib/dm/area-casting.ts).
+  areaStruck?: Record<string, string>;
   // What each enemy has spent of its limited abilities this fight: recharge
   // abilities waiting on their d6, uses a day, spell slots
   // (src/lib/dm/monster-abilities.ts).
@@ -87,10 +95,6 @@ function stringList(raw: unknown): string[] {
   return Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-export function emptyLegendaryState(): LegendaryState {
-  return { pools: {}, lair: false, lairUsedRound: 0 };
-}
-
 export function normalizeLegendaryState(raw: unknown): LegendaryState {
   const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const pools: Record<string, LegendaryPool> = {};
@@ -106,6 +110,9 @@ export function normalizeLegendaryState(raw: unknown): LegendaryState {
   const idle = (record.idle && typeof record.idle === "object" ? record.idle : null) as Record<string, unknown> | null;
   const failed = (record.failedSave && typeof record.failedSave === "object" ? record.failedSave : null) as Record<string, unknown> | null;
   const opportunities = (record.opportunities && typeof record.opportunities === "object" ? record.opportunities : null) as Record<string, unknown> | null;
+  const areaStruck = record.areaStruck && typeof record.areaStruck === "object"
+    ? Object.fromEntries(Object.entries(record.areaStruck as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : null;
   return {
     pools,
     lair: record.lair === true,
@@ -147,41 +154,52 @@ export function normalizeLegendaryState(raw: unknown): LegendaryState {
       : {}),
     ...(Number(record.lairDue) > 0 ? { lairDue: Number(record.lairDue) } : {}),
     ...(typeof record.lairLast === "string" ? { lairLast: record.lairLast } : {}),
+    ...(areaStruck && Object.keys(areaStruck).length ? { areaStruck } : {}),
   };
 }
 
-const COST = /\(costs?\s+(\d)\s+actions?\)/i;
-const NAME_SPLIT = /^([^.:(]{2,60}?)(?:\s*\(costs?[^)]*\))?\s*[.:]\s*([\s\S]*)$/i;
+// A cost however the book prints it: "(Costs 2 Actions)", "(Costs 2 Actions;
+// Humanoid Form Only)", "(Costs 2 Actions, Recharge 5-6)", Tome of Beasts'
+// "(2 actions)" and Tome of Beasts 3's bare "(2)".
+const COST = /\((?:[^)]*?\bcosts?\s+(\d)\s+actions?\b[^)]*|(\d)(?:\s+actions?\b[^)]*)?)\)/i;
+const NAME_SPLIT = /^([^.:(]{2,60}?)((?:\s*\([^)]*\))*)\s*[.:]+\s*([\s\S]*)$/i;
 
 // One tagged line ("Legendary action: Wing Attack (Costs 2 Actions). The
-// dragon beats...") as a row with its cost.
+// dragon beats...") as a row with its cost, read from the name's tags.
 export function parseLegendaryLine(text: string): LegendaryAction {
-  const costMatch = COST.exec(text);
-  const cost = costMatch ? Math.max(1, Math.min(3, Number(costMatch[1]))) : 1;
   const split = NAME_SPLIT.exec(text.trim());
+  const costMatch = COST.exec(split ? split[2] : text);
+  const cost = costMatch ? Math.max(1, Math.min(3, Number(costMatch[1] ?? costMatch[2]))) : 1;
   if (split) {
-    return { name: split[1].trim(), cost, text: split[2].trim() };
+    return { name: split[1].trim(), cost, text: split[3].trim() };
   }
   return { name: text.trim().slice(0, 60), cost, text: "" };
 }
 
 // The profile a stat block implies: legendary lines become actions, a
 // "Legendary Resistance (3/Day)" trait becomes the counter, lair lines
-// become lair actions. A block with none of them has no profile.
+// become lair actions. A block with none of them has no profile. A legendary
+// line that only states the count (A5e prints "The dragon can take 3
+// legendary actions" as the first option) gives the count and is no action.
 export function legendaryProfile(stats: Pick<EnemyStats, "traits">): LegendaryProfile | null {
   const groups = groupTraits(stats.traits ?? []);
-  const actions = (groups.find((group) => group.section === "legendary")?.lines ?? []).map(parseLegendaryLine);
+  const legendaryLines = groups.find((group) => group.section === "legendary")?.lines ?? [];
+  const counted = legendaryLines.map((line) => legendaryCountIn(parseLegendaryLine(line).name)).find((count) => count !== null) ?? null;
+  const actions = legendaryLines.map(parseLegendaryLine).filter((action) => legendaryCountIn(action.name) === null);
   const lairActions = groups.find((group) => group.section === "lair")?.lines ?? [];
   let resistances = 0;
-  let actionsPerRound = 3;
+  let actionsPerRound = counted ?? 3;
   for (const line of stats.traits ?? []) {
     const resist = /legendary resistance\s*\((\d)\s*\/\s*day\)/i.exec(line);
     if (resist) {
       resistances = Number(resist[1]);
     }
-    const perRound = /can take (\d) legendary actions/i.exec(line);
-    if (perRound) {
-      actionsPerRound = Number(perRound[1]);
+    // The count statblock.ts writes when the block's differs from three
+    // ("Legendary actions: The creature can take 1 legendary actions a
+    // round."), or a line a person wrote that says it.
+    const perRound = legendaryCountIn(line);
+    if (perRound !== null) {
+      actionsPerRound = perRound;
     }
   }
   if (!actions.length && !resistances && !lairActions.length) {
@@ -200,22 +218,21 @@ export function refillActions(pool: LegendaryPool | undefined, profile: Legendar
   return { actions: profile.actionsPerRound, resistances: pool ? pool.resistances : profile.resistances };
 }
 
-export type SpendOutcome = { ok: true; pool: LegendaryPool; action: LegendaryAction } | { ok: false; error: string };
+export type SpendOutcome = { ok: true; pool: LegendaryPool; action: LegendaryAction } | ({ ok: false } & ToolError);
 
 export function spendLegendaryAction(
   pool: LegendaryPool,
   profile: LegendaryProfile,
   actionName: string,
 ): SpendOutcome {
-  const wanted = actionName.trim().toLowerCase();
-  const action =
-    profile.actions.find((entry) => entry.name.toLowerCase() === wanted) ??
-    profile.actions.find((entry) => entry.name.toLowerCase().startsWith(wanted) || wanted.startsWith(entry.name.toLowerCase()));
+  // By its whole name; a cost note sent with it is read aside ("Wing Attack
+  // (Costs 2 Actions)").
+  const action = profile.actions.find((entry) => isNamed(actionName, entry.name));
   if (!action) {
-    return { ok: false, error: `No legendary action called "${actionName}". It has: ${profile.actions.map((entry) => entry.name).join(", ")}.` };
+    return { ok: false, error: `No legendary action called "${actionName}". It has: ${profile.actions.map((entry) => entry.name).join(", ")}.`, retry: true };
   }
   if (pool.actions < action.cost) {
-    return { ok: false, error: `${action.name} costs ${action.cost}; only ${pool.actions} legendary action${pool.actions === 1 ? "" : "s"} left this round.` };
+    return { ok: false, error: `${action.name} costs ${action.cost}; only ${pool.actions} legendary action${pool.actions === 1 ? "" : "s"} left this round. Pick a cheaper one, or wait for the next round.`, retry: true };
   }
   return { ok: true, pool: { ...pool, actions: pool.actions - action.cost }, action };
 }
@@ -278,33 +295,22 @@ export function lairCountPassed(order: Array<{ initiative?: number | null }>, fr
   return null;
 }
 
-// The printed lair option a DM names: its number in the list, or the line
-// whose words it carries. Null when none fits.
+// The printed lair option a DM names: its number in the list, or the whole
+// line. Null when none is, never the line that shares a word with it.
 export function pickLairOption(options: string[], wanted: string): string | null {
-  const text = wanted.trim().toLowerCase();
-  const numbered = /^#?(\d{1,2})$/.exec(text);
+  const text = textKey(wanted);
+  const numbered = /^(\d{1,2})$/.exec(text);
   if (numbered) {
     return options[Number(numbered[1]) - 1] ?? null;
   }
-  const words = (line: string) => new Set(line.toLowerCase().match(/[a-z]{4,}/g) ?? []);
-  const asked = words(text);
-  let best: { line: string; shared: number } | null = null;
-  for (const line of options) {
-    const lower = line.toLowerCase();
-    if (lower.includes(text) || text.includes(lower.slice(0, 40))) {
-      return line;
-    }
-    const shared = [...words(line)].filter((word) => asked.has(word)).length;
-    if (shared >= 2 && (!best || shared > best.shared)) {
-      best = { line, shared };
-    }
-  }
-  return best?.line ?? null;
+  return options.find((line) => textKey(line) === text) ?? null;
 }
 
 // How a printed lair option resolves through the engine: a save the server
 // rolls for each creature it reaches (aoe_damage), with the DC, the ability
-// and the dice the line prints. Null for an option with no save.
+// and the dice the line prints, and the condition a failure lays as the save
+// reader finds it (src/lib/dm/save-effect.ts). Null for an option with no
+// save.
 export function lairResolution(line: string): string | null {
   const save = /DC\s*(\d+)\s+(str|dex|con|int|wis|cha)[a-z]*\s+sav(?:e|ing throw)/i.exec(line);
   if (!save) {
@@ -312,7 +318,19 @@ export function lairResolution(line: string): string | null {
   }
   const damage = /(\d+d\d+(?:\s*[+-]\s*\d+)?)\)?\s+([a-z]+)\s+damage/i.exec(line);
   const ability = save[2].slice(0, 3).toLowerCase();
+  const word = Object.keys(ABILITY_WORDS).find((name) => ABILITY_WORDS[name] === ability) ?? "";
+  const effect = parseSaveEffect(line.replace(save[0], `DC ${save[1]} ${word} saving throw`));
+  const laid = effect.condition ? [effect.condition, ...(effect.also ?? [])] : [];
+  // aoe_damage lays one condition on a failed save; a line that lays more
+  // leaves the rest to set_condition on each creature that failed.
+  const one = laid.length === 1 ? `, condition "${laid[0]}"${effect.rounds ? `, rounds ${effect.rounds}` : ""}` : "";
   return `Resolve it now with aoe_damage: dc ${save[1]}, saveAbility "${ability}"${
     damage ? `, damage "${damage[1].replace(/\s+/g, "")}", type "${damage[2].toLowerCase()}"` : ""
-  }, and the enemyIds and characterIds of the creatures it reaches; the server rolls every save. Lay what a failure brings as the line says.`;
+  }${one}, and the enemyIds and characterIds of the creatures it reaches; the server rolls every save${one ? " and lays the condition on a failure." : "."} ${
+    laid.length > 1
+      ? `A failure lays ${laid.join(" and ")}${effect.rounds ? ` for ${effect.rounds} round${effect.rounds === 1 ? "" : "s"}` : ""}: set it on each creature that failed with set_condition.`
+      : one
+        ? ""
+        : "Lay what a failure brings as the line says."
+  }`.trim();
 }

@@ -78,7 +78,7 @@ export function quakeShake(campaign: Campaign, map: BattleMap, zone: SpellZone, 
           continue;
         }
         if (!prone(enemy.conditions)) {
-          const save = rollEnemySave(campaign.id, enemy, "dex", dc, { magical: true, record: { turn, detail: `${enemy.displayName}: DEX save against ${zone.spell}` } });
+          const save = rollEnemySave(campaign.id, enemy, "dex", dc, { magical: true, against: "prone", record: { turn, detail: `${enemy.displayName}: DEX save against ${zone.spell}` } });
           if (!save.success && laySpellConditionsOnEnemy(enemy.id, ["prone"], {}).length) {
             lines.push(`${enemy.displayName} is knocked prone by ${zone.spell}.`);
           }
@@ -100,7 +100,7 @@ export function quakeShake(campaign: Campaign, map: BattleMap, zone: SpellZone, 
         continue;
       }
       if (!prone(sheet.conditions)) {
-        const save = rollCharacterSave(campaign, turn, sheet, "dex", dc, `DEX save against ${zone.spell}`, "spell");
+        const save = rollCharacterSave(campaign, turn, sheet, "dex", dc, `DEX save against ${zone.spell}`, { magical: true });
         if (!save.success) {
           const laid = handleSetCondition(campaign, turn.id, getSheetById(sheet.id) ?? sheet, { condition: "prone" }, zone.spell);
           if (!("error" in laid)) {
@@ -189,7 +189,7 @@ function fallIn(campaign: Campaign, encounter: Encounter, zone: SpellZone, token
     return null;
   }
   return withQuakeTurn(campaign.id, (turn) => {
-    const save = rollCharacterSave(campaign, turn, sheet, "dex", dc, `DEX save against a fissure of ${zone.spell}`, "spell");
+    const save = rollCharacterSave(campaign, turn, sheet, "dex", dc, `DEX save against a fissure of ${zone.spell}`, { magical: true });
     if (save.success) {
       return `${sheet.name} keeps their footing at the fissure's edge.`;
     }

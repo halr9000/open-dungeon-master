@@ -4,6 +4,8 @@
 // leave on a sheet, and what those do to rolls, are rows in
 // src/lib/srd/affliction-conditions.ts. Pure.
 
+import { textKey } from "@/lib/language/text-logic";
+
 export type AbilityId = "str" | "dex" | "con" | "int" | "wis" | "cha";
 
 // ---- diseases ----
@@ -73,13 +75,14 @@ export type DiseaseSpec = {
 };
 
 export function findDisease(text: string): Disease | null {
-  const key = text.trim().toLowerCase().replace(/[^a-z]+/g, "_").replace(/^_|_$/g, "");
+  const key = textKey(text.replace(/[^\p{L}\p{M}]+/gu, " ")).replaceAll(" ", "_");
   return (Object.values(DISEASES).find((disease) => disease.id === key || disease.condition.replace(/ /g, "_") === key) ?? null);
 }
 
 // ---- madness ----
 
-export type MadnessKind = "short" | "long" | "indefinite";
+export const MADNESS_KINDS = ["short", "long", "indefinite"] as const;
+export type MadnessKind = (typeof MADNESS_KINDS)[number];
 
 export type MadnessEffect = {
   low: number;
@@ -113,7 +116,7 @@ export const LONG_TERM_MADNESS: MadnessEffect[] = [
   { low: 11, high: 20, text: "sees vivid hallucinations: disadvantage on ability checks", conditions: ["hallucinating"] },
   { low: 21, high: 30, text: "suffers extreme paranoia: disadvantage on Wisdom and Charisma checks", conditions: ["paranoid"] },
   { low: 31, high: 40, text: "regards something (usually the source of the madness) with intense revulsion, as the antipathy effect of antipathy/sympathy", conditions: ["madness: revulsion"] },
-  { low: 41, high: 45, text: "imagines they are under the effects of a potion of the DM's choice", conditions: ["madness: delusion"] },
+  { low: 41, high: 45, text: "imagines they are under the effects of a potion of the GM's choice", conditions: ["madness: delusion"] },
   { low: 46, high: 55, text: "clings to a lucky charm: disadvantage on attack rolls, ability checks and saving throws while more than 30 feet from it", conditions: ["madness: lucky charm"] },
   { low: 56, high: 65, text: "is blinded (25%) or deafened (75%)", conditions: [] },
   { low: 66, high: 75, text: "has uncontrollable tremors or tics: disadvantage on attack rolls, and on checks and saves that use Strength or Dexterity", conditions: ["tremors"] },
@@ -201,23 +204,17 @@ export const POISONS: Poison[] = [
   { id: "wyvern_poison", name: "Wyvern Poison", type: "injury", priceGp: 1200, dc: 15, damage: "7d6", halfOnSave: true, summary: "DC 15 CON: 7d6 poison, half on a success." },
 ];
 
-// A name as a vial's label might say it ("Vial of Serpent Venom", "dose of
-// Malice"), and the book's names read the same way: "Essence of Ether" and
-// "Oil of Taggit" were never found by their own names, because the asked
-// name lost its "of" and the book's kept it.
-const poisonKey = (text: string) =>
-  text.trim().toLowerCase().replace(/\(.*\)/g, "").replace(/[^a-z]+/g, " ").replace(/\b(vial|dose|of)\b/g, " ").replace(/\s+/g, " ").trim();
+// A poison is found by its whole name, a note in brackets aside ("Oil of
+// Taggit (vial)"): "a dose of Malice" names its row in srdName, at every
+// table alike.
+const POISON_KEYS = new Map(POISONS.map((poison) => [textKey(poison.name), poison]));
 
 export function findPoison(text: string): Poison | null {
-  const key = poisonKey(text);
+  const key = textKey(text.replace(/\(.*\)/g, " "));
   if (!key) {
     return null;
   }
-  return (
-    POISONS.find((poison) => poisonKey(poison.name) === key) ??
-    POISONS.find((poison) => key.includes(poisonKey(poison.name))) ??
-    null
-  );
+  return POISON_KEYS.get(key) ?? null;
 }
 
 // Sight rot's penalty to ability checks that rely on sight (and to attack

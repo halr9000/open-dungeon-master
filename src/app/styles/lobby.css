@@ -334,3 +334,31 @@
   html:not([data-effects="low"]) .lobby-pop { animation: pop-in var(--dur-beat) var(--ease-spring) both; }
   .lobby-seat:hover .lobby-medallion-face { transform: scale(1.06); }
 }
+
+/* ---- what happens next (LobbyActions): one line above the buttons, gold
+   when it is the viewer's move, quiet while they wait, green-gold once the
+   table can open. The text slides in fresh each time it changes. ---- */
+@layer components {
+  .lobby-next {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.55rem 0.8rem;
+    border-radius: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--color-amber-500) 30%, transparent);
+    background: color-mix(in srgb, var(--color-amber-950) 30%, transparent);
+    font-size: 0.85rem;
+    color: var(--color-amber-100);
+    transition: border-color var(--dur-move) var(--ease-snap), background-color var(--dur-move) var(--ease-snap);
+  }
+  .lobby-next[data-lobby-next="wait"] {
+    border-color: color-mix(in srgb, var(--color-stone-600) 50%, transparent);
+    background: color-mix(in srgb, var(--color-stone-950) 45%, transparent);
+    color: var(--color-stone-300);
+  }
+  .lobby-next[data-lobby-next="go"] {
+    border-color: color-mix(in srgb, var(--color-emerald-400) 40%, transparent);
+    background: color-mix(in srgb, var(--color-emerald-950) 30%, transparent);
+    color: var(--color-emerald-100);
+  }
+}

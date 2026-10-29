@@ -5,8 +5,7 @@
 // imports only what it reads.
 
 import { authoredRows, resolveFormula, type Ability } from "@/lib/srd/authored-effects";
-
-const lower = (value: string) => value.trim().toLowerCase();
+import { textKey } from "@/lib/language/text-logic";
 
 // The passive effects the feature-effects table already has a shape for
 // (walking speed, an ability on initiative, damage riders), as entries it
@@ -15,8 +14,9 @@ const lower = (value: string) => value.trim().toLowerCase();
 export function authoredFeatureDefs(): Array<{
   match: string[];
   effects: Array<
-    | { kind: "speed_bonus"; amount: (level: number) => number }
+    | { kind: "speed_bonus"; amount: (level: number) => number; gate?: "raging" }
     | { kind: "initiative_ability"; ability: Ability }
+    | { kind: "initiative_proficiency" }
     | {
         kind: "weapon_damage_rider";
         dice: (level: number) => string;
@@ -31,13 +31,15 @@ export function authoredFeatureDefs(): Array<{
   const out: ReturnType<typeof authoredFeatureDefs> = [];
   for (const row of authoredRows()) {
     for (const effect of row.entry.effects ?? []) {
-      const term = lower(effect.gate?.choice ? `${row.feature} (${effect.gate.choice})` : row.feature);
+      const term = textKey(effect.gate?.choice ? `${row.feature} (${effect.gate.choice})` : row.feature);
       const guidance = `${row.feature}: ${effect.note ?? "the server applies it."}`;
       if (effect.kind === "speed") {
         const amount = effect.amount;
-        out.push({ match: [term], effects: [{ kind: "speed_bonus", amount: () => amount }], guidance });
+        out.push({ match: [term], effects: [{ kind: "speed_bonus", amount: () => amount, ...(effect.gate?.raging ? { gate: "raging" as const } : {}) }], guidance });
       } else if (effect.kind === "init_ability") {
         out.push({ match: [term], effects: [{ kind: "initiative_ability", ability: effect.ability }], guidance });
+      } else if (effect.kind === "init_prof") {
+        out.push({ match: [term], effects: [{ kind: "initiative_proficiency" }], guidance });
       } else if (effect.kind === "rider") {
         const dice = effect.dice;
         out.push({

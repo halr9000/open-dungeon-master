@@ -11,9 +11,10 @@
 //
 //   npm run build && npm run test:browser
 //   node scripts/browser/run.mjs --only board,chronicle      (a few)
-//   node scripts/browser/run.mjs --app ../open-dungeon-master-client/mobile/www
+//   node scripts/browser/run.mjs --app <client>/mobile/www   (built from this tree: ODM_SERVER_DIR=<this tree> node scripts/build-www.mjs)
 //   node scripts/browser/run.mjs --base http://127.0.0.1:3005 --ids /tmp/x/ids.json
 //   node scripts/browser/run.mjs --viewports desktop,phone --keep
+//   node scripts/browser/run.mjs --shard 2/6      (CI: every 6th scenario from the 2nd)
 //
 // Needs a Chromium: `npx playwright-core install chromium` once, or
 // ODM_BROWSER=<path to a Chrome>. Writes screenshots of every failure and
@@ -25,7 +26,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { removeTempDir } from "../lib/remove-temp-dir.mjs";
-import { enterApp, freePort, launchBrowser, newContext, pageHarness, serveFolder, signIn, startServer } from "./lib.mjs";
+import { enterApp, freePort, launchBrowser, newContext, noEnvFile, pageHarness, seeAllTours, serveFolder, signIn, startServer } from "./lib.mjs";
 
 const { values: args } = parseArgs({
   options: {
@@ -36,8 +37,20 @@ const { values: args } = parseArgs({
     viewports: { type: "string", default: "" },
     keep: { type: "boolean", default: false },
     out: { type: "string", default: "" },
+    shard: { type: "string", default: "" },
   },
 });
+
+// --shard i/n runs every nth scenario from the ith, with all its viewports,
+// so n CI jobs share the suite, each on its own seed and server.
+let shard = null;
+if (args.shard) {
+  const match = /^(\d+)\/(\d+)$/.exec(args.shard);
+  shard = match ? { index: Number(match[1]), count: Number(match[2]) } : null;
+  if (!shard || shard.index < 1 || shard.index > shard.count) {
+    throw new Error(`--shard takes i/n with 1 <= i <= n, as 2/6 (got ${args.shard})`);
+  }
+}
 
 const tree = path.resolve(import.meta.dirname, "../..");
 const outDir = args.out || fs.mkdtempSync(path.join(os.tmpdir(), "odm-browser-"));
@@ -58,7 +71,11 @@ if (base) {
   const seeded = spawnSync(process.execPath, [path.join(import.meta.dirname, "seed.mjs"), outDir], {
     cwd: tree,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, CONTENT_DB_PATH: process.env.CONTENT_DB_PATH ?? path.join(tree, "data", "content", "open5e.sqlite") },
+    env: {
+      ...process.env,
+      CONTENT_DB_PATH: process.env.CONTENT_DB_PATH ?? path.join(tree, "data", "content", "open5e.sqlite"),
+      ODM_ENV_FILE: noEnvFile(path.join(outDir, "world.sqlite")),
+    },
   });
   if (seeded.status !== 0) {
     throw new Error(`seed failed:\n${seeded.stdout}\n${seeded.stderr}`);
@@ -84,6 +101,26 @@ if (app) {
     throw new Error(`${www} holds no index.html: build the client's mobile shell first (cd mobile && node scripts/build-www.mjs)`);
   }
   shell = await serveFolder(www, await freePort());
+  // Which sources the shell was built from (the client's build-www.mjs
+  // writes build-info.json). A shell built from older pages fails for faults
+  // already fixed, as a Workshop audit once found, so a mismatch is said.
+  const info = (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(www, "build-info.json"), "utf8"));
+    } catch {
+      return null;
+    }
+  })();
+  const here = spawnSync("git", ["-C", tree, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  if (!info) {
+    console.log(`The shell at ${www} does not say what it was built from: rebuild it to be sure it holds these pages.`);
+  } else {
+    const short = (source) => (source ? `${source.commit.slice(0, 8)}${source.changed ? " with changes" : ""}` : "unknown");
+    console.log(`The shell was built ${info.builtAt} from client ${short(info.client)} and server ${short(info.server)}.`);
+    if (!info.server || info.server.commit !== here) {
+      console.log(`Warning: these pages are server ${here.slice(0, 8)}; the shell holds ${short(info.server)}. Rebuild it (cd mobile && ODM_SERVER_DIR=${tree} node scripts/build-www.mjs).`);
+    }
+  }
 }
 
 // ---- the scenarios ----
@@ -96,10 +133,44 @@ for (const file of fs.readdirSync(scenarioDir).filter((name) => name.endsWith(".
     throw new Error(`${file} does not export a scenario ({ name, run })`);
   }
   if (wanted && !wanted.some((name) => scenario.name.includes(name))) continue;
+  // A measurement, not a check (54-large-world-measure.mjs): it runs only
+  // when --only names it in full.
+  if (scenario.onlyWhenNamed && !wanted?.includes(scenario.name)) continue;
   if (app && scenario.app === false) continue;
   scenarios.push(scenario);
 }
+if (shard) {
+  const all = scenarios.splice(0);
+  scenarios.push(...all.filter((_, position) => position % shard.count === shard.index - 1));
+}
 const viewportFilter = args.viewports ? args.viewports.split(",") : null;
+// A filter that matches nothing (a typo, a web-only scenario under --app, a
+// viewport no scenario has) would print "0 of 0 passed" and exit green, so a
+// run with nothing to run fails, as npm test does (vitest.config.mts).
+const nothingToRun = () =>
+  `No scenario ran${args.only ? ` for --only ${args.only}` : ""}${app ? " with --app" : ""}${viewportFilter ? ` at --viewports ${args.viewports}` : ""}.`;
+if (!scenarios.length) {
+  if (shell) await shell.stop();
+  if (server) await server.stop();
+  console.error(nothingToRun());
+  process.exit(1);
+}
+
+// A close that never settles must not hold the run past its report: on CI a
+// shard sat on one for half an hour after its last scenario had passed, until
+// the job's own timeout cancelled it. It is named, and the run goes on (the
+// browser goes with the process at exit).
+async function closeWithin(promise, label, ms = 20_000) {
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[browser] ${label} did not close within ${ms / 1000}s`);
+      resolve();
+    }, ms);
+  });
+  await Promise.race([promise.catch(() => {}), late]);
+  clearTimeout(timer);
+}
 
 const browser = await launchBrowser({ app });
 const results = [];
@@ -116,6 +187,9 @@ try {
       const t0 = Date.now();
       try {
         await signIn(apiContext, base, ids.lead, ids.password);
+        // The lead has seen every tour at its current version; tours-account
+        // walks its own accounts, and a scenario about a tour replays it.
+        await seeAllTours(apiContext.request, base);
         if (app) {
           await enterApp(page, shell.base, base, ids, harness.touch);
         } else {
@@ -130,21 +204,32 @@ try {
       } catch (error) {
         await harness.shot("failed");
         results.push({ tag, ok: false, ms: Date.now() - t0, error: String(error?.message ?? error) });
-        console.log(`FAIL  ${tag}: ${String(error?.message ?? error).split("\n")[0]}`);
+        // The whole message: a scenario that gathers its problems lists them
+        // on the lines after the first, and CI keeps no report to read them in.
+        console.log(`FAIL  ${tag}: ${String(error?.message ?? error)}`);
       } finally {
-        await apiContext.close().catch(() => {});
-        await context.close().catch(() => {});
+        // A route handler still waiting on its route.fetch when the page
+        // closes rejects with "socket hang up", outside any scenario's await,
+        // and that ended the whole run after workshop-tours had passed.
+        await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
+        await context.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
+        await closeWithin(apiContext.close(), `${tag}: its API context`);
+        await closeWithin(context.close(), `${tag}: its page's context`);
       }
     }
   }
 } finally {
-  await browser.close().catch(() => {});
+  await closeWithin(browser.close(), "the browser");
   if (shell) await shell.stop();
   if (server) await server.stop();
 }
 
 const failed = results.filter((result) => !result.ok);
 fs.writeFileSync(path.join(outDir, "report.json"), JSON.stringify({ base, app, results }, null, 2));
+if (!results.length) {
+  console.error(nothingToRun());
+  process.exit(1);
+}
 console.log(
   `\n${results.length - failed.length} of ${results.length} passed in ${((Date.now() - started) / 1000).toFixed(0)}s` +
     (failed.length ? `; screenshots and server.log in ${outDir}` : args.keep ? `; run folder kept at ${outDir}` : ""),

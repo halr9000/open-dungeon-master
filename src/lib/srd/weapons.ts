@@ -5,6 +5,12 @@
 // (cyberpunk, horror, steampunk...); names stay generic enough to read in
 // any genre. No runtime dependencies so test scripts can import directly.
 
+import { textKey } from "@/lib/language/text-logic";
+import { pluralForms, spellingIndex } from "@/lib/srd/name-forms";
+import { rowName, withoutBonus, type RowItem } from "@/lib/srd/item-row";
+import { packBaseOf } from "@/lib/srd/pack-bases";
+import { gearDefFor } from "@/lib/srd/magic-gear";
+
 export type SrdWeapon = {
   name: string;
   category: "simple" | "martial" | "firearm" | "exotic";
@@ -127,40 +133,48 @@ const ALIAS_TERMS: Record<string, string[]> = {
   occult: ["Silvered Stake", "Censer Mace", "Dagger", "Hurled Vial"],
 };
 
-const byName = new Map(SRD_WEAPONS.map((weapon) => [normalize(weapon.name), weapon]));
+// Other whole names a weapon goes by: a staff is fought with as a
+// quarterstaff.
+export const WEAPON_ALIASES: Record<string, string[]> = { Quarterstaff: ["staff", "wooden staff", "wood staff"] };
 
-// "Longswords" / "quarterstaffs" / "Hand crossbows" -> canonical lookup key.
-function normalize(term: string) {
-  return term.trim().toLowerCase().replace(/s$/, "");
+// Each weapon's English spellings, onto its row: its name, its aliases and
+// their plurals ("Longswords", "quarterstaffs", "Hand crossbows"), each also
+// without its spaces, so a name written apart ("long sword", "Hand axe") is
+// the same weapon.
+const unspaced = (key: string) => key.replace(/ /g, "");
+const byName = spellingIndex(SRD_WEAPONS, (weapon) =>
+  [textKey(weapon.name), ...(WEAPON_ALIASES[weapon.name] ?? [])].flatMap((key) => [key, unspaced(key)]),
+);
+
+const aliasTerms = new Map(Object.entries(ALIAS_TERMS).flatMap(([term, names]) => pluralForms(term).map((form) => [form, names] as const)));
+
+// The weapon a written name is: its whole name past a "+N" bonus, a plural or
+// an alias, also written apart or in the book's order ("Crossbow, light"). A
+// name that holds a weapon's among other words is none: "Longsword of the
+// Dawn" names its row in srdName, and "Signet Ring" is no Net.
+export function weaponNamed(term: string): SrdWeapon | null {
+  const book = /^([^,(]+),\s*([^,(]+)$/.exec(term);
+  for (const written of [term, ...(book ? [`${book[2]} ${book[1]}`] : [])]) {
+    const wanted = textKey(withoutBonus(written));
+    const weapon = byName.get(wanted) ?? byName.get(unspaced(wanted));
+    if (weapon) {
+      return weapon;
+    }
+  }
+  return null;
 }
 
-// Adventuring gear whose name sits inside a weapon's: the hammer of a
-// dungeoneer's pack is a tool, not a light hammer, and a priest's censer is
-// not a censer mace. Keys as normalize() writes them.
-const GEAR_NOT_WEAPONS = new Set(["hammer", "censer"]);
+// The weapon a carried item's row is by name (src/lib/srd/item-row.ts), or
+// the one a pack row of another document is built on (pack-bases.ts).
+export function rowWeapon(item: RowItem): SrdWeapon | null {
+  return weaponNamed(rowName(item)) ?? weaponNamed(packBaseOf(item) ?? "");
+}
 
-// Finds the weapon a free-text reference points at: exact normalized name,
-// then containment either way so "Longsword of the Dawn" and "long sword"
-// both land on the Longsword. Longer names win so "hand crossbow" never
-// matches a plain crossbow entry first.
-export function matchWeapon(term: string): SrdWeapon | null {
-  const wanted = normalize(term);
-  if (!wanted) {
-    return null;
-  }
-  const exact = byName.get(wanted);
-  if (exact) {
-    return exact;
-  }
-  if (GEAR_NOT_WEAPONS.has(wanted)) {
-    return null;
-  }
-  const candidates = SRD_WEAPONS.filter((weapon) => {
-    const name = normalize(weapon.name);
-    return wanted.includes(name) || name.includes(wanted);
-  });
-  candidates.sort((a, b) => b.name.length - a.name.length);
-  return candidates[0] ?? null;
+// The weapon a carried item is: its row's, else the one its magic row is
+// built on (src/lib/srd/magic-gear.ts): a Dagger of Venom is a dagger.
+export function matchWeapon(item: RowItem): SrdWeapon | null {
+  const base = gearDefFor(item)?.base;
+  return rowWeapon(item) ?? (base?.kind === "weapon" ? weaponNamed(base.name) : null);
 }
 
 function parseProfs(weaponProfs: string[]) {
@@ -197,14 +211,14 @@ function parseProfs(weaponProfs: string[]) {
       exotic = true;
       continue;
     }
-    const alias = ALIAS_TERMS[normalize(term)];
+    const alias = aliasTerms.get(textKey(term));
     if (alias) {
       for (const name of alias) {
-        addSpecific(byName.get(normalize(name)));
+        addSpecific(byName.get(textKey(name)));
       }
       continue;
     }
-    addSpecific(byName.get(normalize(term)));
+    addSpecific(byName.get(textKey(term)));
   }
   return { simple, martial, firearm, exotic, specific };
 }
@@ -247,7 +261,7 @@ function bestOf(weapons: SrdWeapon[]) {
 }
 
 function get(name: string) {
-  const weapon = byName.get(normalize(name));
+  const weapon = byName.get(textKey(name));
   if (!weapon) {
     throw new Error(`Unknown SRD weapon: ${name}`);
   }

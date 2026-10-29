@@ -1,14 +1,14 @@
 "use client";
 
 import { EmptyState } from "@/components/EmptyState";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { GameIcon } from "@/components/ui/GameIcon";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { Select } from "@/components/ui/Select";
 import { FieldLabel, quietRow } from "@/app/campaigns/[campaignId]/DmConsoleParts";
-import { LoadFailed } from "@/app/campaigns/[campaignId]/PanelKit";
-import { readLoad, useLoadStatus } from "@/lib/load-state";
+import { LoadFailed, PanelError } from "@/app/campaigns/[campaignId]/PanelKit";
+import { findLostCreate, readLoad, readWrite, useLoadStatus } from "@/lib/load-state";
 import { cn } from "@/lib/cn";
 import { ui } from "@/lib/ui";
 import {
@@ -20,6 +20,7 @@ import {
   type Beat,
   type BeatKind,
   type BeatLinks,
+  type BeatOrigin,
   type Board,
   type BoardInventory,
   type Suggestion,
@@ -61,6 +62,8 @@ type Payload = {
   inventory: BoardInventory;
   // Links that no longer resolve, by card.
   broken: Record<string, Array<keyof BeatLinks>>;
+  // Where each card came from (audit WF-19); a card made here has none.
+  origins?: Record<string, BeatOrigin>;
   suggestions: Suggestion[];
   compiled: CompiledBoard & { summary: CompileSummary };
   // The shared workshop a workshop draws on, and what it could draw on
@@ -86,11 +89,20 @@ export function DmStoryboardPanel({
   const [newTitle, setNewTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const board = layout === "board";
+  // In the card's sheet the sentence sits under a long editor; a new one is
+  // scrolled to, so it is seen as well as announced.
+  const sheetError = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error) sheetError.current?.scrollIntoView({ block: "nearest" });
+  }, [error]);
 
   // A refused or failed load is settled, not dropped (issue 140): the
   // skeleton below gives way to the server's sentence instead of staying up
   // for good.
+  // The board it read, or null when it could not, so an add whose answer
+  // was lost can look for its card.
   const { loadError, settle } = useLoadStatus();
   const load = useCallback(
     () =>
@@ -99,6 +111,7 @@ export function DmStoryboardPanel({
           setData(outcome.payload);
         }
         settle(outcome);
+        return outcome.payload;
       }),
     [campaignId, settle],
   );
@@ -107,21 +120,48 @@ export function DmStoryboardPanel({
     void load();
   }, [load]);
 
+  // Every write goes through readWrite (WA-05): one that dies on the
+  // connection is said here and keeps what was typed. An add whose answer
+  // was lost reads the board again before saying anything, so the card is
+  // never added twice by a second press.
   async function add(kind: BeatKind, title: string) {
     if (!title.trim()) {
       return;
     }
     setBusy(true);
     setError("");
+    setNote("");
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/storyboard`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, title }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) {
-        setError(payload.error ?? "That card could not be added.");
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/storyboard`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind, title }),
+        }),
+        "That card could not be added.",
+      );
+      if (sent.error !== null && sent.unanswered) {
+        // As the server keeps it (src/lib/workshop/board.ts): trimmed, cut at TITLE_MAX.
+        const wanted = title.trim().slice(0, TITLE_MAX);
+        const found = await findLostCreate(
+          data ? data.board.nodes : null,
+          () => load().then((payload) => payload?.board.nodes ?? null),
+          (node) => node.kind === kind && node.title === wanted,
+        );
+        if (found === "made") {
+          setNewTitle("");
+          setNote("Added. The server's answer was lost on the way, so the board was read again to make sure.");
+          return;
+        }
+        setError(
+          found === "missing"
+            ? "The server did not answer and the card is not on the board, so it was not added. Add it again."
+            : "The server could not be reached, so it is not known yet whether the card was added. Look at the board before adding it again.",
+        );
+        return;
+      }
+      if (sent.error !== null) {
+        setError(sent.error);
         return;
       }
       setNewTitle("");
@@ -135,14 +175,16 @@ export function DmStoryboardPanel({
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/dm/storyboard/${beat.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(beat),
-      });
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) {
-        setError(payload.error ?? "That card could not be saved.");
+      const sent = await readWrite(
+        fetch(`/api/campaigns/${campaignId}/dm/storyboard/${beat.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(beat),
+        }),
+        "That card could not be saved.",
+      );
+      if (sent.error !== null) {
+        setError(sent.unanswered ? `${sent.error} Your changes are kept here.` : sent.error);
         return;
       }
       await load();
@@ -152,12 +194,24 @@ export function DmStoryboardPanel({
   }
 
   async function remove(id: string) {
-    await fetch(`/api/campaigns/${campaignId}/dm/storyboard/${id}`, { method: "DELETE" });
-    if (openId === id) {
-      setOpenId(null);
-      setEdit(null);
+    setBusy(true);
+    setError("");
+    try {
+      const sent = await readWrite(fetch(`/api/campaigns/${campaignId}/dm/storyboard/${id}`, { method: "DELETE" }), "That card could not be deleted.");
+      if (sent.error !== null) {
+        setError(sent.error);
+        // No answer: it may be gone all the same, and the board says which.
+        if (sent.unanswered) await load();
+        return;
+      }
+      if (openId === id) {
+        setOpenId(null);
+        setEdit(null);
+      }
+      await load();
+    } finally {
+      setBusy(false);
     }
-    await load();
   }
 
   function close() {
@@ -221,7 +275,8 @@ export function DmStoryboardPanel({
         </button>
       </div>
       <p key={newKind} className="live-in text-[11px] leading-snug text-stone-400">{BEAT_HINTS[newKind]}</p>
-      {error ? <p className="motion-shake text-[11px] text-red-400">{error}</p> : null}
+      {error ? <PanelError className="text-[11px]">{error}</PanelError> : null}
+      {note ? <p className="live-in text-[11px] text-emerald-400">{note}</p> : null}
     </>
   );
 
@@ -231,6 +286,7 @@ export function DmStoryboardPanel({
       onChange={setEdit}
       inventory={data.inventory}
       broken={data.broken?.[beat.id] ?? []}
+      origin={data.origins?.[beat.id]}
       others={nodes.filter((other) => other.id !== beat.id)}
       busy={busy}
       onSave={() => void save(beat)}
@@ -287,7 +343,11 @@ export function DmStoryboardPanel({
           {open && edit ? (
             <div className="reveal flex flex-col gap-2">
               {editorFor(edit, () => void remove(open.id))}
-              {error ? <p className="motion-shake text-[11px] text-red-400">{error}</p> : null}
+              {error ? (
+                <div ref={sheetError}>
+                  <PanelError className="text-[11px]">{error}</PanelError>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </Sheet>
@@ -403,7 +463,7 @@ export function DmStoryboardPanel({
           <p className="text-[11px] leading-snug text-stone-400">
             {data.compiled.summary.lines.length
               ? `Imported into a campaign, this board becomes ${data.compiled.summary.lines.join(", ")}.`
-              : "Nothing yet. Cards become lore, quests, prepared fights, DM notes and the story arc."}
+              : "Nothing yet. Cards become lore, quests, prepared fights, GM notes and the story arc."}
           </p>
           {data.compiled.summary.arcRefusal ? (
             <p className="reveal text-[10px] text-amber-300/70">{data.compiled.summary.arcRefusal}</p>

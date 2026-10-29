@@ -1,7 +1,7 @@
 import { normalizeHandLayout, type HandLayout } from "@/lib/battlemap/hand-layout";
 import { getDatabase, nowIso, parseJson } from "@/lib/db/core";
 import { touchCampaign } from "@/lib/db/campaigns";
-import { effectiveMaxHp, maxHpRiders, type ConditionMetaMap } from "@/lib/dm/condition-logic";
+import { effectiveMaxHp, maxHpRiders, tempHpClaims, withoutTempHpClaims, type ConditionMetaMap } from "@/lib/dm/condition-logic";
 import { populateFeaturesForClasses } from "@/lib/srd/features";
 import { populateResources } from "@/lib/srd/class-resources";
 import { XP_THRESHOLDS, deriveAc } from "@/lib/srd";
@@ -12,15 +12,23 @@ import { itemWeightByName, repairedWeight } from "@/lib/content";
 import { homebrewRaceLabel, hydrateHomebrewGear } from "@/lib/db/homebrew";
 import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { storedGender } from "@/lib/gender";
+import { attractionJson, normalizeAttraction } from "@/lib/attraction";
 import { backgroundFeatureFor } from "@/lib/backgrounds";
 import { registerSpeciesReader } from "@/lib/srd/race-id";
 import { featsAsRun } from "@/lib/srd/feat-effects";
 import { serverSpeciesRules } from "@/lib/characters/species-rules";
-import type {
-  CharacterSheet,
-  CreateSheetInput,
-  FullPatchSheetInput,
+import {
+  keyedFeatChoices,
+  type CharacterSheet,
+  type CreateSheetInput,
+  type FullPatchSheetInput,
 } from "@/lib/schemas/sheet";
+import { textKey } from "@/lib/language/text-logic";
+import { noteDominationShift } from "@/lib/db/side-watch";
+import { repairedPets } from "@/lib/srd/familiar-forms";
+import { rowName } from "@/lib/srd/item-row";
+
+type FeatChoices = NonNullable<CreateSheetInput["featChoices"]>;
 
 // Every rule that reads a species by id reads a pack or workshop species
 // through this (src/lib/srd/race-id.ts); every sheet the engines touch
@@ -73,8 +81,13 @@ type SheetRow = {
   backstory: string | null;
   is_companion: number | null;
   companion_kind: string | null;
+  commanded_by?: string | null;
   personality: string | null;
   hand_layout_json?: string | null;
+  feat_choices_json?: string | null;
+  attraction_json?: string | null;
+  open_to_advances?: number | null;
+  open_to_pacts?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -111,6 +124,9 @@ function mapSheet(row: SheetRow): CharacterSheet {
     background: row.background,
     alignment: row.alignment,
     gender: storedGender(row.gender),
+    attraction: normalizeAttraction(row.attraction_json ?? ""),
+    openToAdvances: row.open_to_advances === 1,
+    openToPacts: row.open_to_pacts === 1,
     level: row.level,
     xp: row.xp,
     abilities: parseJson(row.abilities_json, { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 }),
@@ -145,7 +161,9 @@ function mapSheet(row: SheetRow): CharacterSheet {
     conditionMeta: parseJson<CharacterSheet["conditionMeta"]>(row.condition_meta_json, {}),
     resources: parseJson<CharacterSheet["resources"]>(row.resources_json, {}),
     wildShape: parseJson<CharacterSheet["wildShape"]>(row.wild_shape_json, null),
-    pets: parseJson<CharacterSheet["pets"]>(row.pets_json, []),
+    // A familiar stored with an attack the creature table has since put
+    // right takes the table's (src/lib/srd/familiar-forms.ts).
+    pets: repairedPets(parseJson<CharacterSheet["pets"]>(row.pets_json, [])),
     summon: parseJson<CharacterSheet["summon"]>(row.summon_json ?? null, null),
     exhaustion: row.exhaustion ?? 0,
     deathSaves: parseJson<CharacterSheet["deathSaves"]>(row.death_saves_json, null),
@@ -159,8 +177,10 @@ function mapSheet(row: SheetRow): CharacterSheet {
       row.companion_kind === "party" || row.companion_kind === "guest"
         ? row.companion_kind
         : null,
+    commandedBy: row.commanded_by ?? null,
     personality: row.personality ?? "",
     ...handLayoutOf(row.hand_layout_json),
+    ...featChoicesOf(row.feat_choices_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -172,6 +192,17 @@ function handLayoutOf(json: string | null | undefined): { handLayout?: HandLayou
   const layout = json ? normalizeHandLayout(parseJson(json, null)) : null;
   return layout ? { handLayout: layout } : {};
 }
+
+// The picks the sheet's feats and subclass grants were made with, when it
+// records any (issue #430), under the keys featChoice reads: a map stored
+// under the earlier lower-case keys is re-keyed here.
+function featChoicesOf(json: string | null | undefined): { featChoices?: FeatChoices } {
+  const choices = json ? parseJson<FeatChoices | null>(json, null) : null;
+  return choices && typeof choices === "object" && Object.keys(choices).length ? { featChoices: keyedFeatChoices(choices) } : {};
+}
+
+const featChoicesJson = (choices: FeatChoices | undefined): string | null =>
+  choices && Object.keys(choices).length ? JSON.stringify(choices) : null;
 
 // The player's arrangement of this character's Hand (issue 231), or null to
 // go back to the automatic split. Only the layout column is written: it is a
@@ -190,8 +221,28 @@ const SHEET_COLUMNS = `
   classes_json, hit_dice_pools_json,
   proficiencies_json, equipment_json, gold, copper, feats_json, features_json,
   spellcasting_json, conditions_json, condition_meta_json, resources_json, wild_shape_json, pets_json, summon_json, exhaustion, death_saves_json, concentrating_on, concentration_rounds,
-  portrait_json, notes, backstory, is_companion, companion_kind, personality, hand_layout_json, created_at, updated_at
+  portrait_json, notes, backstory, is_companion, companion_kind, commanded_by, personality, hand_layout_json, feat_choices_json,
+  attraction_json, open_to_advances, open_to_pacts, created_at, updated_at
 `;
+
+// The owner's answer to "Open to advances from NPCs" (issue 501), for this
+// table only. Like the Hand layout it is a preference, not an edit, so
+// nothing else on the sheet moves and updated_at stays.
+export function setOpenToAdvances(sheetId: string, open: boolean): CharacterSheet | null {
+  getDatabase()
+    .prepare(`UPDATE character_sheets SET open_to_advances = ? WHERE id = ?`)
+    .run(open ? 1 : 0, sheetId);
+  return getSheetById(sheetId);
+}
+
+// The owner's answer to "Pacts may approach me" (issue 503 Phase 7), for
+// this table only: a preference, like the advances opt-in above.
+export function setOpenToPacts(sheetId: string, open: boolean): CharacterSheet | null {
+  getDatabase()
+    .prepare(`UPDATE character_sheets SET open_to_pacts = ? WHERE id = ?`)
+    .run(open ? 1 : 0, sheetId);
+  return getSheetById(sheetId);
+}
 
 // Flags a freshly created sheet as an AI companion. Kept out of the main
 // INSERT so every existing creation path stays untouched.
@@ -205,6 +256,16 @@ export function markSheetAsCompanion(
       `UPDATE character_sheets SET is_companion = 1, companion_kind = ?, personality = ? WHERE id = ?`,
     )
     .run(kind, personality, sheetId);
+  return getSheetById(sheetId);
+}
+
+// Who takes an AI companion's turns in a fight: a player's id, or null for
+// the DM (src/lib/dm/companion-command.ts). Kept out of patchSheet like the
+// companion mark: no sheet edit can hand a companion to somebody.
+export function setCompanionCommander(sheetId: string, userId: string | null): CharacterSheet | null {
+  getDatabase()
+    .prepare(`UPDATE character_sheets SET commanded_by = ?, updated_at = ? WHERE id = ? AND is_companion = 1`)
+    .run(userId, nowIso(), sheetId);
   return getSheetById(sheetId);
 }
 
@@ -249,7 +310,7 @@ function withBackgroundFeature(
   }
   // The sheet schema holds feature names to 80 characters.
   const label = `${granted.name} (${granted.background})`.slice(0, 80);
-  if (list.some((feature) => feature.name.toLowerCase() === label.toLowerCase())) {
+  if (list.some((feature) => textKey(feature.name) === textKey(label))) {
     return list;
   }
   return [...list, { name: label, source: "background" as const }];
@@ -269,13 +330,13 @@ function withBackgroundFeature(
 // number is left as it is.
 function withItemWeights(equipment: CharacterSheet["equipment"]): CharacterSheet["equipment"] {
   return equipment.map((item) => {
-    const stored = repairedWeight(item.name, item.weight);
+    const stored = repairedWeight(rowName(item), item.weight);
     if (typeof stored === "number") {
       return stored === item.weight ? item : { ...item, weight: stored };
     }
     const line = { ...item };
     delete line.weight;
-    const weight = itemWeightByName(item.name);
+    const weight = itemWeightByName(rowName(item));
     return weight === null ? (item.weight === undefined ? item : line) : { ...line, weight };
   });
 }
@@ -368,9 +429,9 @@ export function createSheet(
         level, xp, abilities_json, max_hp, current_hp, temp_hp, ac, ac_override, speed,
         hit_dice_json, classes_json, hit_dice_pools_json, proficiencies_json, equipment_json, gold, copper, feats_json,
         features_json, resources_json, spellcasting_json, conditions_json, portrait_json,
-        notes, backstory, created_at, updated_at
+        notes, backstory, feat_choices_json, attraction_json, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)
     `,
   ).run(
     id,
@@ -417,6 +478,9 @@ export function createSheet(
     input.notes,
     // Older library sheet_json blobs predate the field.
     input.backstory ?? "",
+    featChoicesJson(input.featChoices),
+    // Older library sheet_json blobs and companion drafts predate the field.
+    attractionJson(input.attraction),
     now,
     now,
   );
@@ -711,6 +775,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
     portrait: patch.portrait !== undefined ? patch.portrait : existing.portrait,
     notes: patch.notes ?? existing.notes,
     backstory: patch.backstory ?? existing.backstory,
+    featChoices: patch.featChoices ?? existing.featChoices,
   };
 
   // A level or a class that changed, by any path, brings its features, hit
@@ -731,6 +796,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
         xp: next.xp,
         classes: next.classes,
         features: next.features,
+        feats: featsAsRun(next.feats, existing.campaignId),
         // A spent count the patch itself carries is the newest word on it.
         hitDice: patch.hitDice ?? existing.hitDice,
         hitDicePools: patch.hitDicePools !== undefined ? patch.hitDicePools : existing.hitDicePools,
@@ -775,12 +841,30 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
     const after = maxHpRiders(next.conditions, next.conditionMeta as ConditionMetaMap);
     const bonusDelta = after.bonus - before.bonus;
     const drainDelta = after.drain - before.drain;
+    // Exact deltas, so taking a rider away gives back what it took and no
+    // more: a drain may bring the maximum to 0 (a death), never past it on
+    // its own (src/lib/dm/enemy-hit.ts drainMaxHp caps it).
     if (bonusDelta || drainDelta) {
-      next.maxHp = Math.max(1, next.maxHp + bonusDelta - drainDelta);
+      next.maxHp = next.maxHp + bonusDelta - drainDelta;
       if (bonusDelta > 0) {
         next.currentHp = next.currentHp + bonusDelta;
       }
     }
+    // A Dominate starting or ending moves the character's side (side-watch.ts).
+    noteDominationShift(existing.campaignId, existing, next);
+  }
+
+  // Temporary hit points a spell granted for its duration go when it ends
+  // (False Life, Heroism): the instance that granted them carries the claim.
+  // A new pool from anything else takes their place (they never stack) and
+  // is no spell's to take away.
+  if (patch.tempHp !== undefined && next.tempHp > existing.tempHp) {
+    next.conditionMeta = withoutTempHpClaims(next.conditionMeta as ConditionMetaMap);
+  } else if (
+    next.tempHp > 0 &&
+    tempHpClaims(next.conditions, next.conditionMeta as ConditionMetaMap) < tempHpClaims(existing.conditions, existing.conditionMeta as ConditionMetaMap)
+  ) {
+    next.tempHp = 0;
   }
 
   // The armor engine owns the AC unless a human pinned it: buying a
@@ -820,7 +904,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
           spellcasting_json = ?, wild_shape_json = ?, pets_json = ?, exhaustion = ?, death_saves_json = ?, concentrating_on = ?, concentration_rounds = ?,
           feats_json = ?, features_json = ?, subclass = ?,
           classes_json = ?, hit_dice_pools_json = ?,
-          portrait_json = ?, notes = ?, backstory = ?, updated_at = ?
+          portrait_json = ?, notes = ?, backstory = ?, feat_choices_json = ?, updated_at = ?
         WHERE id = ?
       `,
     )
@@ -864,6 +948,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
       next.portrait ? JSON.stringify(next.portrait) : null,
       next.notes,
       next.backstory,
+      featChoicesJson(next.featChoices),
       nowIso(),
       sheetId,
     );

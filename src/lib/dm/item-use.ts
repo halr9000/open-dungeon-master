@@ -28,9 +28,10 @@ import {
 } from "@/lib/dm/item-charges";
 import { attacksAllowedFor, budgetFor, storeBudget } from "@/lib/dm/turn-budget";
 import { gearDefOfRow } from "@/lib/srd/magic-gear";
-import { conditionExtraActions } from "@/lib/srd/condition-effects";
+import { conditionTurnShape } from "@/lib/srd/condition-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { RollResult } from "@/lib/dice";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
 
 function publishRoll(campaign: Campaign, sheet: CharacterSheet, detail: string, result: RollResult) {
   const roll = insertRoll({
@@ -56,7 +57,7 @@ export function chargedItemUse(
   itemName: string,
   charges: number | undefined,
   spell?: string,
-): Record<string, unknown> | null {
+): ToolResult | null {
   // A name that fits a charged item and something else as well is a guess:
   // "healing" with a Staff of Healing and a potion in the pack. The charges
   // are not spent on a guess.
@@ -65,6 +66,7 @@ export function chargedItemUse(
   if (chargedMatches.length && matching.length > 1) {
     return {
       error: `"${itemName}" could mean ${matching.map((item) => item.name).join(" or ")}; name the item exactly. Nothing was spent.`,
+      retry: true,
     };
   }
   const carried = chargedMatches[0] ?? null;
@@ -74,18 +76,20 @@ export function chargedItemUse(
   }
   const cast = spell?.trim() ? itemSpellCast(carried, spell, charges) : null;
   if (cast && "error" in cast) {
-    return { error: `${cast.error} Nothing was spent.` };
+    return { ...toolError(cast), error: `${cast.error} Nothing was spent.` };
   }
   const count = cast ? cast.charges : Math.max(1, Math.round(charges ?? 1));
   if (sheet.deathSaves?.dead || sheet.currentHp <= 0) {
     return {
       error: `${sheet.name} is ${sheet.deathSaves?.dead ? "dead" : "unconscious at 0 hit points"} and cannot use ${carried.name}.`,
+      refused: "rules",
     };
   }
   const def = gearDefOfRow(carried);
   if (def?.requiresAttunement && !carried.attuned) {
     return {
       error: `${carried.name} works only for someone attuned to it, and ${sheet.name} is not; attuning takes a short rest with the item. Nothing was spent.`,
+      refused: "rules",
     };
   }
   // In a fight, activating the item is the character's action.
@@ -95,25 +99,25 @@ export function chargedItemUse(
   // nothing of the acting combatant's turn (readied-release.ts).
   const readied = readiedReleaseFor(sheet, encounter, "item");
   if (readied && "error" in readied) {
-    return { error: readied.error };
+    return toolError(readied);
   }
   if (encounter && !readied) {
     const able = canAct({ sheet, encounter, kind: "action" });
     if (!able.ok) {
-      return { error: able.error };
+      return toolError(able);
     }
-    budget = budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionExtraActions(sheet.conditions));
+    budget = budgetFor(encounter, sheet.id, attacksAllowedFor(sheet), conditionTurnShape(sheet.conditions));
     if (budget) {
       const spent = spendAction(budget, "action", `using ${carried.name}`, sheet.name);
       if (!spent.ok) {
-        return { error: spent.error };
+        return toolError(spent);
       }
       budget = spent.budget;
     }
   }
   const math = spendChargesMath(carried, rule, count);
   if ("error" in math) {
-    return { error: `${math.error} Nothing was spent.` };
+    return { ...toolError(math), error: `${math.error} Nothing was spent.` };
   }
   if (encounter && budget) {
     storeBudget(encounter, budget);

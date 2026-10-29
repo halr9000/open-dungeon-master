@@ -3,6 +3,7 @@ import { listChapters } from "@/lib/db/chapters";
 import { actRecapFor, actTitle, romanNumeral, sagaIndexOf } from "@/lib/dm/arc-logic";
 import { listAllMessages } from "@/lib/db/messages";
 import { listSheets } from "@/lib/db/sheets";
+import { slugOf } from "@/lib/language/text-logic";
 
 // A serializer-independent view of a campaign's story, gathered once from the
 // database and then handed to the HTML/ODT/DOCX renderers. Player-safe by
@@ -86,7 +87,7 @@ export function buildStoryDocument(campaignId: string): StoryDocument | null {
         kind: message.authorType === "dm" ? "dm" : "player",
         speaker:
           message.authorType === "dm"
-            ? "Dungeon Master"
+            ? "Game Master"
             : (message.characterId && sheetNames.get(message.characterId)) ||
               (message.userId && memberNames.get(message.userId)) ||
               "Adventurer",
@@ -127,18 +128,8 @@ export function buildStoryDocument(campaignId: string): StoryDocument | null {
 }
 
 // A url/filename-safe slug of the campaign title.
-export function slugify(name: string): string {
-  return (
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "campaign"
-  );
-}
-
 export function exportFilename(doc: StoryDocument, ext: "html" | "odt" | "docx"): string {
-  return `${slugify(doc.title)}-story.${ext}`;
+  return `${[slugOf(doc.title), "story"].filter((part) => part !== "").join("-")}.${ext}`;
 }
 
 // Escapes text for insertion into HTML or XML text/attribute nodes. ODF and

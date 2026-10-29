@@ -49,7 +49,7 @@ export function violetRayTurnStart(campaign: Campaign, combatantIds: string[]): 
     for (const caster of casters) {
       const dc = spellSaveDcFor(caster, "Prismatic Spray") ?? 13;
       for (const enemy of held.filter((entry) => (entry.conditionMeta as ConditionMetaMap)[VIOLET_MARK]?.source === caster.id)) {
-        const save = rollEnemySave(campaign.id, enemy, "wis", dc, { magical: true, resist: true, record: { turn, detail: `${enemy.displayName}: WIS save against Prismatic Spray's violet ray` } });
+        const save = rollEnemySave(campaign.id, enemy, "wis", dc, { magical: true, resist: true, against: "blinded", record: { turn, detail: `${enemy.displayName}: WIS save against Prismatic Spray's violet ray` } });
         const cleared = withoutViolet(enemy.conditions, enemy.conditionMeta as ConditionMetaMap);
         patchEnemyConditions(enemy.id, cleared.conditions, cleared.meta);
         lines.push(
@@ -59,7 +59,7 @@ export function violetRayTurnStart(campaign: Campaign, combatantIds: string[]): 
         );
       }
       for (const sheet of heldSheets.filter((entry) => (entry.conditionMeta as ConditionMetaMap)[VIOLET_MARK]?.source === caster.id)) {
-        const save = rollCharacterSave(campaign, turn, sheet, "wis", dc, "WIS save against Prismatic Spray's violet ray", "spell");
+        const save = rollCharacterSave(campaign, turn, sheet, "wis", dc, "WIS save against Prismatic Spray's violet ray", { magical: true });
         const cleared = withoutViolet(sheet.conditions, sheet.conditionMeta as ConditionMetaMap);
         const updated = patchSheet(sheet.id, {
           conditions: save.success ? cleared.conditions : [...cleared.conditions, "banished"],
@@ -68,7 +68,7 @@ export function violetRayTurnStart(campaign: Campaign, combatantIds: string[]): 
         if (updated) {
           publishPersisted(campaign.id, "sheet_updated", { sheet: updated });
         }
-        lines.push(save.success ? `${sheet.name}'s sight returns.` : `${sheet.name} is sent to another plane by the violet ray (the DM decides which).`);
+        lines.push(save.success ? `${sheet.name}'s sight returns.` : `${sheet.name} is sent to another plane by the violet ray (the GM decides which).`);
       }
     }
   } finally {

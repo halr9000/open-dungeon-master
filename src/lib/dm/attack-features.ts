@@ -20,19 +20,25 @@ import { heldInspiration } from "@/lib/dm/roll-riders";
 import type { SheetDerived } from "@/lib/srd";
 import { classLevelOf, holdsFeature } from "@/lib/srd/trait-rules";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { ToolError } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { nameChoice } from "@/lib/srd/feature-names";
+import { favoredEnemies } from "@/lib/srd/check-traits";
+import { sameRulesKey } from "@/lib/srd/name-forms";
+import { activeAuthored } from "@/lib/srd/authored-effects";
+import { ABILITY_NAMES } from "@/lib/srd/legality/types";
 
 type Sheet = Pick<CharacterSheet, "name" | "class" | "level" | "classes" | "features" | "feats" | "conditions" | "resources" | "spellcasting">;
 
-const lower = (value: string) => value.trim().toLowerCase();
-const holds = (sheet: Sheet, condition: string) => sheet.conditions.some((entry) => lower(entry) === condition);
+const holds = (sheet: Sheet, condition: string) => sheet.conditions.some((entry) => textKey(entry) === condition);
 
 // ---- Inspiration ----
 
-export function inspirationProblem(sheet: Sheet, asked: boolean | undefined): string | null {
+export function inspirationProblem(sheet: Sheet, asked: boolean | undefined): ToolError | null {
   if (!asked || heldInspiration(sheet)) {
     return null;
   }
-  return `${sheet.name} holds no Inspiration to spend. The DM awards it with set_condition condition "inspiration"; attack without useInspiration.`;
+  return { error: `${sheet.name} holds no Inspiration to spend. The GM awards it with set_condition condition "inspiration"; attack without useInspiration.`, retry: true };
 }
 
 // ---- Feral Senses ----
@@ -46,7 +52,7 @@ export function hasFeralSenses(sheet: Sheet): boolean {
 // roll anything.
 export function seenTargetConditions(sheet: Sheet, conditions: string[]): string[] {
   return hasFeralSenses(sheet)
-    ? conditions.filter((entry) => !["invisible", "hidden"].includes(lower(entry)))
+    ? conditions.filter((entry) => !["invisible", "hidden"].includes(textKey(entry)))
     : conditions;
 }
 
@@ -54,29 +60,15 @@ export function seenTargetConditions(sheet: Sheet, conditions: string[]): string
 
 export const FOE_SLAYER = "foe-slayer";
 
-// The creature types (and, for humanoids, the races) a ranger's Favored
-// Enemy names: a feature written "Favored Enemy: undead, fiends" or
-// "Favored Enemy (orcs)". None recorded, none favored.
-export function favoredEnemyTypes(sheet: Sheet): string[] {
-  const out: string[] = [];
-  for (const feature of sheet.features) {
-    const match = /^favored enemy(?: improvement)?\s*[:(]\s*([^)]*)\)?$/i.exec(feature.name.trim());
-    if (match) {
-      out.push(
-        ...match[1]
-          .split(/,|\band\b/)
-          .map((entry) => lower(entry).replace(/s$/, ""))
-          .filter(Boolean),
-      );
-    }
-  }
-  return out;
-}
-
-export function isFavoredEnemy(sheet: Sheet, enemy: Pick<EncounterEnemy, "displayName" | "stats">): boolean {
-  const type = lower(String(enemy.stats.type ?? ""));
-  const name = lower(enemy.displayName);
-  return favoredEnemyTypes(sheet).some((favored) => type.includes(favored) || name.includes(favored));
+// The enemy is favored (src/lib/srd/check-traits.ts favoredEnemies) by its
+// creature type ("fiend (demon)" is a fiend), a subtype ("humanoid
+// (goblinoid, orc)" is an orc) or its row ("goblin"), each whole, in the
+// singular or the plural ("monstrosities", "elves"): no name it merely
+// holds ("Forcemage" is no orc).
+export function isFavoredEnemy(sheet: Sheet, enemy: Pick<EncounterEnemy, "slug" | "stats">): boolean {
+  const type = String(enemy.stats.type ?? "");
+  const kinds = [textKey(enemy.slug), textKey(type.replace(/\s*\([^()]*\)\s*$/, "")), ...(nameChoice(type) ?? "").split(",").map(textKey)].filter(Boolean);
+  return favoredEnemies(sheet).some((favored) => kinds.some((kind) => sameRulesKey(kind, favored)));
 }
 
 // The bonus Foe Slayer can add to this attack, or 0: a ranger 20 (or the
@@ -84,7 +76,7 @@ export function isFavoredEnemy(sheet: Sheet, enemy: Pick<EncounterEnemy, "displa
 export function foeSlayerBonus(
   sheet: Sheet,
   derived: Pick<SheetDerived, "abilityMods">,
-  enemy: Pick<EncounterEnemy, "displayName" | "stats">,
+  enemy: Pick<EncounterEnemy, "slug" | "stats">,
   oncePerTurn: string[] | null,
 ): number {
   if (!oncePerTurn || oncePerTurn.includes(FOE_SLAYER)) {
@@ -100,16 +92,16 @@ export function foeSlayerBonus(
 
 export const STROKE_OF_LUCK = "stroke_of_luck";
 
-export function strokeOfLuckProblem(sheet: Sheet, asked: boolean | undefined): string | null {
+export function strokeOfLuckProblem(sheet: Sheet, asked: boolean | undefined): ToolError | null {
   if (!asked) {
     return null;
   }
   if (!(classLevelOf(sheet, "rogue") >= 20 || holdsFeature(sheet, "stroke of luck"))) {
-    return `${sheet.name} does not have Stroke of Luck (a rogue's feature at 20th level); attack without strokeOfLuck.`;
+    return { error: `${sheet.name} does not have Stroke of Luck (a rogue's feature at 20th level); attack without strokeOfLuck.`, retry: true };
   }
   const state = sheet.resources?.[STROKE_OF_LUCK];
   if (!state || state.max - state.used <= 0) {
-    return `${sheet.name} has used Stroke of Luck; it comes back on a short or long rest. Attack without strokeOfLuck.`;
+    return { error: `${sheet.name} has used Stroke of Luck; it comes back on a short or long rest. Attack without strokeOfLuck.`, retry: true };
   }
   return null;
 }
@@ -140,13 +132,43 @@ const SHILLELAGH_WEAPONS = new Set(["club", "quarterstaff"]);
 // the spell does not touch this attack: the base weapon's die becomes a d8
 // (a quarterstaff's two-handed d8 stays one), and the spellcasting ability
 // stands in for Strength when it is better.
+// Hex Warrior (Hexblade 1): the weapon the warlock bound at the end of a
+// long rest ("Hex Warrior (Longsword)") swings with Charisma when it is the
+// better modifier, for its attack and damage rolls alike.
+export function hexWarriorSwing(
+  sheet: Sheet & { features: Array<{ name: string; classId?: string; source?: string }> },
+  resolved: ResolvedWeapon,
+  derived: SheetDerived,
+): { derived: SheetDerived; note: string } | null {
+  const srd = resolved.srd;
+  if (!srd) {
+    return null;
+  }
+  for (const { effect, held } of activeAuthored(sheet, "weapon_ability")) {
+    // Battle Ready: any magic weapon. Hex Warrior: the weapon its option names.
+    const fits = effect.magicOnly ? Boolean(resolved.gear) : Boolean(held.choice) && textKey(held.choice ?? "") === textKey(srd.name);
+    if (!fits) {
+      continue;
+    }
+    const mod = derived.abilityMods[effect.ability];
+    if (mod <= Math.max(derived.abilityMods.str, derived.abilityMods.dex)) {
+      return null;
+    }
+    return {
+      derived: { ...derived, abilityMods: { ...derived.abilityMods, str: mod, dex: mod } },
+      note: `${held.feature}: ${srd.name} swings with ${ABILITY_NAMES[effect.ability] ?? effect.ability}`,
+    };
+  }
+  return null;
+}
+
 export function shillelaghSwing(
   sheet: Sheet,
   resolved: ResolvedWeapon,
   derived: SheetDerived,
 ): { resolved: ResolvedWeapon; derived: SheetDerived; note: string } | null {
   const srd = resolved.srd;
-  if (!srd || !SHILLELAGH_WEAPONS.has(lower(srd.name)) || !holds(sheet, SHILLELAGH) || !sheet.spellcasting) {
+  if (!srd || !SHILLELAGH_WEAPONS.has(textKey(srd.name)) || !holds(sheet, SHILLELAGH) || !sheet.spellcasting) {
     return null;
   }
   const casting = derived.abilityMods[sheet.spellcasting.ability];
@@ -166,8 +188,4 @@ export function shillelaghSwing(
     },
     note: `Shillelagh: ${srd.name} deals 1d8 with the spellcasting ability, and is magical`,
   };
-}
-
-export function underShillelagh(sheet: Sheet, weaponName: string | undefined): boolean {
-  return holds(sheet, SHILLELAGH) && SHILLELAGH_WEAPONS.has(lower(weaponName ?? ""));
 }

@@ -21,6 +21,7 @@ import { blankDraft, copyName, draftFromCatalog, type HomebrewDraft } from "@/ap
 import { CONTENT_KIND } from "@/app/workshop/homebrew/CatalogStart";
 import type { PickerEntry } from "@/app/characters/builder/useContentSearch";
 import { useSearchParams } from "next/navigation";
+import { LinkedEntries, useOpenOnArrival } from "@/app/workshop/world/WorldEntryLink";
 import {
   HOMEBREW_EDITOR_KINDS,
   KIND_BLURB,
@@ -29,6 +30,8 @@ import {
   type EditorKind,
   type HomebrewEntryView,
 } from "@/app/workshop/homebrew/types";
+import { textKey } from "@/lib/language/text-logic";
+import { workshopClassId } from "@/lib/homebrew/class-data";
 
 // The Homebrew system: the user's items, spells and character options, one
 // kind at a time, with the editor in a sheet. User-scoped like the bestiary,
@@ -38,9 +41,18 @@ import {
 export function HomebrewPanel({
   variantRules,
   onChanged,
+  campaignId,
+  openOnArrival,
+  onWorldEntry,
 }: {
   variantRules: Partial<VariantRules>;
   onChanged?: () => void;
+  // In the workshop only: the workshop, the entry to open on arrival by id,
+  // and the way to a World entry that links to it
+  // (src/app/workshop/world/WorldEntryLink.tsx).
+  campaignId?: string;
+  openOnArrival?: string | null;
+  onWorldEntry?: (ref: string) => void;
 }) {
   const [entries, setEntries] = useState<HomebrewEntryView[]>([]);
   const [kind, setKind] = useState<EditorKind>("item");
@@ -53,16 +65,26 @@ export function HomebrewPanel({
   const [showForgotten, setShowForgotten] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // What the last save did besides saving: a rename carried to the sheets,
+  // entries and tables that held the old name (src/lib/db/homebrew-rename.ts).
+  const [notice, setNotice] = useState("");
+  // A forgotten entry that would not come back or go for good.
+  const [listError, setListError] = useState("");
   // A refused or failed read of the shelf is said so, with a way to ask
   // again, never shown as "nothing of your own yet" (issue 140).
   const { loaded, loadError, settle } = useLoadStatus();
 
-  // The tour's "open the editor" step.
+  // The tour's "open the editor" step; the Create chooser names the kind
+  // ("open-homebrew-editor:spell").
   useTourPrepare((name) => {
-    if (name === "open-homebrew-editor" && !editing) {
-      setError("");
-      setEditing({ id: null, draft: blankDraft(kind) });
-    }
+    const [asked, askedKind] = name.split(":");
+    if (asked !== "open-homebrew-editor") return;
+    if (editing) return true;
+    const editorKind = HOMEBREW_EDITOR_KINDS.includes(askedKind as EditorKind) ? (askedKind as EditorKind) : kind;
+    setKind(editorKind);
+    setError("");
+    setEditing({ id: null, draft: blankDraft(editorKind) });
+    return true;
   });
 
   const load = useCallback(
@@ -124,14 +146,20 @@ export function HomebrewPanel({
       }
       const wanted = page.crosswalk?.catalogName ?? page.page.title;
       const query = new URLSearchParams({ q: wanted, mechanics: "1", limit: "20", book: "1" });
-      const body = (await fetch(`/api/content/${CONTENT_KIND[editorKind]}?${query}`).then((response) => (response.ok ? response.json() : null))) as
-        | { results?: PickerEntry[] }
-        | null;
+      const answer = await fetch(`/api/content/${CONTENT_KIND[editorKind]}?${query}`).catch(() => null);
+      if (!live) return;
+      if (!answer?.ok) {
+        // Not reached is not "not in the catalog".
+        setError(`Could not reach the catalog for ${page.page.title}. Open it from the rulebook again to retry.`);
+        done();
+        return;
+      }
+      const body = (await answer.json().catch(() => null)) as { results?: PickerEntry[] } | null;
       const rows = body?.results ?? [];
       const row =
         rows.find((entry) => entry.rulebook === pageId) ??
-        rows.find((entry) => entry.name.toLowerCase() === wanted.toLowerCase() && (entry.documentSlug === "wotc-srd" || entry.source === "srd")) ??
-        rows.find((entry) => entry.name.toLowerCase() === wanted.toLowerCase());
+        rows.find((entry) => textKey(entry.name) === textKey(wanted) && (entry.documentSlug === "wotc-srd" || entry.source === "srd")) ??
+        rows.find((entry) => textKey(entry.name) === textKey(wanted));
       if (!live) return;
       if (row) {
         setEditing({ id: null, draft: draftFromCatalog(editorKind, { ...row, rulebook: row.rulebook ?? pageId }) });
@@ -146,12 +174,12 @@ export function HomebrewPanel({
   }, [start]);
 
   const ofKind = entries.filter((entry) => entry.kind === kind);
-  const needle = query.trim().toLowerCase();
+  const needle = textKey(query);
   const shown = sortRows(
     needle
       ? ofKind.filter((entry) =>
           [entry.name, String(entry.data.desc ?? ""), describeHomebrew(entry.kind, entry.data)].some((text) =>
-            text.toLowerCase().includes(needle),
+            textKey(text).includes(needle),
           ),
         )
       : ofKind,
@@ -159,8 +187,14 @@ export function HomebrewPanel({
     (entry) => entry.name,
   );
 
+  useOpenOnArrival(openOnArrival, loaded ? entries : null, (entry) => {
+    setKind(entry.kind as EditorKind);
+    open(entry);
+  });
+
   function open(entry: HomebrewEntryView) {
     setError("");
+    setNotice("");
     setEditing({ id: entry.id, draft: { kind: entry.kind as EditorKind, name: entry.name, data: entry.data }, savedName: entry.name });
   }
 
@@ -170,6 +204,7 @@ export function HomebrewPanel({
     }
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const { id, draft } = editing;
       const response = await fetch(id ? `/api/homebrew/${id}` : "/api/homebrew", {
@@ -187,7 +222,10 @@ export function HomebrewPanel({
       await load();
       onChanged?.();
       const saved = (payload as { entry?: HomebrewEntryView }).entry;
+      setNotice(carriedNotice((payload as { carried?: Carried }).carried));
       setEditing(saved ? { id: saved.id, draft: { kind: saved.kind as EditorKind, name: saved.name, data: saved.data }, savedName: saved.name } : null);
+    } catch {
+      setError("Could not reach the server. Nothing was saved; try again.");
     } finally {
       setBusy(false);
     }
@@ -217,6 +255,8 @@ export function HomebrewPanel({
       if (saved) {
         setEditing({ id: saved.id, draft: { kind: saved.kind as EditorKind, name: saved.name, data: saved.data }, savedName: saved.name });
       }
+    } catch {
+      setError("Could not reach the server. No copy was made; try again.");
     } finally {
       setBusy(false);
     }
@@ -235,8 +275,14 @@ export function HomebrewPanel({
       return;
     }
     setBusy(true);
+    setError("");
     try {
-      await fetch(`/api/homebrew/${editing.id}`, { method: "DELETE" });
+      const response = await fetch(`/api/homebrew/${editing.id}`, { method: "DELETE" }).catch(() => null);
+      if (!response?.ok) {
+        const payload = (await response?.json().catch(() => ({}))) as { error?: string } | undefined;
+        setError(payload?.error ?? "Could not reach the server. It is still on your shelf; try again.");
+        return;
+      }
       setEditing(null);
       await Promise.all([load(), loadForgotten()]);
       onChanged?.();
@@ -247,8 +293,13 @@ export function HomebrewPanel({
 
   async function restore(entry: HomebrewEntryView) {
     setBusy(true);
+    setListError("");
     try {
-      await fetch(`/api/homebrew/${entry.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ restore: true }) });
+      const response = await fetch(`/api/homebrew/${entry.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ restore: true }) }).catch(() => null);
+      if (!response?.ok) {
+        setListError(`${entry.name} did not come back. Check the connection and try again.`);
+        return;
+      }
       await Promise.all([load(), loadForgotten()]);
       onChanged?.();
     } finally {
@@ -266,8 +317,13 @@ export function HomebrewPanel({
       return;
     }
     setBusy(true);
+    setListError("");
     try {
-      await fetch(`/api/homebrew/${entry.id}?purge=1`, { method: "DELETE" });
+      const response = await fetch(`/api/homebrew/${entry.id}?purge=1`, { method: "DELETE" }).catch(() => null);
+      if (!response?.ok) {
+        setListError(`${entry.name} was not deleted. Check the connection and try again.`);
+        return;
+      }
       await loadForgotten();
     } finally {
       setBusy(false);
@@ -382,12 +438,21 @@ export function HomebrewPanel({
           ) : null}
         </div>
       ) : null}
+      {listError ? (
+        <p role="alert" className="motion-shake text-xs text-red-400">
+          {listError}
+        </p>
+      ) : null}
 
       {loadError ? <LoadFailed error={loadError} onRetry={() => void load()} /> : null}
       {!loaded && !loadError ? (
         <p className="text-xs text-stone-500" aria-busy="true">Reading your shelf...</p>
       ) : loaded && ofKind.length === 0 ? (
-        <EmptyState art="chest" title="Nothing of your own yet. Start from something in the books and change what you like." />
+        <EmptyState
+          art="chest"
+          title="Nothing of your own yet. Start from something in the books and change what you like."
+          hint="The character builder, shops and inventories offer what you make here beside the books' own: in your own library, and at every table you run as its owner, GM or assistant GM."
+        />
       ) : shown.length === 0 ? (
         <p className="live-in text-xs text-stone-500">Nothing by that name.</p>
       ) : null}
@@ -402,6 +467,9 @@ export function HomebrewPanel({
         title={editing?.id ? editing.draft.name || KIND_SINGULAR[kind] : `New ${KIND_SINGULAR[editing?.draft.kind ?? kind]}`}
         className="top-0 h-dvh max-h-none rounded-none pt-[max(0.5rem,env(safe-area-inset-top))] lg:top-1/2 lg:h-auto lg:max-h-[92vh] lg:w-[min(96vw,56rem)] lg:rounded-xl"
       >
+        {editing?.id && editing.draft.kind === "item" && campaignId && onWorldEntry ? (
+          <LinkedEntries campaignId={campaignId} kind="item" record={`homebrew:${editing.id}`} onWorldEntry={onWorldEntry} />
+        ) : null}
         {editing ? (
           <div className="reveal overflow-y-auto pb-2">
             <HomebrewEditor
@@ -410,15 +478,34 @@ export function HomebrewPanel({
               savedName={editing.savedName}
               busy={busy}
               error={error}
+              notice={notice}
               variantRules={variantRules}
               onDraft={(draft) => setEditing({ ...editing, draft })}
               onSave={() => void save()}
               onDuplicate={() => void duplicate()}
               onDelete={() => void remove()}
+              workshopClasses={entries
+                .filter((entry) => entry.kind === "class")
+                .map((entry) => ({ id: workshopClassId(entry.id), name: entry.name, subclassLevel: Number(entry.data.subclassLevel) || 3 }))}
             />
           </div>
         ) : null}
       </Sheet>
     </div>
   );
+}
+
+type Carried = { characters: number; entries: number; prep: number };
+
+// What a rename was carried to, in one line, or nothing when it moved none.
+function carriedNotice(carried: Carried | undefined): string {
+  if (!carried || !(carried.characters || carried.entries || carried.prep)) {
+    return "";
+  }
+  const parts = [
+    carried.characters ? `${carried.characters} character${carried.characters === 1 ? "" : "s"}` : "",
+    carried.entries ? `${carried.entries} other entr${carried.entries === 1 ? "y" : "ies"} of yours` : "",
+    carried.prep ? `${carried.prep} NPC${carried.prep === 1 ? "" : "s"}, fight${carried.prep === 1 ? "" : "s"}, table${carried.prep === 1 ? "" : "s"} or shop${carried.prep === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  return `Renamed everywhere it was used: ${parts.join(", ")} now name it by its new name.`;
 }

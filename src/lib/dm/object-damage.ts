@@ -8,21 +8,30 @@
 // the model remembered to pass.
 //
 // A named object keeps the damage it has taken on the campaign clock
-// (`objects`), so a second blow on "the oak door" adds to the first.
+// (`objects`), so a second blow on "the oak door" adds to the first, and so
+// does what the first call naming it decided it is (its AC, hit points and
+// damage threshold): a later call that leaves the material out does not
+// turn the iron gate into the default wooden one. A broken object stays
+// broken, so a blow at its splinters breaks nothing a second time.
 
 import { z } from "zod";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { getClock, setClock } from "@/lib/db/clock";
+import { getCurrentLocation } from "@/lib/db/locations";
+import type { ObjectRecord } from "@/lib/dm/march-state";
 import { insertRoll, type RollAttacker } from "@/lib/db/rolls";
 import { rollAgainst, rollOn } from "@/lib/roll-labels";
-import { getSheetById } from "@/lib/db/sheets";
+import { getSheetById, listSheets } from "@/lib/db/sheets";
 import { isValidExpression, rollExpression, type RollResult } from "@/lib/dice";
 import { publishWithSeq } from "@/lib/events";
 import { critDamageExpression } from "@/lib/dm/encounter-logic";
 import { buildAttackProfile } from "@/lib/dm/pc-attack-profile";
 import { objectProfile, type ObjectMaterial, type ObjectSize } from "@/lib/srd/objects";
 import { breakWallSection, sectionHit, wallSectionFor } from "@/lib/dm/zone-walls";
+import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
+import { textKey } from "@/lib/language/text-logic";
+import { unknownSheetRef } from "@/lib/dm/rolls";
 
 export const OBJECT_MATERIALS: ObjectMaterial[] = [
   "cloth", "paper", "rope", "crystal", "glass", "ice", "wood", "bone", "stone", "iron", "steel", "mithral", "adamantine",
@@ -31,6 +40,8 @@ export const OBJECT_SIZES: ObjectSize[] = ["tiny", "small", "medium", "large"];
 
 const objectSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
+  // A sectioned wall's section (src/lib/dm/zone-walls.ts).
+  section: z.coerce.number().int().min(1).max(99).optional(),
   material: z.enum(OBJECT_MATERIALS as [ObjectMaterial, ...ObjectMaterial[]]).optional(),
   size: z.enum(OBJECT_SIZES as [ObjectSize, ...ObjectSize[]]).optional(),
   fragile: z.coerce.boolean().optional(),
@@ -38,6 +49,7 @@ const objectSchema = z.object({
   damageType: z.string().max(30).optional(),
   characterId: z.string().max(80).optional(),
   weapon: z.string().max(80).optional(),
+  improvised: z.coerce.boolean().optional(),
   ac: z.coerce.number().int().min(1).max(30).optional(),
   hp: z.coerce.number().int().min(1).max(1000).optional(),
   // SRD 5.1 (Objects): a big object's damage threshold. A blow below it is
@@ -46,7 +58,15 @@ const objectSchema = z.object({
   reason: z.string().optional(),
 });
 
-const keyOf = (name: string) => name.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 60);
+// An object is the one of that name where the party is: "the door" broken
+// in the crypt is not the door of the next inn, nor of the material the
+// crypt's was. A place's id is cut to its first eight characters so the key
+// fits the clock's 60 (src/lib/dm/march-state.ts); a table with no place
+// set keeps the name alone.
+function keyOf(campaignId: string, name: string): string {
+  const place = getCurrentLocation(campaignId)?.id.slice(0, 8) ?? "";
+  return `${place ? `${place}:` : ""}${textKey(name)}`.slice(0, 60);
+}
 
 function publishRoll(campaign: Campaign, turn: DmTurn | null, characterId: string | null, kind: "attack" | "damage", detail: string, result: RollResult, attacker: RollAttacker | null) {
   const roll = insertRoll({ campaignId: campaign.id, characterId, requestedBy: "dm", kind, detail, result, attacker });
@@ -54,19 +74,23 @@ function publishRoll(campaign: Campaign, turn: DmTurn | null, characterId: strin
   turn?.rollIds.push(roll.id);
 }
 
-// Damage a named object has already taken.
-export function objectDamageTaken(campaignId: string, name: string): number {
-  return getClock(campaignId).objects?.[keyOf(name)] ?? 0;
+// What the clock keeps of a named object, or null for one never named.
+function objectRecord(campaignId: string, name: string): ObjectRecord | null {
+  return getClock(campaignId).objects?.[keyOf(campaignId, name)] ?? null;
 }
 
-function recordObjectDamage(campaignId: string, name: string, taken: number, broken: boolean) {
+// Damage a named object has already taken.
+export function objectDamageTaken(campaignId: string, name: string): number {
+  return objectRecord(campaignId, name)?.taken ?? 0;
+}
+
+function recordObject(campaignId: string, name: string, record: ObjectRecord) {
   const current = getClock(campaignId);
   const objects = { ...(current.objects ?? {}) };
-  if (broken) {
-    delete objects[keyOf(name)];
-  } else {
-    objects[keyOf(name)] = taken;
-  }
+  // Written last, so the 40 kept are the ones most lately struck.
+  const key = keyOf(campaignId, name);
+  delete objects[key];
+  objects[key] = record;
   const kept = Object.entries(objects).slice(-40);
   setClock(campaignId, { ...current, objects: Object.fromEntries(kept) });
 }
@@ -75,36 +99,58 @@ export function damageObject(
   campaign: Campaign | null,
   turn: DmTurn | null,
   rawArguments: string,
-): Record<string, unknown> {
+): ToolResult {
   let args: z.infer<typeof objectSchema>;
   try {
     args = objectSchema.parse(JSON.parse(rawArguments || "{}"));
   } catch {
-    return { error: "Invalid arguments for damage_object." };
+    return { error: "Invalid arguments for damage_object.", retry: true };
   }
   // A section of a Wall of Ice has its own numbers (src/lib/dm/zone-walls.ts).
-  const section = campaign && args.name ? wallSectionFor(campaign.id, args.name) : null;
+  const section = campaign && args.name ? wallSectionFor(campaign.id, args.name, args.section) : null;
   if (section && "error" in section) {
     return section;
   }
+  // Each section keeps its own damage between blows.
+  const kept = section ? `${section.zoneId} ${section.section}` : args.name;
+  const record = campaign && kept ? objectRecord(campaign.id, kept) : null;
   const profile = objectProfile(args.material ?? "wood", args.size ?? "medium", args.fragile);
-  const ac = section?.ac ?? args.ac ?? profile.ac;
-  const hp = section?.hp ?? args.hp ?? profile.hp;
-  const already = campaign && args.name ? objectDamageTaken(campaign.id, args.name) : 0;
+  // A section's numbers are its wall's; an object already named keeps the
+  // numbers its first call decided; only a new one reads this call's.
+  const ac = section?.ac ?? record?.ac ?? args.ac ?? profile.ac;
+  const hp = section?.hp ?? record?.hp ?? args.hp ?? profile.hp;
+  const threshold = record ? record.threshold : args.threshold;
+  const already = record?.taken ?? 0;
+  const restated =
+    record && !section && ((args.ac !== undefined && args.ac !== ac) || (args.hp !== undefined && args.hp !== hp) || args.material !== undefined || args.size !== undefined)
+      ? `kept as it was first described: AC ${ac}, ${hp} HP${threshold ? `, damage threshold ${threshold}` : ""}`
+      : null;
+  if (record?.broken) {
+    return {
+      ok: true,
+      ac,
+      hp,
+      damage: 0,
+      broken: true,
+      damageTaken: hp,
+      hpLeft: 0,
+      note: `${args.name ?? "That object"} is already broken; there is nothing left to break. Narrate what is left of it.`,
+    };
+  }
 
   let dealt: number | null = null;
   let type = (args.damageType ?? "").trim().toLowerCase();
   const notes: string[] = [];
   const sheet = args.characterId ? getSheetById(args.characterId) : null;
   if (args.characterId && (!sheet || (campaign && sheet.campaignId !== campaign.id))) {
-    return { error: "Unknown characterId; use one from GAME STATE." };
+    return campaign ? unknownSheetRef("characterId", args.characterId, listSheets(campaign.id)) : { error: "Unknown characterId; use one from GAME STATE.", retry: true };
   }
   if (sheet && campaign) {
     // The character's own attack, from their sheet: the roll has to beat the
     // object's AC before any damage lands.
-    const built = buildAttackProfile(campaign.id, sheet, { weapon: args.weapon });
+    const built = buildAttackProfile(campaign.id, sheet, { weapon: args.weapon, improvised: args.improvised });
     if ("error" in built) {
-      return { error: built.error };
+      return toolError(built);
     }
     const attack = rollExpression(`1d20${built.profile.toHit >= 0 ? "+" : ""}${built.profile.toHit}`);
     const striker: RollAttacker = { kind: "sheet", id: sheet.id, name: sheet.name };
@@ -112,6 +158,9 @@ export function damageObject(
     const natural = attack.natural ?? 0;
     const hit = natural !== 1 && (natural === 20 || attack.total >= ac);
     if (!hit) {
+      if (campaign && kept && !record) {
+        recordObject(campaign.id, kept, { taken: 0, ac, hp, ...(threshold ? { threshold } : {}) });
+      }
       return {
         ok: true,
         ac,
@@ -138,7 +187,7 @@ export function damageObject(
       }
       dealt = rolled.total;
     } else {
-      return { error: `Invalid damage "${args.damage}".` };
+      return { error: `Invalid damage "${args.damage}".`, retry: true };
     }
   }
   if (dealt !== null && /^(poison|psychic)$/.test(type)) {
@@ -146,14 +195,19 @@ export function damageObject(
     dealt = 0;
   }
   dealt = section && dealt ? sectionHit(section, dealt, type, notes) : dealt;
-  if (dealt !== null && args.threshold && dealt > 0 && dealt < args.threshold) {
-    notes.push(`${dealt} is under its damage threshold of ${args.threshold}: superficial, nothing comes off`);
+  if (dealt !== null && threshold && dealt > 0 && dealt < threshold) {
+    notes.push(`${dealt} is under its damage threshold of ${threshold}: superficial, nothing comes off`);
     dealt = 0;
+  }
+  if (restated) {
+    notes.push(restated);
   }
   const taken = already + (dealt ?? 0);
   const broken = dealt !== null && taken >= hp;
-  if (campaign && args.name && dealt !== null) {
-    recordObjectDamage(campaign.id, args.name, taken, broken);
+  // Named once is decided: a call that only asks what the object is still
+  // fixes its numbers for the blows after it.
+  if (campaign && kept && (dealt !== null || !record)) {
+    recordObject(campaign.id, kept, { taken: broken ? hp : taken, ac, hp, ...(threshold ? { threshold } : {}), ...(broken ? { broken: true } : {}) });
   }
   if (campaign && section && broken) {
     notes.push(breakWallSection(campaign, section));

@@ -57,13 +57,9 @@ await test("each denomination lands on the sheet at the SRD's rate", async () =>
   }
 });
 
-await test("the coins' names are read like their codes, and a mixed purse adds up", async () => {
+await test("a mixed purse in the coins' codes adds up", async () => {
   const cases = [
-    ["340 silver", 3400],
-    ["2 platinum", 2000],
-    ["3 electrum", 150],
-    ["12 gold pieces", 1200],
-    ["9 copper", 9],
+    ["340 sp", 3400],
     ["2 pp 5 sp", 2050],
     ["1 pp 2 gp 3 ep 4 sp 5 cp", 1000 + 200 + 150 + 40 + 5],
   ];
@@ -71,6 +67,16 @@ await test("the coins' names are read like their codes, and a mixed purse adds u
     purse(hero.id, 0, 0);
     await act("modify_gold", { delta: 1, coins });
     assert.equal(copperOf(hero.id), worth, coins);
+  }
+});
+
+await test("coins written in a language's words are asked for again, never moved as the delta", async () => {
+  for (const coins of ["340 silver", "50 mo", "50 pièces d'or", "50 monedas de oro", "50 Goldmünzen"]) {
+    purse(hero.id, 10, 0);
+    const refused = await act("modify_gold", { delta: 1, coins });
+    assert.equal(refused.retry, true, coins);
+    assert.match(refused.error, /pp, gp, ep, sp and cp/, coins);
+    assert.equal(copperOf(hero.id), 1000, `${coins}: nothing moved`);
   }
 });
 
@@ -186,7 +192,7 @@ await test("a hoard split by party_award reaches the sheets whole, whatever the 
       heroes.forEach((entry) => purse(entry.id, 0, 0));
       const awarded = await world.invoke("party_award", {
         characterIds: sharers.map((entry) => entry.id),
-        delta: hoard,
+        gold: hoard,
         reason: "test",
       });
       assert.equal(awarded.ok, true, awarded.error);
@@ -201,14 +207,27 @@ await test("a hoard split by party_award reaches the sheets whole, whatever the 
 
 await test("an item in the spoils goes to one character, once", async () => {
   heroes.forEach((entry) => world.patch(entry.id, { equipment: [] }));
-  await world.invoke("party_award", { characterIds: heroes.map((entry) => entry.id), name: "Silver Chalice", qty: 1, reason: "test" });
+  await world.invoke("party_award", { characterIds: heroes.map((entry) => entry.id), item: "Silver Chalice", qty: 1, reason: "test" });
   const holders = heroes.filter((entry) => world.sheet(entry.id).equipment.some((item) => item.name === "Silver Chalice"));
   assert.deepEqual(holders.map((entry) => entry.id), [hero.id]);
 });
 
+await test("a share a character cannot take is reported, never counted as awarded", async () => {
+  const before = world.sheet(hero.id);
+  world.patch(hero.id, { equipment: [], abilities: { ...before.abilities, str: 1 } });
+  const out = await world.invoke("party_award", { characterIds: [hero.id], xp: 10, item: "Plate Armor", qty: 1, reason: "test" });
+  assert.equal(out.ok, true, out.error);
+  assert.equal(out.result.refused.length, 1, JSON.stringify(out.result));
+  assert.ok(!out.result.awarded.includes("Plate Armor"), out.result.awarded);
+  assert.ok(!world.sheet(hero.id).equipment.some((item) => item.name === "Plate Armor"));
+  const nothing = await world.invoke("party_award", { characterIds: [hero.id], item: "Plate Armor", qty: 1, reason: "test" });
+  assert.equal(nothing.ok, false);
+  world.patch(hero.id, { abilities: before.abilities });
+});
+
 await test("an award of nothing to anyone is refused", async () => {
   assert.equal((await world.invoke("party_award", { characterIds: [hero.id], reason: "test" })).ok, false);
-  assert.equal((await world.invoke("party_award", { characterIds: ["nobody"], delta: 50, reason: "test" })).ok, false);
+  assert.equal((await world.invoke("party_award", { characterIds: ["nobody"], gold: 50, reason: "test" })).ok, false);
 });
 
 // ---- the common purse and the shared pack ----
@@ -241,6 +260,18 @@ await test("a deposit the character cannot cover and a withdrawal the purse cann
   assert.equal(getParty(world.campaignId).copper, 300);
   assert.equal(everything(), before);
   assert.equal((await stash({ do: "deposit", amount: 0 })).ok, false);
+});
+
+await test("coins the common purse cannot read are asked for again, never moved as the amount", async () => {
+  setParty(world.campaignId, emptyParty());
+  purse(hero.id, 10, 0);
+  for (const coins of ["5 silver", "5 mo", "5 pièces d'or"]) {
+    const refused = await stash({ do: "deposit", coins, amount: 1 });
+    assert.equal(refused.retry, true, coins);
+    assert.match(refused.error, /pp, gp, ep, sp and cp/, coins);
+  }
+  assert.equal(copperOf(hero.id), 1000);
+  assert.equal(getParty(world.campaignId).copper, 0);
 });
 
 await test("an item stowed in the shared pack and taken out again is counted once throughout", async () => {

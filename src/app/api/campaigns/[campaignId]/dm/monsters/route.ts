@@ -1,4 +1,5 @@
 import { isErrorResponse, requireDm } from "@/lib/campaign-api";
+import { refuseDuringBreak } from "@/lib/dm/table-break";
 import { delegated } from "@/lib/dm/delegation";
 import { monstersReady, playMonsterTurns } from "@/lib/dm/delegate";
 
@@ -53,11 +54,17 @@ export async function POST(
   }
   if (!delegated(campaign.gameSettings.dmMode, campaign.gameSettings.dmAssist, "monsters")) {
     return Response.json(
-      { error: "The monsters are yours to run; turn on AI monsters under Game settings." },
+      { error: "The monsters are yours to run; turn on AI monsters in Table settings, under AI storytelling and allies." },
       { status: 403 },
     );
   }
 
+  // Play, which would wait at the DM queue's gate with this request held
+  // open for the whole break: refused at once instead.
+  const paused = refuseDuringBreak(campaignId);
+  if (paused) {
+    return paused;
+  }
   const outcome = await playMonsterTurns(campaign);
   if (outcome.error) {
     // Nothing to do is an answer, not a failure: 409 so the console shows it

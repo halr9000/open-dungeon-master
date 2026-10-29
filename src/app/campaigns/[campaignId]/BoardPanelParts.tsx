@@ -1,6 +1,6 @@
 "use client";
 
-import { extraTurnTag } from "@/lib/battlemap/initiative-rows";
+import { extraTurnTag, litOrderRows } from "@/lib/battlemap/initiative-rows";
 import { Keyboard, LocateFixed, Lock, Maximize2, Unlock, Users, ZoomIn, ZoomOut } from "lucide-react";
 import { useState } from "react";
 import { Dialog } from "@/components/ui/Dialog";
@@ -10,6 +10,7 @@ import { playingSheet } from "@/lib/battlemap/hand-table";
 
 import { TokenFace, type FaceLookup } from "@/app/campaigns/[campaignId]/BoardChrome";
 import { DmInitiativePanel } from "@/app/campaigns/[campaignId]/DmInitiativePanel";
+import { offSide, SideBadge } from "@/app/campaigns/[campaignId]/SideBadge";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
 
 // Two pieces of BattleMapPanel that carry no state of their own, split out so
@@ -26,6 +27,7 @@ const BOARD_KEYS: Array<{ keys: string[]; does: string }> = [
   { keys: ["+", "−"], does: "Zoom in and out" },
   { keys: ["0"], does: "Fit the whole board" },
   { keys: ["Esc"], does: "Cancel an aim or a drag" },
+  { keys: ["Ctrl", "Z"], does: "Take back your last move" },
   { keys: ["Scroll"], does: "Zoom at the pointer" },
   { keys: ["Drag"], does: "Move the view" },
 ];
@@ -210,12 +212,12 @@ export function BoardOrderDialog({
         <DmInitiativePanel campaignId={campaignId} encounter={encounter} faceOf={faceOf} />
       ) : encounter ? (
         <ol className="space-y-1">
-          {encounter.order.map((entry, index) => (
+          {encounter.order.map((entry, index, order) => (
             <li
               key={`${entry.id}-${index}`}
               className={cn(
                 "flex items-center gap-2 rounded-md border px-2 py-1 text-sm",
-                index === encounter.turnIndex
+                litOrderRows(order, encounter.turnIndex, encounter.acting, encounter.enemiesUp).includes(index)
                   ? "border-amber-700 bg-amber-950/40 text-amber-100"
                   : "border-stone-800 text-stone-300",
               )}
@@ -227,7 +229,8 @@ export function BoardOrderDialog({
                 className="size-7 rounded-full border border-stone-700"
               />
               <span className="min-w-0 flex-1 truncate">{entry.name}{entry.reflex ? <sup className="motion-pop ml-0.5 text-[9px] text-amber-300" title={extraTurnTag(entry)?.title}>{extraTurnTag(entry)?.short}</sup> : null}</span>
-              {index === encounter.turnIndex ? (
+              <SideBadge side={offSide(encounter, entry.id, entry.kind)} />
+              {litOrderRows(order, encounter.turnIndex, encounter.acting, encounter.enemiesUp).includes(index) ? (
                 <span className="text-[10px] uppercase tracking-wide text-amber-300">up now</span>
               ) : null}
             </li>
@@ -250,6 +253,8 @@ export function boardHintText(input: {
   drawing: boolean;
   targeting: boolean;
   canMove: boolean;
+  // A first tap aimed the walk; the second makes it.
+  moveAimed: boolean;
   scene: boolean;
   budgetLeft: number;
   hasToken: boolean;
@@ -277,10 +282,12 @@ export function boardHintText(input: {
         ? "Drag to draw. The table sees it; erase it when the plan changes."
       : targeting
         ? "Tap the enemy."
+        : canMove && input.moveAimed
+          ? "Tap the same tile again to move there. Tap another to change course, or press Esc."
         : canMove
           ? scene
-            ? "Tap anywhere you can walk. Nothing is being counted out here."
-            : `Tap a highlighted tile to move (${input.budgetLeft * TILE_FEET} ft left this turn). Tap your figure for actions.`
+            ? "Tap anywhere you can walk, then tap it again to go. Nothing is being counted out here."
+            : `Tap a highlighted tile to see the path, then again to move (${input.budgetLeft * TILE_FEET} ft left this turn). Tap your figure for actions.`
           : input.hasToken
             ? "You can move on your turn. The shroud shows what your character cannot see."
             : "You have no token on this field.";
@@ -290,6 +297,8 @@ export function boardHintText(input: {
 // turn in round 1 is marked (Thief's Reflexes). Split from BattleMapPanel.tsx.
 export function BoardOrderStrip({ encounter, faceOf }: { encounter: PublicEncounter | null | undefined; faceOf: FaceLookup }) {
   if (!encounter?.orderReady) return null;
+  // Whose turn it is (initiative-rows.ts litOrderRows), not only the pointer.
+  const lit = litOrderRows(encounter.order, encounter.turnIndex, encounter.acting, encounter.enemiesUp);
   return (
     <ol className="flex flex-wrap gap-1 text-[11px] text-stone-400">
       {encounter.order.map((entry, index) => (
@@ -297,7 +306,7 @@ export function BoardOrderStrip({ encounter, faceOf }: { encounter: PublicEncoun
           key={`${entry.id}-${index}`}
           className={cn(
             "flex items-center gap-1 rounded-full py-0.5 pl-0.5 pr-2",
-            index === encounter.turnIndex ? "bg-amber-950/60 font-medium text-amber-300" : "bg-stone-900",
+            lit.includes(index) ? "bg-amber-950/60 font-medium text-amber-300" : "bg-stone-900",
           )}
         >
           <TokenFace
@@ -306,7 +315,7 @@ export function BoardOrderStrip({ encounter, faceOf }: { encounter: PublicEncoun
             enemy={entry.kind === "enemy"}
             className={cn(
               "size-5 rounded-full border",
-              index === encounter.turnIndex ? "border-amber-500" : "border-stone-700",
+              lit.includes(index) ? "border-amber-500" : "border-stone-700",
             )}
           />
           {entry.name}
