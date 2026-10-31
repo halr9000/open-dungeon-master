@@ -224,14 +224,6 @@ export function AdminSpeechSection({
         ) : null}
         {provider === "openrouter" ? (
           <>
-            <Field label="Server base URL" hint="Blank = openrouter.ai.">
-              <input
-                className={ui.input}
-                value={speech.ttsBaseUrl}
-                onChange={(event) => set({ ttsBaseUrl: event.target.value })}
-                placeholder={env.ttsBaseUrl || "https://openrouter.ai/api/v1"}
-              />
-            </Field>
             <Field label="Model" hint="A speech model's id from OpenRouter's text-to-speech collection.">
               <input
                 className={ui.input}
@@ -239,16 +231,6 @@ export function AdminSpeechSection({
                 maxLength={200}
                 onChange={(event) => set({ ttsModel: event.target.value })}
               />
-            </Field>
-            <Field label="Response format" hint="Blank = mp3. Some models answer only pcm; it is wrapped as WAV to play.">
-              <select
-                className={ui.input}
-                value={speech.ttsResponseFormat}
-                onChange={(event) => set({ ttsResponseFormat: (event.target as HTMLSelectElement).value as "" | "mp3" | "pcm" })}
-              >
-                <option value="">mp3</option>
-                <option value="pcm">pcm</option>
-              </select>
             </Field>
             <SecretField
               label="API key"

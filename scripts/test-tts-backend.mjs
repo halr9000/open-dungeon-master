@@ -39,6 +39,8 @@ const {
   narrationModel,
   serverVoices,
   ttsBackend,
+  openRouterVoiceList,
+  forgetFormatMemory,
   SpeechHttpError,
   SpeechEmptyError,
 } = backendLib;
@@ -69,7 +71,7 @@ const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "
 
 await test("an untouched server is Kokoro at the shipped address", () => {
   const backend = resolveTtsBackend(blank);
-  assert.deepEqual(backend, { provider: "kokoro", v1: "http://127.0.0.1:8880/v1", model: "kokoro", apiKey: "", responseFormat: "mp3", defaultVoice: "af_heart" });
+  assert.deepEqual(backend, { provider: "kokoro", v1: "http://127.0.0.1:8880/v1", model: "kokoro", apiKey: "", responseFormat: "auto", defaultVoice: "af_heart" });
 });
 
 await test("a Kokoro address is used as given, with or without /v1", () => {
@@ -115,6 +117,23 @@ await test("the text model's OpenRouter key is lent to openrouter.ai and to nobo
   assert.equal(local.apiKey, "", "a custom OpenAI-kind server gets no OpenRouter key");
   assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", apiKey: " sk-own ", sharedOpenRouterKey: "sk-or" }).apiKey, "sk-own");
   assert.equal(resolveTtsBackend({ ...blank, provider: "openai", sharedOpenRouterKey: "sk-or" }).apiKey, "", "the OpenAI kind never takes it");
+});
+
+await test("an OpenAI profile pointed at openrouter.ai resolves as the OpenRouter profile", async () => {
+  const migrated = resolveTtsBackend({ ...blank, provider: "openai", openaiUrl: "https://openrouter.ai/api/v1", sharedOpenRouterKey: "sk-or" });
+  assert.equal(migrated.provider, "openrouter");
+  assert.equal(migrated.v1, "https://openrouter.ai/api/v1");
+  assert.equal(migrated.apiKey, "sk-or", "the text key is lent, as the OpenRouter profile lends it");
+  const pinned = resolveTtsBackend({ ...blank, provider: "openai", openaiUrl: "http://openrouter.ai/api/v1", responseFormat: "pcm" });
+  assert.equal(pinned.provider, "openrouter");
+  assert.equal(pinned.responseFormat, "pcm");
+});
+
+await test("a blank response format is auto: mp3 asked first, pcm when refused", async () => {
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter" }).responseFormat, "auto");
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", responseFormat: "mp3" }).responseFormat, "mp3");
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", responseFormat: " pcm " }).responseFormat, "pcm");
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", responseFormat: "banana" }).responseFormat, "auto");
 });
 
 await test("voice lists are read in the shapes servers send them", () => {
@@ -230,11 +249,22 @@ let mode = "ok";
 const hung = [];
 // What the stand-in lists at /v1/models; null answers 404, as Kokoro does.
 let listedModels = null;
+// OpenRouter's filtered speech listing; null answers 404, as a plain
+// OpenAI-compatible server does.
+let listedSpeechModels = null;
+// When set, the stand-in refuses every mp3 request the way OpenRouter's
+// pcm-only models do, and answers pcm ones with raw samples.
+let speechFormat = null;
 const server = http.createServer((request, response) => {
   let body = "";
   request.on("data", (chunk) => (body += chunk));
   request.on("end", () => {
     seen.push({ url: request.url, auth: request.headers.authorization ?? "", body: body ? JSON.parse(body) : null });
+    if (request.url === "/v1/models?output_modalities=speech" && listedSpeechModels) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ data: listedSpeechModels }));
+      return;
+    }
     if (request.url === "/v1/models" && listedModels) {
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ data: listedModels.map((id) => ({ id })) }));
@@ -263,6 +293,16 @@ const server = http.createServer((request, response) => {
       if (mode === "refuse") {
         response.writeHead(400, { "Content-Type": "application/json" });
         response.end(JSON.stringify({ error: { message: "Voice not found" } }));
+        return;
+      }
+      if (speechFormat === "pcm-only") {
+        if (body && JSON.parse(body).response_format === "mp3") {
+          response.writeHead(400, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ error: { message: 'HeyGen Voice only supports response_format "pcm".' } }));
+          return;
+        }
+        response.writeHead(200, { "Content-Type": "audio/pcm" });
+        response.end(Buffer.from([0x01, 0x02, 0x03, 0x04]));
         return;
       }
       if (mode === "empty") {
@@ -463,10 +503,10 @@ await test("a pcm answer comes back as a WAV container the browser can play", as
   saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsApiKey: "sk-own", ttsVoice: "narrator_one", ttsResponseFormat: "" } });
 });
 
-await test("a blank response format stays mp3, saved or not", async () => {
+await test("a blank response format is auto, which asks for mp3 first", async () => {
   mode = "ok";
   const backend = ttsBackend();
-  assert.equal(backend.responseFormat, "mp3");
+  assert.equal(backend.responseFormat, "auto");
   await synthesizeSpeech("Hi.", "narrator_one", 1, backend);
   assert.equal(seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1).body.response_format, "mp3");
 });
@@ -576,6 +616,42 @@ await test("narration switched off asks for nothing and announces nothing", asyn
   await enqueueNarrationAudio(CAMP, "msg-off", "Not a word.", [], "af_heart");
   assert.equal(seen.length, before);
   assert.equal(events.length, 0);
+});
+
+await test("openrouter's speech filter lists the models, and a model's own row names its voices", async () => {
+  forgetFormatMemory();
+  listedSpeechModels = [
+    { id: "heygen/heygen-voice-1", supported_voices: ["nadine", "bram", 42, ""] },
+    { id: "mistralai/voxtral-mini-tts", supported_voices: ["en_paul_neutral"] },
+  ];
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: base, ttsModel: "heygen/heygen-voice-1", ttsApiKey: "sk-own", ttsVoice: "" } });
+  const listed = await serverVoices(ttsBackend(), true);
+  assert.equal(listed.listed, true);
+  assert.deepEqual(listed.ids, ["nadine", "bram"]);
+  const free = await serverVoices({ ...ttsBackend(), model: "heygen/heygen-voice-1:free" }, true);
+  assert.deepEqual(free.ids, ["nadine", "bram"], "a variant shares its row's voices");
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: base, ttsModel: "x-ai/grok-voice", ttsApiKey: "sk-own", ttsVoice: "" } });
+  const unlisted = await serverVoices(ttsBackend(), true);
+  assert.deepEqual(unlisted.ids, []);
+  assert.equal(unlisted.listed, false, "an unknown model lists nothing; the picker leans on typing");
+  listedSpeechModels = null;
+});
+
+await test("a pcm-only model is asked for mp3 once, answers pcm, and plays as WAV", async () => {
+  forgetFormatMemory();
+  speechFormat = "pcm-only";
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: base, ttsModel: "heygen/heygen-voice-1", ttsApiKey: "sk-own", ttsVoice: "nadine" } });
+  const backend = ttsBackend();
+  assert.equal(backend.responseFormat, "auto");
+  const audio = await synthesizeSpeech("Hello.", "nadine", 1, backend);
+  assert.equal(audio.toString("ascii", 0, 4), "RIFF");
+  assert.equal(audio.length, 48, "a 44-byte WAV header over four samples");
+  const first = seen.filter((entry) => entry.url === "/v1/audio/speech").slice(-2);
+  assert.deepEqual(first.map((entry) => entry.body.response_format), ["mp3", "pcm"], "mp3 asked first, pcm after the refusal");
+  const mp3Before = seen.filter((entry) => entry.url === "/v1/audio/speech" && entry.body.response_format === "mp3").length;
+  await synthesizeSpeech("Again.", "nadine", 1, backend);
+  assert.equal(seen.filter((entry) => entry.url === "/v1/audio/speech" && entry.body.response_format === "mp3").length, mp3Before, "the learned answer is asked for directly next time");
+  speechFormat = null;
 });
 
 unsubscribe?.();

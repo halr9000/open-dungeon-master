@@ -35,8 +35,9 @@ export type TtsBackend = {
   v1: string;
   model: string;
   apiKey: string;
-  // What the server is asked to answer with: mp3, or pcm wrapped as WAV.
-  responseFormat: "mp3" | "pcm";
+  // What the server is asked to answer with: mp3, pcm (wrapped as WAV), or
+  // auto — mp3 first, and pcm for models that answer nothing else.
+  responseFormat: "auto" | "mp3" | "pcm";
   // The voice used when a campaign names one this server does not have.
   defaultVoice: string;
 };
@@ -120,11 +121,18 @@ export type TtsBackendInput = {
 };
 
 export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
-  const provider: TtsProvider =
+  let provider: TtsProvider =
     input.provider === "openai" || input.provider === "openrouter" || input.provider === "off" ? input.provider : "kokoro";
-  // What the speech bytes come back as: mp3 by default; pcm for models that
-  // answer nothing else (wrapped in WAV so a browser can play it).
-  const responseFormat = input.responseFormat.trim() === "pcm" ? "pcm" : "mp3";
+  // An OpenAI-compatible profile pointed at openrouter.ai IS the OpenRouter
+  // profile — different endpoint paths, key lending and voice rules — so it
+  // resolves as one and no saved setting has to be migrated.
+  if (provider === "openai" && isOpenRouterHost(input.openaiUrl.trim())) {
+    provider = "openrouter";
+  }
+  // What the speech bytes come back as: auto (mp3 asked first, pcm when the
+  // model refuses it) unless the admin pinned one.
+  const asked = input.responseFormat.trim();
+  const responseFormat = asked === "pcm" || asked === "mp3" ? asked : "auto";
   if (provider === "openrouter") {
     const base = input.openaiUrl.trim() || OPENROUTER_DEFAULT_URL;
     return {
@@ -198,6 +206,25 @@ export function parseVoiceList(payload: unknown): string[] {
     }
   }
   return ids.slice(0, 400);
+}
+
+// The voices the model's own row lists, as OpenRouter's models list
+// answers it (a model id's free variant shares the row's voices).
+export function openRouterVoiceList(payload: unknown, model: string): string[] {
+  const root = payload as { data?: unknown } | null;
+  const rows = Array.isArray(root?.data) ? root.data : [];
+  const asked = model.trim().toLowerCase().replace(/:.*$/, "");
+  if (!asked) {
+    return [];
+  }
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const id = (row as Record<string, unknown>).id;
+    if (typeof id !== "string" || id.toLowerCase().replace(/:.*$/, "") !== asked) continue;
+    const voices = (row as Record<string, unknown>).supported_voices;
+    return Array.isArray(voices) ? voices.filter((voice): voice is string => typeof voice === "string" && voice.trim().length > 0 && voice.length <= 120) : [];
+  }
+  return [];
 }
 
 // The picker's list: the curated voices this server really has first, under
@@ -342,8 +369,9 @@ export function isSpeechTimeout(error: unknown): boolean {
 
 export type SpeechRequestOptions = { timeoutMs?: number };
 
-// A pcm answer is raw 24 kHz mono 16-bit samples; browsers play containers,
-// not bare samples, so it is wrapped in a 44-byte WAV header.
+// One attempt, at one response format. A pcm answer is raw 24 kHz mono
+// 16-bit samples; browsers play containers, not bare samples, so it is
+// wrapped in a 44-byte WAV header.
 export function pcmToWav(pcm: Buffer): Buffer {
   const rate = 24000;
   const channels = 1;
@@ -366,14 +394,21 @@ export function pcmToWav(pcm: Buffer): Buffer {
   return Buffer.concat([header, pcm]);
 }
 
-async function requestSpeechOnce(backend: TtsBackend, input: string, voice: string, speed: number, timeoutMs: number): Promise<Buffer> {
+async function requestSpeechOnce(
+  backend: TtsBackend,
+  input: string,
+  voice: string,
+  speed: number,
+  timeoutMs: number,
+  format: "mp3" | "pcm",
+): Promise<Buffer> {
   const response = await fetch(`${backend.v1}/audio/speech`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(backend.apiKey ? { Authorization: `Bearer ${backend.apiKey}` } : {}),
     },
-    body: JSON.stringify({ model: backend.model, voice, input, response_format: backend.responseFormat, ...(speed !== 1 ? { speed } : {}) }),
+    body: JSON.stringify({ model: backend.model, voice, input, response_format: format, ...(speed !== 1 ? { speed } : {}) }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
@@ -383,11 +418,51 @@ async function requestSpeechOnce(backend: TtsBackend, input: string, voice: stri
   if (!audio.length) {
     throw new SpeechEmptyError();
   }
-  return backend.responseFormat === "pcm" ? pcmToWav(audio) : audio;
+  return format === "pcm" ? pcmToWav(audio) : audio;
+}
+
+// A refusal of the mp3 we asked for, in the server's own words — the shape
+// OpenRouter's pcm-only models answer with ("only supports response_format
+// \"pcm\""). Anything else is not the format's fault.
+function refusesFormat(error: unknown): boolean {
+  return error instanceof SpeechHttpError && error.status === 400 && /response.?format|audio.?format|pcm/i.test(error.message);
+}
+
+// The formats to try, in order. A pinned format is used as asked; auto is
+// mp3 first, then pcm. That pcm-only models stay mp3-only questions is
+// remembered for the model for a few minutes, so one clip costs the extra
+// round trip, not every one.
+type FormatMemory = Map<string, { at: number }>;
+declare global {
+  var __odmTtsFormat: FormatMemory | undefined;
+}
+const FORMAT_TTL_MS = 10 * 60_000;
+
+export function forgetFormatMemory() {
+  globalThis.__odmTtsFormat = undefined;
+}
+
+function formatPlan(backend: TtsBackend): ("mp3" | "pcm")[] {
+  if (backend.responseFormat !== "auto") {
+    return [backend.responseFormat];
+  }
+  const memory = (globalThis.__odmTtsFormat ??= new Map());
+  const learned = memory.get(`${backend.v1}|${backend.model}`);
+  if (learned && Date.now() - learned.at < FORMAT_TTL_MS) {
+    return ["pcm"];
+  }
+  return ["mp3", "pcm"];
+}
+
+function rememberFormat(backend: TtsBackend, format: "mp3" | "pcm") {
+  if (format === "pcm") {
+    (globalThis.__odmTtsFormat ??= new Map()).set(`${backend.v1}|${backend.model}`, { at: Date.now() });
+  }
 }
 
 // A request that timed out is asked once more: a provider that stalls on one
-// request usually answers the next in seconds. Any other failure is final.
+// request usually answers the next in seconds. A refused format is asked for
+// in the next format the plan holds. Any other failure is final.
 async function requestSpeech(
   backend: TtsBackend,
   input: string,
@@ -396,15 +471,34 @@ async function requestSpeech(
   options: SpeechRequestOptions = {},
 ): Promise<Buffer> {
   const timeoutMs = options.timeoutMs ?? speechTimeoutMs(input.length);
-  try {
-    return await requestSpeechOnce(backend, input, voice, speed, timeoutMs);
-  } catch (error) {
-    if (!isSpeechTimeout(error)) {
+  const formats = formatPlan(backend);
+  let last: unknown;
+  for (const format of formats) {
+    try {
+      // A provider that stalls on one request usually answers the next in
+      // seconds, so a timeout is retried before a format is given up on.
+      try {
+        return await requestSpeechOnce(backend, input, voice, speed, timeoutMs, format);
+      } catch (error) {
+        if (!isSpeechTimeout(error)) {
+          throw error;
+        }
+        console.warn(`[tts] speech request timed out after ${timeoutMs} ms; asking once more`);
+        return await requestSpeechOnce(backend, input, voice, speed, timeoutMs, format);
+      }
+    } catch (error) {
+      last = error;
+      const more = format !== formats[formats.length - 1];
+      if (more && refusesFormat(error)) {
+        // The refusal named the format the plan was on; the plan's next
+        // format is the one this model answers, and that is remembered.
+        rememberFormat(backend, "pcm");
+        continue;
+      }
       throw error;
     }
-    console.warn(`[tts] speech request timed out after ${timeoutMs} ms; asking once more`);
-    return requestSpeechOnce(backend, input, voice, speed, timeoutMs);
   }
+  throw last ?? new SpeechEmptyError();
 }
 
 // The model a passage is asked for: the one picked (or TTS_MODEL), else, on
@@ -444,7 +538,7 @@ export async function synthesizeSpeech(
   if (!backend.model) {
     throw new SpeechModelMissingError();
   }
-  const voices = backend.provider === "openai" ? await serverVoiceIds(backend) : [];
+  const voices = backend.provider === "kokoro" ? [] : await serverVoiceIds(backend);
   // A local server with no default named falls back to the first voice it
   // lists, as the admin form says it will.
   const defaultVoice = backend.defaultVoice || voices[0] || "";
@@ -467,15 +561,32 @@ export async function serverVoices(backend: TtsBackend = ttsBackend(), fresh = f
     return { ids: [], listed: false };
   }
   const cache = (globalThis.__odmTtsVoices ??= new Map());
-  const key = `${backend.provider}|${backend.v1}`;
+  const key = `${backend.provider}|${backend.v1}|${backend.model}`;
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < VOICE_CACHE_MS) {
     return { ids: hit.ids, listed: hit.listed };
   }
   let ids: string[] = [];
   let listed = false;
+  // OpenRouter has no voices endpoint, but its models list names each speech
+  // model's voices (supported_voices), so the model's own row is the list.
+  if (backend.provider === "openrouter") {
+    try {
+      const response = await fetch(`${backend.v1}/models?output_modalities=speech`, {
+        cache: "no-store",
+        headers: backend.apiKey ? { Authorization: `Bearer ${backend.apiKey}` } : {},
+        signal: AbortSignal.timeout(4_000),
+      });
+      if (response.ok) {
+        ids = openRouterVoiceList(await response.json().catch(() => null), backend.model);
+        listed = ids.length > 0;
+      }
+    } catch {
+      // Unreachable or unmapped: the fallback below.
+    }
+  }
   // OpenAI itself has no such endpoint; asking only spends a round trip.
-  if (!isOpenAiHost(backend.v1)) {
+  if (!listed && backend.provider !== "openrouter" && !isOpenAiHost(backend.v1)) {
     try {
       const response = await fetch(`${backend.v1}/audio/voices`, {
         cache: "no-store",

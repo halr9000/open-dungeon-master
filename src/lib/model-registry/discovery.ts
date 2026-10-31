@@ -102,7 +102,14 @@ export function listSpeechModels(baseUrl: string, apiKey: string): Promise<Model
   return listModelIds(baseUrl, apiKey, (json) => readModelIdList(json, () => true));
 }
 
-async function listModelIds(baseUrlInput: string, apiKey: string, read: (json: unknown) => string[]): Promise<ModelIdListing> {
+// OpenRouter's speech models. Its plain /models lists every text model and
+// no speech one, so a known-good speech model read as "not listed"; its own
+// filter names exactly the models that answer /audio/speech.
+export function listOpenRouterSpeechModels(baseUrl: string, apiKey: string): Promise<ModelIdListing> {
+  return listModelIds(baseUrl, apiKey, (json) => readModelIdList(json, () => true), "?output_modalities=speech");
+}
+
+async function listModelIds(baseUrlInput: string, apiKey: string, read: (json: unknown) => string[], pathSuffix = ""): Promise<ModelIdListing> {
   const baseUrl = normalizeBaseUrl(baseUrlInput);
   if (!baseUrl) {
     return { ok: false, baseUrl, error: "Enter the server's address." };
@@ -114,7 +121,7 @@ async function listModelIds(baseUrlInput: string, apiKey: string, read: (json: u
     return { ok: false, baseUrl, error: "That address is not a web address." };
   }
   try {
-    const response = await fetch(modelsUrl(baseUrl), {
+    const response = await fetch(`${modelsUrl(baseUrl)}${pathSuffix}`, {
       cache: "no-store",
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       signal: replyTimeout(LIST_TIMEOUT_MS * 2),

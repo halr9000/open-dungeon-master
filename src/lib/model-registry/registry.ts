@@ -8,10 +8,11 @@
 // goes out.
 
 import { probeHarness } from "@/lib/harness/status";
+import { isOpenRouterHost } from "@/lib/tts-backend";
 import { isHarnessId, type HarnessId } from "@/lib/harness/types";
 import { assessModel, findCatalogModel, isSpeechModelId, providerForBaseUrl, type CatalogModel, type ModelRole, type ModelVerdict } from "./catalog-logic";
 import { catalogStatus, harnessCatalogProvider, modelCatalog, recommendListed, type CatalogStatus } from "./catalog";
-import { listCustomModels, listImageModels, listOllamaModels, listSpeechModels, ollamaBaseUrl, ollamaModelInfo } from "./discovery";
+import { listCustomModels, listImageModels, listOpenRouterSpeechModels, listOllamaModels, listSpeechModels, ollamaBaseUrl, ollamaModelInfo } from "./discovery";
 import { isOllamaChatModel } from "./discovery-logic";
 import { describeMachine, machine, memoryBudgetGb, type Machine } from "./hardware";
 import { probeRecordFor, type ProbeRecord } from "./probes";
@@ -198,7 +199,9 @@ export async function modelChoices(input: ModelChoicesInput): Promise<ModelChoic
     const baseUrl = input.baseUrl?.trim() ?? "";
     const hint = providerForBaseUrl(baseUrl, modelCatalog().providers);
     const make = (found: Found, listed: boolean | null) => row({ ...input, providerHint: hint, selected, baseUrl }, found, listed);
-    const listing = await listSpeechModels(baseUrl, input.apiKey ?? "");
+    const listing = isOpenRouterHost(baseUrl)
+      ? await listOpenRouterSpeechModels(baseUrl, input.apiKey ?? "")
+      : await listSpeechModels(baseUrl, input.apiKey ?? "");
     if (!listing.ok) {
       return {
         ...base,

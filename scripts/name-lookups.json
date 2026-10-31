@@ -2209,7 +2209,7 @@
     "lib/table-layout.ts#whole": [["key",1,"tab ids"]],
     "lib/text-models.ts#partial": [["pattern",1,"a fixed pattern over text that reads no record's name: its English words are scripts/text-comparisons.json's to classify"]],
     "lib/tts-backend.ts#keyed": [["key",1,"ids, refs, slugs, tool names, field names, env names, event kinds, UI keys, caches, door and map keys; a sheet's conditionMeta by the condition key it was written under; the usage route's gear map by the sheet's own stored item names (src/: every site read)"]],
-    "lib/tts-backend.ts#partial": [["pattern",1,"a fixed pattern over text that reads no record's name: its English words are scripts/text-comparisons.json's to classify"],["key",2,"endpoint URLs"]],
+    "lib/tts-backend.ts#partial": [["pattern",1,"a fixed pattern over text that reads no record's name: its English words are scripts/text-comparisons.json's to classify"],["key",2,"endpoint URLs"],["key",1,"OpenRouter model ids: a variant suffix is stripped so a model matches its own row"]],
     "lib/tts-backend.ts#whole": [["key",1,"voice ids"]],
     "lib/tts-cast.ts#partial": [["pattern",4,"a fixed pattern over text that reads no record's name: its English words are scripts/text-comparisons.json's to classify"]],
     "lib/tts-render.ts#keyed": [["key",2,"ids, refs, slugs, tool names, field names, env names, event kinds, UI keys, caches, door and map keys; a sheet's conditionMeta by the condition key it was written under; the usage route's gear map by the sheet's own stored item names (src/: every site read)"]],
