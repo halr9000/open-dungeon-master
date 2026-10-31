@@ -40,6 +40,7 @@ export type MaskedConfig = {
   };
   speech: {
     ttsProvider: "" | "kokoro" | "openai" | "openrouter" | "off";
+    ttsResponseFormat: "" | "mp3" | "pcm";
     kokoroUrl: string;
     ttsBaseUrl: string;
     ttsModel: string;

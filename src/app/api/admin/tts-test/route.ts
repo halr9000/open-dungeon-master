@@ -14,6 +14,7 @@ const bodySchema = z.object({
   // Only a freshly typed key; blank falls back to the saved one.
   apiKey: z.string().trim().max(400).default(""),
   voice: z.string().trim().max(120).default(""),
+  responseFormat: z.enum(["", "mp3", "pcm"]).default(""),
 });
 
 // The narration counterpart of the text model's "Test backend": speak one
@@ -43,6 +44,7 @@ export async function POST(request: Request) {
       model: form.model,
       apiKey: form.apiKey,
       voice: form.voice,
+      responseFormat: form.responseFormat,
     }),
   );
   const endpoint = `${backend.v1}/audio/speech`;

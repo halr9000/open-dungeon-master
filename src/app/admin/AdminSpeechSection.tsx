@@ -120,6 +120,7 @@ export function AdminSpeechSection({
           model: speech.ttsModel,
           apiKey: apiKey === SECRET_KEPT ? "" : apiKey,
           voice: speech.ttsVoice,
+          responseFormat: speech.ttsResponseFormat,
         }),
       });
       const data = (await response.json().catch(() => null)) as TestResult | null;
@@ -238,6 +239,16 @@ export function AdminSpeechSection({
                 maxLength={200}
                 onChange={(event) => set({ ttsModel: event.target.value })}
               />
+            </Field>
+            <Field label="Response format" hint="Blank = mp3. Some models answer only pcm; it is wrapped as WAV to play.">
+              <select
+                className={ui.input}
+                value={speech.ttsResponseFormat}
+                onChange={(event) => set({ ttsResponseFormat: (event.target as HTMLSelectElement).value as "" | "mp3" | "pcm" })}
+              >
+                <option value="">mp3</option>
+                <option value="pcm">pcm</option>
+              </select>
             </Field>
             <SecretField
               label="API key"

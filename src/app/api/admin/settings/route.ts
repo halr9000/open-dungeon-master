@@ -53,6 +53,7 @@ function maskedConfig(config: GlobalConfig) {
     },
     speech: {
       ttsProvider: config.speech.ttsProvider,
+      ttsResponseFormat: config.speech.ttsResponseFormat,
       kokoroUrl: config.speech.kokoroUrl,
       ttsBaseUrl: config.speech.ttsBaseUrl,
       ttsModel: config.speech.ttsModel,
@@ -180,7 +181,8 @@ const patchSchema = z.object({
     .optional(),
   speech: z
     .object({
-      ttsProvider: z.enum(["", "kokoro", "openai", "off"]).optional(),
+      ttsProvider: z.enum(["", "kokoro", "openai", "openrouter", "off"]).optional(),
+      ttsResponseFormat: z.enum(["", "mp3", "pcm"]).optional(),
       kokoroUrl: z.string().trim().max(500).optional(),
       ttsBaseUrl: z.string().trim().max(500).optional(),
       ttsModel: z.string().trim().max(200).optional(),

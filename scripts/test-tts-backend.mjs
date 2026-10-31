@@ -65,11 +65,11 @@ async function test(name, fn) {
   console.log(`ok: ${name}`);
 }
 
-const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "", voice: "", sharedOpenRouterKey: "", sharedOpenAiKey: "" };
+const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "", voice: "", responseFormat: "", sharedOpenRouterKey: "", sharedOpenAiKey: "" };
 
 await test("an untouched server is Kokoro at the shipped address", () => {
   const backend = resolveTtsBackend(blank);
-  assert.deepEqual(backend, { provider: "kokoro", v1: "http://127.0.0.1:8880/v1", model: "kokoro", apiKey: "", defaultVoice: "af_heart" });
+  assert.deepEqual(backend, { provider: "kokoro", v1: "http://127.0.0.1:8880/v1", model: "kokoro", apiKey: "", responseFormat: "mp3", defaultVoice: "af_heart" });
 });
 
 await test("a Kokoro address is used as given, with or without /v1", () => {
@@ -446,6 +446,29 @@ await test("Kokoro still sends its own model name", async () => {
   const kokoro = resolveTtsBackend({ ...blank, provider: "kokoro", kokoroUrl: base });
   await synthesizeSpeech("Hi.", "af_heart", 1, kokoro);
   assert.equal(seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1).body.model, "kokoro");
+});
+
+await test("a pcm answer comes back as a WAV container the browser can play", async () => {
+  mode = "ok";
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: base, ttsModel: "heygen/voice", ttsResponseFormat: "pcm", ttsVoice: "narrator_one" } });
+  const backend = ttsBackend();
+  assert.equal(backend.responseFormat, "pcm");
+  const audio = await synthesizeSpeech("Hello there.", "narrator_one", 1, backend);
+  assert.equal(seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1).body.response_format, "pcm");
+  assert.equal(audio.readUInt32LE(0), 0x46464952, "RIFF");
+  assert.equal(audio.readUInt32LE(8), 0x45564157, "WAVE");
+  assert.equal(audio.readUInt32LE(24), 24000, "24 kHz mono 16-bit");
+  assert.equal(audio.readUInt16LE(34), 16);
+  assert.equal(audio.length - 44, audio.readUInt32LE(40), "the 44-byte header plus the pcm bytes");
+  saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsApiKey: "sk-own", ttsVoice: "narrator_one", ttsResponseFormat: "" } });
+});
+
+await test("a blank response format stays mp3, saved or not", async () => {
+  mode = "ok";
+  const backend = ttsBackend();
+  assert.equal(backend.responseFormat, "mp3");
+  await synthesizeSpeech("Hi.", "narrator_one", 1, backend);
+  assert.equal(seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1).body.response_format, "mp3");
 });
 
 const speechCalls = () => seen.filter((entry) => entry.url === "/v1/audio/speech").length;

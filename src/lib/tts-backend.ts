@@ -35,6 +35,8 @@ export type TtsBackend = {
   v1: string;
   model: string;
   apiKey: string;
+  // What the server is asked to answer with: mp3, or pcm wrapped as WAV.
+  responseFormat: "mp3" | "pcm";
   // The voice used when a campaign names one this server does not have.
   defaultVoice: string;
 };
@@ -108,6 +110,8 @@ export type TtsBackendInput = {
   model: string;
   apiKey: string;
   voice: string;
+  // What the server is asked to answer with: blank = mp3; pcm-only models say "pcm".
+  responseFormat: string;
   // The text model's OpenRouter key, lent only to openrouter.ai itself.
   sharedOpenRouterKey: string;
   // The server's shared OpenAI key (images, dictation), lent only to
@@ -118,6 +122,9 @@ export type TtsBackendInput = {
 export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
   const provider: TtsProvider =
     input.provider === "openai" || input.provider === "openrouter" || input.provider === "off" ? input.provider : "kokoro";
+  // What the speech bytes come back as: mp3 by default; pcm for models that
+  // answer nothing else (wrapped in WAV so a browser can play it).
+  const responseFormat = input.responseFormat.trim() === "pcm" ? "pcm" : "mp3";
   if (provider === "openrouter") {
     const base = input.openaiUrl.trim() || OPENROUTER_DEFAULT_URL;
     return {
@@ -127,6 +134,7 @@ export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
       // for them: the model is always the admin's pick from its own list.
       model: input.model.trim(),
       apiKey: input.apiKey.trim() || (isOpenRouterHost(base) ? input.sharedOpenRouterKey.trim() : ""),
+      responseFormat,
       defaultVoice: input.voice.trim(),
     };
   }
@@ -138,6 +146,7 @@ export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
       v1: v1Root(base),
       model: input.model.trim(),
       apiKey: input.apiKey.trim() || (official ? input.sharedOpenAiKey.trim() : ""),
+      responseFormat,
       defaultVoice: input.voice.trim() || (official ? "alloy" : ""),
     };
   }
@@ -146,13 +155,14 @@ export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
     v1: v1Root(input.kokoroUrl.trim() || KOKORO_DEFAULT_URL),
     model: input.model.trim() || "kokoro",
     apiKey: input.apiKey.trim(),
+    responseFormat,
     defaultVoice: input.voice.trim() || "af_heart",
   };
 }
 
 // The server's saved narration backend. `override` carries the admin form's
 // unsaved values so "Test" tries what is typed, not what was last saved.
-export function ttsBackend(override: Partial<Pick<TtsBackendInput, "provider" | "kokoroUrl" | "openaiUrl" | "model" | "voice">> & { apiKey?: string } = {}): TtsBackend {
+export function ttsBackend(override: Partial<Pick<TtsBackendInput, "provider" | "kokoroUrl" | "openaiUrl" | "model" | "voice" | "responseFormat">> & { apiKey?: string } = {}): TtsBackend {
   const speech = getGlobalConfig().speech;
   const provider = override.provider ?? configValue(speech.ttsProvider, "TTS_PROVIDER");
   return resolveTtsBackend({
@@ -162,6 +172,7 @@ export function ttsBackend(override: Partial<Pick<TtsBackendInput, "provider" | 
     model: override.model?.trim() || configValue(speech.ttsModel, "TTS_MODEL"),
     apiKey: override.apiKey?.trim() || configValue(speech.ttsApiKey, "TTS_API_KEY"),
     voice: override.voice?.trim() || configValue(speech.ttsVoice, "TTS_VOICE"),
+    responseFormat: override.responseFormat?.trim() || configValue(speech.ttsResponseFormat, "TTS_RESPONSE_FORMAT"),
     sharedOpenAiKey: openAiSpeechConfig().apiKey,
     sharedOpenRouterKey: openRouterTextKey(),
   });
@@ -331,6 +342,30 @@ export function isSpeechTimeout(error: unknown): boolean {
 
 export type SpeechRequestOptions = { timeoutMs?: number };
 
+// A pcm answer is raw 24 kHz mono 16-bit samples; browsers play containers,
+// not bare samples, so it is wrapped in a 44-byte WAV header.
+export function pcmToWav(pcm: Buffer): Buffer {
+  const rate = 24000;
+  const channels = 1;
+  const bits = 16;
+  const blockAlign = (channels * bits) / 8;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * blockAlign, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bits, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
 async function requestSpeechOnce(backend: TtsBackend, input: string, voice: string, speed: number, timeoutMs: number): Promise<Buffer> {
   const response = await fetch(`${backend.v1}/audio/speech`, {
     method: "POST",
@@ -338,7 +373,7 @@ async function requestSpeechOnce(backend: TtsBackend, input: string, voice: stri
       "Content-Type": "application/json",
       ...(backend.apiKey ? { Authorization: `Bearer ${backend.apiKey}` } : {}),
     },
-    body: JSON.stringify({ model: backend.model, voice, input, response_format: "mp3", ...(speed !== 1 ? { speed } : {}) }),
+    body: JSON.stringify({ model: backend.model, voice, input, response_format: backend.responseFormat, ...(speed !== 1 ? { speed } : {}) }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
@@ -348,7 +383,7 @@ async function requestSpeechOnce(backend: TtsBackend, input: string, voice: stri
   if (!audio.length) {
     throw new SpeechEmptyError();
   }
-  return audio;
+  return backend.responseFormat === "pcm" ? pcmToWav(audio) : audio;
 }
 
 // A request that timed out is asked once more: a provider that stalls on one

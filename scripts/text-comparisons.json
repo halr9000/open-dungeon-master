@@ -2441,7 +2441,7 @@
     "lib/tours/tour-store.ts#str-eq": [["key",1,"stored tour state"]],
     "lib/tours/workshop.ts#str-key": [["key",1,"system ids"]],
     "lib/tts-backend.ts#re-word": [["key",1,"HTML document markup"]],
-    "lib/tts-backend.ts#str-eq": [["key",5,"TTS voice ids, provider ids, host names and DOMException names"]],
+    "lib/tts-backend.ts#str-eq": [["key",6,"TTS voice ids, provider ids, host names and DOMException names"]],
     "lib/tts-backend.ts#str-list": [["key",1,"TTS voice ids, provider ids and DOMException names"]],
     "lib/tts-backend.ts#toLowerCase": [["key",2,"hostname"]],
     "lib/tts-cast.ts#[a-z]": [["key",2,"voice ids"]],
