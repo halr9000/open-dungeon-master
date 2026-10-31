@@ -3,8 +3,10 @@ import { dmRoll } from "@/lib/dm/roll-card";
 import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
 import { insertRoll } from "@/lib/db/rolls";
 import {
+  endRelationshipsWithSubject,
   getRelationship,
   listRelationships,
+  listRelationshipsForSubject,
   patchRelationship,
   type Relationship,
 } from "@/lib/db/relationships";
@@ -18,9 +20,11 @@ import {
   canAdvanceRomance,
   consentCheck,
   demoteRomance,
+  endedByDeath,
   friendshipTier,
   nextRomanceStage,
   REFUSAL_COST,
+  refusedStepText,
   relationshipFragment,
   RELATIONSHIP_BEAT_NAMES,
   ROMANCE_LABEL,
@@ -40,9 +44,10 @@ import {
   resolveSubject,
 } from "@/lib/dm/relationship-subject";
 import { handleNpcAdvance } from "@/lib/dm/npc-advance";
-import { conscienceNotes, landBeat, landBystanders, settleUnrecordedDeeds, type DeedOptions, type Landing } from "@/lib/dm/beat-landing";
-import { DEED_KINDS, DEED_SEVERITIES, deedSeverity, isDeedKind, valueLabel } from "@/lib/dm/companion-values-logic";
+import { conscienceNotes, landBeat, landBystanders, landOnVictim, settleUnrecordedDeeds, type DeedOptions, type Landing } from "@/lib/dm/beat-landing";
+import { DEED_KINDS, DEED_SEVERITIES, deedSeverity, doneToDelta, isDeedKind, valueLabel, type DeedKind } from "@/lib/dm/companion-values-logic";
 import { MAX_DEADLINE_HOURS } from "@/lib/dm/conscience-logic";
+import { readUneaseTells } from "@/lib/dm/conscience-voice";
 import { getActiveEncounter } from "@/lib/db/encounters";
 import { actNote, outwardApproval } from "@/lib/dm/scheme-logic";
 import { revealAct, runningAct, schemesPossible, schemeTool } from "@/lib/dm/scheme-tools";
@@ -55,6 +60,11 @@ import type { RollArgs } from "@/lib/dm/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { toolError, type ToolResult } from "@/lib/dm/tool-errors";
 import { textKey } from "@/lib/language/text-logic";
+import { deathMemory } from "@/lib/dm/party-bonds-logic";
+import { heroFell } from "@/lib/characters/fallen-logic";
+import { listSheets } from "@/lib/db/sheets";
+import { NOTE_LIMIT_WORDS, parseToolArguments, relationshipNote } from "@/lib/dm/relationship-note";
+import { heldStepError, stepTakenThisExchange } from "@/lib/dm/step-exchange";
 
 export { publishRelationshipsUpdated };
 
@@ -135,9 +145,10 @@ export function relationshipTools(campaign: Campaign, inEncounter = false): Tool
           },
           note: {
             type: "string",
-            description: "One short line on what actually happened, for the relationship's memory.",
+            description: `One short line on what actually happened, for the relationship's memory. ${NOTE_LIMIT_WORDS}`,
           },
           witnesses: { type: "array", items: { type: "string" }, description: "Deeds only: everyone else who saw it, by exact name, player characters who stood by too." },
+          victims: { type: "array", items: { type: "string" }, description: "Deeds only: whoever it was done to (the one harmed, spared or freed), by exact name." },
           objected: { type: "array", items: { type: "string" }, description: "Deeds only: other player characters there who spoke against it or tried to stop it." },
           severity: { type: "string", enum: [...DEED_SEVERITIES], description: "Deeds only: how grave it was, where minor counts half and atrocity double. Default: serious. The server counts a mercy sent as an atrocity as serious." },
           faction: { type: "string", description: "Deeds only: the faction whose people it was done to or for, by the name a companion's loyalty uses. The server matches it against the faction loyalty of each companion who saw it." },
@@ -169,7 +180,7 @@ export function relationshipTools(campaign: Campaign, inEncounter = false): Tool
       function: {
         name: "relationship_end",
         description:
-          "Record a relationship changing for good, for a reason the relationship rules give, or 'breakup' or 'betrayal' when a romance ends badly; every reason but 'parting' closes the book. A 'parting' is also for the ally who stays behind while the party travels on. Call it BEFORE narrating the goodbye.",
+          "Record a relationship changing for good, for a reason the relationship rules give, or 'breakup' or 'betrayal' when a romance ends badly; every reason but 'parting' closes the book. A 'parting' is also for the ally who stays behind while the party travels on. 'death' only for someone killed, and it closes every character's bond with them. Call it BEFORE narrating the goodbye.",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -182,7 +193,7 @@ export function relationshipTools(campaign: Campaign, inEncounter = false): Tool
               enum: ["character", "npc"],
               description: "Only when reason is betrayal: character if the character was the betrayer, npc if the NPC was. Default: character, which costs their regard; with npc their regard stays what it truly was, and an act they kept up comes out.",
             },
-            note: { type: "string", description: "One short line for the record." },
+            note: { type: "string", description: `One short line for the record. ${NOTE_LIMIT_WORDS}` },
           },
           required: ["characterId", "subject", "reason"],
         },
@@ -215,7 +226,7 @@ export function relationshipTools(campaign: Campaign, inEncounter = false): Tool
             note: {
               type: "string",
               description:
-                "One short line for the relationship's memory, or with initiator npc their words to the character. For a player's step it describes the moment, such as 'proposed on the bridge at Highmoor'.",
+                `One short line for the relationship's memory, or with initiator npc their words to the character. For a player's step it describes the moment, such as 'proposed on the bridge at Highmoor'. ${NOTE_LIMIT_WORDS}`,
             },
           },
           required: ["characterId", "subject", "to"],
@@ -237,8 +248,9 @@ const beatSchema = z.object({
   characterId: z.string(),
   subject: z.string().min(1).max(80),
   beat: z.string().min(1).max(40),
-  note: z.string().max(200).optional(),
+  note: relationshipNote,
   witnesses: z.array(z.string().trim().min(1).max(80)).max(8).optional(),
+  victims: z.array(z.string().trim().min(1).max(80)).max(8).optional(),
   objected: z.array(z.string().trim().min(1).max(80)).max(8).optional(),
   severity: z.enum(DEED_SEVERITIES).optional(),
   faction: z.string().trim().max(80).optional(),
@@ -256,15 +268,11 @@ export function handleRelationshipBeat(
   if (!relationshipsEnabled(campaign)) {
     return { error: "Relationship tracking is switched off for this campaign.", retry: true };
   }
-  let args: z.infer<typeof beatSchema>;
-  try {
-    args = beatSchema.parse(JSON.parse(rawArguments || "{}"));
-  } catch {
-    return {
-      error: "Invalid arguments: relationship_beat needs characterId, subject, and beat.",
-      retry: true,
-    };
+  const read = parseToolArguments(beatSchema, rawArguments, "Invalid arguments: relationship_beat needs characterId, subject, and beat.");
+  if ("error" in read) {
+    return read;
   }
+  const args = read.args;
   const spec = beatSpec(args.beat);
   if (!spec) {
     return {
@@ -301,7 +309,9 @@ export function handleRelationshipBeat(
   const ended = relationship.status === "ended";
   if (ended && !deedKind) {
     return {
-      error: `${sheet.name} and ${subject.name} are finished. Nothing changes that without the story reopening it first.`,
+      error: endedByDeath(relationship)
+        ? `${subject.name} is dead. Nothing passes between them and ${sheet.name} now.`
+        : `${sheet.name} and ${subject.name} are finished. Nothing changes that without the story reopening it first.`,
       refused: "rules",
     };
   }
@@ -362,15 +372,23 @@ export function handleRelationshipBeat(
       }
     : null;
   const beat = args.beat as RelationshipBeat;
-  const others = deedKind ? landWitnesses(campaign, sheet, subject, args.witnesses ?? [], sheets, beat, args.note, deed!) : null;
-  if (ended && !others?.landed.length) {
+  // Whoever it was done to (issue 580). A person in both lists, the
+  // subject included, counts once, as a victim: being harmed is not
+  // watching. Compared by who each name resolves to, so a person named by an
+  // old name they still answer to is not landed on twice.
+  const victimNames = deedKind ? (args.victims ?? []) : [];
+  const victimKeys = new Set(victimNames.map((name) => personKey(campaign, name, sheets)));
+  const others = deedKind ? landWitnesses(campaign, sheet, subject, args.witnesses ?? [], sheets, beat, args.note, deed!, victimKeys) : null;
+  const harmed = deedKind ? landVictims(campaign, sheet, subject, victimNames, sheets, beat as DeedKind, args.note, deed!) : null;
+  if (ended && !others?.landed.length && !harmed?.landed.length) {
     return {
       error: `${sheet.name} and ${subject.name} are finished, so the deed changes nothing between them, and nobody else tracked saw it. Name who did in witnesses.`,
       refused: "rules",
     };
   }
-  const landing = ended ? null : landBeat(campaign, sheet, subject, relationship, beat, outcome, args.note, deed);
-  const landings = [...(landing ? [landing] : []), ...(others?.landed ?? [])];
+  const subjectHarmed = !ended && victimKeys.has(textKey(subject.name)) ? landOnVictim(campaign, sheet, subject, relationship, beat as DeedKind, args.note, deed!) : null;
+  const landing = ended ? null : (subjectHarmed ?? landBeat(campaign, sheet, subject, relationship, beat, outcome, args.note, deed));
+  const landings = [...(landing ? [landing] : []), ...(others?.landed ?? []), ...(harmed?.landed ?? [])];
   // The party's own who were there (issue 563): those who stood by bear a
   // share of the cost, those who objected none.
   const objectors = deedKind ? partyCharactersNamed(args.objected ?? [], sheets, sheet) : [];
@@ -380,16 +398,26 @@ export function handleRelationshipBeat(
     settleUnrecordedDeeds(campaign.id, sheet);
   }
   publishRelationshipsUpdated(campaign.id);
+  // A composed companion the deed left uneasy keeps it in, and the party
+  // reads them now (issue 615): whoever's Insight beats it is told alone.
+  readUneaseTells(campaign, turn.id, "fresh");
 
   const notes = [
-    landing
-      ? buildBeatNote(sheet.name, subject.name, spec.label, landing.delta, landing.alignment, landing.updated, outcome)
-      : `${sheet.name} and ${subject.name} are finished: the deed changes nothing between them, but others saw it.`,
+    subjectHarmed
+      ? victimNote(sheet.name, subjectHarmed)
+      : landing
+        ? buildBeatNote(sheet.name, subject.name, spec.label, landing.delta, landing.alignment, landing.updated, outcome)
+        : `${sheet.name} and ${subject.name} are finished: the deed changes nothing between them, but others saw it.`,
+    ...(harmed?.landed.map((victim) => victimNote(sheet.name, victim)) ?? []),
     ...(others?.landed.map((other) => `${other.subject.name} saw it too: ${TIER_LABEL[friendshipTier(other.updated.approval)]} toward ${sheet.name} now.`) ?? []),
     ...shares,
     ...(objectors.length ? [`${objectors.map((entry) => entry.name).join(" and ")} spoke against it and bear none of it.`] : []),
     ...conscienceNotes(landings),
-    ...(others?.unknown.length ? [`Not tracked, so they keep no memory of it: ${others.unknown.join(", ")}. Register someone who matters with set_npc first.`] : []),
+    ...(others?.unknown.length || harmed?.unknown.length
+      ? [`Not tracked, so they keep no memory of it: ${[...(others?.unknown ?? []), ...(harmed?.unknown ?? [])].join(", ")}. Register someone who matters with set_npc first.`]
+      : []),
+    ...(harmed?.players.length ? [`${harmed.players.join(" and ")}: a player's character, whose player plays how they take it.`] : []),
+    ...(harmed?.dead ? [`A deed done to the dead lands on no one's regard; only those who saw it take it.`] : []),
   ];
   return {
     ok: true,
@@ -398,6 +426,15 @@ export function handleRelationshipBeat(
     beat: args.beat,
     ...(deed ? { severity: deed.severity } : {}),
     ...(landing ? subjectResult(landing, relationship, spec.skill ? { skill: spec.skill, roll: rollTotal, dc, outcome } : {}) : { finished: `${sheet.name} and ${subject.name}` }),
+    ...(harmed?.landed.length
+      ? {
+          victims: harmed.landed.map((victim) => ({
+            subject: victim.subject.name,
+            approvalChange: victim.delta,
+            standing: friendshipTier(victim.updated.approval),
+          })),
+        }
+      : {}),
     ...(others?.landed.length
       ? {
           witnesses: others.landed.map((other) => ({
@@ -405,7 +442,7 @@ export function handleRelationshipBeat(
             approvalChange: other.delta,
             standing: friendshipTier(other.updated.approval),
             ...valuesResult(other),
-            ...(other.conscience ? { conscience: `${other.conscience.from} -> ${other.conscience.to}` } : {}),
+            ...(other.conscience && !other.conscience.concealed ? { conscience: `${other.conscience.from} -> ${other.conscience.to}` } : {}),
             ...(other.departure?.departed ? { departed: other.departure.how } : other.departure?.turned ? { turned: other.departure.how } : {}),
           })),
         }
@@ -426,7 +463,9 @@ function subjectResult(landing: Landing, before: Relationship, roll: Record<stri
     standing: friendshipTier(updated.approval),
     ...(alignment !== 0 ? { suitsThem: alignment > 0 ? "yes" : "no", alignment } : {}),
     ...valuesResult(landing),
-    ...(landing.conscience ? { conscience: `${landing.conscience.from} -> ${landing.conscience.to}` } : {}),
+    // Unease kept in is the storyteller's (issue 615): a console call's
+    // result is read by whoever made it.
+    ...(landing.conscience && !landing.conscience.concealed ? { conscience: `${landing.conscience.from} -> ${landing.conscience.to}` } : {}),
     ...(landing.departure?.departed ? { departed: landing.departure.how } : landing.departure?.turned ? { turned: landing.departure.how } : {}),
     ...(updated.romance !== "none" ? { romance: updated.romance } : {}),
     ...(updated.romance !== before.romance ? { romanceSlipped: `${before.romance} -> ${updated.romance}` } : {}),
@@ -469,17 +508,26 @@ function landWitnesses(
   beat: RelationshipBeat,
   note: string | undefined,
   deed: DeedOptions,
+  victims: ReadonlySet<string> = new Set(),
 ): { landed: Landing[]; unknown: string[]; bystanders: CharacterSheet[] } {
   const seen = new Set([textKey(sheet.name), textKey(subject.name)]);
+  // Who has been landed on, by the person each name resolves to.
+  const people = new Set([textKey(sheet.name), textKey(subject.name), ...victims]);
   const landed: Landing[] = [];
   const unknown: string[] = [];
   const bystanders: CharacterSheet[] = [];
   for (const name of names) {
-    if (seen.has(textKey(name))) {
+    if (seen.has(textKey(name)) || victims.has(textKey(name))) {
       continue;
     }
     seen.add(textKey(name));
     const witness = resolveSubject(campaign, name, sheets);
+    if (!("error" in witness)) {
+      if (people.has(textKey(witness.name))) {
+        continue;
+      }
+      people.add(textKey(witness.name));
+    }
     if ("error" in witness) {
       // Another player's character keeps their own counsel, and stood by
       // (issue 563); anyone else is simply not tracked.
@@ -498,6 +546,74 @@ function landWitnesses(
     landed.push(landBeat(campaign, sheet, witness, ledger, beat, null, note, deed));
   }
   return { landed, unknown, bystanders };
+}
+
+// Whoever a deed was done to, other than its subject (who lands as one in
+// the handler), each taking it as landOnVictim weighs it. A name nobody
+// tracks is listed back, and another player's character is theirs to play.
+// `dead` says the deed was done to the dead and landed on nobody.
+function landVictims(
+  campaign: Campaign,
+  sheet: CharacterSheet,
+  subject: { name: string },
+  names: readonly string[],
+  sheets: CharacterSheet[],
+  beat: DeedKind,
+  note: string | undefined,
+  deed: DeedOptions,
+): { landed: Landing[]; unknown: string[]; players: string[]; dead: boolean } {
+  const out = { landed: [] as Landing[], unknown: [] as string[], players: [] as string[], dead: false };
+  if (!names.length) {
+    return out;
+  }
+  if (!doneToDelta(beat, beatSpec(beat)!.base, deed.severity)) {
+    return { ...out, dead: true };
+  }
+  const seen = new Set([textKey(sheet.name), textKey(subject.name)]);
+  // Who has been landed on, by the person each name resolves to.
+  const people = new Set(seen);
+  for (const name of names) {
+    if (seen.has(textKey(name))) {
+      continue;
+    }
+    seen.add(textKey(name));
+    const victim = resolveSubject(campaign, name, sheets);
+    if (!("error" in victim)) {
+      if (people.has(textKey(victim.name))) {
+        continue;
+      }
+      people.add(textKey(victim.name));
+    }
+    if ("error" in victim) {
+      const character = sheets.find((candidate) => !candidate.isCompanion && (candidate.id === name || textKey(candidate.name) === textKey(name)));
+      if (character) {
+        out.players.push(character.name);
+      } else {
+        out.unknown.push(name);
+      }
+      continue;
+    }
+    const ledger = openLedger(campaign, sheet, victim);
+    if (ledger.status === "ended") {
+      continue;
+    }
+    const landed = landOnVictim(campaign, sheet, victim, ledger, beat, note, deed);
+    if (landed) {
+      out.landed.push(landed);
+    }
+  }
+  return out;
+}
+
+// The person a name resolves to, as a key: a tracked NPC or companion by the
+// name they are kept under, anyone else by the name as given.
+function personKey(campaign: Campaign, name: string, sheets: CharacterSheet[]): string {
+  const found = resolveSubject(campaign, name, sheets);
+  return textKey("error" in found ? name : found.name);
+}
+
+function victimNote(character: string, landing: Landing): string {
+  return `It was done to ${landing.subject.name}, and it lands hard: ${landing.subject.name} now stands ${TIER_LABEL[friendshipTier(landing.updated.approval)]} toward ${character}. Show that.`;
 }
 
 // While an NPC keeps up an act, a tool result says so plainly beside the
@@ -549,7 +665,7 @@ const advanceSchema = z.object({
   // An NPC's move names no rung of its own: it is always the step to courting.
   to: z.enum(["interested", "courting", "together", "betrothed", "married"]).optional(),
   initiator: z.enum(["player", "npc"]).default("player"),
-  note: z.string().max(200).optional(),
+  note: relationshipNote,
 });
 
 export function handleRomanceAdvance(
@@ -562,16 +678,11 @@ export function handleRomanceAdvance(
   if (!romanceEnabled(campaign)) {
     return { error: "Romance is switched off for this campaign.", retry: true };
   }
-  let args: z.infer<typeof advanceSchema>;
-  try {
-    args = advanceSchema.parse(JSON.parse(rawArguments || "{}"));
-  } catch {
-    return {
-      error:
-        "Invalid arguments: romance_advance needs characterId, subject, and to (interested, courting, together, betrothed, or married).",
-      retry: true,
-    };
+  const read = parseToolArguments(advanceSchema, rawArguments, "Invalid arguments: romance_advance needs characterId, subject, and to (interested, courting, together, betrothed, or married).");
+  if ("error" in read) {
+    return read;
   }
+  const args = read.args;
   // The NPC's own first move (issue 501): an offer the player answers.
   if (args.initiator === "npc") {
     return handleNpcAdvance(campaign, turn, args, sheets, sheetsById);
@@ -599,12 +710,10 @@ export function handleRomanceAdvance(
     };
   }
   // One step per exchange, exactly like an NPC's attitude: no ratcheting a
-  // stranger to married inside a single reply.
-  if (relationship.lastShiftTurn === turn.id) {
-    return {
-      error: `${sheet.name} and ${subject.name} already took a step this exchange. Let the scene breathe before the next one.`,
-      retry: true,
-    };
+  // stranger to married inside a single reply, and no asking a refusal
+  // again at the console until the die says yes (issue 638).
+  if (stepTakenThisExchange(campaign.id, relationship.lastShiftTurn, turn)) {
+    return { error: heldStepError(sheet.name, subject.name, turn), retry: true };
   }
   // An act is played to the letter: the step reads the warmth shown.
   const shown = outwardApproval(relationship);
@@ -642,7 +751,7 @@ export function handleRomanceAdvance(
       lastShiftTurn: turn.id,
       memories: addMemory(relationship.memories, {
         kind: "refused",
-        text: `${subject.name} was not ready when ${sheet.name} asked for ${to}`,
+        text: refusedStepText(subject.name, sheet.name, to),
         at: new Date().toISOString(),
       }),
     });
@@ -655,7 +764,7 @@ export function handleRomanceAdvance(
       requested: to,
       romance: relationship.romance,
       approval,
-      note: `${subject.name} does not take the step: they care, but not enough for ${to} yet. Narrate the gentle refusal in their own voice and leave things where they were. Do not narrate them agreeing anyway, and do not ask again this scene.`,
+      note: `${subject.name} does not take the step: they care, but not enough to be ${ROMANCE_LABEL[to]} yet. Narrate the gentle refusal in their own voice and leave things where they were. Do not narrate them agreeing anyway, and do not ask again this scene.${turn.actor === "human_dm" ? " You can ask again after your next narration." : ""}`,
     };
   }
 
@@ -702,7 +811,7 @@ const endSchema = z.object({
   // betrayal only: who betrayed whom (issue 501). Today's betrayal is the
   // character's, which costs the NPC's regard; one by the NPC does not.
   by: z.enum(["character", "npc"]).optional(),
-  note: z.string().max(200).optional(),
+  note: relationshipNote,
 });
 
 export function handleRelationshipEnd(
@@ -714,16 +823,11 @@ export function handleRelationshipEnd(
   if (!relationshipsEnabled(campaign)) {
     return { error: "Relationship tracking is switched off for this campaign.", retry: true };
   }
-  let args: z.infer<typeof endSchema>;
-  try {
-    args = endSchema.parse(JSON.parse(rawArguments || "{}"));
-  } catch {
-    return {
-      error:
-        "Invalid arguments: relationship_end needs characterId, subject, and reason (falling_out, parting, breakup, betrayal, or death).",
-      retry: true,
-    };
+  const read = parseToolArguments(endSchema, rawArguments, "Invalid arguments: relationship_end needs characterId, subject, and reason (falling_out, parting, breakup, betrayal, or death).");
+  if ("error" in read) {
+    return read;
   }
+  const args = read.args;
   const sheet = resolveActor(args, sheets, sheetsById);
   if (!sheet) {
     return unknownSheetRef("characterId", args.characterId, sheets);
@@ -732,12 +836,19 @@ export function handleRelationshipEnd(
   if ("error" in subject) {
     return subject;
   }
+  if (args.by === "npc" && args.reason !== "betrayal") {
+    return { error: `by npc is for a betrayal only: ${subject.name} betraying ${sheet.name}. Leave by out for ${args.reason}.`, retry: true };
+  }
+  // A death is the subject's, not one pair's (issue 580): every character's
+  // bond with them closes. Ending only the named one left the others open,
+  // counting the chapters the dead were away until the GM was told to bring
+  // them back into the story.
+  if (args.reason === "death") {
+    return endOnDeath(campaign, sheet, subject.name, args.note);
+  }
   const found = getRelationship(campaign.id, sheet.id, subject.name);
   if (!found) {
     return { error: `No tracked relationship between ${sheet.name} and ${args.subject}.`, retry: true };
-  }
-  if (args.by === "npc" && args.reason !== "betrayal") {
-    return { error: `by npc is for a betrayal only: ${subject.name} betraying ${sheet.name}. Leave by out for ${args.reason}.`, retry: true };
   }
   // The NPC betrayed the character: an act they kept up comes out first, to
   // the whole table, and their regard stays what it truly was.
@@ -789,6 +900,29 @@ export function handleRelationshipEnd(
   };
 }
 
+function endOnDeath(campaign: Campaign, sheet: CharacterSheet, subject: string, note: string | undefined): ToolResult {
+  if (!listRelationshipsForSubject(campaign.id, subject).length) {
+    return { error: `No tracked relationship with ${subject}.`, retry: true };
+  }
+  const told = note?.trim() || endText(sheet.name, subject, "death");
+  // Each record says what that character lost (party-bonds-logic.ts
+  // deathMemory), the wording a death in a fight writes as well.
+  const ended = endRelationshipsWithSubject(campaign.id, subject, (bond) =>
+    bond.characterId === sheet.id && note?.trim() ? told : deathMemory(bond, subject),
+  );
+  recordRelationshipEvent(campaign, sheet, told);
+  publishRelationshipsUpdated(campaign.id);
+  return {
+    ok: true,
+    character: sheet.name,
+    subject,
+    reason: "death",
+    status: "ended",
+    ...(ended.length ? { closed: ended.map((bond) => bond.characterName) } : {}),
+    note: `${subject} is dead, and every bond with them is closed. Narrate it, and treat it as done. Someone dying but still alive is not dead yet: record what was done to them as a deed, with them in victims.`,
+  };
+}
+
 function endText(character: string, subject: string, reason: (typeof END_REASONS)[number], byNpc = false): string {
   if (byNpc) {
     return `${subject} betrayed ${character}`;
@@ -822,11 +956,15 @@ export function relationshipRosterForPrompt(
   options: { storyteller?: boolean; leaving?: SouredLeaving } = {},
 ): string[] {
   const storyteller = options.storyteller !== false;
+  // A hero who fell holds no live bond (issue 657): their lines read as if
+  // the dead still had friends and suitors to play to.
+  const fallen = new Set(listSheets(campaignId).filter(heroFell).map((sheet) => sheet.id));
   return listRelationships(campaignId)
     .map((relationship) => (storyteller ? relationship : { ...relationship, approval: outwardApproval(relationship) }))
     .filter(
       (relationship) =>
         relationship.status !== "ended" &&
+        !fallen.has(relationship.characterId) &&
         (relationship.approval !== 0 || relationship.romance !== "none"),
     )
     .slice(0, 14)

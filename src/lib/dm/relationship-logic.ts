@@ -18,6 +18,7 @@
 // rolls.
 
 import type { ToolError } from "@/lib/dm/tool-errors";
+import { clipText } from "../language/text-logic.ts";
 
 export const APPROVAL_MIN = -100;
 export const APPROVAL_MAX = 100;
@@ -407,8 +408,15 @@ export type ConsentResult = {
 };
 
 export const CONSENT_DC = 12;
-// Approval this far past the rung's threshold makes the answer a certainty.
+// Approval this far past the rung's threshold makes the answer a certainty,
+// capped at the meter's maximum so every rung has a certain yes: married's
+// threshold sits within this margin of the top, and a companion at full
+// approval who has just spoken their own vows says yes (issue 635).
 const CONSENT_CERTAIN = 10;
+
+export function consentCertainAt(target: RomanceStage): number {
+  return Math.min(APPROVAL_MAX, ROMANCE_THRESHOLD[target] + CONSENT_CERTAIN);
+}
 
 // Whether the subject says yes. Comfortably past the threshold they simply
 // do; right at it, it is a real question, weighted by how much they feel and
@@ -420,7 +428,7 @@ export function consentCheck(
   d20: number,
 ): ConsentResult {
   const needed = ROMANCE_THRESHOLD[target];
-  if (approval >= needed + CONSENT_CERTAIN) {
+  if (approval >= consentCertainAt(target)) {
     return { accepted: true, automatic: true, total: 0, dc: CONSENT_DC };
   }
   const total = d20 + Math.floor((approval - needed) / 2) + warmth;
@@ -503,7 +511,7 @@ export function parseMemories(raw: string): RelationshipMemory[] {
       .slice(-MEMORY_LIMIT)
       .map((entry) => ({
         kind: typeof entry.kind === "string" ? entry.kind.slice(0, 40) : "moment",
-        text: String(entry.text).trim().slice(0, MEMORY_CHARS),
+        text: clipText(String(entry.text), MEMORY_CHARS),
         at: typeof entry.at === "string" ? entry.at : "",
       }));
   } catch {
@@ -515,9 +523,58 @@ export function addMemory(
   memories: RelationshipMemory[],
   memory: RelationshipMemory,
 ): RelationshipMemory[] {
-  return [...memories, { ...memory, text: memory.text.trim().slice(0, MEMORY_CHARS) }].slice(
+  return [...memories, { ...memory, text: clipText(memory.text, MEMORY_CHARS) }].slice(
     -MEMORY_LIMIT,
   );
+}
+
+// What a refused step leaves on the Bonds tab, in words rather than the
+// rung's name: "asked for married" read like a form field (issue 644).
+export function refusedStepText(subject: string, character: string, stage: Exclude<RomanceStage, "none">): string {
+  switch (stage) {
+    case "interested":
+      return `${subject} was not ready to return ${character}'s interest`;
+    case "courting":
+      return `${subject} was not ready when ${character} asked to court them`;
+    case "together":
+      return `${subject} was not ready when ${character} asked to be partners`;
+    case "betrothed":
+      return `${subject} was not ready when ${character} asked to be betrothed`;
+    case "married":
+      return `${subject} was not ready when ${character} asked to marry them`;
+  }
+}
+
+// A bond a death closed (relationship_end "death", or a companion who fell
+// and was dismissed), marked with the DIED flag rather than read from its
+// memories, which a merge re-sorts. The Bonds panel says "died" for it, and a
+// companion brought back to life picks it up again (db/relationships.ts); a
+// bond that ended any other way first stays ended.
+export const DIED_FLAG = "died";
+
+export function endedByDeath(relationship: { status: RelationshipStatus; flags: string[] }): boolean {
+  return relationship.status === "ended" && relationship.flags.includes(DIED_FLAG);
+}
+
+// Whether a bond holds anything yet. One opened at neutral when the party met
+// someone (issue 580) and never moved says nothing about how they feel, so
+// whatever reads standing across a party (a pact's regard, a companion's
+// worst standing, how a departed one returns) reads it as no bond, as it read
+// the missing row before bonds opened on meeting.
+export function hasStanding(relationship: { approval: number; romance: RomanceStage; memories: RelationshipMemory[]; beats: BeatCounts; pretense?: unknown }): boolean {
+  return (
+    relationship.approval !== 0 ||
+    relationship.romance !== "none" ||
+    relationship.memories.length > 0 ||
+    Boolean(relationship.pretense) ||
+    Object.values(relationship.beats).some((count) => count > 0)
+  );
+}
+
+// Two records of one pair folded into one (an NPC merged into another): both
+// rows' memories, oldest first, as many as a bond keeps.
+export function foldMemories(keep: RelationshipMemory[], absorbed: RelationshipMemory[]): RelationshipMemory[] {
+  return [...keep, ...absorbed].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).slice(-MEMORY_LIMIT);
 }
 
 export function parseFlags(raw: string): string[] {

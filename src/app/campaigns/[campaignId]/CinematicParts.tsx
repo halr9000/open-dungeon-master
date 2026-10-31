@@ -1,6 +1,7 @@
 "use client";
 
 import { isOocAnswer } from "@/lib/dm/ooc-question";
+import { CardReturnedNote } from "@/app/campaigns/[campaignId]/CardReturnedNote";
 import { extraTurnTag, litOrderRows, pointerOrderIndex } from "@/lib/battlemap/initiative-rows";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { EyeOff } from "lucide-react";
@@ -17,6 +18,7 @@ import type { PublicEncounter } from "@/lib/db/encounter-view";
 import { effectiveMaxHp } from "@/lib/dm/condition-logic";
 import type { StoredRoll } from "@/lib/db/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { classLevelWords } from "@/lib/characters/class-words";
 import { TokenFace } from "@/app/campaigns/[campaignId]/BoardChrome";
 import { DictateField } from "@/components/DictateField";
 import { appendDictation } from "@/lib/dictation";
@@ -24,6 +26,7 @@ import { ROLL_KIND_LABELS, rollChronicleLead, rollToastLead } from "@/lib/roll-l
 import { LengthNote } from "@/components/ui/LengthNote";
 import { atBottom, chronicleSignature, chronicleSystemLine, chronicleWindow } from "@/lib/chronicle-logic";
 import { textLength } from "@/lib/text-limits";
+import { questGlanceOf, type Quest } from "@/lib/dm/quest-logic";
 
 // The cinematic table ("ODM World Concepts", round 3b): the scene's own
 // painting fills the screen, the chrome shrinks to its edges, and the fight
@@ -96,7 +99,9 @@ export function facesFor(
   if (entry.kind === "pc" || entry.kind === "npc") {
     const sheet = sheets.find((candidate) => candidate.id === entry.id);
     if (sheet) {
-      return [sheet.portrait?.url, characterPlaceholder({ race: sheet.race, class: sheet.class, genre })];
+      // The gender too, so the cinematic table draws the face the Party tab,
+      // the board and the chronicle draw (src/lib/speaker-faces.ts).
+      return [sheet.portrait?.url, characterPlaceholder({ race: sheet.race, class: sheet.class, gender: sheet.gender, genre })];
     }
     return [npcPlaceholder(null, entry.name)];
   }
@@ -253,7 +258,7 @@ export function PartyRail({
           >
             <span key={`pulse-${hp}`} className="cine-party-pulse" data-dir={dir} aria-hidden="true" />
             <TokenFace
-              candidates={[sheet.portrait?.url, characterPlaceholder({ race: sheet.race, class: sheet.class, genre })]}
+              candidates={[sheet.portrait?.url, characterPlaceholder({ race: sheet.race, class: sheet.class, gender: sheet.gender, genre })]}
               name={sheet.name}
               className="cine-party-face"
             />
@@ -266,9 +271,8 @@ export function PartyRail({
                 <span className="cine-party-ghost" style={{ width: pct }} />
                 <span className="cine-party-fill" data-low={ratio <= 0.34 ? "true" : undefined} style={{ width: pct }} />
               </span>
-              <span className="cine-party-class">
-                {sheet.class} {sheet.level}
-              </span>
+              {/* A split names each class's levels (backlog F9). */}
+              <span className="cine-party-class">{classLevelWords(sheet)}</span>
             </span>
           </button>
         );
@@ -343,21 +347,92 @@ export function RollToast({
 
 // ---- the quest, in a line ----
 
-// The first line of the quest log, as the small panel under the minimap in
-// the concept: "QUEST · THE DROWNED LANTERN" and its first sentence. A tap
-// opens the story's quests.
-export function QuestGlance({ quests, onOpen }: { quests: ReadonlyArray<string>; onOpen: () => void }) {
-  const first = quests.find((quest) => quest.trim().length > 0)?.trim();
+// The open quest, as the small panel under the minimap in the concept:
+// "QUEST · THE DROWNED LANTERN" and its next step. A tap opens the story's
+// quests.
+//
+// Read from the quest log and read again whenever it changes
+// (quests_updated), so a quest the party finishes leaves the glance and the
+// next one takes its place. It used to read a copy on the campaign row that
+// only the arc planner ever wrote, and a finished quest stayed on screen for
+// good with nothing anyone could do about it (issue 581). `initial` is the
+// campaign payload's open quests, so the first paint is not empty while the
+// log loads.
+type GlanceLine = { title: string; step: string };
+
+function glanceFromLine(line: string | undefined): GlanceLine | null {
+  const first = line?.trim();
   if (!first) {
     return null;
   }
   const colon = first.indexOf(":");
-  const title = colon > 0 && colon < 60 ? first.slice(0, colon).trim() : "";
-  const body = colon > 0 && colon < 60 ? first.slice(colon + 1).trim() : first;
+  return colon > 0 && colon < 60 ? { title: first.slice(0, colon).trim(), step: first.slice(colon + 1).trim() } : { title: "", step: first };
+}
+
+function useQuestGlance(campaignId: string, refreshKey: number, initial: ReadonlyArray<string>): GlanceLine | null {
+  const [quests, setQuests] = useState<Quest[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/campaigns/${campaignId}/quests`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { quests?: Quest[] } | null) => {
+        if (!cancelled && Array.isArray(data?.quests)) {
+          setQuests(data.quests);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignId, refreshKey]);
+  return useMemo(() => (quests ? questGlanceOf(quests) : glanceFromLine(initial.find((line) => line.trim()))), [quests, initial]);
+}
+
+export function QuestGlance({
+  campaignId,
+  refreshKey,
+  initial,
+  onOpen,
+}: {
+  campaignId: string;
+  refreshKey: number;
+  initial: ReadonlyArray<string>;
+  onOpen: () => void;
+}) {
+  const glance = useQuestGlance(campaignId, refreshKey, initial);
+  // The quest that just ended, with nothing after it, lifts away rather
+  // than blinking out.
+  const [last, setLast] = useState(glance);
+  const [leaving, setLeaving] = useState<GlanceLine | null>(null);
+  if (glance?.title !== last?.title || glance?.step !== last?.step) {
+    setLast(glance);
+    setLeaving(glance ? null : last);
+  }
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = window.setTimeout(() => setLeaving(null), 320);
+    return () => window.clearTimeout(timer);
+  }, [leaving]);
+  const shown = glance ?? leaving;
+  if (!shown) {
+    return null;
+  }
+  // A quest with no step left to name reads its title as the line.
+  const eyebrow = shown.title && shown.step ? shown.title : "";
+  const line = shown.step || shown.title;
   return (
-    <button type="button" onClick={onOpen} className="cine-quest" aria-label={`Quest: ${title || body}. Open the quests.`} data-tour="quest-glance" data-no-motion>
-      <span className="cine-quest-eyebrow">Quest{title ? ` · ${title}` : ""}</span>
-      <span className="cine-quest-body">{body}</span>
+    <button
+      key={`${shown.title}\n${shown.step}`}
+      type="button"
+      onClick={onOpen}
+      className="cine-quest"
+      aria-label={`Quest: ${eyebrow ? `${eyebrow}, ` : ""}${line}. Open the quests.`}
+      data-tour="quest-glance"
+      data-leaving={glance ? undefined : ""}
+      data-no-motion
+    >
+      <span className="cine-quest-eyebrow">Quest{eyebrow ? ` · ${eyebrow}` : ""}</span>
+      <span className="cine-quest-body">{line}</span>
     </button>
   );
 }
@@ -489,6 +564,7 @@ export function TabletopChronicle({
   maxChars,
   onShowStory,
   composer = true,
+  meUserId,
 }: {
   messages: ReadonlyArray<CampaignMessage>;
   rolls: ReadonlyArray<StoredRoll>;
@@ -510,6 +586,8 @@ export function TabletopChronicle({
   onShowStory?: () => void;
   // False on the fight stage, where the desk sits right under the board.
   composer?: boolean;
+  // Who is reading: a card given back offers its own player to play it again.
+  meUserId?: string;
 }) {
   const rollsById = useMemo(() => new Map(rolls.map((roll) => [roll.id, roll])), [rolls]);
   const { recent, earlier } = useMemo(() => chronicleWindow(messages), [messages]);
@@ -578,10 +656,19 @@ export function TabletopChronicle({
               );
             }
             if (message.authorType === "player") {
-              return (
+              const line = (
                 <p key={message.id} className="cine-chronicle-line">
                   {nameOf(message)}: &ldquo;{message.content.trim()}&rdquo;
                 </p>
+              );
+              // A card the GM never carried out says so here too (issue 570).
+              return message.cardReturned ? (
+                <div key={message.id}>
+                  {line}
+                  <CardReturnedNote message={message} mine={Boolean(meUserId) && message.userId === meUserId} name={nameOf(message)} />
+                </div>
+              ) : (
+                line
               );
             }
             return (

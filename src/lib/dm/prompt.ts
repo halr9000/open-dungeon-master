@@ -15,6 +15,8 @@ import { attackSummary } from "@/lib/srd/creature-attacks";
 import { encumbranceFor } from "@/lib/srd/encumbrance";
 import { wearingIsExplicit } from "@/lib/srd/armor";
 import { classFeatureDescription, findCustomClass } from "@/lib/classes";
+import { backgroundWords, classWords, raceWords } from "@/lib/sheet-words";
+import { selectedCharacter } from "@/lib/player-characters";
 // The genre catalogs' rules text, all of it: the model reads it beside a
 // custom feature (src/lib/classes/feature-text.ts).
 import "@/lib/classes/feature-text-all";
@@ -98,8 +100,10 @@ import { CREATURE_TYPES } from "@/lib/bestiary/creature-type";
 import { CHECK_KEY_PROPERTIES, NONE, SAVE_AGAINST } from "@/lib/dm/roll-about";
 import { stopWordsFor } from "@/lib/language/language";
 import { textKey } from "@/lib/language/text-logic";
+import { conversationNote, type Conversation } from "@/lib/dm/conversation-logic";
 import { ADVANTAGE_SOURCES } from "@/lib/dm/pc-attack-options";
 import { PLACE_DIRECTIONS, PLACE_DISTANCES } from "@/lib/overworld/places";
+import { heroFell } from "@/lib/characters/fallen-logic";
 
 export { DM_SYSTEM, dmSystemText, ENCOUNTER_RULES, encounterRulesText } from "@/lib/dm/prompt-rules";
 
@@ -205,6 +209,9 @@ export type DmEncounterState = {
     immune: string;
     vulnerable: string;
     concentration: string | null;
+    // Its movement left this turn when that is not its plain speed: Dashed,
+    // already walked, Disengaged (src/lib/dm/enemy-speed.ts enemyMovementNote).
+    moving?: string;
   }>;
   // Combatants fighting on the side their kind does not (issue 503): a
   // character turned against the party, a creature the party dominates.
@@ -215,11 +222,18 @@ export type DmEncounterState = {
 };
 
 export type DmGameState = {
+  // The player messages whose cards the engine resolves before the model is
+  // asked (src/lib/dm/turn.ts directCards): their card lines say so.
+  engineCardIds?: ReadonlySet<string>;
   campaign: Campaign;
   members: CampaignMember[];
   sheets: CharacterSheet[];
   encounter?: DmEncounterState | null;
   enemySuggestions?: Array<{ slug: string; name: string; cr: number }>;
+  // Who is still about after the last fight, for the GM: the knocked out
+  // and the fled, with the id that brings one back as they are (issue #667,
+  // src/lib/dm/foe-return.ts foesAboutBlock). Empty when nobody is.
+  foesAbout?: string;
   recentRolls: StoredRoll[];
   storySummary: string;
   // The newest message the chapter summaries or the rolling summary cover;
@@ -276,6 +290,9 @@ export type DmGameState = {
   facts?: FactLike[];
   // Sparks from the world-simulation tick, consumed into this turn.
   directorNotes?: string[];
+  // A player answering someone who just spoke to them
+  // (src/lib/dm/conversation-logic.ts): that person answers first.
+  conversation?: Conversation | null;
   // Tracked NPCs and how they currently feel about the party, plus a
   // bounded agency fragment (personality leans, bonds, goals, pressure).
   npcs?: Array<{
@@ -448,7 +465,7 @@ export function relationshipRules(romance: boolean, openNames: readonly string[]
         ? "A COMPANION who cannot stand a character says so plainly and stays: this table keeps its companions, so never dismiss_companion one over standing."
         : "A COMPANION who cannot stand a character says so plainly; whether they leave is the server's, so never dismiss_companion one over standing or deeds."
   } Never keep narrating a warm companion whose meter says otherwise.
-- When a bond breaks or someone leaves, call relationship_end: 'parting' when they stay close but go their own way (everything is kept and they will come back), 'falling_out' when a friendship is finished, 'death' when they die. Someone who has been away for chapters surfaces in GAME STATE as a GM-only note; act on it and put them back in the party's path.${
+- When a bond breaks or someone leaves, call relationship_end: 'parting' when they stay close but go their own way (everything is kept and they will come back), 'falling_out' when a friendship is finished, 'death' only when they are killed (it closes every character's bond with them; someone left to die but still alive is a deed done to them). Someone who has been away for chapters surfaces in GAME STATE as a GM-only note; act on it and put them back in the party's path.${
     romance
       ? `
 - Romance sits on TOP of that meter and never replaces it. Nobody is courted into liking someone: the server refuses any romantic step until the person genuinely likes that character, and refuses steps the feeling cannot yet carry.
@@ -514,13 +531,15 @@ function spellListLabel(lists: {
 }
 
 // What GAME STATE adds of a companion a player commands in fights
-// (src/lib/dm/companion-command.ts): whose orders its turns follow.
-function companionCommandNote(campaign: Campaign, sheet: CharacterSheet, usernames: Map<string, string>): string {
+// (src/lib/dm/companion-command.ts): whose orders its turns follow, named as
+// the story knows them. The account name went into the GM's narration ("she
+// waits for playtester's orders"), as the fight-control notice did (#594).
+function companionCommandNote(campaign: Campaign, sheet: CharacterSheet, commanderName: (userId: string) => string): string {
   const commander = commanderOf(campaign, sheet);
   if (!commander) {
     return "";
   }
-  const name = usernames.get(commander) ?? "their player";
+  const name = commanderName(commander);
   return `; in fights ${name} commands them: on their turn wait for ${name}'s orders and resolve them as a player's`;
 }
 
@@ -588,18 +607,22 @@ export function describeSheet(
       ? " | DEAD"
       : sheet.deathSaves.stable
         ? " | STABLE at 0 HP (unconscious)"
-        : ` | DYING: ${sheet.deathSaves.successes} death-save successes, ${sheet.deathSaves.failures} failures`
+        // The GM has no tool for these and must not invent them: out of
+        // combat they come from game time passing (condition-tick.ts).
+        : ` | DYING: ${sheet.deathSaves.successes} death-save successes, ${sheet.deathSaves.failures} failures (server-rolled: each of their turns in combat, every 6 seconds of game time outside it)`
     : "";
-  // Multiclass header: "barbarian 3 [Berserker] / rogue 2 (level 5)".
+  // Multiclass header: "barbarian 3 [Berserker] / rogue 2 (level 5)". A
+  // workshop class goes by its name: its id ("homebrew-<id>") tells the GM
+  // nothing (issue 569).
   const classLabel =
     (sheet.classes?.length ?? 0) > 1
       ? `${sheet.classes
           .map(
             (entry) =>
-              `${entry.id}${entry.subclass ? ` [${entry.subclass}]` : ""} ${entry.level}`,
+              `${classWords(entry.id)}${entry.subclass ? ` [${entry.subclass}]` : ""} ${entry.level}`,
           )
           .join(" / ")} (level ${sheet.level})`
-      : `${sheet.class}${sheet.subclass ? ` [${sheet.subclass}]` : ""} ${sheet.level}`;
+      : `${classWords(sheet.class)}${sheet.subclass ? ` [${sheet.subclass}]` : ""} ${sheet.level}`;
   const hitDiceLabel = sheet.hitDicePools?.length
     ? sheet.hitDicePools
         .map((pool) => `${Math.max(0, pool.total - pool.spent)}/${pool.total} ${pool.die}`)
@@ -617,7 +640,7 @@ export function describeSheet(
     ? `  Carrying ${load.carriedLb} lb of a ${load.capacityLb} lb capacity${load.unweighed ? ` (${load.unweighed} item${load.unweighed === 1 ? "" : "s"} of unknown weight, so the total is a floor)` : ""}${load.note ? `: ${load.note}` : ""}${load.overCapacity ? ". OVER CAPACITY: they cannot pick up anything more." : ""}`
     : null;
   const lines = [
-    `- ${sheet.name} (${sizeForRace(sheet.race)} ${sheet.race.replaceAll("_", " ")} ${classLabel}) characterId=${sheet.id} played by ${playedBy}${realDice ? " (rolls PHYSICAL dice)" : ""}`,
+    `- ${sheet.name} (${sizeForRace(sheet.race)} ${raceWords(sheet)} ${classLabel}) characterId=${sheet.id} played by ${playedBy}${realDice ? " (rolls PHYSICAL dice)" : ""}`,
     `  HP ${sheet.currentHp}/${sheet.maxHp}${sheet.tempHp ? ` (+${sheet.tempHp} temp)` : ""}${deathNote} | AC ${sheet.ac} | Speed ${speedFor(sheet, { encumbrance: options.encumbrance })} | Passive Perception ${derived.passivePerception} | Initiative ${formatModifier(derived.initiative)} | Hit Dice ${hitDiceLabel}`,
     `  ${abilities} | Save proficiencies: ${sheet.proficiencies.saves.map((save) => save.toUpperCase()).join(", ") || "none"}`,
     `  Skill proficiencies: ${proficientSkills || "none"}`,
@@ -774,7 +797,7 @@ export function describeSheet(
     lines.push(`  Worn and in hand: ${worn.length ? worn.join(", ") : "nothing"} (everything else is packed away)`);
   }
   if (sheet.background || sheet.alignment) {
-    lines.push(`  Background: ${sheet.background || "unknown"} | Alignment: ${sheet.alignment || "unstated"}`);
+    lines.push(`  Background: ${backgroundWords(sheet) || "unknown"} | Alignment: ${sheet.alignment || "unstated"}`);
   }
   // Who they are (issue 501): the gender always, and at a romance table who
   // they are drawn to and whether their player opened them to advances.
@@ -793,12 +816,18 @@ export function describeSheet(
     // #429: the first 400 characters of 2,000 used to be all the DM saw).
     lines.push(`  Backstory: ${options.compact ? cutForRoom(sheet.backstory, COMPACT_TEXT_CHARS.backstory) : sheet.backstory}`);
   }
+  if (sheet.hopes) {
+    // What the player would love to see happen (a romance, a rival, a
+    // redemption), said out of character: a direction to steer toward when
+    // the story allows, never a script, and never quoted at the table.
+    lines.push(`  Their player hopes the story holds (out of character; work toward it when it fits, never announce it): ${options.compact ? cutForRoom(sheet.hopes, COMPACT_TEXT_CHARS.hopes) : sheet.hopes}`);
+  }
   return lines.join("\n");
 }
 
 // What a compact call keeps of the text the table wrote for the DM, and
 // what each notes list carries whole before its notes keep only their start.
-const COMPACT_TEXT_CHARS = { backstory: 400, note: 300 } as const;
+const COMPACT_TEXT_CHARS = { backstory: 400, hopes: 200, note: 300 } as const;
 const NOTES_SHARE_CHARS = 4_000;
 
 // The start of a text cut at a word, saying it was cut, so the model never
@@ -830,6 +859,13 @@ export function fitNoteBodies<T extends { body: string }>(notes: T[], compact: b
 export function buildGameStateBlock(state: DmGameState): string {
   const { campaign, members, sheets, recentRolls, storySummary } = state;
   const usernamesById = new Map(members.map((member) => [member.userId, member.username]));
+  // A commanding player's character at this table: the seat's, else their
+  // first; the account only for a player with none (conscience.ts does the
+  // same for the table's notice).
+  const commanderName = (userId: string) =>
+    selectedCharacter(sheets, userId, members.find((member) => member.userId === userId)?.activeCharacterId ?? "")?.name ??
+    usernamesById.get(userId) ??
+    "their player";
   const physicalDiceUsers = realDiceUserIds(campaign, members);
   // Who people are drawn to rides at a romance table (issue 501). Who is
   // open to advances is a storyteller secret, said in that section. Optional
@@ -975,6 +1011,9 @@ export function buildGameStateBlock(state: DmGameState): string {
         .join("\n")}`,
     );
   }
+  if (state.conversation) {
+    moment.push(conversationNote(state.conversation));
+  }
   if (campaign.scene) {
     sections.push(`Current scene: ${campaign.scene}`);
   }
@@ -1086,6 +1125,9 @@ export function buildGameStateBlock(state: DmGameState): string {
       if (enemy.concentration) {
         parts.push(`CONCENTRATING on ${enemy.concentration} (damage forces its CON save; a break ends the effect)`);
       }
+      if (enemy.moving) {
+        parts.push(`movement: ${enemy.moving}`);
+      }
       lines.push(parts.join(" | "));
     }
     if (encounter.sides?.length) {
@@ -1102,6 +1144,9 @@ export function buildGameStateBlock(state: DmGameState): string {
     if (encounter.map) {
       lines.push(encounter.map);
     }
+    if (state.foesAbout) {
+      lines.push(state.foesAbout);
+    }
     moment.push(lines.join("\n"));
   } else if (state.enemySuggestions?.length) {
     sections.push(
@@ -1111,19 +1156,28 @@ export function buildGameStateBlock(state: DmGameState): string {
             entry.cr === 0.125 ? "1/8" : entry.cr === 0.25 ? "1/4" : entry.cr === 0.5 ? "1/2" : entry.cr;
           return `${entry.slug} as "${entry.name}" (CR ${cr})`;
         })
-        .join(", ")}`,
+        .join(", ")}${state.foesAbout ? `\n${state.foesAbout}` : ""}`,
     );
+  } else if (state.foesAbout) {
+    sections.push(state.foesAbout);
   }
   // The quest log with its ticks (docs/vtt-parity-implementation-plan.md
   // section 5.7). The arc's own sub-arcs are in the arc render; this adds
   // the DM's hand-written quests and the objectives ticked under both.
+  const quests = listQuests(campaign.id);
   const questBlock = renderQuestsForPrompt(
-    listQuests(campaign.id).filter((quest) => quest.source === "dm" || quest.objectives.some((objective) => objective.done)),
+    // An arc quest whose thread left the arc is in no arc render, so it is
+    // listed like the GM's own.
+    quests.filter((quest) => quest.source === "dm" || !quest.sourceRef || quest.objectives.some((objective) => objective.done)),
   );
   if (questBlock) {
     state.questsBlock = questBlock;
     sections.push(questBlock);
-  } else if (campaign.questLog.length && !campaign.storyArc) {
+  } else if (!quests.length && campaign.questLog.length && !campaign.storyArc) {
+    // The one-line log on the campaign row, for a campaign from before the
+    // quest log. Once there is a quest log it is the record: the row's copy
+    // was never kept up to date, and read after every quest was done it told
+    // the GM finished quests were open.
     state.questsBlock = `Quests:\n${campaign.questLog.map((quest) => `- ${quest}`).join("\n")}`;
     sections.push(state.questsBlock);
   }
@@ -1254,7 +1308,9 @@ export function buildGameStateBlock(state: DmGameState): string {
   const severalOwned = members
     .map((member) => ({
       member,
-      owned: sheets.filter((sheet) => sheet.userId === member.userId && !sheet.isCompanion),
+      // A hero who has fallen is controlled by nobody: a player who brought
+      // in a replacement does not run "several characters".
+      owned: sheets.filter((sheet) => sheet.userId === member.userId && !sheet.isCompanion && !heroFell(sheet)),
     }))
     .filter((entry) => entry.owned.length > 1);
   if (severalOwned.length) {
@@ -1273,7 +1329,7 @@ export function buildGameStateBlock(state: DmGameState): string {
         const base = describeSheet(
           sheet,
           sheet.isCompanion
-            ? `nobody: AI companion under your control (${sheet.companionKind === "guest" ? "scene-scoped guest ally" : "party member"}; personality: ${sheet.personality || "plain and steady"})${companionCommandNote(state.campaign, sheet, usernamesById)}`
+            ? `nobody: AI companion under your control (${sheet.companionKind === "guest" ? "scene-scoped guest ally" : "party member"}; personality: ${sheet.personality || "plain and steady"})${companionCommandNote(state.campaign, sheet, commanderName)}`
             : usernamesById.get(sheet.userId) ?? "unknown",
           !sheet.isCompanion && physicalDiceUsers.has(sheet.userId),
           // Optional all the way down: test doubles build partial campaigns.
@@ -1803,7 +1859,9 @@ export function buildDmMessages(
   state: DmGameState,
   history: CampaignMessage[],
 ): ChatMessage[] {
-  const sheetsById = new Map(state.sheets.map((sheet) => [sheet.id, sheet]));
+  // A companion who came back holds a new sheet: the lines from before they
+  // left name the ids it held then (formerSheetIds), and read "Unknown" here.
+  const sheetsById = new Map(state.sheets.flatMap((sheet) => [...(sheet.formerSheetIds ?? []).map((id) => [id, sheet] as const), [sheet.id, sheet] as const]));
   // A small model reads the server's "[roll:<id>]" markers in its own past
   // narration as something to write: Qwen3.5 9B wrote "[roll:pc_attack]" in
   // place of the attack. The short rules leave them out of the transcript.
@@ -1832,7 +1890,7 @@ export function buildDmMessages(
     // parsing the sentence (src/lib/dm/intent-logic.ts).
     const card =
       message.authorType === "player" && message.intent
-        ? `\n${describeIntent(message.intent, message.characterId)}`
+        ? `\n${describeIntent(message.intent, message.characterId, { resolved: state.engineCardIds?.has(message.id) ?? false })}`
         : "";
     return { message, id: message.id, seq: message.seq, text: `${content}${card}` };
   });

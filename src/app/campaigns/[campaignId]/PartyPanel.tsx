@@ -27,6 +27,9 @@ import { CharacterSheetDialog } from "@/app/campaigns/[campaignId]/CharacterShee
 import { TradeDialog } from "@/app/campaigns/[campaignId]/TradeDialog";
 import { CompanionBuilderDialog } from "@/app/campaigns/[campaignId]/CompanionBuilderDialog";
 import { CompanionCommand } from "@/app/campaigns/[campaignId]/CompanionCommand";
+import { CompanionPaintButton } from "@/app/campaigns/[campaignId]/CompanionPaintButton";
+import { CompanionKeepButton } from "@/app/campaigns/[campaignId]/CompanionKeepButton";
+import { hostOffers, offersImages, useCapabilities } from "@/lib/use-capabilities";
 import { offSide, SideBadge } from "@/app/campaigns/[campaignId]/SideBadge";
 import { DiceSourcesButton } from "@/app/campaigns/[campaignId]/DiceSourcesDialog";
 import { DiceLookButton } from "@/components/DiceLookEditor";
@@ -38,6 +41,8 @@ import type { CharacterSheet } from "@/lib/schemas/sheet";
 import { computeSheetDerived, formatModifier } from "@/lib/srd";
 import { usePackArt } from "@/lib/worlds/use-pack-art";
 import { textKey } from "@/lib/language/text-logic";
+import { heroFell, livingHero, switchesHeroes } from "@/lib/characters/fallen-logic";
+import { speciesAndClassWords } from "@/lib/characters/class-words";
 
 // The portrait cropper (and its cropping library) loads when a portrait is
 // being cropped, not with the table.
@@ -405,6 +410,11 @@ export function PartyPanel({
   multiCharacter?: "off" | "one_active" | "all_active";
 }) {
   const packArt = usePackArt(worldPack);
+  // A companion's "Paint a portrait" only where the server can paint, and
+  // where the host has the route (an app's screens may be newer than it).
+  const capabilities = useCapabilities();
+  const canPaint = offersImages(capabilities) && hostOffers(capabilities, "companionPortrait");
+  const canKeep = hostOffers(capabilities, "keepCompanion");
   const [editingSheetId, setEditingSheetId] = useState("");
   const [viewingSheetId, setViewingSheetId] = useState("");
   const [croppingSheetId, setCroppingSheetId] = useState("");
@@ -568,7 +578,7 @@ export function PartyPanel({
                   <span className="truncate">{sheet.name}</span>
                   <SideBadge side={offSide(encounter, sheet.id, "pc")} />
                   {lights[sheet.id] ? <LightBar light={lights[sheet.id]} /> : null}
-                  {mine && multiCharacter !== "off" && myOwn.length > 1 ? (
+                  {mine && myOwn.length > 1 && switchesHeroes(myOwn, multiCharacter) && (multiCharacter !== "off" || !heroFell(sheet)) ? (
                     mySheet?.id === sheet.id ? (
                       <span className="eyebrow rounded-sm border border-amber-500/50 bg-amber-400/10 px-1 text-[9px] text-amber-300">playing</span>
                     ) : (
@@ -611,10 +621,7 @@ export function PartyPanel({
                   ) : null}
                 </span>
                 <span className="block text-xs text-stone-400">
-                  {sheet.raceLabel ?? sheet.race.replaceAll("_", " ")}{" "}
-                  {(sheet.classes?.length ?? 0) > 1
-                    ? (sheet.classes ?? []).map((entry) => `${entry.id} ${entry.level}`).join(" / ")
-                    : `${sheet.class} ${sheet.level}`}
+                  {speciesAndClassWords(sheet)}
                 </span>
               </span>
               </button>
@@ -914,6 +921,12 @@ export function PartyPanel({
                   <ImagePlus className="size-3.5" />
                   {sheet.portrait ? "Change portrait" : "Add portrait"}
                 </KitButton>
+                {campaignId && sheet.isCompanion && steersStory && canPaint ? (
+                  <CompanionPaintButton campaignId={campaignId} sheet={sheet} />
+                ) : null}
+                {campaignId && sheet.isCompanion && steersStory && canKeep && sheet.companionKind === "party" && !sheet.summon ? (
+                  <CompanionKeepButton campaignId={campaignId} sheet={sheet} />
+                ) : null}
                 {mine ? <DiceLookButton /> : null}
                 {mine && realDiceAllowed && myMember ? (
                   <>
@@ -951,7 +964,7 @@ export function PartyPanel({
       {campaignId ? (
         <TravelFormation
           campaignId={campaignId}
-          sheets={fieldedOf(sheets, multiCharacter, (userId) => members.find((member) => member.userId === userId)?.activeCharacterId)}
+          sheets={fieldedOf(sheets, multiCharacter, (userId) => members.find((member) => member.userId === userId)?.activeCharacterId).filter((sheet) => !heroFell(sheet))}
           party={party}
           meUserId={meUserId}
           arranges={arrangesFormation}
@@ -1051,7 +1064,8 @@ export function PartyPanel({
 // DM seat (src/lib/dm/sheet-view.ts), so nothing here shows it to anyone else.
 function RomanceNote({ sheet }: { sheet: CharacterSheet }) {
   const drawn = attractionWords(sheet.attraction);
-  const open = !sheet.isCompanion && Boolean(sheet.openToAdvances);
+  // A hero who fell is courted by nobody (issue 657), so the chip goes.
+  const open = livingHero(sheet) && Boolean(sheet.openToAdvances);
   if (!drawn && !open) {
     return null;
   }

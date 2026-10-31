@@ -14,15 +14,19 @@ import { campaignSeats, getCampaignById, type Campaign } from "@/lib/db/campaign
 import { getDatabase, nowIso } from "@/lib/db/core";
 import { getLatestDmMessage } from "@/lib/db/messages";
 import { listSheets } from "@/lib/db/sheets";
+import { heroFell } from "@/lib/characters/fallen-logic";
 import { coverInEffect } from "@/lib/dm/delegation";
 import { getDmStatus } from "@/lib/dm/status";
 import { hasHumanDm } from "@/lib/dm/viewer";
 import { wakeDm } from "@/lib/dm/wake";
+import { detachFromTurn } from "@/lib/dm/job-control";
 import { latestEventOfType, onlineUserIds, publishEphemeral, publishPersisted } from "@/lib/events";
 import { tableBreakOn } from "@/lib/dm/table-break";
+import { sessionHoldOn } from "@/lib/dm/session-hold";
 import { breakRefusal } from "@/lib/dm/table-break-logic";
 import { runsAiTurns } from "@/lib/workshop/kind";
 import { decideTableWait, type TableSeat, type TableWaitDecision, type TableWaitView } from "./table-wait-logic";
+import { sessionRefusal } from "@/lib/dm/session-hold-logic";
 
 export type { TableWaitView } from "./table-wait-logic";
 
@@ -48,25 +52,43 @@ function memory(campaignId: string): WaitMemory {
 //
 // A table break (src/lib/dm/table-break.ts) stands the wait aside: nobody
 // can answer while the table is paused, so no clock runs and nothing fires;
-// Resume settles the table again, with the clock counted from then.
+// Resume settles the table again, with the clock counted from then. The
+// time between sessions (src/lib/dm/session-hold.ts) does the same.
 export function waitsForTable(campaign: Campaign): boolean {
-  if (!campaign.gameSettings.waitForTable || !runsAiTurns(campaign) || campaign.status !== "active" || tableBreakOn(campaign.id)) {
+  if (!campaign.gameSettings.waitForTable || !runsAiTurns(campaign) || campaign.status !== "active" || tableBreakOn(campaign.id) || sessionHoldOn(campaign.id)) {
     return false;
   }
   const covering = coverInEffect(campaign.gameSettings.dmMode, campaign.gameSettings.dmAssist, campaign.dmCover);
   return !hasHumanDm(campaignSeats(campaign)) || covering;
 }
 
-// The player seats, one per person, named by their first character.
-function playerSeats(campaign: Campaign): TableSeat[] {
-  const seats = new Map<string, string>();
+// The player seats, one per person, named by their first character, or by
+// the first one still alive once that one has fallen: a player who brought
+// in a new hero (src/lib/characters/hero-door.ts) is waited on by the new
+// hero's name, not the dead one's. A seat whose every hero has fallen is
+// kept, marked, so the table can leave it out: the dead answer nothing.
+// joinedAt is when the seat's hero sat down, so an answer from before a
+// new hero arrived (a pass made while the old one lay dead) is not theirs.
+type PlayerSeat = TableSeat & { fell: boolean; joinedAt: number };
+
+function playerSeats(campaign: Campaign): PlayerSeat[] {
+  const seats = new Map<string, PlayerSeat>();
   for (const sheet of listSheets(campaign.id)) {
-    if (sheet.isCompanion || !sheet.userId || sheet.userId === campaign.dmUserId || seats.has(sheet.userId)) {
+    if (sheet.isCompanion || !sheet.userId || sheet.userId === campaign.dmUserId) {
       continue;
     }
-    seats.set(sheet.userId, sheet.name);
+    const held = seats.get(sheet.userId);
+    if (!held || (held.fell && !heroFell(sheet))) {
+      const joinedAt = Date.parse(sheet.createdAt);
+      seats.set(sheet.userId, {
+        userId: sheet.userId,
+        name: sheet.name,
+        fell: heroFell(sheet),
+        joinedAt: Number.isFinite(joinedAt) ? joinedAt : 0,
+      });
+    }
   }
-  return [...seats].map(([userId, name]) => ({ userId, name }));
+  return [...seats.values()];
 }
 
 // Players reached through a live agent subscription (a webhook or a poll
@@ -108,8 +130,17 @@ function decisionFor(campaignId: string, now: number): TableWaitDecision | null 
     return null;
   }
   const db = getDatabase();
-  const seats = playerSeats(campaign);
+  const allSeats = playerSeats(campaign);
+  const seatOf = new Map(allSeats.map((seat) => [seat.userId, seat]));
+  const seats: TableSeat[] = allSeats.filter((seat) => !seat.fell).map(({ userId, name }) => ({ userId, name }));
   const names = new Map(seats.map((seat) => [seat.userId, seat.name]));
+  // An answer counts for the seat's living hero only: not from a player
+  // whose heroes have all fallen, and not from before their new hero sat
+  // down, so a replacement starts the beat unanswered.
+  const counts = (answer: { userId: string; at: number }) => {
+    const seat = seatOf.get(answer.userId);
+    return !seat || (!seat.fell && answer.at >= seat.joinedAt);
+  };
   const sheetNames = new Map(listSheets(campaignId).map((sheet) => [sheet.id, sheet.name]));
   const posts = (
     db
@@ -123,7 +154,7 @@ function decisionFor(campaignId: string, now: number): TableWaitDecision | null 
     userId: row.userId,
     name: names.get(row.userId) ?? sheetNames.get(row.characterId ?? "") ?? "A player",
     at: new Date(row.createdAt).getTime(),
-  }));
+  })).filter(counts);
   const passes = (
     db
       .prepare(`SELECT payload_json AS payload, created_at AS createdAt FROM campaign_events WHERE campaign_id = ? AND type = 'table_pass' AND seq > ? ORDER BY seq ASC`)
@@ -133,7 +164,7 @@ function decisionFor(campaignId: string, now: number): TableWaitDecision | null 
       userId: String((JSON.parse(row.payload) as { userId?: unknown }).userId ?? ""),
       at: new Date(row.createdAt).getTime(),
     }))
-    .filter((pass) => pass.userId)
+    .filter((pass) => pass.userId && counts(pass))
     .map((pass) => ({ ...pass, name: names.get(pass.userId) ?? "A player" }));
   const here = new Set([...onlineUserIds(campaignId), ...agentUserIds(campaignId)]);
   return decideTableWait({
@@ -207,13 +238,16 @@ export function settleTableWait(campaignId: string, now = Date.now(), holdUntilD
     entry.deadline = decision.deadline;
     // Node timers fire late, never early; the decision is re-read when it
     // does, so a table that changed in between is judged as it is then.
-    entry.timer = setTimeout(() => {
+    // Set as a narration lands, inside its turn; the wait it ends is the
+    // table's, and what it wakes belongs to no turn of the past (#622).
+    const delay = Math.max(0, decision.deadline - now) + 50;
+    entry.timer = detachFromTurn(() => setTimeout(() => {
       entry.timer = undefined;
       entry.deadline = undefined;
       if (settleTableWait(campaignId)) {
         wakeDm(campaignId);
       }
-    }, Math.max(0, decision.deadline - now) + 50);
+    }, delay));
     entry.timer.unref?.();
   }
   return false;
@@ -240,6 +274,10 @@ export type PassResult = { ok: true; fire: boolean } | { ok: false; status: numb
 // waiting to pass on, and once the player has already acted or passed.
 export function passTable(campaignId: string, userId: string): PassResult {
   const campaign = getCampaignById(campaignId);
+  const between = sessionHoldOn(campaignId);
+  if (between) {
+    return { ok: false, status: 409, error: sessionRefusal(between) };
+  }
   const paused = tableBreakOn(campaignId);
   if (paused) {
     return { ok: false, status: 409, error: breakRefusal(paused) };
@@ -263,8 +301,12 @@ export function passTable(campaignId: string, userId: string): PassResult {
   if (decision.view.answered.some((seat) => seat.userId === userId)) {
     return { ok: false, status: 409, error: "You have already answered this beat." };
   }
-  if (!playerSeats(campaign).some((seat) => seat.userId === userId)) {
+  const seat = playerSeats(campaign).find((held) => held.userId === userId);
+  if (!seat) {
     return { ok: false, status: 400, error: "You need a character to pass." };
+  }
+  if (seat.fell) {
+    return { ok: false, status: 409, error: `${seat.name} has fallen, so the GM is not waiting on you. Bring in a new hero to rejoin the table.` };
   }
   publishPersisted(campaignId, "table_pass", { userId });
   return { ok: true, fire: settleTableWait(campaignId) };

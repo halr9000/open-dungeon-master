@@ -9,14 +9,14 @@ import { settleLevelChange, withoutDuplicateClasses } from "@/lib/srd/level-chan
 import { normalizeSpellcasting } from "@/lib/srd/spell-lists";
 import { settleAttunement, type Wearer } from "@/lib/srd/magic-items";
 import { itemWeightByName, repairedWeight } from "@/lib/content";
-import { homebrewRaceLabel, hydrateHomebrewGear } from "@/lib/db/homebrew";
+import { homebrewLabel, homebrewRaceLabel, hydrateHomebrewGear } from "@/lib/db/homebrew";
 import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { storedGender } from "@/lib/gender";
 import { attractionJson, normalizeAttraction } from "@/lib/attraction";
 import { backgroundFeatureFor } from "@/lib/backgrounds";
 import { registerSpeciesReader } from "@/lib/srd/race-id";
 import { featsAsRun } from "@/lib/srd/feat-effects";
-import { serverSpeciesRules } from "@/lib/characters/species-rules";
+import { serverSpeciesName, serverSpeciesRules } from "@/lib/characters/species-rules";
 import {
   keyedFeatChoices,
   type CharacterSheet,
@@ -79,6 +79,7 @@ type SheetRow = {
   portrait_json: string | null;
   notes: string;
   backstory: string | null;
+  hopes?: string | null;
   is_companion: number | null;
   companion_kind: string | null;
   commanded_by?: string | null;
@@ -86,6 +87,7 @@ type SheetRow = {
   hand_layout_json?: string | null;
   feat_choices_json?: string | null;
   attraction_json?: string | null;
+  former_sheet_ids_json?: string | null;
   open_to_advances?: number | null;
   open_to_pacts?: number | null;
   created_at: string;
@@ -110,7 +112,10 @@ function mapSheet(row: SheetRow): CharacterSheet {
   }
   // Sheets from before the cantrip list kept cantrips in prepared/known.
   const spellcasting = normalizeSpellcasting(parsedCasting);
-  const raceLabel = homebrewRaceLabel(row.user_id, row.race, row.campaign_id);
+  // A homebrew species by its author's name, a content-pack one by the
+  // builder's ("Minotaur (Bhain Kwai)"); a bundled id reads as its words.
+  const raceLabel = homebrewRaceLabel(row.user_id, row.race, row.campaign_id) ?? serverSpeciesName(row.race) ?? undefined;
+  const backgroundLabel = homebrewLabel(row.user_id, row.background, "background", row.campaign_id);
   return {
     id: row.id,
     campaignId: row.campaign_id,
@@ -122,9 +127,11 @@ function mapSheet(row: SheetRow): CharacterSheet {
     class: row.class,
     subclass: row.subclass ?? "",
     background: row.background,
+    ...(backgroundLabel ? { backgroundLabel } : {}),
     alignment: row.alignment,
     gender: storedGender(row.gender),
     attraction: normalizeAttraction(row.attraction_json ?? ""),
+    ...formerSheetIdsOf(row.former_sheet_ids_json),
     openToAdvances: row.open_to_advances === 1,
     openToPacts: row.open_to_pacts === 1,
     level: row.level,
@@ -172,6 +179,7 @@ function mapSheet(row: SheetRow): CharacterSheet {
     portrait: parseJson<CharacterSheet["portrait"]>(row.portrait_json, null),
     notes: row.notes,
     backstory: row.backstory ?? "",
+    hopes: row.hopes ?? "",
     isCompanion: row.is_companion === 1,
     companionKind:
       row.companion_kind === "party" || row.companion_kind === "guest"
@@ -221,8 +229,8 @@ const SHEET_COLUMNS = `
   classes_json, hit_dice_pools_json,
   proficiencies_json, equipment_json, gold, copper, feats_json, features_json,
   spellcasting_json, conditions_json, condition_meta_json, resources_json, wild_shape_json, pets_json, summon_json, exhaustion, death_saves_json, concentrating_on, concentration_rounds,
-  portrait_json, notes, backstory, is_companion, companion_kind, commanded_by, personality, hand_layout_json, feat_choices_json,
-  attraction_json, open_to_advances, open_to_pacts, created_at, updated_at
+  portrait_json, notes, backstory, hopes, is_companion, companion_kind, commanded_by, personality, hand_layout_json, feat_choices_json,
+  attraction_json, open_to_advances, open_to_pacts, former_sheet_ids_json, created_at, updated_at
 `;
 
 // The owner's answer to "Open to advances from NPCs" (issue 501), for this
@@ -246,6 +254,25 @@ export function setOpenToPacts(sheetId: string, open: boolean): CharacterSheet |
 
 // Flags a freshly created sheet as an AI companion. Kept out of the main
 // INSERT so every existing creation path stays untouched.
+// A returned companion's earlier sheet ids, as the sheet carries them: only
+// when there are any, so every other sheet reads as it always has.
+function formerSheetIdsOf(json: string | null | undefined): { formerSheetIds?: string[] } {
+  const ids = parseJson<unknown>(json ?? "", []);
+  const list = Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+  return list.length ? { formerSheetIds: [...new Set(list)] } : {};
+}
+
+// The server's record that a companion who came back held these sheets
+// before (src/lib/dm/companion-return.ts). Its own write: patchSheet and every
+// edit route leave the column alone.
+export function recordFormerSheetIds(sheetId: string, ids: readonly string[]): CharacterSheet | null {
+  const list = [...new Set(ids.filter((id) => id && id !== sheetId))];
+  getDatabase()
+    .prepare(`UPDATE character_sheets SET former_sheet_ids_json = ? WHERE id = ?`)
+    .run(list.length ? JSON.stringify(list) : "", sheetId);
+  return getSheetById(sheetId);
+}
+
 export function markSheetAsCompanion(
   sheetId: string,
   kind: "party" | "guest",
@@ -429,9 +456,9 @@ export function createSheet(
         level, xp, abilities_json, max_hp, current_hp, temp_hp, ac, ac_override, speed,
         hit_dice_json, classes_json, hit_dice_pools_json, proficiencies_json, equipment_json, gold, copper, feats_json,
         features_json, resources_json, spellcasting_json, conditions_json, portrait_json,
-        notes, backstory, feat_choices_json, attraction_json, created_at, updated_at
+        notes, backstory, hopes, feat_choices_json, attraction_json, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)
     `,
   ).run(
     id,
@@ -478,6 +505,7 @@ export function createSheet(
     input.notes,
     // Older library sheet_json blobs predate the field.
     input.backstory ?? "",
+    input.hopes ?? "",
     featChoicesJson(input.featChoices),
     // Older library sheet_json blobs and companion drafts predate the field.
     attractionJson(input.attraction),
@@ -524,6 +552,18 @@ export function getSheetForUser(campaignId: string, userId: string): CharacterSh
   return row ? mapSheet(row) : null;
 }
 
+// A character a player names for an action of theirs, by id: one of their
+// own at this table, not a companion (the GM's to run) and not fallen. Null
+// for anything else. A connected agent names the character its link wakes
+// (issue 654), which at a table where everyone plays several characters at
+// once need not be the one its player has selected.
+export function ownLivingSheet(campaignId: string, userId: string, characterId: string): CharacterSheet | null {
+  const sheet = getSheetById(characterId);
+  return sheet && sheet.campaignId === campaignId && sheet.userId === userId && !sheet.isCompanion && sheet.deathSaves?.dead !== true
+    ? sheet
+    : null;
+}
+
 // Every character this user made here, oldest first.
 export function listSheetsForUser(campaignId: string, userId: string): CharacterSheet[] {
   const rows = getDatabase()
@@ -566,6 +606,17 @@ export function listSheetsForLibraryCharacter(libraryCharacterId: string): Chara
     .prepare(`SELECT ${SHEET_COLUMNS} FROM character_sheets WHERE library_character_id = ?`)
     .all(libraryCharacterId) as SheetRow[];
   return rows.map(mapSheet);
+}
+
+// A campaign sheet tied to the library entry it is now kept as: a companion
+// the GM wrote in, saved to its keeper's characters
+// (src/lib/characters/keep-companion.ts). "Save to my characters" then
+// writes its progress back there, as a player's own sheet does.
+export function linkSheetToLibrary(sheetId: string, libraryCharacterId: string): CharacterSheet | null {
+  getDatabase()
+    .prepare(`UPDATE character_sheets SET library_character_id = ?, updated_at = ? WHERE id = ?`)
+    .run(libraryCharacterId, nowIso(), sheetId);
+  return getSheetById(sheetId);
 }
 
 // The name of the character this user plays in each of their campaigns,
@@ -775,6 +826,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
     portrait: patch.portrait !== undefined ? patch.portrait : existing.portrait,
     notes: patch.notes ?? existing.notes,
     backstory: patch.backstory ?? existing.backstory,
+    hopes: patch.hopes ?? existing.hopes ?? "",
     featChoices: patch.featChoices ?? existing.featChoices,
   };
 
@@ -904,7 +956,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
           spellcasting_json = ?, wild_shape_json = ?, pets_json = ?, exhaustion = ?, death_saves_json = ?, concentrating_on = ?, concentration_rounds = ?,
           feats_json = ?, features_json = ?, subclass = ?,
           classes_json = ?, hit_dice_pools_json = ?,
-          portrait_json = ?, notes = ?, backstory = ?, feat_choices_json = ?, updated_at = ?
+          portrait_json = ?, notes = ?, backstory = ?, hopes = ?, feat_choices_json = ?, updated_at = ?
         WHERE id = ?
       `,
     )
@@ -948,6 +1000,7 @@ export function patchSheet(sheetId: string, patch: FullPatchSheetInput): Charact
       next.portrait ? JSON.stringify(next.portrait) : null,
       next.notes,
       next.backstory,
+      next.hopes ?? "",
       featChoicesJson(next.featChoices),
       nowIso(),
       sheetId,

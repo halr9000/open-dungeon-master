@@ -12,7 +12,7 @@
 # instead, which pulls the patched Debian packages at build time.
 
 # --------------------------------------------------------------- dependencies
-FROM node:22.23.2-trixie-slim AS deps
+FROM node:22.23.4-trixie-slim AS deps
 WORKDIR /app
 
 # Toolchain for the two native modules, in case no prebuild matches the platform.
@@ -27,6 +27,12 @@ COPY package.json package-lock.json ./
 COPY scripts/copy-dice-assets.mjs ./scripts/
 # A full install, not --ignore-scripts: better-sqlite3-multiple-ciphers and
 # onnxruntime-node fetch their native binaries from an install script.
+# onnxruntime-node's script would also download its CUDA and TensorRT
+# providers from api.nuget.org on x64, which the build stage deletes (the app
+# embeds on the CPU only), and a timed-out download fails the whole install
+# (seen in CI, .github/workflows/linux-smoke.yml).
+# Its CPU binding ships in the package and is not affected.
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 RUN npm ci
 
 # --------------------------------------------------------------------- build
@@ -94,7 +100,7 @@ RUN cd .next/standalone \
             README.md CLAUDE.md AGENTS.md eslint.config.mjs postcss.config.mjs
 
 # -------------------------------------------------------------------- runner
-FROM node:22.23.2-trixie-slim AS runner
+FROM node:22.23.4-trixie-slim AS runner
 WORKDIR /app
 
 # The patched Debian packages, as in the deps stage, plus the system CA

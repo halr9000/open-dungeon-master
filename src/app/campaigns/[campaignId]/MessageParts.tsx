@@ -10,9 +10,10 @@ import { useFaceChain } from "@/app/campaigns/[campaignId]/useFaceChain";
 import { useFaceSize } from "@/app/campaigns/[campaignId]/useFaceSize";
 import { cn } from "@/lib/cn";
 import { playerFaces } from "@/lib/speaker-faces";
-import { JOIN_NOTE_PREFIX, LEAD_NOTE_PREFIX, systemNoteWords, type CampaignMember } from "@/lib/campaign-types";
+import { JOIN_NOTE_PREFIX, LEAD_NOTE_PREFIX, RECAP_PREFIX, systemNoteWords, type CampaignMember } from "@/lib/campaign-types";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { TranscriptSheet } from "@/app/campaigns/[campaignId]/departing";
 import {
   MessageActions,
   toContextItems,
@@ -21,6 +22,7 @@ import {
 import type { SystemGlyph } from "@/lib/system-glyphs";
 import { PACT_REVEAL_PREFIX } from "@/lib/dm/pact-logic";
 import { kitButtonClass } from "@/app/campaigns/[campaignId]/PanelKit";
+import { CardReturnedNote } from "@/app/campaigns/[campaignId]/CardReturnedNote";
 
 // The transcript's smaller voices: the table's own notices and what the
 // players say. The DM's passage, the hero of the screen, is MessageItem.tsx.
@@ -93,6 +95,17 @@ export function SystemMessage({ content, glyph }: { content: string; glyph?: Sys
       </div>
     );
   }
+  // The "Previously" that opens a session reads as part of the story, at
+  // narration weight under its own heading, not as a faint system line
+  // (issue 668).
+  if (content.startsWith(RECAP_PREFIX)) {
+    return (
+      <section aria-label="Previously" className="panel session-banner-card session-recap rounded-xl">
+        <SectionHead title="Previously" glyph="cue-bell" level="h4" className="mb-1" />
+        <p className="session-recap-text">{content.slice(RECAP_PREFIX.length)}</p>
+      </section>
+    );
+  }
   const join = content.startsWith(JOIN_NOTE_PREFIX);
   // The markers the DM reads (a joiner, a settled offer) come off.
   const text = systemNoteWords(content);
@@ -143,15 +156,20 @@ export function PlayerMessage({
   message: CampaignMessage;
   mine: boolean;
   sheets: CharacterSheet[];
-  sheetsById: Map<string, CharacterSheet>;
+  sheetsById: ReadonlyMap<string, TranscriptSheet>;
   membersById: Map<string, CampaignMember>;
   onReport?: (message: CampaignMessage) => void;
 }) {
   // Older messages predate characterId, so fall back to the author's
-  // sheet in this campaign before giving up on a character identity.
-  const sheet =
-    (message.characterId ? sheetsById.get(message.characterId) : undefined) ??
-    (message.userId ? sheets.find((candidate) => candidate.userId === message.userId) : undefined);
+  // sheet in this campaign before giving up on a character identity. A line
+  // that names its character never borrows the author's: a card the player
+  // played for a companion who has since left read as the player's own
+  // (0.31.1 playtest).
+  const sheet: TranscriptSheet | undefined = message.characterId
+    ? sheetsById.get(message.characterId)
+    : message.userId
+      ? sheets.find((candidate) => candidate.userId === message.userId)
+      : undefined;
   // Character portrait first, then the player's own avatar, then a stand-in
   // (playerFaces); one that fails to load gives way to the next.
   const [portraitUrl, onFaceError] = useFaceChain(
@@ -191,6 +209,7 @@ export function PlayerMessage({
         <div className={cn("session-bubble", ooc && "session-bubble-ooc")}>
           <p className="whitespace-pre-wrap text-pretty">{message.content}</p>
         </div>
+        {message.cardReturned ? <CardReturnedNote message={message} mine={mine} name={sheet?.name ?? "the player"} /> : null}
       </div>
     </ContextMenu>
   );

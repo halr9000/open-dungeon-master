@@ -1,3 +1,4 @@
+import type { NextSession } from "@/lib/dm/session-hold-logic";
 import type { CampaignKind } from "@/lib/workshop/kind";
 import { OFFER_NOTE_PREFIX } from "@/lib/dm/proposal-logic";
 import { PACT_REVEAL_PREFIX } from "@/lib/dm/pact-logic";
@@ -87,6 +88,10 @@ export type HomeGlance = {
   recapAt: string | null;
   sceneImage: string | null;
   faces: HomeGlanceFace[];
+  // Between sessions, and when the table meets next (issue 586): the home
+  // says "between sessions" and the date instead of a bare "active". Absent
+  // from a host older than the sessions feature.
+  session?: { between: boolean; next: NextSession | null };
 };
 
 // What a player is doing when they hit send. Shared by the composer and the
@@ -123,6 +128,14 @@ export function isFloorExempt(kind: InputKind): boolean {
 // prompt reframes them as authoritative table direction and the client
 // styles them as a lead note.
 export const LEAD_NOTE_PREFIX = "[Party lead direction] ";
+
+// Opens the "Previously" recap a returning table is given
+// (src/lib/dm/recap.ts). It is a system line, so the recap filter, the
+// export and the voice all treat it as one, but the table draws it as a
+// card at narration weight (MessageParts SystemMessage): in the faint
+// italic of a system line it was easy to miss (issue 668). An app built
+// before the card simply shows the old line.
+export const RECAP_PREFIX = "Previously: ";
 
 // The table note Begin posts. The table reads only this; the instruction
 // that asks the AI DM for the opening scene travels with it in the prompt

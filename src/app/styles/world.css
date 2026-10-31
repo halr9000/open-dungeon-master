@@ -1329,7 +1329,8 @@ html[data-theme="light"] .ts-below .ts-ghost:hover { background: rgba(255, 252, 
 .cine-party-bar { display: block; height: 5px; border-radius: 9px; background: rgba(4, 2, 12, 0.8); overflow: hidden; }
 .cine-party-fill { display: block; height: 100%; border-radius: 9px; background: linear-gradient(90deg, #b8922a, #f4e0a6); transition: width var(--dur-beat) var(--ease-settle), background var(--dur-beat) var(--ease-snap); }
 .cine-party-fill[data-low="true"] { background: linear-gradient(90deg, #c65a24, #ff9d5c); }
-.cine-party-class { font-size: 11px; color: var(--cine-ink-dim); text-transform: capitalize; }
+/* A split ("fighter 3 / rogue 2") wraps inside the card on a narrow phone. */
+.cine-party-class { font-size: 11px; color: var(--cine-ink-dim); text-transform: capitalize; overflow-wrap: anywhere; }
 
 /* ---- the transcript: the narrator's heading between hairlines ---- */
 
@@ -1357,6 +1358,7 @@ html[data-theme="light"] .ts-below .ts-ghost:hover { background: rgba(255, 252, 
   text-shadow: 0 1px 2px rgba(4, 2, 12, 0.9), 0 2px 12px rgba(4, 2, 12, 0.6);
 }
 .cine-stage .cine-chat .session-sysline { color: var(--cine-ink-soft); }
+.cine-stage .cine-chat .session-recap-text { color: var(--cine-ink); }
 .cine-stage .cine-chat .session-bubble { color: #edeaf7; }
 .cine-stage .cine-chat .session-dm { padding: 0.25rem 0; }
 
@@ -1441,6 +1443,16 @@ html[data-theme="light"] .ts-below .ts-ghost:hover { background: rgba(255, 252, 
   transition: border-color var(--dur-quick) var(--ease-snap), box-shadow var(--dur-move) var(--ease-snap);
 }
 .cine-quest:hover { border-color: rgba(212, 171, 58, 0.55); box-shadow: 0 0 16px rgba(212, 171, 58, 0.18); }
+/* The next quest or step settles in; a finished quest with none after it
+   lifts away (issue 581). */
+.cine-quest { animation: cine-quest-in var(--dur-move) var(--ease-settle) backwards; }
+.cine-quest[data-leaving] { animation: cine-quest-out 300ms var(--ease-snap) forwards; pointer-events: none; }
+@keyframes cine-quest-in {
+  from { opacity: 0; transform: translateY(-6px); }
+}
+@keyframes cine-quest-out {
+  to { opacity: 0; transform: translateY(-6px); }
+}
 .cine-quest:focus-visible { outline: 2px solid var(--cine-gold-pale); outline-offset: 2px; }
 .cine-quest-eyebrow {
   font-family: var(--font-display);
@@ -1775,7 +1787,7 @@ html[data-theme="light"] .ts-below .ts-ghost:hover { background: rgba(255, 252, 
   .cine-art, .cine-art-in { animation: none; }
   .cine-party-card, .cine-tabletop { animation: none; }
   .cine-ribbon-seat[data-current="true"] .cine-ribbon-face { animation: none; }
-  .cine-roll { animation: none; }
+  .cine-roll, .cine-quest, .cine-quest[data-leaving] { animation: none; }
   .cine-ribbon-face, .cine-party-card, .cine-party-fill, .cine-quest, .cine-order-row { transition: none; }
 }
 html[data-effects="low"] .cine-art,
@@ -1794,6 +1806,7 @@ html[data-theme="light"] .cine-stage .cine-desk .session-mode:not([data-on]) { b
    a player's bubble was ivory on parchment, and the streaming passage (its
    paragraph is the .session-dm-body itself) read pale until it was written. */
 html[data-theme="light"] .cine-stage .cine-chat .session-dm-body { text-shadow: none; color: var(--color-stone-100); }
+html[data-theme="light"] .cine-stage .cine-chat .session-recap-text { color: var(--color-stone-100); }
 html[data-theme="light"] .cine-stage .cine-chat .session-bubble { color: var(--color-stone-200); }
 html[data-theme="light"] .cine-stage .cine-chat .session-bubble-ooc { color: var(--color-stone-500); }
 html[data-theme="light"] .cine-stage .cine-chat .session-dm .section-head-title { color: #6f500f; }

@@ -267,4 +267,58 @@ test("a change of who holds authority reads the snapshot again (audit WA-11)", (
   assert.equal(next.lastSeq, loaded.lastSeq + 1, "persisted: its seq is recorded");
 });
 
+test("another seat's pin reaches this one, and a place removed in the World tab leaves the map (found auditing issue 581)", () => {
+  for (const type of ["pins_updated", "location_removed"]) {
+    assert.ok(STREAMED_EVENTS.includes(type), `${type} is not streamed`);
+    assert.deepEqual(EVENT_AUDIENCE[type], { kind: "table" }, `${type} reaches every seat`);
+  }
+  const pinned = campaignReducer(loaded, event("pins_updated", { pinId: "p1" }, 11));
+  assert.equal(pinned.pinsVersion, loaded.pinsVersion + 1);
+  const mapped = { ...loaded, locations: [{ id: "a", name: "Thornhollow" }, { id: "b", name: "The Mill" }] };
+  const removed = campaignReducer(mapped, event("location_removed", { locationId: "a" }, 12));
+  assert.deepEqual(removed.locations.map((location) => location.id), ["b"]);
+});
+
+// The 0.31.1 playtest: "After the fight: Party Defeated" stayed over the
+// whole of the next encounter, because only the next fight's own card
+// replaced it.
+test("the last fight's card comes down when another fight is on the board", () => {
+  const defeated = { outcome: "party_defeated", rounds: 5, seconds: 1140, kills: 1, fled: 0, fighters: [], totals: { dealt: 26, taken: 57, healed: 7, nat20s: 0, nat1s: 0 } };
+  let seq = loaded.lastSeq;
+  const ended = campaignReducer(loaded, event("encounter_summary", { encounterId: "fight-1", summary: defeated }, ++seq));
+  assert.equal(ended.fightSummary, defeated);
+  const sameFight = campaignReducer(ended, event("encounter_updated", { encounter: { id: "fight-1", status: "ended" } }, ++seq));
+  assert.equal(sameFight.fightSummary, defeated, "the fight it sums up keeps it");
+  const cleared = campaignReducer(sameFight, event("encounter_updated", { encounter: null }, ++seq));
+  assert.equal(cleared.fightSummary, defeated, "an empty board keeps it");
+  const next = campaignReducer(cleared, event("encounter_updated", { encounter: { id: "fight-2", status: "active" } }, ++seq));
+  assert.equal(next.fightSummary, null, "the next fight takes it down");
+  const fetched = campaignReducer(ended, { type: "encounter", encounter: { id: "fight-2", status: "active" } });
+  assert.equal(fetched.fightSummary, null, "so does a GM's own read of the next fight");
+  const second = campaignReducer(next, event("encounter_summary", { encounterId: "fight-2", summary: { ...defeated, outcome: "victory" } }, ++seq));
+  assert.equal(second.fightSummary.outcome, "victory", "and its own card shows when it ends");
+});
+
+test("a card dismissed at this seat does not hide the next fight's card", () => {
+  const source = readFileSync(new URL("../src/app/campaigns/[campaignId]/SessionChatColumn.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(source, /state\.fightSummary !== dismissedSummary/, "dismissal names the card, not every card after it");
+});
+
+// Issue #622: a fight's rounds write a time-only tick for each character
+// every round. The log's window keeps its eighty real changes; the ticks
+// among them do not take a change's place.
+test("the event log's window keeps eighty real changes, however many rounds tick by after them", () => {
+  let state = loaded;
+  const audit = (id, kind, delta) => campaignReducer(state, event("sheet_audit", { entry: { id, kind, delta, seq: 0 }, characterName: "Kara" }));
+  for (let n = 1; n <= 90; n += 1) state = audit(`c${n}`, "apply_damage", { amount: 1 });
+  for (let n = 1; n <= 300; n += 1) state = audit(`t${n}`, "condition_clock", { ended: [], added: [] });
+  const changes = state.auditLog.filter((entry) => entry.kind !== "condition_clock");
+  assert.equal(changes.length, 80, `the window holds ${changes.length} changes`);
+  assert.equal(changes[0].id, "c11");
+  assert.equal(state.auditLog.length, 380, "a tick after the changes was dropped");
+  // The same row again replaces itself rather than taking a second place.
+  state = audit("c90", "apply_damage", { amount: 2 });
+  assert.equal(state.auditLog.filter((entry) => entry.id === "c90").length, 1);
+});
+
 console.log(`\n${passed} campaign reducer tests passed.`);

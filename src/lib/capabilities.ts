@@ -46,7 +46,70 @@ export type Capabilities = {
   // transcribes: whether voice-chat transcription can write anything down
   // (the transcript route's own check, src/lib/stt.ts sttAvailable).
   voice: { enabled: boolean; mode: VoiceMode; transcribes: boolean };
+  // What this server's routes offer beyond its backends, one flag per
+  // control an older host lacks (SERVER_FEATURES below).
+  features: ServerFeatures;
 };
+
+// The apps' own screens can be newer than the host they are opened on. A
+// control that needs a route or a field the host may not have waits for its
+// flag here (src/lib/use-capabilities.ts hostOffers), so an older host keeps
+// the app's screens and simply shows no such control, rather than the app
+// dropping it to its own pages over one button. Constant per release: a flag
+// only ever says this server's code has the thing.
+export const SERVER_FEATURES = {
+  // "Paint a portrait" on a companion's card (issue 569):
+  // POST /api/campaigns/[id]/companions/[characterId]/portrait.
+  companionPortrait: true,
+  // "Save to my characters" on a companion's card, and a companion built at
+  // the table kept in its builder's characters (the builder says so):
+  // POST /api/campaigns/[id]/companions/[characterId]/keep.
+  keepCompanion: true,
+  // "Hopes for this story" on a character (the builder's Hero step and the
+  // sheet in play): the `hopes` field an older host drops while answering
+  // the save as done.
+  storyHopes: true,
+  // "Add a second class" in the builder (backlog F9): a class list on a new
+  // character, which an older host folds into one class.
+  builderMulticlass: true,
+  // End the session and start the next (issue 586): POST
+  // /api/campaigns/[id]/session, `sessionHold` in the table's snapshot, and
+  // `nextSession` on the home list.
+  sessions: true,
+  // "Bring in a new hero" for a player whose heroes have all fallen: the
+  // seat doors let them in at a table that plays one character each, and
+  // GET /sheet answers the level the replacement joins at
+  // (src/lib/characters/hero-door.ts). An older host refuses the seat.
+  fallenHeroes: true,
+  // An enemy's Dash, Disengage and Dodge (issue #621): take_action with
+  // enemyId for any of them, the Monster Hand's cards for them, and
+  // `movement` on an enemy's actions in the GM's view of the fight. An older
+  // host reads enemyId as the escaping enemy only.
+  enemyActions: true,
+  // An instant blast's card laid on the battle map (issue 570): the Hand
+  // sends a Fireball's square, which an older host could not catch anyone
+  // in, so its blasts stay aimed at one enemy there.
+  handBlasts: true,
+  // A casting shared out among creatures in the Hand (issue 570): the
+  // message's `shares`, which an older host drops and resolves as the aimed
+  // creature alone, so the split stays shut there.
+  handShares: true,
+  // What each connected agent's receiver or poll link wakes, and a link
+  // that stopped and why, on Settings > Connected agents (issue 654): the
+  // `links` and `stoppedLinks` fields of GET /api/profile/agents.
+  agentLinks: true,
+  // take_action's toward (issue #666): a Dash or Disengage walks the mover
+  // beside someone in the same call. The console shows the fields only on a host
+  // that reads them; an older one drops them unread.
+  moveWithAction: true,
+  // The GM seat plays the turn of a companion nobody commands at a table a
+  // person runs (src/lib/dm/companion-command.ts gmCompanionTurn): the
+  // actions route takes that companion's cards and Do, and End turn ends its
+  // turn. An older host refuses all three as "another character's turn", so
+  // the seat keeps the monsters' hand and Skip turn there.
+  gmCompanionTurns: true,
+} as const;
+export type ServerFeatures = { [K in keyof typeof SERVER_FEATURES]: boolean };
 
 export const PROBE_TIMEOUT_MS = 2_500;
 
@@ -518,5 +581,6 @@ export async function capabilitiesSnapshot(): Promise<Capabilities> {
     // from the same probe-gated inputs, so a named box that does not answer
     // costs nothing here.
     voice: { enabled: voice.enabled, mode: voice.mode, transcribes: Boolean(dictation.explicitWhisperUrl && dictation.whisperModel) },
+    features: { ...SERVER_FEATURES },
   };
 }

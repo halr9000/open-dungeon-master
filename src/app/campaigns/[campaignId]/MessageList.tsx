@@ -8,11 +8,13 @@ import type { CastMember } from "@/lib/dm/cast";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { StoredRoll } from "@/lib/db/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { transcriptSheets, type DepartingSheet } from "@/app/campaigns/[campaignId]/departing";
+import { useGoneCompanions } from "@/app/campaigns/[campaignId]/useGoneCompanions";
 import { MessageItem } from "@/app/campaigns/[campaignId]/MessageItem";
 import { Prose } from "@/app/campaigns/[campaignId]/Prose";
 import { DM_STATUS_PHRASES } from "@/app/campaigns/[campaignId]/dmStatusPhrases";
 import { useDmDraft, useDmDraftSeq } from "@/app/campaigns/[campaignId]/liveStore";
-import { isNarration } from "@/lib/dm/ooc-question";
+import { isNarration, voicedByServer } from "@/lib/dm/ooc-question";
 import type {
   CampaignLocation,
   DmStatus,
@@ -20,6 +22,7 @@ import type {
 } from "@/app/campaigns/[campaignId]/useCampaignStream";
 
 const NO_NARRATION_STATUS: Record<string, NarrationStatus> = {};
+const NO_DEPARTING: readonly DepartingSheet[] = [];
 
 // FNV-1a plus a murmur-style finalizer. The avalanche matters: a weaker mix
 // leaves the six-entry pools reachable only at half their entries.
@@ -120,6 +123,8 @@ export function MessageList({
   onReport,
   onDispute,
   hidden = false,
+  departing = NO_DEPARTING,
+  goneRefreshKey = 0,
 }: {
   messages: CampaignMessage[];
   hidden?: boolean;
@@ -139,6 +144,9 @@ export function MessageList({
   canIllustrate?: boolean;
   rolls: StoredRoll[];
   sheets: CharacterSheet[];
+  // Companions who left the party: their lines keep their names and faces.
+  departing?: readonly DepartingSheet[];
+  goneRefreshKey?: number;
   members?: CampaignMember[];
   locations?: CampaignLocation[];
   // Names and faces of the cast, for speech lines.
@@ -165,10 +173,8 @@ export function MessageList({
   const scrollPendingRef = useRef(false);
   const statusPhrase = dmStatusPhrase(dmStatus, messages[messages.length - 1]?.id ?? "");
   const rollsById = useMemo(() => new Map(rolls.map((roll) => [roll.id, roll])), [rolls]);
-  const sheetsById = useMemo(
-    () => new Map(sheets.map((sheet) => [sheet.id, sheet])),
-    [sheets],
-  );
+  const gone = useGoneCompanions(campaignId, `${goneRefreshKey}:${departing.length}`);
+  const sheetsById = useMemo(() => transcriptSheets(sheets, departing, gone), [sheets, departing, gone]);
   const membersById = useMemo(
     () => new Map(members.map((member) => [member.userId, member])),
     [members],
@@ -298,10 +304,11 @@ export function MessageList({
   // Only the newest DM message can be rerolled; the server enforces the same
   // rule, this just keeps the button off every older passage. An
   // out-of-character answer is not a passage, so it leaves the last one
-  // rerollable.
+  // rerollable, and so does a companion's line the server posted after it
+  // (issue 615).
   const latestDmMessageId = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (isNarration(messages[index])) {
+      if (isNarration(messages[index]) && !voicedByServer(messages[index])) {
         return messages[index].id;
       }
     }

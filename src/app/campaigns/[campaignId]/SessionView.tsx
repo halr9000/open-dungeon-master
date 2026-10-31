@@ -1,19 +1,23 @@
 "use client";
 
 import { romanceCueAllowed } from "@/lib/dm/director-logic";
-import { initiativeCharacter, selectedCharacter } from "@/lib/player-characters";
+import { gmTurnCompanion, initiativeCharacter, selectedCharacter } from "@/lib/player-characters";
 import { useThemePrefs } from "@/lib/theme-mode";
 import { LevelUpMoment, LootMoment, MomentVeil, RestMoment, TravelBanner } from "@/app/campaigns/[campaignId]/Moments";
 import { CoordinationPanel } from "@/app/campaigns/[campaignId]/CoordinationPanel";
 import { CorrectionReasonChips } from "@/components/CorrectionReasonChips";
 import { haptic, useEffectsRoot, useTurnChime } from "@/lib/effects-mode";
 import { levelForXp } from "@/lib/srd";
-import { transcribesVoice, useCapabilities } from "@/lib/use-capabilities";
+import { hostOffers, transcribesVoice, useCapabilities } from "@/lib/use-capabilities";
+import { fallenHero, heroJoinLevel } from "@/lib/characters/fallen-logic";
 import { SceneTitle } from "@/components/SceneTitle";
 import { askConcentrationSwap, isConcentrationQuestion } from "@/components/concentration-prompt";
 import { HandoutStage } from "@/components/HandoutStage";
 import { SafetyPause } from "@/app/campaigns/[campaignId]/SafetyPause";
 import { TableBreakBanner, type TableBreakControl } from "@/app/campaigns/[campaignId]/TableBreakBanner";
+import { SessionHoldBanner, type SessionControl } from "@/app/campaigns/[campaignId]/SessionHoldBanner";
+import { maySteerSessions } from "@/lib/dm/session-hold-logic";
+import { appConfirm } from "@/components/ui/ConfirmDialog";
 import { mayResumeBreak } from "@/lib/dm/table-break-logic";
 import type { Speaker } from "@/lib/dm/speech";
 import type { MapLabel } from "@/lib/battlemap/scene";
@@ -123,6 +127,7 @@ const tablePieces = {
   HelpDialog: preloadable(() => import("@/components/HelpDialog").then((module) => module.HelpDialog)),
   GuidedTour: preloadable(() => import("@/components/ui/GuidedTour").then((module) => module.GuidedTour)),
   CharacterGate: preloadable(() => import("@/app/campaigns/[campaignId]/CharacterGate").then((module) => module.CharacterGate)),
+  FallenHeroBanner: preloadable(() => import("@/app/campaigns/[campaignId]/CharacterGate").then((module) => module.FallenHeroBanner)),
   DiceLookDialog: preloadable(() => import("@/components/DiceLookEditor").then((module) => module.DiceLookDialog)),
   DiceTrayDialog: preloadable(() => import("@/app/campaigns/[campaignId]/DiceTrayDialog").then((module) => module.DiceTrayDialog)),
   LoreCheckDialog: preloadable(() => import("@/app/campaigns/[campaignId]/LoreCheckDialog").then((module) => module.LoreCheckDialog)),
@@ -130,7 +135,7 @@ const tablePieces = {
   LabelSheet: preloadable(() => import("@/app/campaigns/[campaignId]/LabelSheet").then((module) => module.LabelSheet)),
   ReportProblemDialog: preloadable(() => import("@/components/ReportProblemDialog").then((module) => module.ReportProblemDialog)),
 };
-const { HelpDialog, GuidedTour, CharacterGate, DiceLookDialog, DiceTrayDialog, LoreCheckDialog, RenarrateDialog, LabelSheet, ReportProblemDialog } = tablePieces;
+const { HelpDialog, GuidedTour, CharacterGate, FallenHeroBanner, DiceLookDialog, DiceTrayDialog, LoreCheckDialog, RenarrateDialog, LabelSheet, ReportProblemDialog } = tablePieces;
 const { BattleMapPanel } = panels;
 
 // True from the first time `open` is true: a dialog mounts then and stays.
@@ -431,7 +436,7 @@ export function SessionView({
   // than a map in the side panel. The header switch shows the story there
   // instead; the choice is the reader's, kept per browser.
   const docked = useDocked();
-  const { active: addonBoardView, views: addonViews, choose: chooseBoardView } = useBoardView(state.battleMap?.addonView?.addonId);
+  const { active: addonBoardView, views: addonViews, choose: chooseBoardView } = useBoardView(state.battleMap?.addonView?.addonId, state.encounter?.status === "active");
   const [addonOptions, setAddonOption] = useBoardViewOptions();
   const sessionLayout = docked && addonBoardView?.sessionLayout === "stage";
   const { mode: themeMode } = useThemePrefs();
@@ -472,8 +477,17 @@ export function SessionView({
     () => selectedCharacter(sheets, me?.id ?? "", state.activeSheetId) ?? sheets.find((sheet) => sheet.userId === me?.id) ?? null,
     [sheets, me?.id, state.activeSheetId],
   );
-  const turnSheet = initiativeCharacter(sheets, me?.id ?? "", turnCharacterId(state.encounter));
+  // In the GM seat, the turn of a companion nobody commands is the GM's to
+  // play (player-characters.ts gmTurnCompanion), with its Hand and its Do,
+  // on a host that takes them (capabilities.ts gmCompanionTurns).
+  const capabilities = useCapabilities();
+  const gmCompanions = caps.role === "dm" && !state.encounter?.enemyTurns && hostOffers(capabilities, "gmCompanionTurns");
+  const turnSheet =
+    initiativeCharacter(sheets, me?.id ?? "", turnCharacterId(state.encounter)) ??
+    (gmCompanions ? gmTurnCompanion(sheets, turnCharacterId(state.encounter)) : null);
   const actingSheet = turnSheet ?? mySheet;
+  // The GM seat holds a companion's turn the floor names the companion for.
+  const gmPlaysTurn = Boolean(gmCompanions && turnSheet?.isCompanion);
   // The server's notice opens the level-up dialog once, when the experience
   // lands. Closing it only puts it off: the sheet's experience still earns
   // the level, so the party card offers a Level up button until it is done.
@@ -527,9 +541,12 @@ export function SessionView({
   // cannot call one (the route checks its voice), so it is not offered one.
   const breakMembers = state.members;
   const breakOffered = breakMembers.length > 1 && !breakMembers.some((member) => member.userId === me?.id && member.muted);
+  // Between sessions play is already held (SessionHoldBanner.tsx): there is
+  // no break to call until the next session starts.
+  const betweenSessions = state.sessionHold !== null;
   const breakControl = useMemo<TableBreakControl | undefined>(
     () =>
-      campaign?.status === "active" && (tableBreak !== null || breakOffered)
+      campaign?.status === "active" && !betweenSessions && (tableBreak !== null || breakOffered)
         ? {
             paused: tableBreak !== null,
             mayResume: mayResumeTable,
@@ -537,7 +554,7 @@ export function SessionView({
             onResume: () => void sendBreak("DELETE"),
           }
         : undefined,
-    [campaign?.status, tableBreak, breakOffered, mayResumeTable, sendBreak],
+    [campaign?.status, betweenSessions, tableBreak, breakOffered, mayResumeTable, sendBreak],
   );
   if (isDm && !seenDmSeat) {
     setSeenDmSeat(true);
@@ -595,8 +612,8 @@ export function SessionView({
   const enemyTurns = state.encounter?.enemyTurns === true;
   const gate = useMemo(
     () =>
-      composerGate({ floor, sheets, meUserId: meId, kind, myName, leadPrivate, openingNarrationPlaying, enemyTurns }),
-    [floor, sheets, meId, kind, myName, leadPrivate, openingNarrationPlaying, enemyTurns],
+      composerGate({ floor, sheets, meUserId: meId, kind, myName, leadPrivate, openingNarrationPlaying, enemyTurns, playsTurn: gmPlaysTurn }),
+    [floor, sheets, meId, kind, myName, leadPrivate, openingNarrationPlaying, enemyTurns, gmPlaysTurn],
   );
   // A mid-game joiner without a character is gated to creation first. The DM
   // runs no character, so the gate must never catch them.
@@ -672,8 +689,75 @@ export function SessionView({
   const turnEnforcement = voiceSettings?.turnEnforcement ?? "soft";
   const sayRangeRule = Boolean(voiceSettings?.rules?.sayRange);
   // Nothing records or announces a transcript the server cannot write.
-  const capabilities = useCapabilities();
   const transcribe = Boolean(voiceSettings?.transcribe) && transcribesVoice(capabilities);
+  // End the session, or start the next (issue 586), for whoever steers the
+  // story or the party lead, at a campaign in play on a host that has it.
+  // A test fight is its author's prep, not a table that meets.
+  const sessionHold = state.sessionHold;
+  const sessionCampaignId = campaign?.id ?? "";
+  const sendSession = useCallback(
+    async (action: "end" | "start") => {
+      const response = await fetch(`/api/campaigns/${sessionCampaignId}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      }).catch(() => null);
+      if (!response?.ok) {
+        const body = (await response?.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error || (action === "end" ? "Could not end the session." : "Could not start the session."));
+      }
+    },
+    [sessionCampaignId],
+  );
+  const endSession = useCallback(async () => {
+    const ok = await appConfirm(
+      "Play stops for everyone where it stands, and waits for the next session. Nothing is lost: the story, every sheet, the board and any fight under way stay exactly as they are, and table talk stays open. To finish the campaign for good, use End the campaign in the settings instead.",
+      // Nothing is lost, so the action is gold, not the ember of End the campaign.
+      { title: "End the session", actionLabel: "End the session", tone: "plain" },
+    );
+    if (ok) {
+      await sendSession("end");
+    }
+  }, [sendSession]);
+  const startSession = useCallback(() => sendSession("start"), [sendSession]);
+  const maySteerSession = maySteerSessions({ steersStory, isLead });
+  const offersSessions =
+    campaign?.status === "active" &&
+    !state.testFight &&
+    maySteerSession &&
+    // Only once the host has said it has sessions: an older one has no route.
+    capabilities !== null &&
+    hostOffers(capabilities, "sessions");
+  const sessionControl = useMemo<SessionControl | undefined>(
+    () =>
+      offersSessions
+        ? {
+            held: sessionHold !== null,
+            next: (sessionHold?.number ?? 0) + 1,
+            onEnd: () => void endSession(),
+            onStart: () => void startSession(),
+          }
+        : undefined,
+    [offersSessions, sessionHold, endSession, startSession],
+  );
+  // What a move reads between sessions: only table talk goes through.
+  const heldPlaceholder =
+    sessionHold && kind !== "ooc" ? `Session ${sessionHold.number} is over: use OOC for table talk until the next one starts.` : null;
+  // A player whose heroes have all fallen keeps the table and is offered a
+  // new hero above the composer (src/lib/characters/fallen-logic.ts), once
+  // the host has said its seat doors let them in; an older one refuses the seat.
+  const offersFallen = caps.needsCharacter && campaign?.status === "active" && capabilities !== null && hostOffers(capabilities, "fallenHeroes");
+  const tableStartLevel = campaign?.startingLevel ?? 1;
+  const fallen = useMemo(() => {
+    if (!offersFallen) {
+      return null;
+    }
+    const own = sheets.filter((sheet) => sheet.userId === meId);
+    const hero = fallenHero(own);
+    return hero ? { name: hero.name, level: heroJoinLevel(own, tableStartLevel) } : null;
+  }, [offersFallen, sheets, meId, tableStartLevel]);
+  // The fallen hero cannot act: the box says what it is for until the new one joins.
+  const fallenPlaceholder = fallen && kind !== "ooc" ? `${fallen.name} has fallen. Use OOC for table talk until your new hero joins.` : null;
   const floorUserIds =
     floor.mode === "spotlight" || floor.mode === "initiative" ? floor.userIds : EMPTY_IDS;
   const voice = useMemo(
@@ -838,6 +922,12 @@ export function SessionView({
   // A shop's Browse wares in the chat: the Market on that shop, in the side
   // panel at a desk and in place of the table on a phone.
   const [marketRequest, setMarketRequest] = useState<MarketRequest | null>(null);
+  // The quest glance opens the Story tab on its Quests.
+  const [questsRequest, setQuestsRequest] = useState(0);
+  const openQuests = useCallback(() => {
+    setQuestsRequest(Date.now());
+    openTab("story");
+  }, [openTab]);
   const browseShop = useCallback(
     (shopId: string) => {
       const target = browseWares(shopId, Date.now());
@@ -960,13 +1050,14 @@ export function SessionView({
       setInput={setInput}
       sending={sending}
       inputBlocked={gate.inputBlocked || silenced}
-      placeholder={silenced ? silencedPlaceholder : gate.placeholder}
+      placeholder={silenced ? silencedPlaceholder : (heldPlaceholder ?? fallenPlaceholder ?? gate.placeholder)}
       onSubmit={submit}
       maxChars={composerLimit(kind, leadPrivate)}
       // The stage's copy opens the story for what its window leaves out;
       // the enlarged board's dialog covers the story, so it only says so.
       onShowStory={composer ? undefined : toggleStage}
       composer={composer}
+      meUserId={meId}
     />
   );
   const chronicle = chronicleFor(false);
@@ -977,7 +1068,7 @@ export function SessionView({
   const routerProps = {
     levelUpLevel: myLevelUp && !levelUpShown ? myLevelUp.level : null,
     onLevelUp: () => setLevelUpByHand(true),
-    pinsVersion,
+    pinsVersion: pinsVersion + state.pinsVersion,
     campaignId: campaign.id,
     sheets,
     members: state.members,
@@ -1012,6 +1103,7 @@ export function SessionView({
     notes: state.notes,
     facts: state.facts,
     characterEvents: state.characterEvents,
+    clockTurns: state.clockTurns,
     refreshNotes,
     refreshFacts,
     sideThreads: state.sideThreads,
@@ -1046,6 +1138,7 @@ export function SessionView({
     loreVersion: state.loreVersion,
     shopsVersion: state.shopsVersion,
     marketRequest,
+    questsRequest,
     coins: state.coins,
     activeSheetId: state.activeSheetId,
     questsVersion: state.questsVersion,
@@ -1092,6 +1185,7 @@ export function SessionView({
         layoutSeat={sessionLayout ? undefined : layoutSeat}
         tableBreak={breakControl}
         prep={headerPrep}
+        session={sessionControl}
         exit={headerExit}
         ribbon={
           state.encounter?.status === "active" ? (
@@ -1249,6 +1343,11 @@ export function SessionView({
                       here to read.
                     </SessionBanner>
                   ) : null}
+                  {fallen ? (
+                    <Suspense fallback={null}>
+                      <FallenHeroBanner campaignId={campaign.id} name={fallen.name} level={fallen.level} />
+                    </Suspense>
+                  ) : null}
                   {/* The plan the party is coordinating (issue 254), above the
                       box its players would otherwise type their moves into. */}
                   {state.coordination ? (
@@ -1256,7 +1355,9 @@ export function SessionView({
                   ) : null}
                   <Composer
                     campaignId={campaign.id}
+                    genre={campaign.gameSettings?.genre ?? null}
                     trackAmmo={campaign.gameSettings?.variantRules?.ammunition ?? false}
+                    multiCharacter={campaign.gameSettings?.multiCharacter}
                     romanceCue={romanceCueAllowed(campaign.gameSettings)}
                     edges={state.battleMap?.edges}
                     drops={state.battleMap?.drops}
@@ -1273,7 +1374,7 @@ export function SessionView({
                     sending={sending}
                     error={error}
                     inputBlocked={gate.inputBlocked || silenced}
-                    placeholder={silenced ? silencedPlaceholder : gate.placeholder}
+                    placeholder={silenced ? silencedPlaceholder : (heldPlaceholder ?? fallenPlaceholder ?? gate.placeholder)}
                     dmStatus={dmStatus}
                     dmJob={state.dmJob}
                     pendingRolls={pendingRolls}
@@ -1319,7 +1420,7 @@ export function SessionView({
                 chatUnread={chatUnreadTotal}
                 mobileVisible={mobileView === "panel"}
                 storyDue={storyDue}
-                glance={<QuestGlance quests={campaign.questLog ?? []} onOpen={() => openTab("story")} />}
+                glance={<QuestGlance campaignId={campaign.id} refreshKey={state.questsVersion} initial={campaign.questLog ?? []} onOpen={openQuests} />}
               />
             ),
           },
@@ -1352,9 +1453,19 @@ export function SessionView({
 
       {prep && (prepOpen || prepLeaving) ? <PrepLayer leaving={!prepOpen}>{prep.screen}</PrepLayer> : null}
 
-      {dice3d ? <DiceOverlay latestRoll={state.latestRoll} enabled /> : null}
+      {dice3d ? <DiceOverlay rolls={state.recentRolls} enabled /> : null}
       <SceneTitle card={state.titleCard} onShown={markTitleCardShown} />
       <TableBreakBanner tableBreak={tableBreak} meUserId={me.id} mayResume={mayResumeTable} onResume={resumeTable} />
+      <SessionHoldBanner
+        hold={campaign.status === "active" ? sessionHold : null}
+        campaignId={campaign.id}
+        meUserId={me.id}
+        isLead={isLead}
+        members={state.members}
+        scheduleVersion={state.scheduleVersion}
+        mayStart={Boolean(sessionControl?.held)}
+        onStart={startSession}
+      />
       <SafetyPause campaignId={campaign.id} paused={state.safetyPause !== null} steersStory={steersStory} />
       <HandoutStage
         campaignId={campaign.id}

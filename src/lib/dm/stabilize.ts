@@ -19,6 +19,7 @@ import { removeConditions } from "@/lib/dm/condition-logic";
 import { stableDeathTrack } from "@/lib/dm/death-logic";
 import { insertSheetAudit } from "@/lib/db/sheet-audit";
 import { insertRoll } from "@/lib/db/rolls";
+import type { DmTurn } from "@/lib/db/dm-turns";
 import { rollExpression } from "@/lib/dice";
 import { publishPersisted, publishWithSeq } from "@/lib/events";
 import type { CharacterSheet, EquipmentItem, FullPatchSheetInput } from "@/lib/schemas/sheet";
@@ -26,6 +27,7 @@ import { allSpellNames } from "@/lib/srd/spell-lists";
 import { spendAction } from "@/lib/dm/action-budget";
 import { canAct } from "@/lib/dm/can-act";
 import { rollStableTimer } from "@/lib/dm/death";
+import { tableNote } from "@/lib/dm/between-io";
 import { getBattleMapForEncounter, getTokenByRef } from "@/lib/db/battle-maps";
 import { chebyshev } from "@/lib/battlemap/types";
 import { findCarriedItem } from "@/lib/dm/item-logic";
@@ -108,6 +110,9 @@ export function handleStabilize(
   sheet: CharacterSheet,
   healer: CharacterSheet | null,
   input: { method?: StabilizeMethod; reason?: string },
+  // The GM turn the check is rolled on: the GM's message shows the roll
+  // cards listed in turn.rollIds, as for every other roll the turn makes.
+  turn?: DmTurn | null,
 ): ToolResult {
   const reason = (input.reason ?? "").slice(0, 200);
   const track = sheet.deathSaves;
@@ -229,6 +234,7 @@ export function handleStabilize(
       roll,
       source: "digital",
     });
+    turn?.rollIds.push(roll.id);
     check = { rolled: outcome.total, dc: STABILIZE_DC };
     if (outcome.total < STABILIZE_DC) {
       return {
@@ -259,6 +265,7 @@ export function handleStabilize(
       conditions: woken.conditions,
       conditionMeta: woken.meta,
     });
+    tableNote(campaign, `${how}: ${sheet.name} is stable and regains 1 hit point.`, "cue-heal");
     return {
       ok: true,
       stabilized: true,
@@ -274,6 +281,9 @@ export function handleStabilize(
     conditions: wait.conditions,
     conditionMeta: wait.conditionMeta,
   });
+  // A kit or Spare the Dying throws no die, so without this line the table
+  // would see the sheet turn stable with nothing to say how.
+  tableNote(campaign, `${how}: ${sheet.name} is stable (unconscious at 0 HP).`, "cue-heal");
   return {
     ok: true,
     stabilized: true,

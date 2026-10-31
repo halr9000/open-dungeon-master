@@ -7,7 +7,7 @@ import { patchRelationship, type Relationship } from "@/lib/db/relationships";
 import { conscienceOn, settleCompanion, worstApproval, type ConscienceMove } from "@/lib/dm/conscience";
 import { departureNote, settleBreakingPoint, type DepartureOutcome } from "@/lib/dm/departure";
 import { clockDay, RUNG_WORD, stepLadder, type LadderStep } from "@/lib/dm/conscience-logic";
-import { deedVerdict, SEVERITY_FACTOR, type DeedSeverity, type DeedVerdict } from "@/lib/dm/companion-values-logic";
+import { deedVerdict, doneToDelta, SEVERITY_FACTOR, type DeedKind, type DeedSeverity, type DeedVerdict } from "@/lib/dm/companion-values-logic";
 import { openLedger, type Subject } from "@/lib/dm/relationship-subject";
 import { actAfterBeat, actFaceValue, actRunning, outwardApproval } from "@/lib/dm/scheme-logic";
 import {
@@ -139,19 +139,73 @@ export function landBeat(
         : {}),
     }) ?? relationship;
 
-  let conscience: ConscienceMove | null = null;
-  let departure: DepartureOutcome | null = null;
-  if (companion && subject.npc) {
-    const step: LadderStep | null = beat === "amends" ? "honour" : (values?.ladder ?? null);
-    const day = clockDay((getCampaignById(campaign.id) ?? campaign).clock.instant);
-    const next = stepLadder(companionConscience(subject.npc.id), step, worstBefore, day, causeOf(beat, sheet.name));
-    saveConscience(subject.npc.id, next);
-    conscience = settleCompanion(campaign, companion, next, deed ? { demand: deed.demand, hours: deed.hours } : {}, listSheets(campaign.id));
-    // At the breaking point the server decides what they do, now (issue 503
-    // Phase 2); climbed back off it, any plan they held is dropped.
-    departure = settleBreakingPoint(campaign, getSheetById(companion.id) ?? companion);
-  }
+  const { conscience, departure } = stepConscience(campaign, sheet, subject, companion, beat, values, deed, worstBefore);
   return { subject, before: relationship, updated, delta, alignment, values, conscience, departure };
+}
+
+// What a beat does to a lasting companion's conscience (issue 503): the step
+// its values take on the ladder, the rung settled against the standing it
+// now has, and at the breaking point what the server has it do. Shared by a
+// witness's landing and a victim's.
+function stepConscience(
+  campaign: Campaign,
+  sheet: CharacterSheet,
+  subject: Subject,
+  companion: CharacterSheet | null,
+  beat: RelationshipBeat,
+  values: DeedVerdict | null,
+  deed: DeedOptions | null,
+  worstBefore: number | null,
+): { conscience: ConscienceMove | null; departure: DepartureOutcome | null } {
+  if (!companion || !subject.npc) {
+    return { conscience: null, departure: null };
+  }
+  const step: LadderStep | null = beat === "amends" ? "honour" : (values?.ladder ?? null);
+  const day = clockDay((getCampaignById(campaign.id) ?? campaign).clock.instant);
+  const next = stepLadder(companionConscience(subject.npc.id), step, worstBefore, day, causeOf(beat, sheet.name));
+  saveConscience(subject.npc.id, next);
+  const conscience = settleCompanion(campaign, companion, next, deed ? { demand: deed.demand, hours: deed.hours } : {}, listSheets(campaign.id));
+  // At the breaking point the server decides what they do, now (issue 503
+  // Phase 2); climbed back off it, any plan they held is dropped.
+  const departure = settleBreakingPoint(campaign, getSheetById(companion.id) ?? companion);
+  return { conscience, departure };
+}
+
+// A deed landing on whoever it was done to (issue 580): the captive harmed,
+// the foe spared, the prisoner set free. Their regard moves at face value and
+// a step graver than a witness's (companion-values-logic.ts doneToDelta),
+// since being harmed or spared is not a matter of taste. A lasting companion
+// it was done to still weighs the deed by what it holds to, on its
+// conscience, as a witness would (the ladder, an ultimatum's demand); only
+// its regard is the victim's. null when it lands on nobody: a deed done to
+// the dead.
+export function landOnVictim(
+  campaign: Campaign,
+  sheet: CharacterSheet,
+  subject: Subject,
+  relationship: Relationship,
+  beat: DeedKind,
+  note: string | undefined,
+  deed: DeedOptions,
+): Landing | null {
+  const delta = doneToDelta(beat, beatSpec(beat)!.base, deed.severity);
+  if (!delta) {
+    return null;
+  }
+  const companion = conscienceOn(campaign) ? liveCompanion(subject) : null;
+  const values = companion && subject.npc ? deedVerdict(companionValues(subject.npc.id), beat, deed.severity, deed.faction) : null;
+  const worstBefore = companion ? worstApproval(campaign.id, companion.name, listSheets(campaign.id)) : null;
+  const approval = applyApproval(relationship.approval, delta);
+  const running = actRunning(relationship.pretense) ? relationship.pretense : null;
+  const updated =
+    patchRelationship(relationship.id, {
+      approval,
+      romance: demoteRomance(relationship.romance, running ? running.shown : approval),
+      beats: { ...relationship.beats, [beat]: (relationship.beats[beat] ?? 0) + 1 },
+      ...(note?.trim() ? { memories: addMemory(relationship.memories, { kind: beat, text: note.trim(), at: new Date().toISOString() }) } : {}),
+    }) ?? relationship;
+  const { conscience, departure } = stepConscience(campaign, sheet, subject, companion, beat, values, deed, worstBefore);
+  return { subject, before: relationship, updated, delta, alignment: 0, values, conscience, departure };
 }
 
 // The other player characters who stood by while a deed was done (issue
@@ -203,23 +257,25 @@ export function unrecordedDeedSubject(name: string): string {
 }
 
 // What the witnesses' landings add to the DM's note: whose conscience moved,
-// an ultimatum to voice, a command that ended, a companion who left.
+// an ultimatum to voice, a command that ended, a companion who left. A move
+// the table is owed says the server posts it when the GM does not (issue
+// 615); unease kept in says nothing here, since a console call's result is
+// read by whoever made it, and the storyteller's section carries it.
 export function conscienceNotes(landings: readonly Landing[]): string[] {
+  const posts = " Say it in their own words when you next narrate, or the server posts their line after it.";
   return landings.flatMap((landing) => {
     const move = landing.conscience;
     if (!move) {
       return [];
     }
     const lines: string[] = [];
-    if (move.from !== move.to) {
+    if (move.from !== move.to && !move.concealed) {
       lines.push(
-        `${move.companion}'s conscience moves from ${RUNG_WORD[move.from]} to ${RUNG_WORD[move.to]}: play it as GAME STATE's conscience line says.`,
+        `${move.companion}'s conscience moves from ${RUNG_WORD[move.from]} to ${RUNG_WORD[move.to]}: play it as GAME STATE's conscience line says.${move.owed && !move.ultimatum ? posts : ""}`,
       );
     }
     if (move.ultimatum) {
-      lines.push(
-        `${move.companion} sets an ultimatum: "${move.ultimatum.condition}", by ${move.ultimatum.due} (${move.ultimatum.left}). Voice it in their own words.`,
-      );
+      lines.push(`${move.companion} sets an ultimatum: "${move.ultimatum.condition}", by ${move.ultimatum.due} (${move.ultimatum.left}).${posts}`);
     }
     if (move.commandEnded) {
       lines.push(`${move.companion} no longer takes ${move.commandEnded}'s orders in a fight; you play their turns now.`);

@@ -1,4 +1,5 @@
-import { allocateSeq, getCampaignById, type Campaign } from "@/lib/db/campaigns";
+import { hasStanding } from "@/lib/dm/relationship-logic";
+import { getCampaignById, type Campaign } from "@/lib/db/campaigns";
 import { getBattleMapForEncounter, getTokenByRef } from "@/lib/db/battle-maps";
 import { companionConduct, saveConduct } from "@/lib/db/companion-conduct";
 import { companionValues } from "@/lib/db/companion-conscience";
@@ -38,6 +39,7 @@ import { resolveSheetRef } from "@/lib/dm/rolls";
 import { spellLevelOf } from "@/lib/srd/spell-lists";
 import { conditionBlocksReactions } from "@/lib/srd/condition-effects";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import { tableNoteSeq } from "@/lib/dm/narration-slot";
 
 // A lasting companion inside the party (issue 503 Phase 4), the rim around
 // src/lib/dm/party-conduct-logic.ts: the server checks where the companion
@@ -53,7 +55,7 @@ function now(campaign: Campaign): number {
 }
 
 function tableLine(campaign: Campaign, content: string) {
-  const seq = allocateSeq(campaign.id);
+  const seq = tableNoteSeq(campaign.id);
   const message = insertCampaignMessage({ campaignId: campaign.id, seq, authorType: "system", glyph: "system-party", content });
   publishWithSeq(campaign.id, seq, "message_added", { message });
 }
@@ -81,7 +83,7 @@ function conscientious(campaign: Campaign, ref: unknown): { sheet: CharacterShee
 export function standingWith(campaignId: string, companionName: string, characterId: string): number | null {
   const key = textKey(companionName);
   const bond = listRelationships(campaignId).find(
-    (entry) => entry.status === "active" && entry.characterId === characterId && textKey(entry.subjectName) === key,
+    (entry) => entry.status === "active" && entry.characterId === characterId && textKey(entry.subjectName) === key && hasStanding(entry),
   );
   return bond ? bond.approval : null;
 }

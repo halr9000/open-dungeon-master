@@ -29,7 +29,8 @@ import { offerVisibleTo } from "@/lib/dm/proposal-view";
 import { listOpenDisputes, publicDispute } from "@/lib/db/disputes";
 import { publicItemProposal } from "@/lib/dm/proposal-intercept";
 import { listLocations } from "@/lib/db/locations";
-import { listRecentAudit } from "@/lib/db/sheet-audit";
+import { listRecentAuditChanges } from "@/lib/db/sheet-audit";
+import { listLiveClockTurns } from "@/lib/db/clock-moves";
 import { insertCampaignMessage, listRecentMessages } from "@/lib/db/messages";
 import { listRollsVisibleTo } from "@/lib/db/rolls";
 import { getSheetForUser, listSheets } from "@/lib/db/sheets";
@@ -40,7 +41,7 @@ import { getDatabase } from "@/lib/db/core";
 import { requestDmTurn } from "@/lib/dm/loop";
 import { hasHumanDm, isPrimaryDm, lobbyBlocker, narratorIsAi } from "@/lib/dm/viewer";
 import { auditEntryForViewer, sheetForViewer } from "@/lib/dm/sheet-view";
-import { enqueueDmJob, runningDmJob } from "@/lib/dm/queue";
+import { enqueueDmJob, resumeDmQueue, runningDmJob } from "@/lib/dm/queue";
 import { runStorySetup } from "@/lib/dm/setup";
 import { generateStoryArc } from "@/lib/dm/arc";
 import { getDmStatus } from "@/lib/dm/status";
@@ -48,12 +49,14 @@ import { listUtilityCalls } from "@/lib/dm/call-tracker";
 import { listBlockedUserIds } from "@/lib/db/moderation";
 import { xCardRaised } from "@/lib/dm/safety";
 import { tableBreakOn } from "@/lib/dm/table-break";
+import { sessionHoldOn } from "@/lib/dm/session-hold";
 import { latestEventOfType, publishPersisted, publishWithSeq } from "@/lib/events";
 import type { HandoutShown, TitleCard } from "@/lib/scene/state";
 import { narrationAudioFor } from "@/lib/tts";
 import { tableAuthors, workshopClassesFor } from "@/lib/db/homebrew";
 import { testFightSource } from "@/lib/db/test-fights";
 import { isPlaytest } from "@/lib/workshop/kind";
+import { SESSION_REASON } from "@/lib/dm/session-hold-logic";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -160,13 +163,18 @@ export async function GET(
     pendingRolls: listOpenPendingRolls(campaignId).map(publicPendingRoll),
     // A correction of someone's notes is listed without them, as their sheet
     // is (src/lib/dm/sheet-view.ts).
-    auditLog: listRecentAudit(campaignId, 50).map((entry) =>
+    // The newest fifty changes; the rounds' time-only ticks among them ride
+    // along without taking a change's place (issue #622).
+    auditLog: listRecentAuditChanges(campaignId, 50).map((entry) =>
       auditEntryForViewer(entry, campaignSeats(campaign), user.id, ownedCharacterIds),
     ),
     locations: listLocations(campaignId),
     chapters: listChaptersForSnapshot(campaignId),
     notes: listNotesVisibleTo(campaignId, user.id, caps.steersStory),
     characterEvents: listRecentCampaignEvents(campaignId, 30),
+    // The turns whose time the event log can still put back (issue #622);
+    // an app reading an older host gets none and keeps its old rule.
+    clockTurns: listLiveClockTurns(campaignId),
     encounter: activePublicEncounter(campaignId, { enemyNumbers: caps.enemyNumbers }),
     // An owner-only offer (a pact's approach, issue 503) only to its player
     // and the storyteller.
@@ -197,6 +205,9 @@ export async function GET(
     safetyPause: safetyPauseOnTable(campaignId),
     // A table break: who paused and since when (src/lib/dm/table-break.ts).
     tableBreak: tableBreakOn(campaignId),
+    // Between sessions: which one ended, when and by whom
+    // (src/lib/dm/session-hold.ts); null while the table plays.
+    sessionHold: sessionHoldOn(campaignId),
     titleCard: (latestEventOfType(campaignId, ["title_card"])?.payload as TitleCard | null) ?? null,
     // What this seat may see and do, so the client never re-derives it from
     // ids and never shows a control the server would refuse.
@@ -304,6 +315,9 @@ export async function PATCH(
   // Campaign over: write durable progression back to each player's library
   // character (level, XP, gold, gear, spells; never HP or conditions).
   if (nextStatus === "ended") {
+    // Ended between sessions: nothing waits for a next one, so the queue
+    // is let go (src/lib/dm/session-hold.ts).
+    resumeDmQueue(campaignId, SESSION_REASON);
     for (const sheet of listSheets(campaignId)) {
       if (sheet.libraryCharacterId) {
         syncProgressToLibrary(sheet.id);

@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Bookmark,
+  BookMarked,
   ChevronLeft,
   ChevronRight,
   FastForward,
@@ -27,6 +27,7 @@ import type { CastMember } from "@/lib/dm/cast";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { StoredRoll } from "@/lib/db/rolls";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
+import type { TranscriptSheet } from "@/app/campaigns/[campaignId]/departing";
 import { HaltedTurnBanner } from "@/app/campaigns/[campaignId]/HaltedTurnBanner";
 import { InlineMessageEditor } from "@/app/campaigns/[campaignId]/InlineMessageEditor";
 import { DmContent, MediaPlaceholder } from "@/app/campaigns/[campaignId]/MessageContent";
@@ -102,7 +103,7 @@ export const MessageItem = memo(function MessageItem({
   // Whoever runs the story may put a picture of their own under a passage.
   canIllustrate: boolean;
   rollsById: Map<string, StoredRoll>;
-  sheetsById: Map<string, CharacterSheet>;
+  sheetsById: ReadonlyMap<string, TranscriptSheet>;
   membersById: Map<string, CampaignMember>;
   locationsById: Map<string, CampaignLocation>;
   sheets: CharacterSheet[];
@@ -269,12 +270,16 @@ export const MessageItem = memo(function MessageItem({
     }
     if (onPinMemory) {
       actions.push({
+        // The one pin on the toolbar (issue 668): Pinned memories, shown as
+        // pins in its own panel and as a pin in the menus. It used to be a
+        // bookmark here while the lead's canon control wore the pin, so the
+        // panel's "press the pin icon" pointed at the wrong one.
         id: "remember",
-        name: "Remember",
+        name: "Pin to memory",
         label: "Pin this to the GM's memory",
-        hint: "Remember: keep your selected text (or this whole message) in front of the GM every turn",
+        hint: "Pin to memory: keep your selected text (or this whole message) in front of the GM every turn",
         glyph: "ui-pin",
-        icon: <Bookmark className="size-3.5" />,
+        icon: <Pin className="size-3.5" />,
         onSelect: () => onPinMemory(message),
       });
     }
@@ -291,12 +296,14 @@ export const MessageItem = memo(function MessageItem({
     }
     if (onPinCanon) {
       actions.push({
+        // It writes a lore entry to Facts, so it wears the Facts tab's own
+        // icon, here and in the menus (issue 668).
         id: "canon",
-        name: "Pin as canon",
-        label: "Pin this passage as canon",
-        hint: "Pin as canon: keep this passage (or your selected text) in front of the GM permanently",
+        name: "Add to Facts",
+        label: "Add this passage to Facts as canon",
+        hint: "Add to Facts (lead only): save this passage, or your selected text, as established fact",
         glyph: "tab-facts",
-        icon: <Pin className="size-3.5" />,
+        icon: <BookMarked className="size-3.5" />,
         onSelect: () => onPinCanon(message),
       });
     }

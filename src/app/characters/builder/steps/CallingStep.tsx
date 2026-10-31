@@ -22,6 +22,7 @@ import type { ArchetypeOption, BackgroundOption, ClassOption, RaceOption } from 
 import type { BuilderActions, BuilderDerived } from "../useBuilderDerived";
 import type { BuilderState } from "../useBuilderState";
 import { ClassChoices } from "./ClassChoices";
+import { MulticlassSection } from "./MulticlassSection";
 import { PlaystylePicker } from "../PlaystylePicker";
 import { fillClassSkills, type PlaystyleId } from "../playstyles";
 import FeatChoicesFields, { knownTraining } from "../FeatChoicesFields";
@@ -54,7 +55,9 @@ export function CallingStep({
   classNote = null,
   subclassNote = null,
   notices = null,
+  genderField = null,
   levelField = null,
+  multiclassAllowed = true,
 }: {
   state: BuilderState;
   derived: BuilderDerived;
@@ -81,10 +84,12 @@ export function CallingStep({
     intro?: string;
     onHelpMeBuild?: (style: PlaystyleId | null) => void;
   };
-  // The setting's notices (ContentNotices) and the level (LevelField): the
-  // level decides what this step and every later one offers, so it is set
-  // here, under the class.
+  // The setting's notices (ContentNotices), the gender (GenderField), which
+  // the class cards' art follows, so it is asked above them, and the level
+  // (LevelField): the level decides what this step and every later one
+  // offers, so it is set here, under the class.
   notices?: ReactNode;
+  genderField?: ReactNode;
   levelField?: ReactNode;
   // "Pick for me" on the subclass (quickBuild.ts), offered once the level
   // asks for one.
@@ -93,9 +98,16 @@ export function CallingStep({
   // asker's own Homebrew the table leaves out, or a list that did not load.
   classNote?: ReactNode;
   subclassNote?: ReactNode;
+  // Whether a second class may be added here (backlog F9): the table's
+  // multiclassing setting, always true in the library.
+  multiclassAllowed?: boolean;
 }) {
   const { subclass } = state;
-  const { effectiveLevel, grantedFeatures } = derived;
+  const { effectiveLevel } = derived;
+  // The first class's own levels and features: a class taken after it
+  // shows its own in its card (MulticlassSection).
+  const primaryLevel = derived.primaryLevel ?? effectiveLevel;
+  const grantedFeatures = derived.multiclass ? (derived.featuresByClass[0]?.features ?? []) : derived.grantedFeatures;
   const { gender } = state;
   // A genre class's feature text arrives on demand (issue 411).
   useClassFeatureText([klass?.id]);
@@ -220,6 +232,7 @@ export function CallingStep({
           intro={playstyle?.intro}
           onHelpMeBuild={playstyle?.onHelpMeBuild}
         />
+        {genderField}
         <Field label="Class" className="mt-4">
           {klass ? (
             <span className="mb-3 flex flex-wrap items-center gap-x-1 text-xs text-stone-500">
@@ -335,17 +348,34 @@ export function CallingStep({
           <Field label="Subclass" className="mt-3">
             <p className="rounded-lg border border-dashed border-stone-700/70 bg-stone-950/40 px-3 py-2 text-xs text-stone-400">
               A {klass.name.toLowerCase()} chooses a <GameTerm id="subclass">subclass</GameTerm> at level{" "}
-              {subclassLockedAt}; there is nothing to pick at level {effectiveLevel}. The choice comes with
-              that level-up, and subclasses made in the Workshop wait for that level too.
+              {subclassLockedAt}; there is nothing to pick at {derived.multiclass ? `${klass.name.toLowerCase()} level` : "level"}{" "}
+              {primaryLevel}. The choice comes with that level-up, and subclasses made in the Workshop wait for that
+              level too.
             </p>
             {subclassNote}
           </Field>
         ) : null}
       </StepPanel>
 
+      {klass ? (
+        <MulticlassSection
+          state={state}
+          derived={derived}
+          klass={klass}
+          classes={classes}
+          classGroups={classGroups}
+          allowed={multiclassAllowed}
+          numbers={numbers}
+        />
+      ) : null}
+
       {grantedFeatures.length ? (
         <StepPanel
-          title={`What you gain at level ${effectiveLevel}`}
+          title={
+            derived.multiclass
+              ? `What your ${klass?.name.toLowerCase() ?? "class"} gains by its level ${primaryLevel}`
+              : `What you gain at level ${effectiveLevel}`
+          }
           help="Tap any name to read what it does. Racial traits and background perks are added on top when the character is saved."
         >
           <div className="flex flex-wrap gap-x-3 gap-y-1">

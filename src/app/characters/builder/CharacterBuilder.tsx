@@ -12,7 +12,7 @@ import type { Genre } from "@/lib/schemas/game-settings";
 import type { Ability, CreateSheetInput } from "@/lib/schemas/sheet";
 import { SRD_SKILLS } from "@/lib/srd";
 import { FIGHTING_STYLES } from "@/lib/srd/feature-effects";
-import { offersImages, useCapabilities } from "@/lib/use-capabilities";
+import { hostOffers, offersImages, useCapabilities } from "@/lib/use-capabilities";
 import { applyClassReskins, applyIdReskins } from "@/lib/worlds/reskin-logic";
 import { ABILITY_LABELS } from "./AbilityEditor";
 import type { DroppedPick } from "./reconcile";
@@ -20,7 +20,7 @@ import { AbilitiesStep } from "./steps/AbilitiesStep";
 import { AncestryStep } from "./steps/AncestryStep";
 import { BackgroundPanel } from "./steps/BackgroundPanel";
 import { CallingStep } from "./steps/CallingStep";
-import { ContentNotices, LevelField } from "./steps/CallingSetup";
+import { ContentNotices, GenderField, LevelField } from "./steps/CallingSetup";
 import { ToolGrantPanels } from "./steps/ClassChoices";
 import { FinishStep, type BuilderRole } from "./steps/FinishStep";
 import { IdentityStep } from "./steps/IdentityStep";
@@ -43,7 +43,8 @@ import {
   type StepBlock,
 } from "./submit";
 import { clearBuilderDraft, readBuilderDraft, writeBuilderDraft, type BuilderDraft } from "./builderDraft";
-import { builderActions, useBuilderDerived } from "./useBuilderDerived";
+import { builderActions, extraClassRows, useBuilderDerived } from "./useBuilderDerived";
+import { classSplitWords } from "./multiclassBuild";
 import { BuildMathPanel } from "./BuildMathPanel";
 import { useArchetypeOptions, useBuilderOptions, useWorldPack, type OptionListKind } from "./useBuilderOptions";
 import { TableScopeNote } from "./TableScopeNote";
@@ -89,6 +90,7 @@ const STEP_OF_TARGET: Record<BlockerTarget, string> = {
   variant: "ancestry",
   repeatSkills: "ancestry",
   class: "calling",
+  multiclass: "calling",
   classSkills: "calling",
   subclass: "calling",
   styles: "calling",
@@ -269,7 +271,7 @@ function CharacterBuilderForm({
     ...(initial?.feats ?? []),
     ...(initial?.asiChoices ?? []).flatMap((choice) => (choice.mode === "feat" ? [choice.feat] : [])),
   ]);
-  const state = useBuilderState({ initial, initialFeatDescs, initialLevel, fixedLevel, startLevel, races, classes, backgrounds });
+  const state = useBuilderState({ initial, initialFeatDescs, initialLevel, fixedLevel, startLevel, races, classes, backgrounds, rowsLoaded: loaded });
   // No stand-in for a race, class or background the player has not chosen:
   // the first row used to be shown as if picked ("Continue as Aarakocra"),
   // so the step's own race gate could never hold, and an untouched
@@ -296,7 +298,9 @@ function CharacterBuilderForm({
     ...state.asiChoices.flatMap((choice) => (choice?.mode === "feat" ? [choice.feat] : [])),
   ]);
   const featDescs = featTexts.descs;
-  const derived = useBuilderDerived({ state, race, klass, background, fixedLevel, rules: table.rules, featDescs, genre });
+  // The classes taken after the first (backlog F9), with their rows.
+  const extras = useMemo(() => extraClassRows(state.extraClasses, classes), [state.extraClasses, classes]);
+  const derived = useBuilderDerived({ state, race, klass, background, extras, fixedLevel, rules: table.rules, featDescs, genre });
   // The header's hit die in words, its die with "Show rules and numbers" on (backlog F11).
   const numbers = useShowNumbers();
   // Each feat's prerequisite judged as the save judges it, against the
@@ -314,11 +318,17 @@ function CharacterBuilderForm({
     genre,
     klass,
     subclass: state.subclass,
-    effectiveLevel: derived.effectiveLevel,
+    // The first class's own levels open its subclass pick (backlog F9).
+    effectiveLevel: derived.primaryLevel,
     archetypes,
   });
 
-  const paintsPortraits = offersImages(useCapabilities());
+  const capabilities = useCapabilities();
+  const paintsPortraits = offersImages(capabilities);
+  // A host older than multiclassing at creation keeps one class of a new
+  // character's split, so it is offered no second class (a stored split
+  // still shows, and keeps its classes there).
+  const addsClasses = hostOffers(capabilities, "builderMulticlass");
   const [cropping, setCropping] = useState(false);
   // This builder's own root, so the footer's "Show me" looks inside it and
   // not in another builder on the page.
@@ -456,7 +466,9 @@ function CharacterBuilderForm({
   // Takes the player to the block that holds the missing pick: scrolls the
   // active step to it, lights it for a moment and puts focus on its first
   // control (issue #117).
-  function locate(target: BlockerTarget) {
+  // "gender" is never owed, but the Hero step and the summary go to it as
+  // they go to a pick (GenderField's anchor).
+  function locate(target: BlockerTarget | "gender") {
     const found = document.querySelector<HTMLElement>(
       `[data-builder-root="${rootId}"] [data-active] [data-builder-target="${target}"]`,
     );
@@ -596,8 +608,8 @@ function CharacterBuilderForm({
   const stillOwed = Object.values(owed).reduce((sum, blocks) => sum + owedPicks(blocks).length, 0);
   // A change from the read-back: to the pick's step, then to its block once
   // the step is showing.
-  function changePick(target: BlockerTarget) {
-    const index = STEP_ORDER.indexOf(STEP_OF_TARGET[target]);
+  function changePick(target: BlockerTarget | "gender") {
+    const index = STEP_ORDER.indexOf(target === "gender" ? "calling" : STEP_OF_TARGET[target]);
     if (index >= 0) {
       setStep(index);
     }
@@ -608,9 +620,11 @@ function CharacterBuilderForm({
     name: state.name,
     background: background?.name,
     race: race?.name,
-    klass: klass?.name,
+    // A split reads "Fighter 3 / Wizard 2" (backlog F9).
+    klass: derived.multiclass ? classSplitWords(derived.classList, (id) => classes.find((entry) => entry.id === id)?.name ?? id) : klass?.name,
     subclass: state.subclass || undefined,
     level: derived.effectiveLevel,
+    gender: state.gender || undefined,
     abilities: derived.shownAbilities,
     casts,
     cantrips: state.cantrips,
@@ -639,6 +653,7 @@ function CharacterBuilderForm({
           {owedLine(owed.calling)}
           <CallingStep
             notices={<ContentNotices pack={pack} packInstalled={packInstalled} />}
+            genderField={<GenderField state={state} className="mt-4" />}
             levelField={<LevelField state={state} fixedLevel={fixedLevel} levelNote={levelNote} className="mt-3" />}
             state={state}
             derived={derived}
@@ -653,6 +668,7 @@ function CharacterBuilderForm({
             offersSubclass={pickers.offersSubclass}
             subclassLockedAt={pickers.subclassLockedAt}
             chosenArchetype={pickers.chosenArchetype}
+            multiclassAllowed={table.multiclassAllowed && addsClasses}
             classNote={scopeNote("classes", "classes")}
             subclassNote={<TableScopeNote noun="subclasses" unadmitted={subclassOptions.unadmitted} failed={subclassOptions.failed} onRetry={subclassOptions.retry} />}
             playstyle={
@@ -774,6 +790,7 @@ function CharacterBuilderForm({
             onUploadPortrait={() => setCropping(true)}
             alignmentGroups={pickers.alignmentGroups}
             alignmentInfo={pickers.alignmentInfo}
+            onEditGender={() => changePick("gender")}
           />
         </>
       ),
@@ -935,7 +952,15 @@ function CharacterBuilderForm({
         aside={
           race || klass
             ? [
-                [race?.name, klass?.name].filter(Boolean).join(" "),
+                // A split names each class's levels (backlog F9).
+                [
+                  race?.name,
+                  derived.multiclass
+                    ? classSplitWords(derived.classList, (id) => classes.find((entry) => entry.id === id)?.name ?? id)
+                    : klass?.name,
+                ]
+                  .filter(Boolean)
+                  .join(" "),
                 `level ${derived.effectiveLevel}`,
                 ...(klass ? [hitDieChip(klass.hitDie, numbers)] : []),
               ].map((part, index) => (

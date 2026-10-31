@@ -21,6 +21,8 @@ import { sortCalls, type UtilityCall } from "@/lib/dm/call-tracker-logic";
 import type { Campaign } from "@/lib/db/campaigns";
 import type { Chapter } from "@/lib/db/chapters";
 import type { CharacterEvent } from "@/lib/db/character-events";
+import type { ClockTurn } from "@/lib/db/clock-moves";
+import { changesWindow } from "@/lib/sheet-audit-logic";
 import type { PublicEncounter } from "@/lib/db/encounter-view";
 import type { CampaignMessage } from "@/lib/db/messages";
 import type { DmBeat } from "@/lib/db/dm-beats";
@@ -46,6 +48,7 @@ import { registerBrowserSpecies } from "@/lib/srd/race-id";
 import { registerBrowserSubclassExtras, type SubclassExtras } from "@/lib/srd/subclass-tables";
 import { registerBrowserTableFeats } from "@/lib/srd/feat-effects";
 import type { TableBreak } from "@/lib/dm/table-break-logic";
+import { sessionHoldFrom, type SessionHold } from "@/lib/dm/session-hold-logic";
 import { registerWorkshopClasses } from "@/lib/classes/workshop-registry";
 import type { WorkshopClass } from "@/lib/homebrew/class-data";
 
@@ -204,6 +207,8 @@ export type CampaignState = {
   rolls: StoredRoll[];
   pendingRolls: PendingRoll[];
   auditLog: AuditEntry[];
+  // The GM turns whose time the event log can still put back (issue #622).
+  clockTurns: ClockTurn[];
   levelUps: LevelUpNotice[];
   locations: CampaignLocation[];
   chapters: Chapter[];
@@ -232,6 +237,9 @@ export type CampaignState = {
   departingSheets: DepartingSheet[];
   // Bumped on quests_updated so the quest log refetches.
   questsVersion: number;
+  // Bumped on pins_updated, so another seat's pin or unpin reaches this
+  // one's Pins list and its budget gauge, not only the pinner's own tab.
+  pinsVersion: number;
   // Bumped on factions_updated so the Factions panel refetches.
   factionsVersion: number;
   // Bumped when the campaign's world or a record it describes changed
@@ -245,8 +253,10 @@ export type CampaignState = {
   shopsVersion: number;
   // The last coin movement, for the purse FX.
   coins: { characterId: string; direction: "in" | "out"; amountCp: number; at: number } | null;
-  // The last fight's card (docs/vtt-parity-implementation-plan.md 4.2).
+  // The last fight's card (docs/vtt-parity-implementation-plan.md 4.2), and
+  // the encounter it sums up: a different fight on the board takes it down.
   fightSummary: EncounterSummary | null;
+  fightSummaryEncounterId: string;
   characterEvents: CharacterEvent[];
   encounter: PublicEncounter | null;
   // Open DM item/gold offers (inventoryApprovals).
@@ -291,11 +301,18 @@ export type CampaignState = {
   safetyPause: { at: number; reason: "x_card" } | null;
   // A table break: who paused and since when (src/lib/dm/table-break.ts).
   tableBreak: TableBreak | null;
+  // Between sessions: which one ended, when and by whom
+  // (src/lib/dm/session-hold.ts); null while the table plays.
+  sessionHold: SessionHold | null;
   narrationAudio: Record<string, string>;
   // `live` marks a passage offered while it is still being rendered
   // (tts_stream): heard now, by whoever is at the table now.
   latestTts: { messageId: string; url: string; seq: number; live?: boolean } | null;
   latestRoll: { roll: StoredRoll; source: string; seq: number } | null;
+  // The last few rolls, oldest first, for the 3D dice: two rolls handled in
+  // one render (an enemy's attack and its damage) used to animate only the
+  // second, because latestRoll holds one (issue 668).
+  recentRolls: { roll: StoredRoll; source: string; seq: number }[];
   lastSeq: number;
   dmStatus: DmStatus;
   // The DM's job in flight: the step it is on and since when, for the
@@ -371,6 +388,7 @@ const initialState: CampaignState = {
   rolls: [],
   pendingRolls: [],
   auditLog: [],
+  clockTurns: [],
   levelUps: [],
   locations: [],
   chapters: [],
@@ -392,7 +410,9 @@ const initialState: CampaignState = {
   shopsVersion: 0,
   coins: null,
   questsVersion: 0,
+  pinsVersion: 0,
   fightSummary: null,
+  fightSummaryEncounterId: "",
   characterEvents: [],
   encounter: null,
   itemProposals: [],
@@ -409,9 +429,11 @@ const initialState: CampaignState = {
   handout: null,
   safetyPause: null,
   tableBreak: null,
+  sessionHold: null,
   narrationAudio: {},
   latestTts: null,
   latestRoll: null,
+  recentRolls: [],
   lastSeq: 0,
   dmStatus: "idle",
   dmJob: null,
@@ -477,6 +499,18 @@ function placeBySeq<T extends { seq: number }>(list: T[]): T[] {
   return list;
 }
 
+// The last fight's card stays until it is dismissed or another fight is on
+// the board. It used to wait for the next fight's own card, so "Party
+// Defeated" sat over the whole of the next encounter (0.31.1 playtest).
+function summaryAfter(
+  state: CampaignState,
+  encounter: { id: string } | null,
+): Pick<CampaignState, "fightSummary" | "fightSummaryEncounterId"> | Record<string, never> {
+  return state.fightSummary && encounter && encounter.id !== state.fightSummaryEncounterId
+    ? { fightSummary: null, fightSummaryEncounterId: "" }
+    : {};
+}
+
 // Exported for the reducer tests (scripts/test-campaign-reducer.mjs); the
 // page only ever reaches it through useCampaignStream.
 export function campaignReducer(state: CampaignState, action: Action): CampaignState {
@@ -488,7 +522,7 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
     case "sideThreads":
       return { ...state, sideThreads: action.sideThreads, sideChatLoaded: true };
     case "encounter":
-      return { ...state, encounter: action.encounter };
+      return { ...state, encounter: action.encounter, ...summaryAfter(state, action.encounter) };
     // The seat-visible list, whole, so a wholesale replace is right.
     case "rolls":
       return { ...state, rolls: action.rolls };
@@ -579,6 +613,7 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
             source: String(payload.source ?? "digital"),
             seq: action.seq ?? 0,
           };
+          next.recentRolls = [...state.recentRolls.slice(-5), next.latestRoll];
           if (payload.pendingRollId) {
             next.pendingRolls = state.pendingRolls.filter(
               (pending) => pending.id !== payload.pendingRollId,
@@ -605,10 +640,14 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "sheet_audit": {
           const entry = payload.entry as AuditEntry | undefined;
           if (entry) {
-            next.auditLog = [
-              ...state.auditLog.slice(-80),
-              { ...entry, characterName: payload.characterName as string | undefined },
-            ];
+            // The same row again is the row as it now reads: a turn that took
+            // in what its job wrote before the turn existed (issue #622).
+            // The window keeps eighty real changes; the rounds' time-only
+            // ticks among them do not count toward it (issue #622).
+            next.auditLog = changesWindow(
+              upsertBy(state.auditLog, { ...entry, characterName: payload.characterName as string | undefined }, (row) => row.id),
+              80,
+            );
           }
           return next;
         }
@@ -632,6 +671,10 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           }
           return next;
         }
+        // A place removed in the World tab leaves every seat's map.
+        case "location_removed":
+          next.locations = state.locations.filter((location) => location.id !== String(payload.locationId ?? ""));
+          return next;
         case "tts_ready": {
           const messageId = String(payload.messageId ?? "");
           const url = String(payload.url ?? "");
@@ -712,11 +755,16 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
         case "quests_updated":
           next.questsVersion = state.questsVersion + 1;
           return next;
+        case "pins_updated":
+          next.pinsVersion = state.pinsVersion + 1;
+          return next;
         case "encounter_summary":
           next.fightSummary = (payload.summary as EncounterSummary | undefined) ?? null;
+          next.fightSummaryEncounterId = typeof payload.encounterId === "string" ? payload.encounterId : "";
           return next;
         case "fight_summary_dismissed":
           next.fightSummary = null;
+          next.fightSummaryEncounterId = "";
           return next;
         case "x_card":
           next.safetyPause = { at: Number(payload.at ?? Date.now()), reason: "x_card" };
@@ -733,6 +781,12 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           return next;
         case "table_resumed":
           next.tableBreak = null;
+          return next;
+        case "session_ended":
+          next.sessionHold = sessionHoldFrom(payload);
+          return next;
+        case "session_started":
+          next.sessionHold = null;
           return next;
         case "location_map_ready":
           next.locations = state.locations.map((location) =>
@@ -904,6 +958,18 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           }
           return next;
         }
+        // A GM turn moved the clock, or a revert put its time back: the event
+        // log offers the turn's revert while its time is out (issue #622).
+        case "clock_changed": {
+          const move = payload.move as ClockTurn | null | undefined;
+          if (move?.turnId) {
+            next.clockTurns = upsertBy(state.clockTurns.slice(-50), move, (entry) => entry.turnId);
+          }
+          if (typeof payload.reverted === "string") {
+            next.clockTurns = state.clockTurns.filter((entry) => entry.turnId !== payload.reverted);
+          }
+          return next;
+        }
         case "audit_reverted":
           next.auditLog = state.auditLog.map((entry) =>
             entry.id === payload.entryId
@@ -959,6 +1025,7 @@ export function campaignReducer(state: CampaignState, action: Action): CampaignS
           // mid-fight; they keep what they have until their own fetch lands.
           // The fight ending is not a downgrade, so null always applies.
           next.encounter = state.caps.enemyNumbers && shared ? state.encounter : shared;
+          Object.assign(next, summaryAfter(state, shared));
           return next;
         }
         case "dm_intent_queued":
@@ -1093,7 +1160,9 @@ const PERSISTED_EVENTS = [
   "floor_changed",
   "image_ready",
   "location_updated",
+  "location_removed",
   "location_map_ready",
+  "pins_updated",
   "tts_ready",
   "ambience_changed",
   "campaign_rewound",
@@ -1124,6 +1193,8 @@ const PERSISTED_EVENTS = [
   "safety_resumed",
   "table_paused",
   "table_resumed",
+  "session_ended",
+  "session_started",
   // Each of these has a case above and was published for the table, but was
   // never listened for, so it only showed after a reload: the party record
   // (purse, pack, travel formation), a painted NPC portrait, the Director's
@@ -1132,6 +1203,9 @@ const PERSISTED_EVENTS = [
   "npc_updated",
   "director_armed",
   "beat_recorded",
+  // The clock moved or was put back; the event log reads the GM turn it
+  // names (issue #622).
+  "clock_changed",
 ];
 const EPHEMERAL_EVENTS = [
   // A visual effect planned from a resolved outcome. Worthless after the
@@ -1335,6 +1409,7 @@ export function useCampaignStream(campaignId: string) {
           rolls: data.rolls,
           pendingRolls: data.pendingRolls ?? [],
           auditLog: data.auditLog ?? [],
+          clockTurns: data.clockTurns ?? [],
           locations: data.locations ?? [],
           chapters: data.chapters ?? [],
           notes: data.notes ?? [],
@@ -1362,6 +1437,7 @@ export function useCampaignStream(campaignId: string) {
           handout: data.handout ?? null,
           safetyPause: data.safetyPause ?? null,
           tableBreak: data.tableBreak ?? null,
+          sessionHold: data.sessionHold ?? null,
           titleCard: data.titleCard ?? null,
           titleCardQueue: [],
           lastSeq,

@@ -18,6 +18,7 @@ import { resolveSheetRef } from "@/lib/dm/rolls";
 import { tickWorldTimeskip } from "@/lib/dm/world-tick";
 import { departureNote, departureOpenings } from "@/lib/dm/departure";
 import { pactMoment } from "@/lib/dm/pacts";
+import { readUneaseTells } from "@/lib/dm/conscience-voice";
 import { advanceClock, getClock, openShortRestWindow, recordLongRests, setTravelPace } from "@/lib/db/clock";
 import { getDmTurn } from "@/lib/db/dm-turns";
 import { partyChefDie, partySongOfRestDie, playerChoosesHitDice, spendHitDice } from "@/lib/dm/hit-dice";
@@ -37,6 +38,7 @@ import type { CharacterSheet, FullPatchSheetInput } from "@/lib/schemas/sheet";
 import { authoredRestTempHp } from "@/lib/dm/authored-turns";
 import { tranquilityAfterLongRest } from "@/lib/dm/srd-defenses";
 import type { ToolResult } from "@/lib/dm/tool-errors";
+import { tableNoteSeq } from "@/lib/dm/narration-slot";
 
 // The rest engine: short rests spend hit dice with real server rolls, long
 // rests restore HP, slots, and half the hit dice. Every sheet write is
@@ -155,7 +157,7 @@ function auditRest(
 }
 
 function tableNote(campaign: Campaign, content: string, glyph: SystemGlyph) {
-  const seq = allocateSeq(campaign.id);
+  const seq = tableNoteSeq(campaign.id);
   const message = insertCampaignMessage({
     campaignId: campaign.id,
     seq,
@@ -222,6 +224,11 @@ export function handleTakeRest(
   // pact that is ready goes first, then a wavering companion may recruit,
   // once a long rest; only what the table saw comes back.
   const pacts = args.kind === "long" ? pactMoment(campaign, turnId, "long_rest", { resting, restEndsAt: endsAt }) : [];
+  // The watch is where the party reads a companion who keeps unease in
+  // (issue 615), whatever the table does with pacts.
+  if (args.kind === "long") {
+    readUneaseTells(campaign, turnId);
+  }
   const leaving = args.kind === "long" ? [...pacts, ...departureOpenings(campaign, "long_rest").map(departureNote).filter(Boolean)] : [];
 
   // A rest takes in-world time, and how much depends on the variant: eight
@@ -233,6 +240,10 @@ export function handleTakeRest(
   // A party at rest is no longer on the march.
   setTravelPace(campaign.id, null);
   const clockAfter = advanceClock(campaign.id, restedMinutes, "minutes");
+  // The death saves those hours rolled for the dying (condition-tick.ts):
+  // the GM narrates the rest from this result, and without them told a
+  // character who died in the night that they still lay dying at dawn.
+  const deathSaves = "error" in clockAfter ? [] : clockAfter.deathSaves;
   const restedFor = describeDuration(restedMinutes);
   const nowReads =
     "error" in clockAfter
@@ -296,6 +307,7 @@ export function handleTakeRest(
       ...(living.length ? { lifestyle: living } : {}),
       ...(leaving.length ? { companionsLeft: leaving } : {}),
       ...(unaffected.length ? { unaffected: unaffected.join("; ") } : {}),
+      ...(deathSaves.length ? { deathSaves } : {}),
       restedFor,
       ...(nowReads ? { now: nowReads } : {}),
       note: rested.length
@@ -399,6 +411,7 @@ export function handleTakeRest(
     ok: true,
     kind: "short",
     restedFor,
+    ...(deathSaves.length ? { deathSaves } : {}),
     ...(nowReads ? { now: nowReads } : {}),
     results: results.length ? results : waiting.length ? "No hit dice spent by the server." : "Nobody needed to spend hit dice.",
     ...(waiting.length

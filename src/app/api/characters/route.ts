@@ -8,10 +8,11 @@ import {
   type CharacterRole,
 } from "@/lib/db/characters";
 import { portraitStatus, queueLibraryPortrait } from "@/lib/portrait";
+import { libraryCompanionsOfCampaign } from "@/lib/db/companion-npcs";
 import { admitSheet, refusal } from "@/lib/characters/admit";
 import { olderBuilderOf } from "@/lib/srd/legality/older-builder";
 import { createSheetSchema } from "@/lib/schemas/sheet";
-import { workshopClassName } from "@/lib/classes/workshop-registry";
+import { libraryWords } from "@/lib/characters/species-rules";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,21 +31,30 @@ export async function GET(request: Request) {
   if (!user) {
     return unauthorized();
   }
-  const asked = new URL(request.url).searchParams.get("role");
+  const search = new URL(request.url).searchParams;
+  const asked = search.get("role");
   const role = (CHARACTER_ROLES as readonly string[]).includes(asked ?? "")
     ? (asked as CharacterRole)
     : undefined;
+  // `joinable`: a campaign's Add a companion dialog asks for the ones that
+  // could still join it, so it leaves out any that campaign has or had, the
+  // ones companions/create refuses (issue 661).
+  const joinable = search.get("joinable");
+  const taken = joinable ? libraryCompanionsOfCampaign(joinable) : null;
   // Which campaigns each one is playing in, resolved once for the whole
   // roster rather than per tile.
   const assignments = listAssignmentsForUser(user.id);
   return Response.json({
-    characters: listCharactersForUser(user.id, role).map((character) => ({
-      ...character,
-      portraitStatus: portraitStatus(character.id),
-      campaigns: assignments.get(character.id) ?? [],
-      // A workshop class shows by its name, not its id.
-      ...(workshopClassName(character.class) ? { className: workshopClassName(character.class) } : {}),
-    })),
+    characters: listCharactersForUser(user.id, role)
+      .filter((character) => !taken?.has(character.id))
+      .map((character) => ({
+        ...character,
+        portraitStatus: portraitStatus(character.id),
+        campaigns: assignments.get(character.id) ?? [],
+        // A workshop class, a homebrew or content-pack species and a homebrew
+        // background show by their names, not their ids.
+        ...libraryWords(character),
+      })),
   });
 }
 

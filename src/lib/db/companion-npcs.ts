@@ -1,11 +1,12 @@
 import { getDatabase, nowIso } from "@/lib/db/core";
-import { getNpcById, listNpcs, type Npc } from "@/lib/db/npcs";
+import { getNpcById, listNpcs, setNpcPortrait, type Npc } from "@/lib/db/npcs";
 import { attractionBlank, attractionJson, type Attraction } from "@/lib/attraction";
 import { derivePersonality } from "@/lib/dm/npc-logic";
 import { defaultValues } from "@/lib/dm/companion-values-logic";
 import { departedSheet, saveDepartedSheet, seedCompanionValues, type DepartedSheet } from "@/lib/db/companion-conscience";
 import { companionDeparture } from "@/lib/db/companion-departures";
 import { textKey } from "@/lib/language/text-logic";
+import { isUploadedImagePath } from "@/lib/uploads";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 
 // The person behind a lasting AI companion (#503 Phase 0.1, landed with
@@ -121,6 +122,14 @@ export function rememberDepartingSheet(sheet: CharacterSheet) {
     return;
   }
   saveDepartedSheet(npc.id, { level: sheet.level, xp: sheet.xp, sheet: { ...sheet }, at: nowIso() });
+  // From here the row speaks for them: the line they leave on names it, not
+  // the sheet, and the story log finds its face in the cast. It was made
+  // with no portrait, so the parting line showed a letter (issue 660). It
+  // takes the sheet's face; a face the row already has is kept.
+  const url = sheet.portrait?.url;
+  if (!npc.portraitUrl && isUploadedImagePath(url)) {
+    setNpcPortrait(npc.id, url);
+  }
 }
 
 // A companion who left and is being written back in: the row behind them,
@@ -158,6 +167,8 @@ export function forgetDepartedSheet(npcId: string) {
 // the table saw it (their conscience's words, or a plain parting). Never a
 // plan one still in the party holds; that is not here at all.
 export type GoneCompanion = {
+  // The sheet they had in the party: the story log keeps their lines theirs.
+  sheetId: string;
   name: string;
   how: string;
   // When they went, for ordering.
@@ -168,6 +179,9 @@ export type GoneCompanion = {
   gender: string;
   // The characters they still cared for as they went (issue 563).
   caresFor: string[];
+  // The sheets they held before an earlier return, so the story log finds
+  // those lines too (src/lib/dm/companion-return.ts).
+  formerSheetIds: string[];
 };
 
 export function goneCompanions(campaignId: string): GoneCompanion[] {
@@ -185,10 +199,11 @@ export function goneCompanions(campaignId: string): GoneCompanion[] {
     if (!departed) {
       continue;
     }
-    const sheet = departed.sheet as { portrait?: { url?: unknown }; race?: unknown; class?: unknown; gender?: unknown; deathSaves?: { dead?: unknown } };
+    const sheet = departed.sheet as { portrait?: { url?: unknown }; race?: unknown; class?: unknown; gender?: unknown; deathSaves?: { dead?: unknown }; formerSheetIds?: unknown };
     const record = companionDeparture(npc.id).gone;
     const how = record?.how ?? (sheet.deathSaves?.dead === true ? "Fell" : "Left the party");
     gone.push({
+      sheetId: npc.companionSheetId,
       name: npc.name,
       how,
       at: departed.at,
@@ -197,7 +212,38 @@ export function goneCompanions(campaignId: string): GoneCompanion[] {
       class: typeof sheet.class === "string" ? sheet.class : "",
       gender: typeof sheet.gender === "string" ? sheet.gender : "",
       caresFor: record?.caresFor ?? [],
+      formerSheetIds: Array.isArray(sheet.formerSheetIds) ? sheet.formerSheetIds.filter((id): id is string => typeof id === "string" && id !== npc.companionSheetId) : [],
     });
   }
   return gone.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+}
+
+// The library companions this campaign has or had, keyed by library entry:
+// "here" for one with a sheet at the table (in the party, or turned against
+// it in a fight), "gone" for one who left or fell, whose sheet is kept on
+// the row behind them for the story to bring back. A table seats each one
+// once (companions/create), and the Add a companion dialog offers only the
+// rest (issue 661): a second copy of one who walked out would take over the
+// row their return is waiting on.
+export function libraryCompanionsOfCampaign(campaignId: string): Map<string, "here" | "gone"> {
+  const sheets = getDatabase()
+    .prepare(`SELECT id, library_character_id FROM character_sheets WHERE campaign_id = ?`)
+    .all(campaignId) as Array<{ id: string; library_character_id: string | null }>;
+  const found = new Map<string, "here" | "gone">();
+  for (const sheet of sheets) {
+    if (sheet.library_character_id) {
+      found.set(sheet.library_character_id, "here");
+    }
+  }
+  const live = new Set(sheets.map((sheet) => sheet.id));
+  for (const npc of listNpcs(campaignId)) {
+    if (!npc.companionSheetId || live.has(npc.companionSheetId)) {
+      continue;
+    }
+    const entry = departedSheet(npc.id)?.sheet.libraryCharacterId;
+    if (typeof entry === "string" && entry && !found.has(entry)) {
+      found.set(entry, "gone");
+    }
+  }
+  return found;
 }

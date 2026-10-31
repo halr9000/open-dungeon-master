@@ -1,18 +1,18 @@
 import { z } from "zod";
 import { rollCard } from "@/lib/dm/roll-card";
-import { allocateSeq, type Campaign } from "@/lib/db/campaigns";
+import { type Campaign } from "@/lib/db/campaigns";
 import { getSheetById, listSheets } from "@/lib/db/sheets";
 import { chargeLifestyle } from "@/lib/dm/lifestyle";
 import { dawnsBetween } from "@/lib/dm/item-charges";
 import type { DmTurn } from "@/lib/db/dm-turns";
 import { publishWithSeq } from "@/lib/events";
-import { textKey } from "@/lib/language/text-logic";
+import { asSentence, textKey } from "@/lib/language/text-logic";
 import { applyDmMutation } from "@/lib/dm/mutations";
 import { resolveSheetRef } from "@/lib/dm/rolls";
 import { hourlyConSaves, type HourSave } from "@/lib/dm/endurance";
 import {
-  hoardGoldDice,
   hoardItemCount,
+  treasureGoldRoll,
   treasureTierForCr,
 } from "@/lib/srd/treasure";
 import type { ObjectMaterial, ObjectSize } from "@/lib/srd/objects";
@@ -20,6 +20,7 @@ import { damageObject } from "@/lib/dm/object-damage";
 import { forcedMarchHours, forcedMarchSaveDc, paceEffect, travelLeg, type TravelPace } from "@/lib/srd/travel";
 import { tickWorldTimeskip } from "@/lib/dm/world-tick";
 import { pactMoment } from "@/lib/dm/pacts";
+import { readUneaseTells } from "@/lib/dm/conscience-voice";
 import { advanceClock, getClock, setTravelPace, setWaterRation } from "@/lib/db/clock";
 import { refreshSky } from "@/lib/dm/sky";
 import { publishTitleCard } from "@/lib/dm/scene-state";
@@ -30,6 +31,7 @@ import { ADVANCE_UNITS, describeDuration, describeInstant } from "@/lib/dm/calen
 import { insertCampaignMessage } from "@/lib/db/messages";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
 import type { ToolResult } from "@/lib/dm/tool-errors";
+import { tableNoteSeq } from "@/lib/dm/narration-slot";
 
 // The remaining DM-utility engines: CR-scaled treasure the server actually
 // moves into purses, object durability read from the DMG table, and forced-
@@ -377,11 +379,8 @@ export function handleRollTreasure(
     };
   }
   const tier = treasureTierForCr(args.cr);
-  const { dice, mult } = hoardGoldDice(tier);
-  let gold = rollCard(campaign, turn, null, "custom", `Treasure: gold (${dice} × ${mult})`, dice, null).total * mult;
-  if (args.individual) {
-    gold = Math.floor(gold / 10);
-  }
+  const { dice, mult, label } = treasureGoldRoll(tier, Boolean(args.individual));
+  const gold = rollCard(campaign, turn, null, "custom", label, dice, null).total * mult;
   const share = Math.floor(gold / recipients.length);
   const reason = (args.reason ?? "").trim() || "treasure";
   const paid: Array<{ name: string; gold: number }> = [];
@@ -398,7 +397,9 @@ export function handleRollTreasure(
       paid.push({ name: sheet.name, gold: share });
     }
   }
-  const items = hoardItemCount(tier);
+  // One foe's pocket is coin; the magic items are a hoard's (the reference
+  // calculator says the same). A CR 5 purse used to suggest a magic item.
+  const items = args.individual ? 0 : hoardItemCount(tier);
   const result = {
     ok: true,
     tier,
@@ -450,7 +451,7 @@ const travelSchema = z.object({
 // A system line in the transcript, the same shape every other engine uses to
 // tell the table something happened without the model having to say it.
 function tableNote(campaign: Campaign, content: string) {
-  const seq = allocateSeq(campaign.id);
+  const seq = tableNoteSeq(campaign.id);
   const message = insertCampaignMessage({
     campaignId: campaign.id,
     seq,
@@ -472,9 +473,11 @@ const passTimeSchema = z.object({
 // storm, a night in an inn, a week of downtime. Travel and rests move it
 // themselves, so this is for the time nothing else accounts for.
 //
-// Time only ever moves forward here. Undoing a passage of time is the audit
-// trail's job (audit/revert-turn), not arithmetic's, because a clock that
-// could run backwards would silently un-expire conditions and rests.
+// Time only ever moves forward here: a clock that could run backwards would
+// silently un-expire conditions and rests. Undoing a passage of time is
+// "Revert this turn" (audit/revert-turn): the turn's moves are kept
+// (src/lib/db/clock-moves.ts), and the revert puts the instant back with the
+// sheet changes the time made, all audited (issue #622).
 export function handlePassTime(
   campaign: Campaign,
   rawArguments: string,
@@ -511,7 +514,7 @@ export function handlePassTime(
   const sky = refreshSky(campaign.id, { before, minutes: moved.minutes });
   tableNote(
     campaign,
-    `${describeDuration(moved.minutes)} passes${args.reason ? `: ${args.reason}` : ""}. It is now ${describeInstant(moved.clock.calendar, moved.clock.instant)}.`,
+    `${describeDuration(moved.minutes)} passes${args.reason?.trim() ? `: ${asSentence(args.reason)}` : "."} It is now ${describeInstant(moved.clock.calendar, moved.clock.instant)}.`,
   );
   return {
     ok: true,
@@ -519,6 +522,8 @@ export function handlePassTime(
     now: describeInstant(moved.clock.calendar, moved.clock.instant),
     ...(sky?.summary ? { weather: sky.summary } : {}),
     ...(living.length ? { lifestyle: living } : {}),
+    // Rolled by the server as the time passed; narrate what they decided.
+    ...(moved.deathSaves.length ? { deathSaves: moved.deathSaves } : {}),
   };
 }
 
@@ -612,8 +617,15 @@ export function handleTravel(
   // pact laying a false trail goes now, and a wavering companion may
   // recruit, once a long rest. Only what the table saw comes back.
   const pacts = pactMoment(campaign, turn.id, "travel");
+  // And where a companion who keeps unease in is read again (issue 615).
+  readUneaseTells(campaign, turn.id);
   if (pacts.length) {
     weatherOutcome.companions = pacts;
+  }
+  // The death saves the hours on the road rolled for the dying, already at
+  // the table: the GM narrates the march from this result.
+  if (!("error" in moved) && moved.deathSaves.length) {
+    weatherOutcome.deathSaves = moved.deathSaves;
   }
 
   // The pace holds until the party stops: check_notice reads it (a fast

@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { rollCard } from "@/lib/dm/roll-card";
 import { allocateSeq, campaignSeats, countPartySlots, type Campaign } from "@/lib/db/campaigns";
-import { createSheet, listSheets, markSheetAsCompanion, setCompanionCommander } from "@/lib/db/sheets";
+import { createSheet, listSheets, markSheetAsCompanion, recordFormerSheetIds, setCompanionCommander } from "@/lib/db/sheets";
 import { defaultCommander } from "@/lib/dm/companion-command";
 import { createCompanionUser, deleteCompanionUser } from "@/lib/db/users";
 import {
+  endRelationshipsWithSubject,
   partRelationshipsWithSubject,
   rejoinRelationshipsWithSubject,
+  returnRelationshipsToNpc,
 } from "@/lib/db/relationships";
 import { insertCharacterEvent } from "@/lib/db/character-events";
 import { getActiveEncounter, saveEncounter, type OrderEntry } from "@/lib/db/encounters";
@@ -22,7 +24,9 @@ import { occupiedTiles } from "@/lib/battlemap/view";
 import { spliceIntoOrder } from "@/lib/dm/encounter-logic";
 import { publishBattleMapUpdate } from "@/lib/dm/map-tools";
 import { insertCampaignMessage } from "@/lib/db/messages";
-import { publishPersisted, publishWithSeq } from "@/lib/events";
+import { publishEphemeral, publishPersisted, publishWithSeq } from "@/lib/events";
+import { publishCast } from "@/lib/dm/cast";
+import { openPartyBonds } from "@/lib/dm/party-bonds";
 import { defaultRng } from "@/lib/dice";
 import { characterInitiativeExpression } from "@/lib/dm/contest-roll";
 import {
@@ -35,11 +39,12 @@ import { abilityMod, findClass, findRace, suggestedStartingHp, type SrdClass } f
 import { abilityPriority } from "@/lib/srd/companion-build";
 import { startingKitFor } from "@/lib/srd/starting-kit";
 import { legalCompanionSheet } from "@/lib/dm/companion-level";
-import { queueCompanionPortrait } from "@/lib/portrait";
+import { portraitStatus, queueCompanionPortrait } from "@/lib/portrait";
 import { settingClassIds } from "@/lib/classes";
 import { TOLD_GENDER_HELP, TOLD_GENDERS, toldGender } from "@/lib/gender";
 import { attractionFromTold, TOLD_ATTRACTION } from "@/lib/attraction";
 import { companionNpcFor, lastingCompanion, rememberDepartingSheet } from "@/lib/db/companion-npcs";
+import { getNpcByName, type Npc } from "@/lib/db/npcs";
 import { returningCompanion, settleReturn } from "@/lib/dm/companion-return";
 import { presetFor, packFor } from "@/lib/worlds/preset";
 import { packIds } from "@/lib/worlds/reskin-logic";
@@ -62,6 +67,8 @@ import { unknownSheetRef } from "@/lib/dm/rolls";
 import { ALIGNMENT_CODES, VALUES_PARAMETER, valuesArgSchema } from "@/lib/dm/companion-values-logic";
 import { setCompanionValues } from "@/lib/db/companion-conscience";
 import { seedAgenda } from "@/lib/dm/companion-agenda";
+import { classWords } from "@/lib/sheet-words";
+import { tableNoteSeq } from "@/lib/dm/narration-slot";
 
 // AI companion party members: sheets the DM recruits, plays, and dismisses.
 // A companion is a full character sheet owned by an unloginable bot user,
@@ -334,14 +341,14 @@ export function handleAddCompanion(
   if (kind === "party") {
     const back = returningCompanion(campaign, args.name, args.level ?? partyAverageLevel(sheets));
     if (back) {
-      const { sheet, hadEncounter } = finalizeNewCompanion(campaign, back.level, back.input, kind, args.personality);
+      const { sheet, hadEncounter } = finalizeNewCompanion(campaign, back.level, back.input, kind, args.personality, null, back.formerSheetIds);
       settleReturn(campaign, back);
       return {
         ok: true,
         characterId: sheet.id,
         name: sheet.name,
         returned: true,
-        summary: `${sheet.name} returns: the same ${sheet.class} they were when they left, now level ${sheet.level}. HP ${sheet.maxHp}, AC ${sheet.ac}.`,
+        summary: `${sheet.name} returns: the same ${classWords(sheet.class)} they were when they left, now level ${sheet.level}. HP ${sheet.maxHp}, AC ${sheet.ac}.`,
         note: `They are back with the sheet they left with${back.leftAtLevel !== back.level ? `, brought from level ${back.leftAtLevel} to ${back.level}` : ""}, and every bond with them picks up where it stopped. ${hadEncounter ? "They have an initiative slot and a map token. " : ""}Narrate their return in their own voice.`,
       };
     }
@@ -497,24 +504,40 @@ export function finalizeNewCompanion(
   input: CreateSheetInput,
   kind: "party" | "guest",
   personality: string,
+  // The library entry this companion is kept as: its builder's, or the one
+  // it was brought from. "Save to my characters" and the campaign's end
+  // write its progress back there (src/lib/characters/keep-companion.ts).
+  libraryCharacterId: string | null = null,
+  // A companion coming back: the sheets they held here before
+  // (src/lib/dm/companion-return.ts), recorded on the new one.
+  formerSheetIds: readonly string[] = [],
 ): { sheet: CharacterSheet; hadEncounter: boolean } {
   const botUser = createCompanionUser(input.name);
-  const created = createSheet(campaign.id, botUser.id, level, input);
+  const created = createSheet(campaign.id, botUser.id, level, input, libraryCharacterId);
   const marked = markSheetAsCompanion(created.id, kind, personality) ?? created;
   // At a one-player table the AI runs, a party companion follows that player
   // in fights (src/lib/dm/companion-command.ts).
-  const sheet = setCompanionCommander(marked.id, defaultCommander(campaign, kind)) ?? marked;
+  const commanded = setCompanionCommander(marked.id, defaultCommander(campaign, kind)) ?? marked;
+  const sheet = formerSheetIds.length ? (recordFormerSheetIds(commanded.id, formerSheetIds) ?? commanded) : commanded;
   publishPersisted(campaign.id, "sheet_updated", { sheet });
   // A companion the party once travelled with can be written back in; every
-  // standing with them picks up exactly where it stopped.
-  rejoinRelationshipsWithSubject(campaign.id, sheet.name, sheet.id);
+  // standing with them picks up exactly where it stopped. A bond a death
+  // closed opens again only for the companion who died coming back, never a
+  // namesake (issue 657).
+  let bondsMoved = rejoinRelationshipsWithSubject(campaign.id, sheet.name, sheet.id, formerSheetIds.length > 0).length;
   // A lasting companion has a person behind the sheet: personality axes a
-  // deed weighs against, and who they are drawn to (#503 Phase 0.1).
+  // deed weighs against, and who they are drawn to (#503 Phase 0.1). They
+  // travel with everyone, so every character's bond with them opens now
+  // rather than at the first roll or moment that named one (issue 580).
   if (kind === "party") {
     companionNpcFor(sheet);
+    bondsMoved += openPartyBonds(campaign, { kind: "companion", name: sheet.name, id: sheet.id });
+  }
+  if (bondsMoved) {
+    publishEphemeral(campaign.id, "relationships_updated", {});
   }
   insertCharacterEvent({
-    libraryCharacterId: null,
+    libraryCharacterId,
     campaignCharacterId: sheet.id,
     campaignId: campaign.id,
     seq: allocateSeq(campaign.id),
@@ -524,14 +547,16 @@ export function finalizeNewCompanion(
   // Guests are transient and the render queue shares the one iGPU with the DM
   // model, so only lasting party members are worth a portrait; a sheet built
   // with its own portrait already (manual build) keeps it.
-  if (kind === "party" && !sheet.portrait) {
-    queueCompanionPortrait(campaign, {
-      id: sheet.id,
-      name: sheet.name,
-      race: sheet.race,
-      class: sheet.class,
-      background: sheet.background,
+  // The sheet as built carries what the campaign sheet does not keep: a
+  // manual build's appearance and a dragonborn's ancestry. A library entry
+  // still painting its own face lands it here when it finishes (portrait.ts
+  // mirrors to its campaign copies), so a second render would only race it.
+  const libraryPainting = libraryCharacterId ? portraitStatus(libraryCharacterId) : null;
+  if (kind === "party" && !sheet.portrait && libraryPainting !== "queued" && libraryPainting !== "generating") {
+    queueCompanionPortrait(campaign, sheet, {
       personality,
+      appearance: input.appearance,
+      ancestry: input.racialChoices?.ancestry,
     });
   }
 
@@ -671,9 +696,26 @@ function removeCompanion(campaign: Campaign, sheet: CharacterSheet, reason?: str
   // a departing companion is parted, not ended, so it comes back whole if
   // the story brings them back (src/lib/db/relationships.ts). Nor does who
   // they were: a lasting companion's sheet is kept on the row behind them
-  // (#503 Phase 0.4), so a return is the same person.
+  // (#503 Phase 0.4), so a return is the same person. One who fell is dead,
+  // not away: a parted bond counted the chapters they were gone and asked
+  // the GM to bring them back into the story (issue 580). Their bonds close
+  // on the death, and open again if they are brought back to life.
+  // A guest who is someone from the world (a town NPC drafted for one fight,
+  // issue 637) goes back to being that NPC: still about, still reachable, so
+  // their bonds stay as they were rather than parting. A bond opened while
+  // they fought named the guest sheet, which is going, and read as a
+  // companion's: it names the NPC again. A guest with no row of their own,
+  // or a former companion back for one fight, is away again.
   rememberDepartingSheet(sheet);
-  partRelationshipsWithSubject(campaign.id, sheet.name);
+  const home = sheet.deathSaves?.dead ? null : npcBehindGuest(campaign, sheet);
+  const bonds = sheet.deathSaves?.dead
+    ? endRelationshipsWithSubject(campaign.id, sheet.name, (bond) => `${sheet.name}, who travelled with ${bond.characterName}, fell`)
+    : home
+      ? returnRelationshipsToNpc(campaign.id, sheet.name, home.id)
+      : partRelationshipsWithSubject(campaign.id, sheet.name);
+  if (bonds.length) {
+    publishEphemeral(campaign.id, "relationships_updated", {});
+  }
   const lasting = lastingCompanion(sheet);
   publishPersisted(campaign.id, "sheet_deleted", {
     sheetId: sheet.id,
@@ -682,6 +724,23 @@ function removeCompanion(campaign: Campaign, sheet: CharacterSheet, reason?: str
   });
   // The bot user owns nothing but this sheet; the FK cascade removes it.
   deleteCompanionUser(sheet.userId);
+  // Their row joins the cast now, with their face, so the line they leave
+  // on finds it without a reload (issue 660).
+  if (lasting) {
+    publishCast(campaign.id);
+  }
+}
+
+// A guest ally who stands for an NPC the world already holds, one that was
+// never a lasting companion: when they leave the party they are only that NPC
+// again. A lasting companion's row (companionSheetId) means someone who
+// travelled with the party; once gone they are away, guest or not.
+function npcBehindGuest(campaign: Campaign, sheet: CharacterSheet): Npc | null {
+  if (sheet.companionKind !== "guest") {
+    return null;
+  }
+  const npc = getNpcByName(campaign.id, sheet.name);
+  return npc && !npc.companionSheetId ? npc : null;
 }
 
 // Called when a fight ends: scene-scoped guests are exactly that, so the
@@ -700,13 +759,20 @@ export function dismissGuestCompanions(campaign: Campaign, reason: string): stri
     removeCompanion(campaign, guest, reason);
   }
   const names = guests.map((guest) => guest.name);
-  const seq = allocateSeq(campaign.id);
+  // Every seat reads this line, so it says what happened and nothing more:
+  // its "Narrate the goodbye." was the GM's cue, printed in every player's
+  // chat (issue 668). The GM hears it in the fight's result
+  // (guestsDismissed, src/lib/dm/enemy-damage.ts).
+  const seq = tableNoteSeq(campaign.id);
   const message = insertCampaignMessage({
     campaignId: campaign.id,
     seq,
     authorType: "system",
     glyph: "system-party",
-    content: `${names.join(" and ")} ${names.length === 1 ? "was" : "were"} a temporary ally and leaves the party now that the fight is over. Narrate the goodbye.`,
+    content:
+      names.length === 1
+        ? `${names.join("")} was a temporary ally and leaves the party now that the fight is over.`
+        : `${names.join(" and ")} were temporary allies and leave the party now that the fight is over.`,
   });
   publishWithSeq(campaign.id, seq, "message_added", { message });
   return names;

@@ -13,9 +13,12 @@ import { olderBuilderOf } from "@/lib/srd/legality/older-builder";
 import { admitLibraryForSeat } from "@/lib/characters/seat-preview";
 import { hasSeatPicks, seatPicksSchema, type SeatPicks } from "@/lib/characters/seat-picks";
 import { announceMidGameJoin } from "@/lib/characters/mid-game-join";
+import { heroFell } from "@/lib/characters/fallen-logic";
+import { HERO_DOOR_SHUT, heroDoorFor } from "@/lib/characters/hero-door";
 import { listMembers, setMemberReady } from "@/lib/db/campaigns";
 import { pregenSeatRefusal, recordPregenSeat } from "@/lib/db/pregen-offers";
 import {
+  admitLibraryCharacter,
   companionRoleRefusal,
   createCharacter,
   getCharacterForUser,
@@ -45,7 +48,9 @@ import { rollCard } from "@/lib/dm/roll-card";
 import { buildLevelUp } from "@/lib/srd/level-up";
 import { freeCantripCount } from "@/lib/srd/free-cantrips";
 import type { CharacterSheet } from "@/lib/schemas/sheet";
-import { publishPersisted } from "@/lib/events";
+import { publishEphemeral, publishPersisted } from "@/lib/events";
+import { deleteCharacterRelationships, moveCharacterRelationships } from "@/lib/db/relationships";
+import { openJoinerBonds } from "@/lib/dm/party-bonds";
 
 const fromLibrarySchema = z.object({
   libraryCharacterId: z.string().min(1),
@@ -66,10 +71,10 @@ function picksOf(raw: unknown): { picks: SeatPicks | null } | { error: Response 
 
 // The library door with the picks made: the hero is adapted and admitted
 // as ever, then the picks are applied and judged (seat-preview.ts).
-function admitWith(context: MemberContext, picks: SeatPicks | null) {
+function admitWith(campaign: MemberContext["campaign"], picks: SeatPicks | null) {
   return hasSeatPicks(picks)
     ? (character: Parameters<typeof admitLibraryForSeat>[0], _campaign: unknown, userId: string, level: number) =>
-        admitLibraryForSeat(character, context.campaign, userId, level, picks)
+        admitLibraryForSeat(character, campaign, userId, level, picks)
     : undefined;
 }
 
@@ -111,6 +116,12 @@ function publishReplacement(
   publishPersisted(campaignId, "member_ready", { userId: context.user.id, ready: false });
   publishPersisted(campaignId, "sheet_deleted", { sheetId: oldSheet.id, userId: context.user.id });
   publishPersisted(campaignId, "sheet_updated", { sheet: newSheet });
+  // The bonds follow the seat too (issue 657), and any the old sheet lacked
+  // open, as for any hero who takes a seat.
+  const bonds = moveCharacterRelationships(campaignId, oldSheet.id, newSheet.id, newSheet.name) + openJoinerBonds(context.campaign, newSheet);
+  if (bonds) {
+    publishEphemeral(campaignId, "relationships_updated", {});
+  }
 }
 
 export const runtime = "nodejs";
@@ -133,7 +144,16 @@ export async function GET(
   const linked = sheet?.libraryCharacterId
     ? getCharacterForUser(context.user.id, sheet.libraryCharacterId)
     : null;
-  return Response.json({ sheet, libraryLevel: linked?.level ?? null });
+  // The level a new hero of theirs joins at, and the hero it replaces when
+  // all of theirs have fallen (src/lib/characters/hero-door.ts): the builder
+  // builds at that level and says why.
+  const door = heroDoorFor(context.campaign, context.user.id);
+  return Response.json({
+    sheet,
+    libraryLevel: linked?.level ?? null,
+    joinLevel: door.level,
+    fallen: door.fallen ? { name: door.fallen.name, level: door.fallen.level } : null,
+  });
 }
 
 export async function POST(
@@ -155,6 +175,11 @@ export async function POST(
     if (typeof raw.libraryCharacterId === "string") return Response.json({ error: "Players choose characters from their own libraries." }, { status: 403 });
   }
 
+  // One door for every way in (src/lib/characters/hero-door.ts): a table
+  // that plays one character each still lets in a player whose heroes have
+  // all fallen, at the level the highest of them reached.
+  const door = heroDoorFor(context.campaign, targetUserId);
+
   // A character added here takes the player's seat, except at a table that
   // fields one at a time while a fight is on: then it waits on the bench
   // (src/lib/character-seat.ts seatAddedSheet), and the player switches to it
@@ -167,9 +192,15 @@ export async function POST(
     if ("error" in picked) {
       return picked.error;
     }
-    const reused = listSheetsForUser(campaignId, context.user.id).some((entry) => entry.libraryCharacterId === fromLibrary.data.libraryCharacterId && !entry.isCompanion);
-    if (!reused && getSheetForUser(campaignId, context.user.id) && context.campaign.gameSettings.multiCharacter === "off") {
-      return Response.json({ error: "You already have a character in this campaign." }, { status: 409 });
+    const reusedSheet = listSheetsForUser(campaignId, context.user.id).find((entry) => entry.libraryCharacterId === fromLibrary.data.libraryCharacterId && !entry.isCompanion);
+    const reused = Boolean(reusedSheet);
+    // Picking the fallen hero again would only seat the dead sheet back in
+    // the player's place; their library copy does not know it died here.
+    if (reusedSheet && heroFell(reusedSheet)) {
+      return Response.json({ error: `${reusedSheet.name} fell at this table. Bring in someone else.` }, { status: 409 });
+    }
+    if (!reused && !door.open) {
+      return Response.json({ error: HERO_DOOR_SHUT }, { status: 409 });
     }
     // One player per pregen per table (src/lib/db/pregen-offers.ts): a copy of
     // a DM's offered pregen does not sit where another sheet plays it.
@@ -182,8 +213,8 @@ export async function POST(
       fromLibrary.data.libraryCharacterId,
       campaignId,
       context.user.id,
-      context.campaign.startingLevel,
-      admitWith(context, picked.picks),
+      door.level,
+      admitWith(door.campaign, picked.picks),
     );
     if ("error" in result) {
       return Response.json(result, { status: 400 });
@@ -193,13 +224,13 @@ export async function POST(
     }
     seatAddedSheet(context.campaign, context.user.id, result.id);
     publishPersisted(campaignId, "sheet_updated", { sheet: result });
-    if (!reused) announceMidGameJoin(context, result);
+    if (!reused) announceMidGameJoin(context, result, door.fallen?.name);
     return Response.json({ sheet: result }, { status: 201 });
   }
 
   // Path 2: create new; also saved to the user's library, then copied in.
-  if (getSheetForUser(campaignId, targetUserId) && context.campaign.gameSettings.multiCharacter === "off") {
-    return Response.json({ error: "You already have a character in this campaign." }, { status: 409 });
+  if (!door.open) {
+    return Response.json({ error: HERO_DOOR_SHUT }, { status: 409 });
   }
   const parsed = createSheetSchema.safeParse(raw);
   if (!parsed.success) {
@@ -214,10 +245,10 @@ export async function POST(
   // is written by the server whatever the request says.
   const admitted = admitSheet({
     door: "table",
-    level: context.campaign.startingLevel,
+    level: door.level,
     sheet: parsed.data,
     userId: targetUserId,
-    campaign: context.campaign,
+    campaign: door.campaign,
     olderBuilder: olderBuilderOf(raw),
   });
   if (!admitted.ok) {
@@ -225,13 +256,13 @@ export async function POST(
   }
   const libraryCharacter = createCharacter(
     targetUserId,
-    context.campaign.startingLevel,
+    door.level,
     admitted.sheet,
   );
   const sheet = createSheet(
     campaignId,
     targetUserId,
-    context.campaign.startingLevel,
+    door.level,
     admitted.sheet,
     libraryCharacter.id,
   );
@@ -241,7 +272,7 @@ export async function POST(
   queueLibraryPortrait(libraryCharacter);
   seatAddedSheet(context.campaign, targetUserId, sheet.id);
   publishPersisted(campaignId, "sheet_updated", { sheet });
-  announceMidGameJoin(context, sheet);
+  announceMidGameJoin(context, sheet, door.fallen?.name);
 
   return Response.json(
     { sheet, ...(admitted.rolledHp ? { rolled: { hp: admitted.rolledHp } } : {}) },
@@ -314,7 +345,7 @@ export async function PUT(
       campaignId,
       context.user.id,
       context.campaign.startingLevel,
-      admitWith(context, picked.picks),
+      admitWith(context.campaign, picked.picks),
     );
     if ("error" in result) {
       // The old sheet is already gone; the lobby falls back to its
@@ -323,6 +354,7 @@ export async function PUT(
         sheetId: existing.id,
         userId: context.user.id,
       });
+      deleteCharacterRelationships(campaignId, existing.id);
       return Response.json({ error: result.error }, { status: 400 });
     }
     recordPregenSeat(campaignId, character, context.user.id, result.id);
@@ -373,6 +405,9 @@ export async function PUT(
       campaign: context.campaign,
       baseline: { sheet: character.sheet, level: character.level },
       olderBuilder: olderBuilderOf((raw as { sheet?: unknown } | null)?.sheet),
+      // At a table that turns multiclassing off, the edit keeps the split
+      // the character holds and takes no new class (F9).
+      ...(character.sheet.classes?.length ? { heldClasses: character.sheet.classes } : {}),
     });
     if (!edited.ok) {
       return refusal(edited.problems);
@@ -406,17 +441,21 @@ export async function PUT(
       return Response.json({ error: "Could not update the character." }, { status: 400 });
     }
     deleteSheetById(campaignId, context.user.id, replaced.id);
+    // The seat's classes stand at a table that turned multiclassing off
+    // after it sat down (multiclassEntryProblem).
     const result = instantiateIntoCampaign(
       character.id,
       campaignId,
       context.user.id,
       context.campaign.startingLevel,
+      (entry, table, user, level) => admitLibraryCharacter(entry, table, user, level, replaced.classes ?? []),
     );
     if ("error" in result) {
       publishPersisted(campaignId, "sheet_deleted", {
         sheetId: replaced.id,
         userId: context.user.id,
       });
+      deleteCharacterRelationships(campaignId, replaced.id);
       return Response.json({ error: result.error }, { status: 400 });
     }
     recordPregenSeat(campaignId, updated, context.user.id, result.id);
@@ -440,6 +479,9 @@ export async function PUT(
     userId: context.user.id,
     campaign: context.campaign,
     olderBuilder: olderBuilderOf(raw),
+    // The split the seat holds now stands at a table that turns
+    // multiclassing off; the rebuild may keep it, or part of it (F9).
+    ...(existing?.classes?.length ? { heldClasses: existing.classes } : {}),
   });
   if (!replaced.ok) {
     return refusal(replaced.problems);
@@ -485,6 +527,9 @@ export async function DELETE(
   setMemberReady(campaignId, context.user.id, false);
   publishPersisted(campaignId, "member_ready", { userId: context.user.id, ready: false });
   publishPersisted(campaignId, "sheet_deleted", { sheetId: removed.id, userId: context.user.id });
+  if (deleteCharacterRelationships(campaignId, removed.id)) {
+    publishEphemeral(campaignId, "relationships_updated", {});
+  }
   return Response.json({ ok: true });
 }
 
@@ -551,7 +596,9 @@ export async function PATCH(
   // a level increase; counter adjustments go through /sheet/usage, preparing
   // spells through /sheet/spells, everything else through whoever runs the
   // table.
-  const cosmeticKeys = new Set(["portrait", "notes", "backstory"]);
+  // The hopes for the story are the player's to change at any time too:
+  // what they would love to see happen moves as the story does.
+  const cosmeticKeys = new Set(["portrait", "notes", "backstory", "hopes"]);
   const patchedKeys = Object.entries(parsed.data)
     .filter(([, value]) => value !== undefined)
     .map(([key]) => key);
@@ -572,7 +619,7 @@ export async function PATCH(
     return Response.json(
       {
         error:
-          "Only portrait, notes, and backstory can be changed here outside of a level-up. Ask the party lead to adjust other stats.",
+          "Only portrait, notes, backstory, and hopes for the story can be changed here outside of a level-up. Ask the party lead to adjust other stats.",
       },
       { status: 403 },
     );
@@ -631,6 +678,7 @@ export async function PATCH(
     ...(parsed.data.portrait !== undefined ? { portrait: parsed.data.portrait } : {}),
     ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes } : {}),
     ...(parsed.data.backstory !== undefined ? { backstory: parsed.data.backstory } : {}),
+    ...(parsed.data.hopes !== undefined ? { hopes: parsed.data.hopes } : {}),
   };
   const updated = patchSheet(sheet.id, cosmetic);
   // Portraits are cosmetic, so unlike stats they mirror to the library

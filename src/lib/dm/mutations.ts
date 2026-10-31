@@ -5,7 +5,7 @@ import { ALIGNMENT_CODES } from "@/lib/dm/companion-values-logic";
 import { subclassExtrasForTable } from "@/lib/db/subclass-extras";
 import { foldFieldValue } from "@/lib/dm/update-sheet-args";
 import { aiSheetFieldRefusal } from "@/lib/dm/update-sheet-ai";
-import { getDmTurn } from "@/lib/db/dm-turns";
+import { getDmTurn, type DmTurn } from "@/lib/db/dm-turns";
 import { z } from "zod";
 import { getSheetById, patchSheet } from "@/lib/db/sheets";
 import { insertSheetAudit } from "@/lib/db/sheet-audit";
@@ -109,6 +109,7 @@ import { textKey } from "@/lib/language/text-logic";
 import { ITEM_TAGS } from "@/lib/schemas/item-tags";
 import { holdsFeature, isConditionNamed, isNamed } from "@/lib/srd/feature-names";
 import { unknownSheetRef } from "@/lib/dm/rolls";
+import { classWords } from "@/lib/sheet-words";
 
 // DM stat authority: the model changes sheets ONLY through these tools.
 // Every mutation is server-clamped, audit-logged, and published live.
@@ -547,6 +548,9 @@ export function applyDmMutation(
   rawArguments: string,
   sheets: CharacterSheet[],
   sheetsById: Map<string, CharacterSheet>,
+  // The live turn, for a mutation that rolls dice the GM's message shows
+  // (stabilize's Medicine check).
+  turn?: DmTurn,
 ): MutationOutcome {
   let raw: unknown;
   try {
@@ -922,10 +926,14 @@ export function applyDmMutation(
         return { result: unasked };
       }
       return {
-        result: handleStabilize(campaign, turnId, sheet, resolve(args.healerId), {
-          method: args.method,
-          reason,
-        }),
+        result: handleStabilize(
+          campaign,
+          turnId,
+          sheet,
+          resolve(args.healerId),
+          { method: args.method, reason },
+          turn,
+        ),
       };
     }
     case "modify_gold": {
@@ -1775,7 +1783,7 @@ export function applyDmMutation(
           if (ceiling && current >= ceiling.count) {
             return {
               result: {
-                error: `${sheet.name} already has ${current} ${ceiling.label}, the most a level ${sheet.level} ${sheet.class} may hold. They must give one up first: ask the player which, then call learn_spell with action=remove for the spell they drop.`,
+                error: `${sheet.name} already has ${current} ${ceiling.label}, the most a level ${sheet.level} ${classWords(sheet.class)} may hold. They must give one up first: ask the player which, then call learn_spell with action=remove for the spell they drop.`,
                 retry: true,
               },
             };

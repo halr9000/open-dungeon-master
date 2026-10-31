@@ -18,6 +18,10 @@
 // ODM's own rules, pinned here as the code documents them:
 //   - The save is rolled by the server when the initiative pointer passes the
 //     dying character, never by the player (src/lib/dm/death.ts rollDeathSave).
+//     Outside a fight the same roll comes every six seconds of game time, in
+//     order until the fall is settled, and a fight that ends with nobody on
+//     the party's side conscious rolls the fallen out at once
+//     (death.ts settleDying).
 //   - stabilize names a healer, whose action it takes, and the server rolls
 //     their DC 10 Wisdom (Medicine) check; a healer's kit use or Spare the
 //     Dying needs no check. A healer's kit is carried as one row whose
@@ -34,6 +38,23 @@ import { kit as conditionsKit, FIGHTER } from "./lib/enforce-conditions.mjs";
 const { test, finish } = suite("test-enforce-death");
 const world = await openWorld();
 const kit = conditionsKit(world);
+const messages = await import("../src/lib/db/messages.ts");
+const { minutesSinceDeath } = await import("../src/lib/dm/revival.ts");
+const { listAuditForTurn, listRecentAudit } = await import("../src/lib/db/sheet-audit.ts");
+const { advanceClock, getClock } = await import("../src/lib/db/clock.ts");
+const { getDatabase } = await import("../src/lib/db/core.ts");
+const { listRecentCampaignEvents } = await import("../src/lib/db/character-events.ts");
+const { afflictionsOf, writeAfflictions } = await import("../src/lib/dm/between-io.ts");
+const { latestEventOfType } = await import("../src/lib/events.ts");
+const { getDmTurn } = await import("../src/lib/db/dm-turns.ts");
+const { getRoll } = await import("../src/lib/db/rolls.ts");
+
+// The Medicine checks on the turn's roll list, which is where the GM's
+// message takes its roll cards from (turn.ts).
+const medicineOnTurn = (outcome) =>
+  getDmTurn(outcome.turnId).rollIds
+    .map((id) => getRoll(id))
+    .filter((roll) => roll?.detail.startsWith("medicine, to stabilize"));
 
 const hero = world.addHero(FIGHTER);
 const ally = world.addHero(FIGHTER);
@@ -125,6 +146,15 @@ await test("the save is a bare d20: 10 succeeds and 9 fails, whatever the sheet 
   // Proficient in Constitution saves with +2 CON, and still a failure.
   assert.deepEqual(pass(9), ["d20:9"]);
   assert.deepEqual(track(), { ...FRESH, failures: 1 });
+});
+
+await test("a save the pointer rolls on a player's own End Turn belongs to no GM turn (issue #622)", async () => {
+  dying();
+  pass(12);
+  const save = listRecentAudit(world.campaignId, 30).filter((row) => row.kind === "death_state" && row.characterId === hero.id).at(-1);
+  assert.ok(save, "the save was not audited");
+  assert.deepEqual(save.delta.deathSaves, { ...FRESH, successes: 1 });
+  assert.equal(save.turnId, null, "a player's End Turn was filed under a GM turn");
 });
 
 await test("three successes stabilize, and they need not be consecutive", async () => {
@@ -238,8 +268,31 @@ await test("stabilize stops the saves and leaves the character at 0", async () =
   assert.deepEqual(track(), { successes: 0, failures: 0, stable: true, dead: false });
   assert.equal(hp(), 0);
   assert.deepEqual(pass(), []);
+  // The check shows as a roll card on the GM's message (issue 665).
+  assert.deepEqual(medicineOnTurn(out).map((roll) => roll.total), [10]);
   const swing = await kit.swing([17, 4], hero.id, goblin.id);
   assert.equal(swing.outcome.ok, false);
+});
+
+await test("stabilize's How takes the label the console shows for it, and a word of that label is told the value to send", async () => {
+  for (const method of ["Medicine check, DC 10", "medicine check, dc 10"]) {
+    dying();
+    kit.freshTurn();
+    const tended = await kit.withDice([10, 3], "stabilize", { characterId: hero.id, healerId: ally.id, method });
+    assert.equal(tended.outcome.ok, true, `${method}: ${tended.outcome.error}`);
+    assert.deepEqual(tended.dice, ["d20:10", "d4:3"]);
+    assert.equal(track().stable, true);
+    // Sent by its label, the check is still a roll card on the turn (#681).
+    assert.equal(medicineOnTurn(tended.outcome).at(-1)?.total, 10);
+  }
+  // One word of the label is no option: refused, rolling nothing, with the
+  // value that label stands for.
+  dying();
+  kit.freshTurn();
+  const word = await kit.withDice([10, 3], "stabilize", { characterId: hero.id, healerId: ally.id, method: "medicine" });
+  assert.equal(word.outcome.ok, false);
+  assert.deepEqual(word.dice, []);
+  assert.match(word.outcome.error, /"check" \(Medicine check, DC 10\)/);
 });
 
 await test("stabilize is refused for the living and for the dead", async () => {
@@ -256,6 +309,8 @@ await test("a failed Medicine check leaves the character dying and still costs t
   const out = await kit.withDice([9], "stabilize", { characterId: hero.id, healerId: ally.id });
   assert.equal(out.outcome.ok, true, out.outcome.error);
   assert.deepEqual(out.dice, ["d20:9"]);
+  // A miss is shown too, so the table sees why the hero is still dying.
+  assert.deepEqual(medicineOnTurn(out.outcome).map((roll) => roll.total), [9]);
   assert.deepEqual(track(), { ...FRESH, failures: 1 });
   assert.equal(world.encounter().turnBudget.actionUsed, true);
   // The action is gone, so a second try this turn is refused and rolls nothing.
@@ -443,11 +498,83 @@ await test("a stable creature with no wait of its own wakes once four hours pass
   assert.equal(track(), null);
 });
 
-await test("a dying character waits for help: time alone neither wakes nor kills them", async () => {
-  dying({ ...FRESH, failures: 2 });
-  await world.invoke("pass_time", { amount: 8, unit: "hours" });
+// ---- dying outside a fight ----
+
+// A dying creature makes a death save every six seconds until it is stable,
+// dead or healed, whether or not anyone is counting initiative.
+kit.reset(ally.id);
+kit.reset(orc.id);
+
+await test("a dying character on the clock rolls a death save every six seconds until stable", async () => {
+  dying();
+  const out = await kit.withDice([12, 4, 15, 10, 3, 19], "pass_time", { amount: 1, unit: "minutes" });
+  assert.equal(out.outcome.ok, true, out.outcome.error);
+  // Four saves settle it, then the 1d4 hours of the stable wait; the sixth
+  // die is never thrown.
+  assert.deepEqual(out.dice, ["d20:12", "d20:4", "d20:15", "d20:10", "d4:3"]);
+  assert.equal(out.unused, 1);
+  assert.deepEqual(track(), { successes: 0, failures: 0, stable: true, dead: false });
   assert.equal(hp(), 0);
-  assert.deepEqual(track(), { ...FRESH, failures: 2 });
+  assert.equal(out.result.deathSaves.length, 4, JSON.stringify(out.result));
+  assert.match(out.result.deathSaves.at(-1), /stable/);
+});
+
+await test("a dying character left alone on the clock can die of it", async () => {
+  dying({ ...FRESH, failures: 1 });
+  const out = await kit.withDice([3, 18, 5, 17], "pass_time", { amount: 8, unit: "hours" });
+  assert.equal(out.outcome.ok, true, out.outcome.error);
+  assert.deepEqual(out.dice, ["d20:3", "d20:18", "d20:5"]);
+  assert.deepEqual(track(), { successes: 1, failures: 3, stable: false, dead: true });
+  assert.match(out.result.deathSaves.at(-1), /dies/);
+  // The third save came 18 seconds into the eight hours: that is when they
+  // died, so the record holds the hours since and Revivify's minute is gone.
+  const since = minutesSinceDeath(world.campaignId, hero.id);
+  assert.ok(since !== null && Math.abs(since - (8 * 60 - 0.3)) < 0.01, `died ${since} minutes ago by the record`);
+});
+
+await test("a natural 20 on the clock brings the character round at 1 hit point", async () => {
+  dying({ ...FRESH, failures: 2 });
+  const out = await kit.withDice([20, 1], "pass_time", { amount: 10, unit: "minutes" });
+  assert.deepEqual(out.dice, ["d20:20"]);
+  assert.equal(hp(), 1);
+  assert.equal(track(), null);
+});
+
+await test("the save that settles a fall names its roll like the saves before it", async () => {
+  // Outside a fight no GM message carries the dice, so the line is all the
+  // table sees of the deciding save.
+  const name = world.sheet(hero.id).name;
+  dying({ ...FRESH, failures: 2 });
+  const dies = await kit.withDice([6], "pass_time", { amount: 1, unit: "minutes" });
+  assert.equal(dies.result.deathSaves.at(-1), `${name} death save: rolled 6, failure. ${name} fails their final death save and dies.`);
+  dying({ ...FRESH, successes: 2 });
+  const stable = await kit.withDice([14, 2], "pass_time", { amount: 1, unit: "minutes" });
+  assert.match(stable.result.deathSaves.at(-1), new RegExp(`^${name} death save: rolled 14, success\\. ${name} succeeds their third death save and is stable`));
+  dying();
+  const up = await kit.withDice([20], "pass_time", { amount: 1, unit: "minutes" });
+  assert.equal(up.result.deathSaves.at(-1), `${name} death save: rolled 20, natural 20. ${name} rolls a natural 20 on their death save and regains 1 HP!`);
+  kit.reset(hero.id);
+});
+
+await test("a rest or a march that settles a dying character's saves tells the GM how they went", async () => {
+  dying({ ...FRESH, failures: 2 });
+  const rest = await kit.withDice([4], "take_rest", { kind: "short" });
+  assert.equal(rest.outcome.ok, true, rest.outcome.error);
+  assert.match(String(rest.result.deathSaves?.at(-1)), /dies/, JSON.stringify(rest.result));
+  dying({ ...FRESH, failures: 2 });
+  const march = await kit.withDice([4], "travel", { hours: 2, pace: "normal", characterIds: [ally.id] });
+  assert.equal(march.outcome.ok, true, march.outcome.error);
+  assert.match(String(march.result.deathSaves?.at(-1)), /dies/, JSON.stringify(march.result));
+  kit.reset(hero.id);
+});
+
+await test("the stable and the dead roll nothing as time passes", async () => {
+  for (const saves of [{ ...FRESH, stable: true }, DEAD]) {
+    dying(saves);
+    const out = await kit.withDice([5], "pass_time", { amount: 1, unit: "minutes" });
+    assert.deepEqual(out.dice, [], JSON.stringify(saves));
+    assert.deepEqual(track(), saves);
+  }
 });
 
 await test("a short rest spends no hit dice for a character at 0 hit points", async () => {
@@ -456,6 +583,237 @@ await test("a short rest spends no hit dice for a character at 0 hit points", as
   await kit.withDice([10], "take_rest", { kind: "short", spend: [{ characterId: hero.id, dice: 1 }] });
   assert.equal(hp(), 0);
   assert.equal(world.sheet(hero.id).hitDice.spent, before);
+});
+
+// ---- reverting a turn that moved the clock (issue #622) ----
+//
+// The saves the clock rolls, and everything else time does to a sheet, are
+// filed under the turn that moved it, and "Revert this turn" takes them back
+// with the hours. Before, they were written with no turn, and the revert
+// left the character dead and the night spent.
+
+const revertRoute = await world.route("campaigns/[campaignId]/audit/revert-turn");
+async function revertTurn(turnId, confirm = false) {
+  world.signIn(world.owner);
+  const response = await revertRoute.POST(
+    new Request("http://test/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ turnId, ...(confirm ? { confirm: true } : {}) }),
+    }),
+    { params: Promise.resolve({ campaignId: world.campaignId }) },
+  );
+  return { status: response.status, json: await response.json().catch(() => ({})) };
+}
+const instant = () => getClock(world.campaignId).instant;
+const recordedDeaths = () =>
+  listRecentCampaignEvents(world.campaignId, 500).filter((event) => event.kind === "death" && event.campaignCharacterId === hero.id).length;
+const clockMoves = () => getDatabase().prepare(`SELECT COUNT(*) AS n FROM clock_moves WHERE campaign_id = ?`).get(world.campaignId).n;
+
+await test("a death the clock rolled is filed under the turn that moved it, and reverting the turn brings back the dying track, the hours and the record of death", async () => {
+  dying({ ...FRESH, failures: 1 });
+  const at = instant();
+  const since = minutesSinceDeath(world.campaignId, hero.id);
+  const deaths = recordedDeaths();
+  const out = await kit.withDice([3, 18, 5], "pass_time", { amount: 8, unit: "hours" });
+  assert.equal(out.outcome.ok, true, out.outcome.error);
+  assert.equal(track().dead, true);
+  assert.equal(recordedDeaths(), deaths + 1);
+  const rows = listAuditForTurn(world.campaignId, out.outcome.turnId);
+  assert.equal(rows.filter((row) => row.kind === "death_state").length, 3, rows.map((row) => row.kind).join(", "));
+  assert.ok(rows.some((row) => row.kind === "death_moment"), "the moment of death went under no turn");
+
+  const reverted = await revertTurn(out.outcome.turnId);
+  assert.equal(reverted.status, 200, JSON.stringify(reverted.json));
+  assert.equal(reverted.json.clock, "restored");
+  assert.deepEqual(track(), { ...FRESH, failures: 1 });
+  assert.equal(hp(), 0);
+  assert.equal(instant(), at, "the eight hours stayed spent");
+  assert.equal(minutesSinceDeath(world.campaignId, hero.id), since, "a death taken back still times a revival spell");
+  assert.equal(recordedDeaths(), deaths, "the character's story kept a death that was taken back");
+});
+
+await test("a rest and a march that kill on the clock file the saves under their own turn, and the march's revert brings its hours back", async () => {
+  dying({ ...FRESH, failures: 2 });
+  const rest = await kit.withDice([4], "take_rest", { kind: "short" });
+  assert.equal(rest.outcome.ok, true, rest.outcome.error);
+  assert.ok(
+    listAuditForTurn(world.campaignId, rest.outcome.turnId).some((row) => row.kind === "death_state" && row.delta.deathSaves?.dead),
+    "the rest's fatal save is not the rest's",
+  );
+  dying({ ...FRESH, failures: 2 });
+  const at = instant();
+  const march = await kit.withDice([4], "travel", { hours: 2, pace: "normal", characterIds: [ally.id] });
+  assert.equal(march.outcome.ok, true, march.outcome.error);
+  assert.ok(
+    listAuditForTurn(world.campaignId, march.outcome.turnId).some((row) => row.kind === "death_state" && row.delta.deathSaves?.dead),
+    "the march's fatal save is not the march's",
+  );
+  const back = await revertTurn(march.outcome.turnId);
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.deepEqual(track(), { ...FRESH, failures: 2 });
+  assert.equal(instant(), at, "the march's hours stayed spent");
+  kit.reset(hero.id);
+});
+
+await test("a death save that spends an inspiration die and stabilises leaves the die spent", async () => {
+  // The third success: 9 on the d20 and 3 on the die makes 12. The 1d4 is
+  // the stable wait.
+  dying({ ...FRESH, successes: 2 });
+  world.patch(hero.id, { conditions: ["bardic inspiration (d6)"] });
+  const out = await kit.withDice([9, 3, 2], "pass_time", { amount: 1, unit: "minutes" });
+  assert.equal(out.outcome.ok, true, out.outcome.error);
+  assert.equal(track()?.stable, true, JSON.stringify(out.dice));
+  assert.ok(
+    !world.sheet(hero.id).conditions.includes("bardic inspiration (d6)"),
+    `the spent die came back with the stable conditions: ${world.sheet(hero.id).conditions.join(", ")}`,
+  );
+  kit.reset(hero.id);
+});
+
+await test("what time does to a sheet on its own is filed under the turn and comes back with it: a condition running out, a disease's symptoms", async () => {
+  kit.reset(hero.id);
+  const poisoned = await world.invoke("set_condition", { characterId: hero.id, condition: "poisoned", minutes: 10 });
+  assert.equal(poisoned.ok, true, poisoned.error);
+  const meta = world.sheet(hero.id).conditionMeta;
+  world.clearDice();
+  world.dice(1);
+  const infected = await world.invoke("afflict", { characterId: hero.id, kind: "disease", name: "Sewer Plague", save: false });
+  world.clearDice();
+  assert.equal(infected.ok, true, infected.error);
+  const at = instant();
+  const out = await world.invoke("pass_time", { amount: 2, unit: "days" });
+  assert.equal(out.ok, true, out.error);
+  assert.ok(!world.sheet(hero.id).conditions.includes("poisoned"), "the poison outlasted its ten minutes");
+  assert.ok(world.sheet(hero.id).conditions.includes("sewer plague"), "the symptoms never showed");
+  assert.equal(world.sheet(hero.id).exhaustion, 1);
+  const rows = listAuditForTurn(world.campaignId, out.turnId).map((row) => row.kind);
+  assert.ok(rows.includes("condition_clock"), rows.join(", "));
+  assert.ok(rows.includes("exhaustion"), rows.join(", "));
+  assert.equal(
+    getDatabase().prepare(`SELECT COUNT(*) AS n FROM sheet_audit WHERE turn_id = 'clock'`).get().n,
+    0,
+    "a symptom was filed under the made-up turn \"clock\"",
+  );
+
+  const back = await revertTurn(out.turnId, true);
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.equal(instant(), at);
+  const sheet = world.sheet(hero.id);
+  assert.deepEqual(sheet.conditions, ["poisoned"]);
+  assert.deepEqual(sheet.conditionMeta, meta);
+  assert.equal(sheet.exhaustion, 0);
+  assert.ok(afflictionsOf(world.campaignId, hero.id)[0]?.onsetAt !== undefined, "the disease is not incubating again");
+  writeAfflictions(world.campaignId, hero.id, []);
+  kit.reset(hero.id);
+});
+
+await test("a turn whose hours the clock has since moved past is reverted with the clock left where it stands, and the lead is told first", async () => {
+  kit.reset(hero.id);
+  const at = instant();
+  const quiet = await world.invoke("pass_time", { amount: 2, unit: "hours" });
+  assert.equal(quiet.ok, true, quiet.error);
+  // Nothing on a sheet changed: the time alone is put back.
+  const alone = await revertTurn(quiet.turnId);
+  assert.equal(alone.status, 200, JSON.stringify(alone.json));
+  assert.equal(alone.json.clock, "restored");
+  assert.equal(instant(), at);
+  assert.equal((await revertTurn(quiet.turnId)).status, 400, "the same time was put back twice");
+
+  const out = await world.invoke("pass_time", { amount: 2, unit: "hours" });
+  // The GM's own controls move it on, in no turn.
+  advanceClock(world.campaignId, 1, "hours");
+  const moved = instant();
+  const asked = await revertTurn(out.turnId);
+  assert.equal(asked.status, 409, JSON.stringify(asked.json));
+  assert.ok(asked.json.warnings.some((line) => /^The clock has moved since this turn; it stays at /.test(line)), JSON.stringify(asked.json));
+  const done = await revertTurn(out.turnId, true);
+  assert.equal(done.status, 200, JSON.stringify(done.json));
+  assert.equal(done.json.clock, "kept");
+  assert.equal(instant(), moved);
+});
+
+await test("a turn that only moved the clock is listed for the event log with its time, told live, offered back without a sheet change, and gone from the list once reverted", async () => {
+  kit.reset(hero.id);
+  const snapshotRoute = await world.route("campaigns/[campaignId]");
+  const snapshot = async () => {
+    world.signIn(world.owner);
+    const response = await snapshotRoute.GET(new Request("http://test/"), { params: Promise.resolve({ campaignId: world.campaignId }) });
+    return response.json();
+  };
+  const at = instant();
+  const out = await world.invoke("pass_time", { amount: 3, unit: "hours" });
+  assert.equal(out.ok, true, out.error);
+  assert.deepEqual(listAuditForTurn(world.campaignId, out.turnId), [], "the quiet hours changed a sheet");
+  const listed = (await snapshot()).clockTurns?.find((move) => move.turnId === out.turnId);
+  assert.ok(listed, "the snapshot does not list the turn's time");
+  assert.equal(listed.passed, "3 hours");
+  assert.ok(listed.seq > 0, "the time has no place in the log");
+  const told = latestEventOfType(world.campaignId, ["clock_changed"]);
+  assert.deepEqual(told?.payload?.move, listed, "the table was not told the turn moved the clock");
+
+  const back = await revertTurn(out.turnId);
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.equal(back.json.reverted, 0);
+  assert.equal(back.json.clock, "restored");
+  assert.equal(instant(), at);
+  assert.equal((await snapshot()).clockTurns.some((move) => move.turnId === out.turnId), false, "the time was offered back twice");
+  assert.equal(latestEventOfType(world.campaignId, ["clock_changed"])?.payload?.reverted, out.turnId);
+});
+
+await test("a player's own armor change moves the clock in no turn: the saves it brings are nobody's turn, and no move is kept to take back", async () => {
+  kit.reset(hero.id);
+  kit.reset(ally.id, { currentHp: 0, deathSaves: { ...FRESH } });
+  const gear = world.sheet(hero.id).equipment;
+  world.patch(hero.id, { equipment: [{ name: "Leather", qty: 1, equipped: false }] });
+  const moves = clockMoves();
+  const before = listRecentAudit(world.campaignId, 500).length;
+  const usage = await world.route("campaigns/[campaignId]/sheet/usage");
+  world.signIn(world.owner);
+  world.clearDice();
+  world.dice(12, 12, 12, 2);
+  const response = await usage.POST(
+    new Request("http://test/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ characterId: hero.id, gear: { Leather: { equipped: true } } }),
+    }),
+    { params: Promise.resolve({ campaignId: world.campaignId }) },
+  );
+  world.clearDice();
+  assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  const rows = listRecentAudit(world.campaignId, 500).slice(before);
+  assert.ok(rows.some((row) => row.kind === "death_state" && row.characterId === ally.id), "donning the armor rolled no save");
+  assert.deepEqual(rows.filter((row) => row.turnId !== null).map((row) => row.kind), [], "a player's own change was filed under a turn");
+  assert.equal(clockMoves(), moves, "a move outside every turn was kept for a revert");
+  kit.reset(ally.id);
+  kit.reset(hero.id);
+  world.patch(hero.id, { equipment: gear });
+});
+
+await test("time the GM moves with their own clock controls brings its death saves under no turn, and keeps no move for a revert", async () => {
+  const table = await openWorld({ gameSettings: { dmMode: "human" } });
+  const fallen = table.addHero({ ...FIGHTER, user: table.addUser() });
+  table.patch(fallen.id, { currentHp: 0, deathSaves: { ...FRESH } });
+  const clock = await table.route("campaigns/[campaignId]/dm/clock");
+  table.signIn(table.owner);
+  table.clearDice();
+  table.dice(12, 12, 12, 2);
+  const response = await clock.POST(
+    new Request("http://test/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ do: "advance", amount: 1, unit: "minutes" }),
+    }),
+    { params: Promise.resolve({ campaignId: table.campaignId }) },
+  );
+  table.clearDice();
+  assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  const saves = listRecentAudit(table.campaignId, 50).filter((row) => row.kind === "death_state");
+  assert.ok(saves.length, "the minute rolled no save");
+  assert.deepEqual(saves.map((row) => row.turnId), saves.map(() => null), "the GM's own clock was filed under a turn");
+  assert.equal(getDatabase().prepare(`SELECT COUNT(*) AS n FROM clock_moves WHERE campaign_id = ?`).get(table.campaignId).n, 0);
+  table.close();
 });
 
 // ---- Relentless Endurance ----
@@ -475,6 +833,52 @@ await test("Relentless Endurance holds a half-orc at 1 hit point, once a long re
   await world.invoke("pass_time", { amount: 1, unit: "days" });
   await world.invoke("take_rest", { kind: "long" });
   assert.equal(world.sheet(orc.id).resources.relentless_endurance.used, 0);
+});
+
+// ---- the end of a fight ----
+
+await test("a fight lost with nobody standing rolls the fallen's death saves out at once", async () => {
+  for (const id of [hero.id, ally.id, orc.id]) {
+    kit.reset(id);
+  }
+  await world.beginFight([{ monster: "goblin", count: 1 }]);
+  kit.offBoard();
+  dying();
+  kit.reset(ally.id, { currentHp: 0, deathSaves: DEAD });
+  kit.reset(orc.id, { currentHp: 0, deathSaves: DEAD });
+  const out = await kit.withDice([11, 2, 14, 16, 4], "end_encounter", { outcome: "party_defeated" });
+  assert.equal(out.outcome.ok, true, out.outcome.error);
+  assert.equal(world.encounter(), null);
+  assert.deepEqual(out.dice, ["d20:11", "d20:2", "d20:14", "d20:16", "d4:4"]);
+  assert.deepEqual(track(), { successes: 0, failures: 0, stable: true, dead: false });
+  assert.equal(out.result.deathSaves.length, 4, JSON.stringify(out.result));
+});
+
+await test("a fight that ends with an ally standing leaves the fallen to them, and stabilizing still takes the Medicine check", async () => {
+  for (const id of [hero.id, ally.id, orc.id]) {
+    kit.reset(id);
+  }
+  await world.beginFight([{ monster: "goblin", count: 1 }]);
+  kit.offBoard();
+  dying();
+  const out = await kit.withDice([11], "end_encounter", { outcome: "enemies_fled" });
+  assert.equal(out.outcome.ok, true, out.outcome.error);
+  assert.deepEqual(out.dice, []);
+  assert.deepEqual(track(), FRESH);
+  assert.ok(out.result.dying?.includes(world.sheet(hero.id).name), JSON.stringify(out.result));
+  const tended = await kit.withDice([2], "stabilize", { characterId: hero.id, healerId: ally.id });
+  assert.equal(tended.outcome.ok, true, tended.outcome.error);
+  assert.equal(kit.d20s(tended.dice), 1, "stabilizing rolled no Medicine check");
+  assert.equal(tended.result.stabilized, false);
+  assert.deepEqual(track(), FRESH);
+  const again = await kit.withDice([18, 2], "stabilize", { characterId: hero.id, healerId: ally.id });
+  assert.equal(again.result.stabilized, true, JSON.stringify(again.result));
+  // The table is told how, not only the sheet.
+  const line = messages.listRecentMessages(world.campaignId, 1)[0];
+  assert.match(line.content, /Medicine check \(\d+\) meets DC 10: .* is stable/);
+  for (const id of [hero.id, ally.id, orc.id]) {
+    kit.reset(id);
+  }
 });
 
 // ---- gaps ----
@@ -546,6 +950,25 @@ await test("A dead character makes no ability checks or saving throws.", async (
     characterId: hero.id, kind: "ability_check", ability: "str", dc: 10,
   });
   assert.equal(out.outcome.ok, false, `a dead character rolled ${out.dice.join(" ")}`);
+});
+
+// Issue #622: the snapshot's log is the newest fifty real changes, with the
+// rounds' time-only ticks among them riding along. A plain "last fifty rows"
+// let a long fight's ticks push every change out of the log.
+await test("the table's log keeps its newest fifty changes, however many ticks the rounds wrote after them", async () => {
+  const snapshotRoute = await world.route("campaigns/[campaignId]");
+  const { insertSheetAudit } = await import("../src/lib/db/sheet-audit.ts");
+  const { allocateSeq } = await import("../src/lib/db/campaigns.ts");
+  const write = (kind, delta, reason) =>
+    insertSheetAudit({ campaignId: world.campaignId, characterId: hero.id, kind, delta, reason, seq: allocateSeq(world.campaignId) });
+  for (let n = 1; n <= 55; n += 1) write("apply_damage", { amount: n }, `blow ${n}`);
+  for (let n = 0; n < 200; n += 1) write("condition_clock", { ended: [], added: [] }, "time counted down on their conditions");
+  world.signIn(world.owner);
+  const snapshot = await (await snapshotRoute.GET(new Request("http://test/"), { params: Promise.resolve({ campaignId: world.campaignId }) })).json();
+  const changes = snapshot.auditLog.filter((entry) => entry.kind === "apply_damage" && /^blow /.test(entry.reason));
+  assert.equal(changes.length, 50, `the log holds ${changes.length} of the newest changes`);
+  assert.equal(changes[0].reason, "blow 6");
+  assert.equal(snapshot.auditLog.filter((entry) => entry.kind === "condition_clock" && entry.reason === "time counted down on their conditions").length, 200);
 });
 
 world.close();

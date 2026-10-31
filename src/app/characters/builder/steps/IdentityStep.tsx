@@ -5,27 +5,30 @@ import { useId } from "react";
 import { AttractionPicker, CHARACTER_ATTRACTION_HINT } from "@/components/AttractionPicker";
 import { InfoButton } from "@/components/ui/InfoDialog";
 import { LengthNote } from "@/components/ui/LengthNote";
-import { Select } from "@/components/ui/Select";
 import { cn } from "@/lib/cn";
-import { GENDERS, type Gender } from "@/lib/gender";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { ui } from "@/lib/ui";
+import { hostOffers, useCapabilities } from "@/lib/use-capabilities";
 import type { WorldPack } from "@/lib/worlds/types";
 import OptionPicker, { type PickerGroup } from "../OptionPicker";
 import { rollHeroName } from "../heroNames";
 import type { BuilderState } from "../useBuilderState";
 import { Field, StepPanel, inputClass } from "./shared";
 
-// The sheet schema's own limit on a backstory (src/lib/schemas/sheet.ts).
+// The sheet schema's own limits on a backstory and on the hopes for the story
+// (src/lib/schemas/sheet.ts HOPES_MAX, checked equal by
+// scripts/test-story-hopes.mjs).
 const BACKSTORY_MAX = 2000;
+const HOPES_MAX = 500;
 
 // The last step before the summary (backlog F4): who the hero is, once the
 // player knows what they made. The name (its dice roll a name that fits the
-// lineage already chosen), gender (the cards' art follows it), who they are
-// drawn to (issue 501), alignment, the portrait and how they look, and
-// their story. None of it changes a number on the sheet, so nothing before
-// this step waits on it. How they play, the level and the background are
-// asked on the steps before.
+// lineage already chosen), who they are drawn to (issue 501), alignment, the
+// portrait and how they look, and their story. None of it changes a number
+// on the sheet, so nothing before this step waits on it. How they play, the
+// gender, the level and the background are asked on the steps before; the
+// gender is said here beside the rest of who they are, with the way back to
+// the class step that asks it.
 export function IdentityStep({
   state,
   pack,
@@ -34,6 +37,7 @@ export function IdentityStep({
   onUploadPortrait,
   alignmentGroups,
   alignmentInfo,
+  onEditGender,
 }: {
   state: BuilderState;
   pack: WorldPack | null;
@@ -45,11 +49,17 @@ export function IdentityStep({
   onUploadPortrait: () => void;
   alignmentGroups: PickerGroup[];
   alignmentInfo: string;
+  // To the gender on the class step, where the cards it changes are.
+  onEditGender?: () => void;
 }) {
   const { portrait, setPortrait } = state;
   const appearanceId = useId();
   const alignmentId = useId();
   const backstoryId = useId();
+  const hopesId = useId();
+  // Asked only where the host keeps it: an older host drops the field (an
+  // app's screens may be newer than the host they are opened on).
+  const asksHopes = hostOffers(useCapabilities(), "storyHopes");
   const keptSaved = Boolean(initial?.portrait && portrait?.url === initial.portrait.url);
 
   return (
@@ -100,13 +110,14 @@ export function IdentityStep({
       <StepPanel title="Details">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Gender">
-            <Select<Gender>
-              value={state.gender}
-              onChange={state.setGender}
-              label="Gender"
-              className="w-full"
-              options={[{ value: "", label: "Unspecified" }, ...GENDERS.map((value) => ({ value, label: value }))]}
-            />
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-stone-300">{state.gender || "Not chosen"}</span>
+              {onEditGender ? (
+                <button type="button" onClick={onEditGender} className={cn(ui.btnSmall, "min-h-10")}>
+                  Change on the Class step
+                </button>
+              ) : null}
+            </span>
           </Field>
           <AttractionPicker value={state.attraction} onChange={state.setAttraction} hint={CHARACTER_ATTRACTION_HINT} />
         </div>
@@ -204,6 +215,25 @@ export function IdentityStep({
         />
         <LengthNote id={`${backstoryId}-length`} length={state.backstory.length} max={BACKSTORY_MAX} from={0.75} />
       </StepPanel>
+
+      {asksHopes ? (
+        <StepPanel
+          title="Hopes for this story (optional)"
+          help="What would you love to see happen? A romance, a rival, a redemption, an old debt paid. Only you and the GM see this. The GM reads it every turn and steers toward it when the story allows. You can change it later from your character sheet."
+        >
+          <textarea
+            value={state.hopes}
+            onChange={(event) => state.setHopes(event.target.value)}
+            rows={3}
+            maxLength={HOPES_MAX}
+            placeholder="A romance with the companion who travels with us, and a reckoning with the knight who betrayed me..."
+            className={cn(inputClass, "resize-y")}
+            aria-label="Hopes for this story"
+            aria-describedby={`${hopesId}-length`}
+          />
+          <LengthNote id={`${hopesId}-length`} length={state.hopes.length} max={HOPES_MAX} from={0.75} />
+        </StepPanel>
+      ) : null}
     </div>
   );
 }

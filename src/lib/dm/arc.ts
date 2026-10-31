@@ -1,21 +1,15 @@
 import { withLanguage } from "@/lib/dm/table-language-logic";
-import {
-  allocateSeq,
-  campaignSeats,
-  getCampaignById,
-  latestSeq,
-  setQuestLog,
-  setStoryArc,
-} from "@/lib/db/campaigns";
+import { campaignSeats, getCampaignById, latestSeq, setStoryArc } from "@/lib/db/campaigns";
 import { listChapters } from "@/lib/db/chapters";
+import { retireArcQuests } from "@/lib/db/quests";
 import { hasHumanDm, narratorIsAi } from "@/lib/dm/viewer";
 import { listMessagesInSeqRange } from "@/lib/db/messages";
 import { listSheets } from "@/lib/db/sheets";
+import { backgroundWords, classWords, raceWords } from "@/lib/sheet-words";
 import { presetFor, packWorldHints } from "@/lib/worlds/preset";
 import { nameRegisterHint } from "@/lib/genres";
 import {
   activeBeatNumber,
-  activeQuestLines,
   applyActDetail,
   applyArcDelta,
   applyArcUpgrade,
@@ -50,7 +44,7 @@ import {
 import { activeBeat, beatGated, openWaypoints } from "@/lib/dm/waypoint-logic";
 import { publishTitleCard } from "@/lib/dm/scene-state";
 import { insertCampaignMessage } from "@/lib/db/messages";
-import { publishWithSeq } from "@/lib/events";
+import { publishEphemeral, publishWithSeq } from "@/lib/events";
 import { requestUtilityMessage } from "@/lib/dm/model";
 import { trackUtilityCall } from "@/lib/dm/call-tracker";
 import { isStageEnabled } from "@/lib/dm/stages";
@@ -62,6 +56,7 @@ import { renderWorldArcsForPrompt } from "@/lib/dm/world-arc-logic";
 import { ensureWorldArcs } from "@/lib/dm/world-arc";
 import type { ToolResult } from "@/lib/dm/tool-errors";
 import { partyStoryOf, partyStoryPlannerBlock } from "@/lib/dm/party-story";
+import { tableNoteSeq } from "@/lib/dm/narration-slot";
 
 // Story-arc generation and upkeep. The arc is the DM's secret spine: a saga
 // sized by the lead's campaign-length setting is generated once at campaign
@@ -84,7 +79,7 @@ function worldContext(campaignId: string): string {
   const party = listSheets(campaignId)
     .map(
       (sheet) =>
-        `- ${sheet.name}: level ${sheet.level} ${sheet.race} ${sheet.class}${sheet.subclass ? ` (${sheet.subclass})` : ""}, background ${sheet.background || "unknown"}, ${sheet.spellcasting ? "casts spells" : "casts nothing at all"}${sheet.backstory ? `\n  backstory: ${sheet.backstory}` : ""}`,
+        `- ${sheet.name}: level ${sheet.level} ${raceWords(sheet)} ${classWords(sheet.class)}${sheet.subclass ? ` (${sheet.subclass})` : ""}, background ${backgroundWords(sheet) || "unknown"}, ${sheet.spellcasting ? "casts spells" : "casts nothing at all"}${sheet.backstory ? `\n  backstory: ${sheet.backstory}` : ""}${sheet.hopes ? `\n  their player hopes the story holds: ${sheet.hopes}` : ""}`,
     )
     .join("\n");
   return [
@@ -145,7 +140,7 @@ function partyCompositionContext(campaignId: string): string {
       );
       continue;
     }
-    const build = `${sheet.subclass ? `${sheet.subclass} ` : ""}${sheet.class}`;
+    const build = `${sheet.subclass ? `${sheet.subclass} ` : ""}${classWords(sheet.class)}`;
     for (const pet of sheet.pets ?? []) {
       lines.push(
         `- ${sheet.name} is a ${build} with a ${pet.kind.replace("_", " ")} ("${pet.name}", ${pet.form}): ${PET_PLANNING[pet.kind] ?? PET_PLANNING.other}.`,
@@ -175,7 +170,7 @@ function partyCompositionContext(campaignId: string): string {
 function partyCapabilityContext(campaignId: string): string {
   const lines = listSheets(campaignId).map(
     (sheet) =>
-      `- ${sheet.name}: level ${sheet.level} ${sheet.subclass ? `${sheet.subclass} ` : ""}${sheet.class}${sheet.isCompanion ? " (AI companion)" : ""}, ${sheet.spellcasting ? "casts spells" : "casts nothing at all"}.`,
+      `- ${sheet.name}: level ${sheet.level} ${sheet.subclass ? `${sheet.subclass} ` : ""}${classWords(sheet.class)}${sheet.isCompanion ? " (AI companion)" : ""}, ${sheet.spellcasting ? "casts spells" : "casts nothing at all"}.`,
   );
   if (!lines.length) {
     return "";
@@ -212,7 +207,7 @@ const BEAT_RULE = `Each beat is a turning point that takes a stretch of play to 
 // or its own check of play, and complete_beat is refused until all are
 // done, so a beat can no longer land in the reply that reaches its place.
 const BEAT_PLAN_SHAPE = `{"text": string, "waypoints": [{"kind": "place"|"npc"|"item"|"objective"|"fight"|"narrative", "text": string}]}`;
-const WAYPOINT_RULE = `Each beat carries 2 to 4 waypoints: concrete steps the party must take before the beat can land, each one short line with a kind. place is a named location reached, npc a named person spoken with, item a named thing obtained, objective a quest objective completed, fight a named foe defeated, narrative anything else. Name places, people, items and foes exactly as the arc and cast name them, and make the steps different places or people from the beat before, so a beat takes a stretch of play to reach.`;
+const WAYPOINT_RULE = `Each beat carries 2 to 4 waypoints: concrete steps the party must take before the beat can land, each one short line with a kind. place is a named location reached, npc a named person spoken with, item a named thing obtained, objective a quest objective completed, fight a named foe defeated, narrative anything else. Name places, people, items and foes exactly as the arc and cast name them, and make the steps different places or people from the beat before, so a beat takes a stretch of play to reach. List a fight after the beat's places and people, and save the act's boss for its last beat, never its first. When someone in a beat knows what the party needs, hearing it from them is a narrative step.`;
 
 // The full saga JSON shape, shared by initial generation and sequel
 // chaining (the chain adds one extra field in front).
@@ -247,6 +242,18 @@ ${EVENT_RULES}
 ${SOLVABLE_RULE}
 
 ${SAGA_STYLE_RULES}`;
+}
+
+// A planned or refreshed arc brings its sub-arcs' quests with it; the quest
+// log and the table's glance refetch when they changed (issue 581).
+// `base`: the arc the job read before it awaited the model, so the table's
+// edits made meanwhile survive (db/campaigns.ts setStoryArc).
+function storeArc(campaignId: string, arc: StoryArc, base: StoryArc | null = null): boolean {
+  const changed = setStoryArc(campaignId, arc, base);
+  if (changed) {
+    publishEphemeral(campaignId, "quests_updated", { at: Date.now() });
+  }
+  return changed;
 }
 
 // Runs on the campaign's DM queue at activation (after runStorySetup, so a
@@ -305,13 +312,16 @@ export async function generateStoryArc(
       }
       return;
     }
-    setStoryArc(campaignId, arc);
-    setQuestLog(campaignId, activeQuestLines(arc));
+    // A regenerated arc numbers its threads from the start again.
+    const retired = retireArcQuests(campaignId);
+    if (!storeArc(campaignId, arc) && retired) {
+      publishEphemeral(campaignId, "quests_updated", { at: Date.now() });
+    }
     // The off-screen clocks orbit the fresh arc; a failure here simply
     // retries at the next chapter close (ensureWorldArcs is self-healing).
     const withWorld = await ensureWorldArcs(campaignId, arc);
     if (withWorld !== arc) {
-      setStoryArc(campaignId, withWorld);
+      storeArc(campaignId, withWorld, arc);
     }
   } catch (error) {
     // Always logged: a plan that silently never arrived is what an operator
@@ -522,7 +532,7 @@ export async function judgeBeatCompleted(campaignId: string, sinceSeq: number): 
     if (!advanced) {
       return false;
     }
-    setStoryArc(campaignId, advanced.arc);
+    storeArc(campaignId, advanced.arc, campaign.storyArc);
     return true;
   } catch {
     return false;
@@ -894,8 +904,7 @@ export async function refreshStoryArc(
       next = await ensureWorldArcs(campaignId, next);
     }
     if (next !== campaign.storyArc) {
-      setStoryArc(campaignId, next);
-      setQuestLog(campaignId, activeQuestLines(next));
+      storeArc(campaignId, next, campaign.storyArc);
     }
   } catch (error) {
     console.error(`[arc] campaign ${campaignId}: the story arc could not be refreshed`, error);
@@ -945,8 +954,7 @@ export async function planExhaustedArc(campaignId: string): Promise<boolean> {
       return false;
     }
     next = await announceActs(campaignId, campaign.storyArc, next, true);
-    setStoryArc(campaignId, next);
-    setQuestLog(campaignId, activeQuestLines(next));
+    storeArc(campaignId, next, campaign.storyArc);
     return true;
   } catch (error) {
     console.error(`[arc] campaign ${campaignId}: the next stretch of the arc could not be planned`, error);
@@ -1094,7 +1102,7 @@ async function writeActRecap(
 }
 
 function noteAtTable(campaignId: string, content: string) {
-  const seq = allocateSeq(campaignId);
+  const seq = tableNoteSeq(campaignId);
   const message = insertCampaignMessage({ campaignId, seq, authorType: "system", glyph: "cue-bell", content });
   publishWithSeq(campaignId, seq, "message_added", { message });
 }

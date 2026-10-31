@@ -14,6 +14,7 @@ import type { Genre } from "@/lib/schemas/game-settings";
 import type { CreateSheetInput } from "@/lib/schemas/sheet";
 import { refusalText } from "@/app/characters/builder/refusal";
 import { builderDraftKey, clearBuilderDraft } from "@/app/characters/builder/builderDraft";
+import { hostOffers, useCapabilities } from "@/lib/use-capabilities";
 
 // Whoever steers the story (the party lead in an AI campaign, the DM in a
 // human-run one) builds a lasting companion with the full character creator.
@@ -42,6 +43,7 @@ export function CompanionBuilderDialog({
   onCreated?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const keepsCompanions = hostOffers(useCapabilities(), "keepCompanion");
   const [error, setError] = useState("");
   // Companions filed in this user's own library. An ally worth writing once
   // is worth using twice, and the level adaptation that makes that safe is
@@ -81,13 +83,15 @@ export function CompanionBuilderDialog({
   // effect linter, which is what it is.
   const loadLibrary = useCallback(
     () =>
-      fetch("/api/characters?role=companion")
+      // Only the ones that could still join: none this campaign has or had
+      // (issue 661), which the server would refuse.
+      fetch(`/api/characters?role=companion&joinable=${encodeURIComponent(campaignId)}`)
         .then((response) => (response.ok ? response.json() : null))
         .then((data) => setLibrary(data?.characters ?? []))
         .catch(() => {
           // An empty library is a valid state; the section explains itself.
         }),
-    [],
+    [campaignId],
   );
 
   useEffect(() => {
@@ -118,8 +122,10 @@ export function CompanionBuilderDialog({
     }
   }
 
+  // One opened from the library joins tied to that entry; one built here is
+  // kept as a new entry (companions/create).
   async function submit(result: BuilderResult) {
-    await post({ sheet: result.sheet });
+    await post(tweaking ? { sheet: result.sheet, fromLibraryCharacterId: tweaking.id } : { sheet: result.sheet });
   }
 
   return (
@@ -161,6 +167,9 @@ export function CompanionBuilderDialog({
             {humanDm
               ? "This ally joins the party as a character you play from the GM console. In combat their turn waits for you: act for them, then end the turn. They start at the party's level."
               : "This ally joins the party as an AI companion the GM plays. They start at the party's level."}
+            {/* Said only where the host keeps them (an app's screens may be
+                newer than the host they are opened on). */}
+            {keepsCompanions ? " They are kept in your characters too, so another campaign can bring them along." : null}
           </p>
 
           {library.length && !tweaking ? (
@@ -222,7 +231,8 @@ export function CompanionBuilderDialog({
               ) : null}
               <p className="text-[10px] text-stone-600">
                 They arrive at level {level}, adapted the same way a player character is. Change first
-                opens one in the builder; your library copy stays as it is.
+                opens one in the builder; your library copy stays as it is until you save them from the
+                party.
               </p>
             </div>
           ) : null}

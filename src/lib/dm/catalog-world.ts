@@ -7,6 +7,7 @@ import { DEED_SEVERITIES } from "@/lib/dm/companion-values-logic";
 import type { CatalogEntry } from "@/lib/dm/catalog-types";
 import { cueOptions, sceneOptions } from "@/lib/ambience/catalog";
 import { RELATIONSHIP_BEAT_NAMES } from "@/lib/dm/relationship-logic";
+import { NOTE_LIMIT_WORDS } from "@/lib/dm/relationship-note";
 import { TOLD_GENDERS } from "@/lib/gender";
 import {
   ABILITY_OPTIONS as ABILITIES,
@@ -34,6 +35,7 @@ const NOTE = {
   label: "What happened",
   kind: "text" as const,
   placeholder: "One short line for the record",
+  help: NOTE_LIMIT_WORDS,
 };
 
 // The kind of place, from the ambience beds: its sound, battle map and
@@ -465,6 +467,8 @@ export const SOCIAL_ADJUDICATIONS: CatalogEntry[] = [
       // A deed's (issue 503): who else saw it and how grave it was, and what
       // a companion it pushes to an ultimatum demands.
       { name: "witnesses", label: "Others who saw it", kind: "list", placeholder: "Brother Aldo, Seren", help: "Deeds only: every other tracked NPC or companion who saw it, and other player characters who stood by, comma separated." },
+      // Issue 580: whoever it was done to takes it harder than a witness.
+      { name: "victims", label: "Done to", kind: "list", placeholder: "The captive", help: "Deeds only: whoever it was done to, comma separated: the one harmed, spared or set free. It lands harder on them than on anyone who only watched." },
       // Issue 563: a player character there who stood by bears a share of
       // the cost; one who objected bears none.
       { name: "objected", label: "Spoke against it", kind: "characters", help: "Deeds only: player characters there who objected or tried to stop it. They bear none of it." },
@@ -520,7 +524,7 @@ export const SOCIAL_ADJUDICATIONS: CatalogEntry[] = [
     label: "End a relationship",
     category: "social",
     summary: "A falling out, a parting, a betrayal or a death.",
-    confirm: { message: "Record this death? The relationship closes for good.", when: { field: "reason", equals: "death" } },
+    confirm: { message: "Record this death? Every character's bond with them closes for good.", when: { field: "reason", equals: "death" } },
     fields: [
       { name: "characterId", label: "Character", kind: "character", required: true },
       { name: "subject", label: "NPC or companion", kind: "text", required: true },

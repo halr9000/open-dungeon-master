@@ -81,7 +81,10 @@ export function SessionChatColumn({
   // Blocks made from this table, hidden at once; the snapshot carries them
   // on the next load.
   const [justBlocked, setJustBlocked] = useState<string[]>([]);
-  const [dismissedSummary, setDismissedSummary] = useState(false);
+  // The summary dismissed, not a flag: the next fight's card shows again
+  // (FightSummaryCard: "the next fight replaces it"). A flag hid every card
+  // after the first one closed.
+  const [dismissedSummary, setDismissedSummary] = useState<typeof state.fightSummary>(null);
   const blockedUserIds = useMemo(
     () => [...new Set([...state.blockedUserIds, ...justBlocked])],
     [state.blockedUserIds, justBlocked],
@@ -110,6 +113,8 @@ export function SessionChatColumn({
         canIllustrate={steersStory}
         rolls={rolls}
         sheets={sheets}
+        departing={state.departingSheets}
+        goneRefreshKey={state.relationshipsVersion}
         members={state.members}
         cast={state.cast}
         meUserId={meUserId}
@@ -237,16 +242,28 @@ export function SessionChatColumn({
                 if (!excerpt) {
                   return;
                 }
-                await fetch(`/api/campaigns/${campaignId}/facts`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    category: "lore",
-                    subject: "",
-                    fact: excerpt,
-                    sourceSeq: message.seq,
-                  }),
-                });
+                // A refusal used to pass in silence, so the lead never knew
+                // whether the passage was saved (issue 668).
+                try {
+                  const response = await fetch(`/api/campaigns/${campaignId}/facts`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      category: "lore",
+                      subject: "",
+                      fact: excerpt,
+                      sourceSeq: message.seq,
+                    }),
+                  });
+                  if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    onError(data.error || "Could not add that to Facts.");
+                    return;
+                  }
+                } catch {
+                  onError("Could not reach the table to add that to Facts.");
+                  return;
+                }
                 await refreshFacts();
               }
             : undefined
@@ -291,8 +308,8 @@ export function SessionChatColumn({
 
       {/* Directly above the composer, so the answer to "why is nothing
           happening" sits where the player is already looking. */}
-      {state.fightSummary && !dismissedSummary ? (
-        <FightSummaryCard summary={state.fightSummary} onDismiss={() => setDismissedSummary(true)} className="mx-3 mb-2" />
+      {state.fightSummary && state.fightSummary !== dismissedSummary ? (
+        <FightSummaryCard summary={state.fightSummary} onDismiss={() => setDismissedSummary(state.fightSummary)} className="mx-3 mb-2" />
       ) : null}
       <UtilityCallStrip calls={visibleUtilityCalls} />
 

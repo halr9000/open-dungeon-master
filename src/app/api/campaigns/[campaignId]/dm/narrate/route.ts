@@ -5,7 +5,9 @@ import { insertCampaignMessage } from "@/lib/db/messages";
 import { maybeCloseChapter } from "@/lib/dm/chapter-close";
 import { compactHistoryInBackground } from "@/lib/dm/compaction";
 import { enqueueDmJob } from "@/lib/dm/queue";
-import { publishPersisted, publishWithSeq } from "@/lib/events";
+import { publishEphemeral, publishPersisted, publishWithSeq } from "@/lib/events";
+import { meetSpeakers } from "@/lib/dm/party-bonds";
+import { voiceOwedConscience } from "@/lib/dm/conscience-voice";
 import { enqueueNarrationAudio } from "@/lib/tts";
 import { getNpcById } from "@/lib/db/npcs";
 import type { Speaker } from "@/lib/dm/speech";
@@ -111,6 +113,15 @@ export async function POST(
     speech: narratedLines(campaign, parsed.data.content, { speaker, agentLines: read?.lines ?? null }),
   });
   publishWithSeq(campaignId, seq, "message_added", { message });
+  // Whoever spoke to the party in it, or the person narrated as, has met
+  // them (issue 580).
+  if (meetSpeakers(campaign, message.speech ?? [], speaker)) {
+    publishEphemeral(campaignId, "relationships_updated", {});
+  }
+  // A companion's conscience move the table is owed and this passage did not
+  // say (issue 615): their own line right after it, for a person running the
+  // table and an agent program alike.
+  const voiced = voiceOwedConscience(campaign, message, { post: true });
 
   // Held responses behave exactly as they do after an AI narration: the
   // table is locked for discussion until the floor is opened again.
@@ -132,6 +143,10 @@ export async function POST(
       campaign.gameSettings,
       speaker,
     );
+    // After the passage's own audio, so the table hears them in order.
+    for (const said of voiced) {
+      void enqueueNarrationAudio(campaignId, said.id, said.content, said.speech, campaign.gameSettings);
+    }
   }
 
   // Chapter upkeep runs on the campaign queue, off the request, so a long
