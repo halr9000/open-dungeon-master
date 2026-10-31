@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
-  provider: z.enum(["", "kokoro", "openai", "off"]).default(""),
+  provider: z.enum(["", "kokoro", "openai", "openrouter", "off"]).default(""),
   kokoroUrl: z.string().trim().max(500).default(""),
   baseUrl: z.string().trim().max(500).default(""),
   model: z.string().trim().max(200).default(""),

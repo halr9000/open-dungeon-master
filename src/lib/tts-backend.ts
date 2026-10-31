@@ -1,6 +1,8 @@
 import { configValue, getGlobalConfig } from "@/lib/app-config";
+import { endpointKind } from "@/lib/dm/sampling-logic";
 import { soleListedModel } from "@/lib/model-registry/discovery";
 import { openAiSpeechConfig } from "@/lib/openai-images";
+import { serverEnv } from "@/lib/server-env";
 import { TTS_VOICES } from "@/lib/tts-voices";
 
 // Where narration is rendered (issue 89). One setting names the kind of
@@ -11,6 +13,9 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 //   openai  any server that speaks OpenAI's /v1/audio/speech: OpenAI itself,
 //           or a local one (Kokoro-FastAPI, Speaches, openedai-speech, ...)
 //           with its own address, model and key.
+//   openrouter  OpenRouter's speech endpoint (api/v1/audio/speech), OpenAI's
+//           wire format: the key is the one its text model already uses, and
+//           the model is always the admin's pick from its own list.
 //   off     no narration on this server.
 //
 // Both kinds are the same request on the wire; the kind only picks the
@@ -22,7 +27,7 @@ import { TTS_VOICES } from "@/lib/tts-voices";
 // The decision logic is pure and exported so scripts/test-tts-backend.mjs can
 // drive it without a network.
 
-export type TtsProvider = "kokoro" | "openai" | "off";
+export type TtsProvider = "kokoro" | "openai" | "openrouter" | "off";
 
 export type TtsBackend = {
   provider: TtsProvider;
@@ -36,6 +41,7 @@ export type TtsBackend = {
 
 export const KOKORO_DEFAULT_URL = "http://127.0.0.1:8880";
 export const OPENAI_DEFAULT_URL = "https://api.openai.com/v1";
+export const OPENROUTER_DEFAULT_URL = "https://openrouter.ai/api/v1";
 
 // OpenAI publishes no voice list endpoint; these are the documented voices.
 export const OPENAI_TTS_VOICES = [
@@ -67,6 +73,33 @@ export function isOpenAiHost(baseUrl: string): boolean {
   }
 }
 
+export function isOpenRouterHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "openrouter.ai" || host.endsWith(".openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
+// The text model's OpenRouter key, when the text backend itself is OpenRouter
+// (endpointKind reads the whole host, and a blank URL is never "openrouter").
+// One key covers OpenRouter's text and speech, so a table already paying
+// OpenRouter for its DM need not paste the key twice.
+export function openRouterTextKey(): string {
+  const text = getGlobalConfig().text;
+  const candidates: Array<[string, string]> = [
+    [text.customBaseUrl, text.customApiKey],
+    [serverEnv("OPENAI_COMPAT_BASE_URL"), serverEnv("OPENAI_COMPAT_API_KEY")],
+  ];
+  for (const [baseUrl, apiKey] of candidates) {
+    if (endpointKind(baseUrl) === "openrouter" && apiKey.trim()) {
+      return apiKey.trim();
+    }
+  }
+  return "";
+}
+
 export type TtsBackendInput = {
   provider: string;
   // Admin value, then env, for each kind of server.
@@ -75,13 +108,28 @@ export type TtsBackendInput = {
   model: string;
   apiKey: string;
   voice: string;
+  // The text model's OpenRouter key, lent only to openrouter.ai itself.
+  sharedOpenRouterKey: string;
   // The server's shared OpenAI key (images, dictation), lent only to
   // api.openai.com itself.
   sharedOpenAiKey: string;
 };
 
 export function resolveTtsBackend(input: TtsBackendInput): TtsBackend {
-  const provider: TtsProvider = input.provider === "openai" || input.provider === "off" ? input.provider : "kokoro";
+  const provider: TtsProvider =
+    input.provider === "openai" || input.provider === "openrouter" || input.provider === "off" ? input.provider : "kokoro";
+  if (provider === "openrouter") {
+    const base = input.openaiUrl.trim() || OPENROUTER_DEFAULT_URL;
+    return {
+      provider,
+      v1: v1Root(base),
+      // OpenRouter lists many speech models, so no single default can stand
+      // for them: the model is always the admin's pick from its own list.
+      model: input.model.trim(),
+      apiKey: input.apiKey.trim() || (isOpenRouterHost(base) ? input.sharedOpenRouterKey.trim() : ""),
+      defaultVoice: input.voice.trim(),
+    };
+  }
   if (provider === "openai") {
     const base = input.openaiUrl.trim() || OPENAI_DEFAULT_URL;
     const official = isOpenAiHost(base);
@@ -115,6 +163,7 @@ export function ttsBackend(override: Partial<Pick<TtsBackendInput, "provider" | 
     apiKey: override.apiKey?.trim() || configValue(speech.ttsApiKey, "TTS_API_KEY"),
     voice: override.voice?.trim() || configValue(speech.ttsVoice, "TTS_VOICE"),
     sharedOpenAiKey: openAiSpeechConfig().apiKey,
+    sharedOpenRouterKey: openRouterTextKey(),
   });
 }
 
@@ -155,6 +204,11 @@ export function fallbackVoices(backend: Pick<TtsBackend, "provider" | "v1">): st
   if (backend.provider === "kokoro") {
     return TTS_VOICES.map((voice) => voice.id);
   }
+  // OpenRouter's voices belong to each model, so nothing is offered and the
+  // picker falls back to typing the id the model's page documents.
+  if (backend.provider === "openrouter") {
+    return [];
+  }
   return isOpenAiHost(backend.v1) ? OPENAI_TTS_VOICES : [];
 }
 
@@ -165,7 +219,7 @@ export function fallbackVoices(backend: Pick<TtsBackend, "provider" | "v1">): st
 // custom voice string is the server's to understand.
 export function effectiveVoice(voice: string, backend: Pick<TtsBackend, "provider" | "defaultVoice">, serverVoices: string[]): string {
   const asked = voice.trim() || backend.defaultVoice;
-  if (backend.provider !== "openai" || !backend.defaultVoice) {
+  if ((backend.provider !== "openai" && backend.provider !== "openrouter") || !backend.defaultVoice) {
     return asked;
   }
   const kokoroId = TTS_VOICES.some((entry) => entry.id === asked);
@@ -325,7 +379,9 @@ async function requestSpeech(
 // none: nothing is sent, and the readiness checks say narration is not
 // ready (src/lib/capabilities.ts).
 export async function narrationModel(backend: TtsBackend): Promise<string> {
-  if (backend.model || backend.provider !== "openai" || isOpenAiHost(backend.v1)) {
+  // OpenRouter lists many speech models, so nothing is taken from its list
+  // either: a pick is required, the way OpenAI's dozens are.
+  if (backend.model || backend.provider === "openrouter" || backend.provider !== "openai" || isOpenAiHost(backend.v1)) {
     return backend.model;
   }
   return soleListedModel({ provider: "speech", baseUrl: backend.v1, apiKey: backend.apiKey });

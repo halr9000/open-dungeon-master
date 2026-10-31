@@ -39,7 +39,7 @@ export type MaskedConfig = {
     hasOpenaiApiKey: boolean;
   };
   speech: {
-    ttsProvider: "" | "kokoro" | "openai" | "off";
+    ttsProvider: "" | "kokoro" | "openai" | "openrouter" | "off";
     kokoroUrl: string;
     ttsBaseUrl: string;
     ttsModel: string;

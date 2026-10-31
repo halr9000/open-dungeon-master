@@ -65,7 +65,7 @@ async function test(name, fn) {
   console.log(`ok: ${name}`);
 }
 
-const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "", voice: "", sharedOpenAiKey: "" };
+const blank = { provider: "", kokoroUrl: "", openaiUrl: "", model: "", apiKey: "", voice: "", sharedOpenRouterKey: "", sharedOpenAiKey: "" };
 
 await test("an untouched server is Kokoro at the shipped address", () => {
   const backend = resolveTtsBackend(blank);
@@ -100,6 +100,23 @@ await test("off is off, and anything unknown is Kokoro", () => {
   assert.equal(resolveTtsBackend({ ...blank, provider: "banana" }).provider, "kokoro");
 });
 
+await test("an OpenRouter server defaults to its own address and to no model and no voice", () => {
+  const backend = resolveTtsBackend({ ...blank, provider: "openrouter", kokoroUrl: "http://nas:8880" });
+  assert.equal(backend.v1, "https://openrouter.ai/api/v1");
+  assert.equal(backend.model, "", "the model is always the admin's pick");
+  assert.equal(backend.apiKey, "");
+  assert.equal(backend.defaultVoice, "");
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", openaiUrl: "https://openrouter.ai/api/v1/" }).v1, "https://openrouter.ai/api/v1");
+});
+
+await test("the text model's OpenRouter key is lent to openrouter.ai and to nobody else", () => {
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", sharedOpenRouterKey: "sk-or" }).apiKey, "sk-or");
+  const local = resolveTtsBackend({ ...blank, provider: "openrouter", openaiUrl: "http://10.0.0.5:8000", sharedOpenRouterKey: "sk-or" });
+  assert.equal(local.apiKey, "", "a custom OpenAI-kind server gets no OpenRouter key");
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openrouter", apiKey: " sk-own ", sharedOpenRouterKey: "sk-or" }).apiKey, "sk-own");
+  assert.equal(resolveTtsBackend({ ...blank, provider: "openai", sharedOpenRouterKey: "sk-or" }).apiKey, "", "the OpenAI kind never takes it");
+});
+
 await test("voice lists are read in the shapes servers send them", () => {
   assert.deepEqual(parseVoiceList({ voices: ["af_heart", "af_bella", "af_heart"] }), ["af_heart", "af_bella"]);
   assert.deepEqual(parseVoiceList({ voices: [{ id: "alloy" }, { name: "echo" }, { voice_id: "nova" }, 7, null] }), ["alloy", "echo", "nova"]);
@@ -120,6 +137,7 @@ await test("a silent server falls back to what its kind ships", () => {
   assert.ok(fallbackVoices({ provider: "kokoro", v1: "http://x/v1" }).includes("af_heart"));
   assert.ok(fallbackVoices({ provider: "openai", v1: "https://api.openai.com/v1" }).includes("alloy"));
   assert.deepEqual(fallbackVoices({ provider: "openai", v1: "http://10.0.0.5/v1" }), []);
+  assert.deepEqual(fallbackVoices({ provider: "openrouter", v1: "https://openrouter.ai/api/v1" }), [], "OpenRouter's voices belong to each model");
 });
 
 await test("a Kokoro voice on a server without it becomes the default voice", () => {
@@ -133,6 +151,10 @@ await test("a Kokoro voice on a server without it becomes the default voice", ()
   assert.equal(effectiveVoice("", openai, []), "alloy");
   // Kokoro itself is always sent what was asked.
   assert.equal(effectiveVoice("am_adam", { provider: "kokoro", defaultVoice: "af_heart" }, []), "am_adam");
+  // OpenRouter with a default voice remaps a Kokoro id the same way.
+  const openrouter = { provider: "openrouter", defaultVoice: "narrator" };
+  assert.equal(effectiveVoice("af_heart", openrouter, ["narrator"]), "narrator");
+  assert.equal(effectiveVoice("af_heart", openrouter, ["af_heart"]), "af_heart");
 });
 
 await test("a failure is described in words, without the key", () => {
@@ -160,6 +182,7 @@ await test("the probe and the place follow the backend", () => {
   assert.equal(speechProbeUrl({ provider: "kokoro", v1: "http://127.0.0.1:8880/v1" }), "http://127.0.0.1:8880/health");
   assert.equal(speechProbeUrl({ provider: "openai", v1: "http://10.0.0.5:8000/v1" }), "http://10.0.0.5:8000/v1/models");
   assert.equal(speechProbeUrl({ provider: "openai", v1: "https://api.openai.com/v1" }), "");
+  assert.equal(speechProbeUrl({ provider: "openrouter", v1: "https://openrouter.ai/api/v1" }), "https://openrouter.ai/api/v1/models");
   assert.equal(speechProbeUrl({ provider: "off", v1: "http://127.0.0.1:8880/v1" }), "");
   assert.equal(backendPlace("http://127.0.0.1:8880/v1"), "local");
   assert.equal(backendPlace("http://192.168.1.20:8880"), "local");
@@ -392,6 +415,30 @@ await test("a server of the host's own that lists one model runs it for a blank 
   listedModels = null;
   forgetSoleModelsForTests();
   saveGlobalConfig({ speech: { ttsBaseUrl: base, ttsModel: "my-tts" } });
+});
+
+await test("OpenRouter lists many speech models, so nothing is taken from its list", async () => {
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: "https://openrouter.ai/api/v1", ttsModel: "", ttsApiKey: "sk-or" } });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => assert.fail("OpenRouter was asked for its models");
+  try {
+    assert.equal(await narrationModel(ttsBackend()), "");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsVoice: "narrator_one" } });
+});
+
+await test("an OpenRouter server gets the same wire request, with its own key", async () => {
+  mode = "ok";
+  saveGlobalConfig({ speech: { ttsProvider: "openrouter", ttsBaseUrl: base, ttsModel: "hexgrad/kokoro-82m", ttsApiKey: "sk-or", ttsVoice: "narrator_one" } });
+  const backend = ttsBackend();
+  const audio = await synthesizeSpeech("Hello there.", "narrator_one", 1, backend);
+  assert.equal(audio.toString(), "ID3-fake-mpeg");
+  const call = seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1);
+  assert.equal(call.auth, "Bearer sk-or");
+  assert.deepEqual(call.body, { model: "hexgrad/kokoro-82m", voice: "narrator_one", input: "Hello there.", response_format: "mp3" });
+  saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsApiKey: "sk-local", ttsVoice: "narrator_one" } });
 });
 
 await test("Kokoro still sends its own model name", async () => {

@@ -17,7 +17,7 @@ export type ClientCapabilities = {
   // needsModel (images and tts) arrives from servers newer than 0.26.4.
   images: { configured: boolean; reachable: boolean; backend: string; openaiPlace?: string; needsModel?: boolean };
   // provider and place arrive from servers newer than 0.24.5.
-  tts: { configured: boolean; reachable: boolean; provider?: "kokoro" | "openai" | "off"; place?: string; needsModel?: boolean };
+  tts: { configured: boolean; reachable: boolean; provider?: "kokoro" | "openai" | "openrouter" | "off"; place?: string; needsModel?: boolean };
   // backend and wantsWav arrive from servers newer than 0.23.11.
   stt: { configured: boolean; backend?: "whisper" | "builtin" | "openai" | "none"; wantsWav?: boolean };
   // transcribes arrives from servers newer than 0.26.4.

@@ -12,7 +12,7 @@ import { isHarnessId } from "@/lib/harness/types";
 import { harnessImagesReady } from "@/lib/harness/images";
 import { soleListedModel } from "@/lib/model-registry/discovery";
 import type { StorySettings } from "@/lib/types";
-import { isOpenAiHost, narrationModel, ttsBackend, type TtsBackend, type TtsProvider } from "@/lib/tts-backend";
+import { isOpenAiHost, isOpenRouterHost, narrationModel, ttsBackend, type TtsBackend, type TtsProvider } from "@/lib/tts-backend";
 
 // What this server can actually do, derived from the same resolution the DM
 // path uses (configuredDefaultStorySettings, admin settings, env), not from
@@ -522,7 +522,9 @@ export async function capabilitiesSnapshot(): Promise<Capabilities> {
   const speechModel =
     speech.provider === "openai" && (isOpenAiHost(speech.v1) || ttsReachable) ? await narrationModel(speech) : speech.model;
   const narrationNeedsModel =
-    speech.provider === "openai" && !speechModel && (isOpenAiHost(speech.v1) ? speech.apiKey !== "" : ttsReachable);
+    speech.provider === "openrouter"
+      ? ttsReachable && !speechModel
+      : speech.provider === "openai" && !speechModel && (isOpenAiHost(speech.v1) ? speech.apiKey !== "" : ttsReachable);
 
   const dictation = await sttInputs(async () => sttReachable);
 
@@ -557,9 +559,9 @@ export async function capabilitiesSnapshot(): Promise<Capabilities> {
       // the image backend; a server with an address counts as configured
       // when the admin or env named it, or when the default one answers.
       configured:
-        speech.provider === "off" || (speech.provider === "openai" && !speechModel)
+        speech.provider === "off" || ((speech.provider === "openai" || speech.provider === "openrouter") && !speechModel)
           ? false
-          : isOpenAiHost(speech.v1)
+          : isOpenAiHost(speech.v1) || isOpenRouterHost(speech.v1)
             ? speech.apiKey !== ""
             : speechConfigured(
                 speech.provider === "openai"
@@ -567,7 +569,9 @@ export async function capabilitiesSnapshot(): Promise<Capabilities> {
                   : configValue(cfg.speech.kokoroUrl, "KOKORO_URL"),
                 ttsReachable,
               ),
-      reachable: speech.provider !== "off" && (isOpenAiHost(speech.v1) ? speech.apiKey !== "" : ttsReachable),
+      reachable:
+        speech.provider !== "off" &&
+        (isOpenAiHost(speech.v1) || isOpenRouterHost(speech.v1) ? speech.apiKey !== "" : ttsReachable),
       provider: speech.provider,
       place: backendPlace(speech.v1),
       needsModel: narrationNeedsModel,

@@ -98,10 +98,12 @@ export function AdminSpeechSection({
   const soleNarrationModel =
     narrationListing?.reachable === true && narrationListing.models.filter((model) => model.listed).length === 1;
   const narrationNeedsModel =
-    provider === "openai" &&
-    !speech.ttsModel.trim() &&
-    !env.ttsModel &&
-    (official || (narrationListing?.reachable === true && !soleNarrationModel));
+    provider === "openrouter"
+      ? !speech.ttsModel.trim() && !env.ttsModel
+      : provider === "openai" &&
+        !speech.ttsModel.trim() &&
+        !env.ttsModel &&
+        (official || (narrationListing?.reachable === true && !soleNarrationModel));
 
   async function test() {
     setTesting(true);
@@ -157,6 +159,7 @@ export function AdminSpeechSection({
             },
             { value: "kokoro", label: "Kokoro-FastAPI (local)" },
             { value: "openai", label: "OpenAI-compatible server" },
+            { value: "openrouter", label: "OpenRouter" },
             { value: "off", label: "Off: no narration on this server" },
           ]}
         />
@@ -218,12 +221,46 @@ export function AdminSpeechSection({
             />
           </>
         ) : null}
+        {provider === "openrouter" ? (
+          <>
+            <Field label="Server base URL" hint="Blank = openrouter.ai.">
+              <input
+                className={ui.input}
+                value={speech.ttsBaseUrl}
+                onChange={(event) => set({ ttsBaseUrl: event.target.value })}
+                placeholder={env.ttsBaseUrl || "https://openrouter.ai/api/v1"}
+              />
+            </Field>
+            <Field label="Model" hint="A speech model's id from OpenRouter's text-to-speech collection.">
+              <input
+                className={ui.input}
+                value={speech.ttsModel}
+                maxLength={200}
+                onChange={(event) => set({ ttsModel: event.target.value })}
+              />
+            </Field>
+            <SecretField
+              label="API key"
+              isSet={speech.hasTtsApiKey}
+              value={apiKey}
+              onChange={(value) => {
+                setResult(null);
+                onApiKey(value);
+              }}
+              hint={
+                env.hasTtsApiKey
+                  ? "An env-var key is also set; this one wins when filled."
+                  : "Blank uses the OpenRouter key already saved for the text model, if there is one."
+              }
+            />
+          </>
+        ) : null}
         {provider === "off" ? null : (
           <Field
             label="Default voice"
             hint={
-              provider === "openai"
-                ? `Used for the test, and whenever a campaign asks for a voice this server does not have. Blank = ${official ? "alloy" : "the first voice the server lists"}.`
+              provider === "openai" || provider === "openrouter"
+                ? `Used for the test, and whenever a campaign asks for a voice this server does not have. Blank = ${official ? "alloy" : provider === "openrouter" ? "the voice the model documents" : "the first voice the server lists"}.`
                 : "Used for the test. Blank = af_heart. Campaigns pick their own from the server's list, or type one."
             }
           >
@@ -232,7 +269,7 @@ export function AdminSpeechSection({
               value={speech.ttsVoice}
               maxLength={120}
               onChange={(event) => set({ ttsVoice: event.target.value })}
-              placeholder={provider === "openai" ? (official ? "alloy" : "") : "af_heart"}
+              placeholder={provider === "openai" ? (official ? "alloy" : "") : provider === "openrouter" ? "" : "af_heart"}
             />
           </Field>
         )}
@@ -247,7 +284,7 @@ export function AdminSpeechSection({
           ? "No passage is read aloud and no text is sent anywhere. Campaigns that have Narration on are told it is off here."
           : provider === "kokoro"
             ? `Each passage is sent as text to the Kokoro server at ${host(kokoroAt)} and comes back as audio. It is not sent to the text model's server or anywhere else.`
-            : `Each passage is sent as text to ${host(openaiAt)} and comes back as audio${official ? ", billed to the API key" : ""}. It is not sent to the text model's server or anywhere else.`}
+            : `Each passage is sent as text to ${host(openaiAt)} and comes back as audio${official || host(openaiAt).endsWith("openrouter.ai") ? ", billed to the API key" : ""}. It is not sent to the text model's server or anywhere else.`}
       </p>
       {provider === "off" ? null : (
         <div className="mt-3">
