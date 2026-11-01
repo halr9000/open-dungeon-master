@@ -430,6 +430,11 @@ export function assessModel(input: {
     if (role === "image" && !isImageModelId(input.id)) {
       warn("Not in the catalog, and its name does not say it paints. ODM will try it as a picture model.");
     }
+    // The catalog rates text models; for speech, its name saying it speaks
+    // is enough, and the server's own speech listing is the picker's word.
+    if (role === "narration" && isSpeechModelId(input.id, role)) {
+      return { fit: "ok", warnings: [], summary: "" };
+    }
     return { fit: fit === "ok" ? "unknown" : fit, warnings, summary: describeCatalogModel(null) };
   }
   if (input.local) {

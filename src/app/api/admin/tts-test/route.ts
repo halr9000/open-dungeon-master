@@ -52,7 +52,9 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, endpoint: "", error: "Narration is switched off, so there is nothing to test." });
   }
   const { ids, listed } = await serverVoices(backend, true);
-  const voice = form.voice || backend.defaultVoice || ids[0] || "";
+  // A saved default the server does not list (a voice from an earlier
+  // server) would fail every passage; the first listed voice stands in.
+  const voice = form.voice || (ids.includes(backend.defaultVoice) ? backend.defaultVoice : ids[0] || backend.defaultVoice) || "";
   if (!voice) {
     return Response.json({
       ok: false,

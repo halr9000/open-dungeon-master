@@ -654,6 +654,26 @@ await test("a pcm-only model is asked for mp3 once, answers pcm, and plays as WA
   speechFormat = null;
 });
 
+await test("a default voice the server does not list gives way to the first voice it does", async () => {
+  mode = "ok";
+  // The stand-in lists af_heart and narrator_one; af_bella is a Kokoro id
+  // from an earlier server, the way a saved default survives a provider
+  // switch. Every passage would fail with it, so the listed one stands in.
+  saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsApiKey: "sk-own", ttsVoice: "af_bella" } });
+  const backend = ttsBackend();
+  const last = () => seen.filter((entry) => entry.url === "/v1/audio/speech").at(-1).body;
+  await synthesizeSpeech("One.", "af_bella", 1, backend);
+  assert.equal(last().voice, "af_heart", "an unlisted default is replaced, not sent");
+  await synthesizeSpeech("Two.", "narrator_one", 1, backend);
+  assert.equal(last().voice, "narrator_one", "a voice the server lists is sent as asked");
+  await synthesizeSpeech("Three.", "words-from-nowhere", 1, backend);
+  assert.equal(last().voice, "words-from-nowhere", "a custom string is the server's to understand");
+  saveGlobalConfig({ speech: { ttsProvider: "openai", ttsBaseUrl: base, ttsModel: "my-tts", ttsApiKey: "sk-own", ttsVoice: "" } });
+  const blank = ttsBackend();
+  await synthesizeSpeech("Four.", "", 1, blank);
+  assert.equal(last().voice, "af_heart", "blank settings fall to the first listed voice");
+});
+
 unsubscribe?.();
 for (const response of hung) {
   response.destroy();

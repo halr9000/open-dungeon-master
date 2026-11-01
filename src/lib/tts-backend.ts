@@ -540,8 +540,10 @@ export async function synthesizeSpeech(
   }
   const voices = backend.provider === "kokoro" ? [] : await serverVoiceIds(backend);
   // A local server with no default named falls back to the first voice it
-  // lists, as the admin form says it will.
-  const defaultVoice = backend.defaultVoice || voices[0] || "";
+  // lists, as the admin form says it will. So does a default the server
+  // does not list — a voice id from an earlier server would fail every
+  // passage, so it only stands in when the server lists nothing.
+  const defaultVoice = voices.includes(backend.defaultVoice) ? backend.defaultVoice : voices[0] || backend.defaultVoice || "";
   return requestSpeech(backend, input, effectiveVoice(voice, { ...backend, defaultVoice }, voices), speed, options);
 }
 
